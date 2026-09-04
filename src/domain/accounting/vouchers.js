@@ -272,15 +272,24 @@ function ensurePostingAllowed(workspace, voucher, mode) {
         confidence: classification.confidence,
       });
     }
+    if (mode !== "automatic" && assessment.issues.length && transaction.manualConfirmation?.decision !== "approve") {
+      throw new AccountingRuleError("EVIDENCE_CONFIRMATION_REQUIRED", "证据不完整或存在风险的事项必须先完成人工确认", {
+        transactionId: transaction.id,
+        issues: assessment.issues.map((issue) => issue.code),
+        completeness: assessment.completeness,
+      });
+    }
   });
 }
 
 function nextVoucherNumber(workspace, voucher) {
   const period = voucher.period || String(voucher.date).slice(0, 7);
-  const count = (workspace.vouchers || []).filter((item) => (
-    item.id !== voucher.id && item.status === "posted" && (item.period || String(item.date).slice(0, 7)) === period
-  )).length;
-  return `记-${String(count + 1).padStart(3, "0")}`;
+  const maximum = (workspace.vouchers || []).reduce((current, item) => {
+    if (item.id === voucher.id || (item.period || String(item.date).slice(0, 7)) !== period) return current;
+    const match = /^记-(\d+)$/.exec(String(item.no || ""));
+    return match ? Math.max(current, Number(match[1])) : current;
+  }, 0);
+  return `记-${String(maximum + 1).padStart(3, "0")}`;
 }
 
 export function postVoucher(workspace, { voucherId, reviewNote, mode = "manual" }, context = {}) {
@@ -309,6 +318,11 @@ export function postVoucher(workspace, { voucherId, reviewNote, mode = "manual" 
   voucher.postedAt = resolvedContext.at;
   voucher.postedBy = resolvedContext.actor;
   voucher.versions = [...(voucher.versions || []), voucherSnapshot(voucher, resolvedContext, "凭证入账")];
+  sourceTransactionsForVoucher(next, voucher).forEach((transaction) => {
+    transaction.status = "posted";
+    transaction.postedVoucherId = voucher.id;
+    transaction.postedAt = resolvedContext.at;
+  });
   if (voucher.revisionOf) {
     const original = findVoucher(next, voucher.revisionOf);
     original.status = "superseded";

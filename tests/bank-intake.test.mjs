@@ -4,6 +4,7 @@ import * as XLSX from "xlsx";
 
 import {
   applyBankImport,
+  copyWorkspaceLocalFiles,
   createBankCsvTemplate,
   createFinanceDeskStore,
   createInitialState,
@@ -16,6 +17,7 @@ import {
   parseDelimitedText,
   prepareBankImport,
   readBankFile,
+  removeLocalDocument,
   saveLocalDocument,
   updateWorkspace,
 } from "../src/foundation.js";
@@ -172,4 +174,52 @@ test("资料原文件进入本地文件保险箱，元数据和证据关联进�
   assert.equal(workspace.evidenceLinks.some((item) => item.documentIds.includes(metadata.id)), true);
   assert.equal(metadata.storage.externalUpload, false);
   assert.match(metadata.hash, /^[a-f0-9]{64}$|^fnv1a-/);
+});
+
+test("通用资料入口关联流水时会回写证据并重新计算待办", async () => {
+  const storage = createMemoryStorage();
+  const repository = createLocalFoundationRepository({ storage, now: fixedNow });
+  const store = createFinanceDeskStore({ repository });
+  const fileVault = createMemoryFileVault();
+  const workspaceId = store.getState().activeWorkspaceId;
+  const transactionId = store.getActiveWorkspace().transactions[0].id;
+  const file = Object.assign(new Blob(["invoice evidence"], { type: "text/plain" }), {
+    name: "补充发票.txt",
+    lastModified: Date.parse(fixedTimestamp),
+  });
+  const metadata = await saveLocalDocument({
+    store,
+    fileVault,
+    workspaceId,
+    file,
+    metadata: { category: "发票", relatedObjectIds: [transactionId], actor: "测试会计" },
+  });
+
+  const transaction = store.getActiveWorkspace().transactions.find((item) => item.id === transactionId);
+  assert.equal(transaction.evidenceIds.includes(metadata.id), true);
+  assert.equal(Boolean(transaction.evidenceAssessment), true);
+  assert.equal(store.getActiveWorkspace().evidenceLinks.some((item) => item.documentIds.includes(metadata.id)), true);
+});
+
+test("复制工作台会复制独立 Blob，删除副本资料不影响来源工作台", async () => {
+  const storage = createMemoryStorage();
+  const repository = createLocalFoundationRepository({ storage, now: fixedNow });
+  const store = createFinanceDeskStore({ repository });
+  const fileVault = createMemoryFileVault();
+  const sourceWorkspaceId = store.getState().activeWorkspaceId;
+  const file = Object.assign(new Blob(["source evidence"], { type: "text/plain" }), {
+    name: "来源凭证.txt",
+    lastModified: Date.parse(fixedTimestamp),
+  });
+  const sourceDocument = await saveLocalDocument({ store, fileVault, workspaceId: sourceWorkspaceId, file });
+  const target = store.actions.createWorkspace({ name: "独立副本", sourceWorkspaceId });
+
+  await copyWorkspaceLocalFiles({ store, fileVault, sourceWorkspaceId, targetWorkspaceId: target.id });
+  const copiedDocument = store.getActiveWorkspace().documents.find((item) => item.id === sourceDocument.id);
+  assert.notEqual(copiedDocument.storage.blobId, sourceDocument.storage.blobId);
+  assert.equal((await fileVault.get(copiedDocument.storage.blobId)).workspaceId, target.id);
+
+  await removeLocalDocument({ store, fileVault, workspaceId: target.id, documentId: copiedDocument.id });
+  assert.equal(Boolean(await fileVault.get(sourceDocument.storage.blobId)), true);
+  assert.equal(store.getState().workspaces.find((item) => item.id === sourceWorkspaceId).documents.length > 0, true);
 });

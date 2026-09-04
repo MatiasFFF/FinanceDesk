@@ -143,6 +143,25 @@ test("refunds and internal transfers use dedicated traceable links", () => {
   assert.equal(workspace.transactions.find((item) => item.id === "txn-transfer-out").internalTransferLink.amount, 2000);
   assert.equal(workspace.transactions.find((item) => item.id === "txn-transfer-in").status, "reconciled");
   assert.equal(workspace.auditLog.at(-1).action, "reconciliation.internal_transfer");
+
+  assert.throws(() => linkInternalTransfer(workspace, {
+    outgoingTransactionId: "txn-transfer-out",
+    incomingTransactionId: "txn-transfer-in",
+  }, context), (error) => error instanceof AccountingRuleError && error.code === "TRANSFER_ALREADY_LINKED");
+
+  workspace.transactions.push({
+    ...workspace.transactions.find((item) => item.id === "txn-refund"),
+    id: "txn-refund-second",
+    amount: -2000,
+    serial: "BANK-REFUND-SECOND",
+    refundLinks: [],
+  });
+  assert.throws(() => linkRefundToOriginal(workspace, {
+    refundTransactionId: "txn-refund-second",
+    originalSourceId: "txn-deposit",
+    amount: 2000,
+    reason: "第二笔退款超过原收款剩余额度",
+  }, context), (error) => error instanceof AccountingRuleError && error.code === "ORIGINAL_SOURCE_OVER_REFUNDED");
 });
 
 test("over-allocation is rejected before changing the caller state", () => {

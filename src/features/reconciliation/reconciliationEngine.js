@@ -176,7 +176,7 @@ function validateAutomaticReconciliation(workspace, transaction) {
   const rules = accountingRules(workspace);
   const classification = transaction.classification || classifyBankTransaction(workspace, transaction);
   const assessment = transaction.evidenceAssessment || assessTransactionEvidence(workspace, transaction, classification);
-  if (!workspace.rules?.allowAutomaticReconciliation) {
+  if (!rules.allowAutomaticReconciliation) {
     throw new AccountingRuleError("FINANCE_REVIEW_REQUIRED", "客户和供应商核销必须由财务人员确认；本地规则只能形成建议");
   }
   if (classification.confidence < rules.automaticPostingThreshold || !assessment.canAutomaticallyPost) {
@@ -339,11 +339,26 @@ export function linkRefundToOriginal(workspace, {
   const originalTransaction = (next.transactions || []).find((item) => item.id === originalSourceId);
   const originalBill = (next.bills || []).find((item) => item.id === originalSourceId);
   if (!originalTransaction && !originalBill) throw new AccountingRuleError("ORIGINAL_SOURCE_NOT_FOUND", `找不到退款原业务：${originalSourceId}`);
+  if (originalTransaction && Number(originalTransaction.amount) <= 0) {
+    throw new AccountingRuleError("ORIGINAL_SOURCE_INVALID", "退款只能关联原收款流水");
+  }
+  if (originalBill && !["receivable", "depositReceived"].includes(originalBill.kind)) {
+    throw new AccountingRuleError("ORIGINAL_SOURCE_INVALID", "退款只能关联客户应收或预收业务");
+  }
+  if (!reason?.trim()) throw new AccountingRuleError("REFUND_REASON_REQUIRED", "退款关联必须填写判断依据");
   const linked = sumMoney((refund.refundLinks || []).filter((item) => item.status !== "reversed").map((item) => item.amount));
   const refundRemaining = roundMoney(absoluteAmount(refund.amount) - linked);
   const resolvedAmount = roundMoney(amount || refundRemaining);
   if (resolvedAmount <= 0 || resolvedAmount - refundRemaining > accountingRules(next).amountTolerance) {
     throw new AccountingRuleError("REFUND_OVER_LINKED", "退款关联金额超过未匹配余额", { resolvedAmount, refundRemaining });
+  }
+  const originalAmount = absoluteAmount(originalTransaction?.amount ?? originalBill?.amount);
+  const alreadyRefunded = sumMoney((next.transactions || []).flatMap((transaction) => (
+    (transaction.refundLinks || []).filter((item) => item.status !== "reversed" && item.originalSourceId === originalSourceId).map((item) => item.amount)
+  )));
+  const refundableBalance = roundMoney(originalAmount - alreadyRefunded);
+  if (resolvedAmount - refundableBalance > accountingRules(next).amountTolerance) {
+    throw new AccountingRuleError("ORIGINAL_SOURCE_OVER_REFUNDED", "累计退款金额超过原收款或原业务金额", { resolvedAmount, refundableBalance, originalAmount });
   }
   const link = {
     id: nextRecordId((refund.refundLinks || []), "refund-link"),
@@ -379,6 +394,9 @@ export function linkInternalTransfer(workspace, { outgoingTransactionId, incomin
   if (outgoing.accountId === incoming.accountId) throw new AccountingRuleError("TRANSFER_ACCOUNT_INVALID", "内部转账的转出和转入账户不能相同");
   if (Math.abs(absoluteAmount(outgoing.amount) - absoluteAmount(incoming.amount)) > tolerance) {
     throw new AccountingRuleError("TRANSFER_AMOUNT_MISMATCH", "内部转账两端金额不一致");
+  }
+  if (outgoing.internalTransferLink?.status === "confirmed" || incoming.internalTransferLink?.status === "confirmed") {
+    throw new AccountingRuleError("TRANSFER_ALREADY_LINKED", "其中一端流水已经完成内部转账配对");
   }
   const linkId = nextRecordId((next.internalTransferLinks || []), "transfer-link");
   const link = {

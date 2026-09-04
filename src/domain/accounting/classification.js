@@ -70,8 +70,8 @@ function candidateBills(workspace, transaction) {
     .sort((left, right) => right.score - left.score || left.days - right.days || left.bill.id.localeCompare(right.bill.id));
 }
 
-function configuredRule(workspace, transaction, text) {
-  return (workspace.rules?.categoryKeywords || []).map((rule, index) => {
+function configuredRule(rules, transaction, text) {
+  return (rules.categoryKeywords || []).map((rule, index) => {
     try {
       return { rule, index, expression: new RegExp(rule.keyword, "i") };
     } catch {
@@ -95,7 +95,7 @@ export function classifyBankTransaction(workspace, transaction) {
   const rule = CLASSIFICATION_RULES.find((candidate) => (
     (!candidate.direction || candidate.direction === direction) && candidate.pattern.test(text)
   ));
-  const custom = configuredRule(workspace, transaction, text);
+  const custom = configuredRule(rules, transaction, text);
 
   let eventType = rule?.eventType || EVENT_TYPES.UNKNOWN;
   let account = custom?.rule.account || rule?.account || "expenseOther";

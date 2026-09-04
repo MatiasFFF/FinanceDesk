@@ -48,6 +48,26 @@ test("evidence assessment blocks low-confidence and incomplete transactions", ()
   assert.equal(reviewed.auditLog.at(-1).action, "evidence.review");
 });
 
+test("the active S1 rule set changes the real review threshold", () => {
+  const workspace = createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
+  workspace.rules.confidenceThreshold = 85;
+  workspace.ruleSets = [{
+    id: "rule-set-live",
+    name: "当前本地规则",
+    status: "active",
+    confidenceThreshold: 95,
+    updatedAt: "2026-09-06T12:00:00.000Z",
+  }];
+  const transaction = workspace.transactions.find((item) => item.id === "txn-refund");
+
+  const strictAssessment = assessTransactionEvidence(workspace, transaction);
+  assert.equal(strictAssessment.issues.some((item) => item.code === "low_confidence"), true);
+
+  workspace.ruleSets[0].confidenceThreshold = 90;
+  const relaxedAssessment = assessTransactionEvidence(workspace, transaction);
+  assert.equal(relaxedAssessment.issues.some((item) => item.code === "low_confidence"), false);
+});
+
 test("supplemented evidence returns to explicit human review instead of silently posting", () => {
   const workspace = createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
   const deposit = workspace.transactions.find((item) => item.id === "txn-deposit");

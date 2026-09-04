@@ -249,7 +249,6 @@ export function normalizeBankTable(table, mapping, options = {}) {
       currency: normalizeText(valueAt(row, inspection.mapping.currency)) || options.currency || "CNY",
       status: "pending",
       suggestion: "待确认",
-      confidence: 0,
       evidenceIds: [],
       allocations: [],
       sourceType: "local-file-import",

@@ -61,6 +61,14 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     try {
       const record = await fileVault.get(document.storage?.blobId || document.id);
       downloadStoredDocument(record);
+      const current = store.getActiveWorkspace();
+      actions.replaceWorkspace(current.id, current, {
+        audit: {
+          actor: "本地用户",
+          action: "下载本地资料",
+          detail: `${document.name} · 原文件未离开当前设备`,
+        },
+      });
     } catch (caught) {
       setError(caught.message || "找不到这份资料的本地文件内容");
     }

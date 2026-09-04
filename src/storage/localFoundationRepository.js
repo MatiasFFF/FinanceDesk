@@ -21,6 +21,26 @@ function checksum(text) {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
+function markImportedFilesUnverified(state) {
+  return {
+    ...state,
+    workspaces: state.workspaces.map((workspace) => ({
+      ...workspace,
+      documents: (workspace.documents || []).map((document) => ({
+        ...document,
+        storage: document.storage?.mode === "indexeddb"
+          ? {
+            ...document.storage,
+            backupBlobId: document.storage.blobId || document.storage.backupBlobId || null,
+            blobId: null,
+            availableLocally: false,
+          }
+          : document.storage,
+      })),
+    })),
+  };
+}
+
 function serializeState(state, writtenAt = new Date().toISOString()) {
   const payload = JSON.stringify(state);
   return JSON.stringify({
@@ -159,7 +179,7 @@ export function importBackupJson(text, options = {}) {
     if (parsed.formatVersion !== BACKUP_FORMAT_VERSION) throw new Error(`不支持的备份格式版本：${parsed.formatVersion}`);
     if (checksum(JSON.stringify(rawState)) !== parsed.checksum) throw new Error("备份文件校验失败，内容可能已损坏");
   }
-  const imported = assertValidState(migrateState(rawState, options));
+  const imported = markImportedFilesUnverified(assertValidState(migrateState(rawState, options)));
   if ((options.mode || "replace") === "replace" || !options.currentState) return imported;
   if (options.mode !== "merge") throw new Error(`不支持的导入模式：${options.mode}`);
 

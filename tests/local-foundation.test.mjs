@@ -16,6 +16,7 @@ import {
   migrateState,
   renameWorkspace,
   switchWorkspace,
+  updateWorkspace,
   upsertWorkspaceEntity,
   validateState,
 } from "../src/foundation.js";
@@ -104,7 +105,15 @@ test("本地仓库从最近一次有效副本恢复损坏的主数据", () => {
 });
 
 test("JSON 备份可校验导出、替换导入和合并导入", () => {
-  const state = createInitialState({ now: fixedNow });
+  const initial = createInitialState({ now: fixedNow });
+  const state = updateWorkspace(initial, initial.activeWorkspaceId, (workspace) => ({
+    ...workspace,
+    documents: [{
+      id: "document-local-only",
+      name: "仅浏览器原文件.pdf",
+      storage: { mode: "indexeddb", blobId: "blob-local-only", availableLocally: true },
+    }],
+  }), null, { now: fixedNow });
   const json = exportBackupJson(state, { now: fixedNow });
   const replaced = importBackupJson(json, { mode: "replace", now: fixedNow });
   const merged = importBackupJson(json, { mode: "merge", currentState: state, now: fixedNow });
@@ -113,6 +122,8 @@ test("JSON 备份可校验导出、替换导入和合并导入", () => {
   assert.equal(merged.workspaces.length, 2);
   assert.notEqual(merged.workspaces[0].id, merged.workspaces[1].id);
   assert.match(merged.workspaces[1].name, /导入/);
+  assert.equal(replaced.workspaces[0].documents[0].storage.availableLocally, false, "JSON 不包含 Blob，导入后不得伪装原文件可用");
+  assert.equal(replaced.workspaces[0].documents[0].storage.blobId, null, "未核对归属前不得复用全局 Blob ID");
 });
 
 test("清空单工作台只影响目标工作台", () => {
@@ -123,9 +134,28 @@ test("清空单工作台只影响目标工作台", () => {
     name: "保留数据的副本",
   }, { now: fixedNow });
   const originalCount = getWorkspace(withCopy, initial.activeWorkspaceId).transactions.length;
-  const cleared = clearWorkspace(withCopy, "workspace-copy", { scope: "operational", now: fixedNow });
+  const withDownstreamState = updateWorkspace(withCopy, "workspace-copy", (workspace) => ({
+    ...workspace,
+    exceptionTasks: [{ id: "exception-old" }],
+    confirmations: [{ id: "confirmation-old" }],
+    reportVersions: [{ id: "engine-report-old" }],
+    delivery: {
+      reportVersions: [{ id: "product-report-old" }],
+      filing: { period: workspace.currentPeriod, exportedAt: fixedNow().toISOString(), receipt: { id: "receipt-old" } },
+      archives: [{ id: "archive-old" }],
+      notices: [],
+    },
+  }), null, { now: fixedNow });
+  const cleared = clearWorkspace(withDownstreamState, "workspace-copy", { scope: "operational", now: fixedNow });
 
-  assert.equal(getWorkspace(cleared, "workspace-copy").transactions.length, 0);
+  const clearedWorkspace = getWorkspace(cleared, "workspace-copy");
+  assert.equal(clearedWorkspace.transactions.length, 0);
+  assert.equal(clearedWorkspace.exceptionTasks.length, 0);
+  assert.equal(clearedWorkspace.confirmations.length, 0);
+  assert.equal(clearedWorkspace.reportVersions.length, 0);
+  assert.equal(clearedWorkspace.delivery.reportVersions.length, 0);
+  assert.equal(clearedWorkspace.delivery.archives.length, 0);
+  assert.equal(clearedWorkspace.delivery.filing.exportedAt, null);
   assert.equal(getWorkspace(cleared, initial.activeWorkspaceId).transactions.length, originalCount);
-  assert.ok(getWorkspace(cleared, "workspace-copy").company.legalName);
+  assert.ok(clearedWorkspace.company.legalName);
 });

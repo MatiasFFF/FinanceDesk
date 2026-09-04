@@ -47,6 +47,18 @@ test("reconciled split receipt produces a balanced traceable draft and attachmen
   assert.deepEqual(trace.bills.map((item) => item.id), ["bill-ar-1", "bill-ar-2"]);
   assert.ok(trace.documents.some((item) => item.id === "doc-settlement"));
   assert.equal(vouchersForSource(workspace, "bill-ar-1")[0].id, voucher.id);
+  workspace = postVoucher(workspace, { voucherId: voucher.id, mode: "automatic" }, { ...context, at: "2026-09-06T13:00:30.000Z" });
+  assert.equal(workspace.transactions.find((item) => item.id === "txn-split").status, "posted");
+});
+
+test("manual posting still requires explicit confirmation when evidence is incomplete", () => {
+  let workspace = createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
+  workspace = createVoucherDraft(workspace, { transactionId: "txn-prepay" }, context);
+  assert.throws(() => postVoucher(workspace, {
+    voucherId: workspace.vouchers[0].id,
+    mode: "manual",
+    reviewNote: "只填写复核意见，未补齐证据",
+  }, context), (error) => error instanceof AccountingRuleError && error.code === "EVIDENCE_CONFIRMATION_REQUIRED");
 });
 
 test("low-confidence source cannot post automatically and needs an audited manual confirmation", () => {
@@ -105,6 +117,13 @@ test("draft revision keeps versions, while posted voucher requires a separate re
   workspace = postVoucher(workspace, { voucherId: revision.id, mode: "automatic" }, { ...context, at: "2026-09-06T13:08:00.000Z" });
   assert.equal(workspace.vouchers.find((item) => item.id === voucherId).status, "superseded");
   assert.equal(workspace.vouchers.find((item) => item.id === revision.id).status, "posted");
+
+  workspace = createVoucherDraft(workspace, { transactionId: "txn-payable" }, { ...context, at: "2026-09-06T13:09:00.000Z" });
+  const nextVoucher = workspace.vouchers.find((item) => item.status === "draft" && item.id !== revision.id);
+  workspace = postVoucher(workspace, { voucherId: nextVoucher.id, mode: "automatic" }, { ...context, at: "2026-09-06T13:10:00.000Z" });
+  const numbers = workspace.vouchers.map((item) => item.no).filter(Boolean);
+  assert.equal(new Set(numbers).size, numbers.length);
+  assert.equal(workspace.vouchers.find((item) => item.id === nextVoucher.id).no, "记-003");
 });
 
 test("three statements reconcile and every summary keeps drilldown sources", () => {

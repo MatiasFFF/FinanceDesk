@@ -252,17 +252,11 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   function postDraft(voucherId) {
     run(
       (workspace) => {
-        const next = postVoucher(workspace, {
+        return postVoucher(workspace, {
           voucherId,
           mode: "manual",
           reviewNote: voucherNote,
         }, { actor: "周会计" });
-        next.transactions = next.transactions.map((item) => (
-          item.id === transactionId && transactionSettlement(item).status === "pending"
-            ? { ...item, status: "posted" }
-            : item
-        ));
-        return next;
       },
       "凭证已人工复核入账，编号和附件来源已锁定",
     );

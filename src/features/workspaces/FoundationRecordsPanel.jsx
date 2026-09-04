@@ -103,6 +103,32 @@ const COLLECTION_CONFIG = {
       { key: "status", label: "状态", type: "status" },
     ],
   },
+  bills: {
+    title: "往来账单",
+    icon: FileText,
+    fields: [
+      { key: "no", label: "账单编号", required: true },
+      { key: "counterparty", label: "客户 / 供应商", required: true },
+      { key: "kind", label: "账单类型", type: "select", options: [["receivable", "应收"], ["payable", "应付"], ["depositReceived", "客户预收"], ["prepaymentPaid", "供应商预付"]] },
+      { key: "amount", label: "账单金额", type: "number" },
+      { key: "date", label: "业务日期", type: "date" },
+      { key: "dueDate", label: "到期日期", type: "date" },
+      { key: "status", label: "状态", type: "status" },
+    ],
+  },
+  businessEvents: {
+    title: "业务事件",
+    icon: FileText,
+    fields: [
+      { key: "summary", label: "业务说明", required: true },
+      { key: "type", label: "业务类型", type: "select", options: [["customerReceipt", "客户收款"], ["memberRecharge", "会员充值 / 预收"], ["memberConsumption", "会员耗课"], ["supplierSettlement", "供应商结算"], ["supplierPrepayment", "供应商预付"], ["purchaseExpense", "采购费用"], ["payroll", "工资社保"], ["rentAndProperty", "房租物业"], ["bankFee", "银行手续费"], ["loan", "借款还款"], ["employeeAdvance", "员工代垫"], ["relatedParty", "关联方往来"], ["refund", "退款"], ["internalTransfer", "内部转账"]] },
+      { key: "counterparty", label: "相关方" },
+      { key: "amount", label: "业务金额", type: "number" },
+      { key: "date", label: "发生日期", type: "date" },
+      { key: "businessPeriod", label: "业务期间", type: "month" },
+      { key: "status", label: "状态", type: "status" },
+    ],
+  },
   invoices: {
     title: "发票",
     icon: FileText,
@@ -158,11 +184,11 @@ function Field({ field, value, onChange }) {
   const common = { value: value ?? "", onChange: (event) => onChange(event.target.value), required: field.required };
   if (field.type === "status") return <select {...common}>{STATUS_OPTIONS.map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select>;
   if (field.type === "select") return <select {...common}>{field.options.map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select>;
-  return <input {...common} type={field.type === "number" ? "number" : "text"} step={field.type === "number" ? "0.01" : undefined} placeholder={field.placeholder || ""} />;
+  return <input {...common} type={field.type === "number" ? "number" : field.type === "date" ? "date" : field.type === "month" ? "month" : "text"} step={field.type === "number" ? "0.01" : undefined} placeholder={field.placeholder || ""} />;
 }
 
 function displayName(item) {
-  return item.name || item.title || item.no || item.id;
+  return item.name || item.title || item.no || item.summary || item.id;
 }
 
 function EntityEditor({ collection, onToast }) {
@@ -288,7 +314,7 @@ export function FoundationRecordsPanel({ initialStage = "s0", onToast }) {
   const body = useMemo(() => {
     if (stage === "s0") return <div className="foundation-grid"><CompanyProfile onToast={onToast} /><EntityEditor collection="books" onToast={onToast} /><EntityEditor collection="stores" onToast={onToast} /><EntityEditor collection="users" onToast={onToast} /><EntityEditor collection="roles" onToast={onToast} /><AuthorizationEditor onToast={onToast} /></div>;
     if (stage === "s1") return <div className="foundation-grid"><EntityEditor collection="ruleSets" onToast={onToast} /></div>;
-    if (stage === "s2") return <div className="foundation-grid"><EntityEditor collection="counterparties" onToast={onToast} /><EntityEditor collection="contracts" onToast={onToast} /><DocumentIntakePanel defaultCategory="合同" onToast={onToast} /></div>;
+    if (stage === "s2") return <div className="foundation-grid"><EntityEditor collection="counterparties" onToast={onToast} /><EntityEditor collection="contracts" onToast={onToast} /><EntityEditor collection="bills" onToast={onToast} /><EntityEditor collection="businessEvents" onToast={onToast} /><DocumentIntakePanel defaultCategory="合同" onToast={onToast} /></div>;
     if (stage === "s3") return <div className="foundation-grid"><EntityEditor collection="bankAccounts" onToast={onToast} /><BankImportPanel onToast={onToast} /></div>;
     return <div className="foundation-grid"><EntityEditor collection="invoices" onToast={onToast} /><EntityEditor collection="approvals" onToast={onToast} /><EntityEditor collection="personnelRecords" onToast={onToast} /><DocumentIntakePanel defaultCategory="人员资料" onToast={onToast} /></div>;
   }, [stage, activeWorkspace.id, onToast]);

@@ -107,7 +107,7 @@ function evidenceInventory(workspace, transaction, classification) {
 }
 
 function requirementsFor(workspace, eventType) {
-  const custom = workspace.rules?.evidenceRequirements?.[eventType];
+  const custom = accountingRules(workspace).evidenceRequirements?.[eventType];
   return custom || DEFAULT_EVIDENCE_REQUIREMENTS[eventType] || [];
 }
 

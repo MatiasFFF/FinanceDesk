@@ -30,6 +30,9 @@ export const WORKSPACE_OPERATIONAL_COLLECTIONS = Object.freeze([
   "documents",
   "evidenceLinks",
   "vouchers",
+  "exceptionTasks",
+  "confirmations",
+  "reportVersions",
 ]);
 
 const ALL_MUTABLE_COLLECTIONS = new Set([
@@ -266,6 +269,9 @@ export function normalizeWorkspace(input, options = {}) {
     documents: normalizeDocuments(workspace.documents, timestamp),
     evidenceLinks: uniqueById((workspace.evidenceLinks || []).map((item) => timestamped(item, timestamp))),
     vouchers: uniqueById((workspace.vouchers || []).map((item) => timestamped(item, timestamp))),
+    exceptionTasks: uniqueById((workspace.exceptionTasks || []).map((item) => timestamped(item, timestamp))),
+    confirmations: uniqueById((workspace.confirmations || []).map((item) => timestamped(item, timestamp))),
+    reportVersions: uniqueById((workspace.reportVersions || []).map((item) => timestamped(item, timestamp))),
     auditLog: uniqueById((workspace.auditLog || []).map((item) => timestamped(item, timestamp))),
     stages: { ...defaultStages(), ...(workspace.stages || {}) },
     integrations: {
@@ -487,6 +493,10 @@ export function addWorkspace(state, input = {}, options = {}) {
       updatedAt: timestamp,
       auditLog: [],
     }, { timestamp });
+    workspace.documents = workspace.documents.map((document) => ({
+      ...document,
+      storage: document.storage ? { ...document.storage, availableLocally: false } : document.storage,
+    }));
   } else {
     workspace = createBlankWorkspace(input, { timestamp });
   }
@@ -559,6 +569,21 @@ export function clearWorkspace(state, workspaceId, options = {}) {
       const cleared = { ...workspace };
       WORKSPACE_OPERATIONAL_COLLECTIONS.forEach((key) => { cleared[key] = []; });
       cleared.tax = {};
+      cleared.openingLedger = {};
+      cleared.delivery = {
+        reportVersions: [],
+        filing: {
+          period: workspace.currentPeriod,
+          draftCreatedAt: null,
+          draftVersionId: null,
+          exportedAt: null,
+          exportedPackage: null,
+          receipt: null,
+          archivedAt: null,
+        },
+        archives: [],
+        notices: [],
+      };
       return cleared;
     }
     const blank = createBlankWorkspace({

@@ -103,7 +103,15 @@ export function dateDistanceInDays(left, right) {
 }
 
 export function accountingRules(workspace) {
-  return { ...DEFAULT_ACCOUNTING_RULES, ...(workspace.rules || {}) };
+  const activeRuleSet = [...(workspace.ruleSets || [])]
+    .filter((ruleSet) => ruleSet.status === "active")
+    .sort((left, right) => String(left.updatedAt || "").localeCompare(String(right.updatedAt || "")))
+    .at(-1) || workspace.ruleSets?.[0] || {};
+  return {
+    ...DEFAULT_ACCOUNTING_RULES,
+    ...(workspace.rules || {}),
+    ...activeRuleSet,
+  };
 }
 
 export function nextRecordId(records = [], prefix = "record") {
@@ -147,7 +155,15 @@ export function appendAuditEntry(workspace, entry, context = {}) {
 export function accountDefinition(accountId, workspace = {}) {
   const baseId = String(accountId || "").split(":")[0];
   const custom = (workspace.chartOfAccounts || []).find((account) => account.id === accountId || account.id === baseId);
-  return custom || ACCOUNT_CATALOG[accountId] || ACCOUNT_CATALOG[baseId] || {
+  const bankAccount = [...(workspace.bankAccounts || []), ...(workspace.accounts || [])]
+    .find((account) => account.id === accountId);
+  return custom || ACCOUNT_CATALOG[accountId] || ACCOUNT_CATALOG[baseId] || (bankAccount ? {
+    ...bankAccount,
+    label: bankAccount.label || bankAccount.name || "银行存款",
+    category: "asset",
+    normalSide: "debit",
+    cash: true,
+  } : null) || {
     label: accountId || "未知科目",
     category: "other",
     normalSide: "debit",

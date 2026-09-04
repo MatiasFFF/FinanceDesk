@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  accountDefinition,
   buildFinancialStatements,
   buildTaxWorkpaper,
   createAccountingFixture,
@@ -20,6 +21,7 @@ import {
   PRODUCT_NAME,
   buildReportSnapshot,
   ensureWorkspace,
+  freezeReportVersion,
   workflowChecks,
 } from "../src/productWorkflow.js";
 
@@ -108,16 +110,107 @@ test("the visible report snapshot uses the accounting engine for statements and 
     tax.vatPayable.value,
   );
   assert.equal(Object.values(snapshot.summary.engineChecks).every((check) => typeof check.passed === "boolean"), true);
+  assert.equal(snapshot.sections.cashflow.rows.find((row) => row.id === "netCash").value, statements.cashFlow.netChange.value);
 });
 
-test("posted and explicitly ignored items no longer block the product close workflow", () => {
+test("a real product bank account id is treated as cash and enters the statements", () => {
+  const workspace = createInitialState({ now: fixedNow }).workspaces[0];
+  const account = workspace.bankAccounts[0];
+  const definition = accountDefinition(account.id, workspace);
+  assert.equal(definition.category, "asset");
+  assert.equal(definition.cash, true);
+});
+
+test("only posted and explicitly ignored items stop blocking the product close workflow", () => {
   const workspace = ensureWorkspace(createAccountingFixture());
-  workspace.transactions = workspace.transactions.slice(0, 3).map((transaction, index) => ({
+  workspace.transactions = workspace.transactions.slice(0, 4).map((transaction, index) => ({
     ...transaction,
     date: workspace.currentPeriod + "-15",
-    status: ["posted", "ignored", "pending"][index],
+    status: ["posted", "ignored", "pending", "reconciled"][index],
   }));
 
   const flow = workflowChecks(workspace);
-  assert.deepEqual(flow.unresolved.map((item) => item.status), ["pending"]);
+  assert.deepEqual(flow.unresolved.map((item) => item.status), ["pending", "reconciled"]);
+});
+
+test("a frozen report becomes stale after its financial source data changes", () => {
+  const base = ensureWorkspace(createAccountingFixture());
+  base.transactions = base.transactions.map((transaction) => ({ ...transaction, status: "ignored" }));
+  base.vouchers = base.vouchers.map((voucher) => ({ ...voucher, status: "posted" }));
+  const frozen = freezeReportVersion(base, "测试会计");
+  assert.equal(workflowChecks(frozen).version?.label, "V1");
+
+  const changed = {
+    ...frozen,
+    tax: { ...frozen.tax, adjustments: Number(frozen.tax.adjustments || 0) + 100 },
+  };
+  const flow = workflowChecks(changed);
+  assert.equal(flow.version, null);
+  assert.equal(flow.checks.find((item) => item.id === "frozen").ok, false);
+  assert.match(flow.checks.find((item) => item.id === "frozen").detail, /重新冻结/);
+});
+
+test("a pending correction voucher blocks confirmation even when its source transaction is already posted", () => {
+  const workspace = ensureWorkspace(createAccountingFixture());
+  workspace.transactions = workspace.transactions.map((transaction) => ({ ...transaction, status: "posted" }));
+  workspace.vouchers.push({
+    id: "voucher-correction-draft",
+    period: workspace.currentPeriod,
+    status: "draft",
+    version: 2,
+    lines: [],
+  });
+
+  const flow = workflowChecks(workspace);
+  assert.equal(flow.pendingVouchers.length, 1);
+  assert.equal(flow.checks.find((item) => item.id === "vouchers").ok, false);
+});
+
+test("a failed bank reconciliation blocks report freezing and confirmation", () => {
+  const workspace = ensureWorkspace(createAccountingFixture());
+  workspace.transactions = workspace.transactions.map((transaction) => ({ ...transaction, status: "ignored" }));
+  workspace.vouchers = workspace.vouchers.map((voucher) => ({ ...voucher, status: "posted" }));
+  workspace.bankImports = [{
+    id: "bank-import-failed",
+    period: workspace.currentPeriod,
+    status: "reconciliation_failed",
+    reconciliation: { passed: false, difference: 125 },
+  }];
+  const flow = workflowChecks(workspace);
+  assert.equal(flow.bankReconciliationIssues.length, 1);
+  assert.equal(flow.checks.find((item) => item.id === "bank").ok, false);
+});
+
+test("freezing V2 clears every confirmation and delivery artifact bound to V1", () => {
+  const base = ensureWorkspace(createAccountingFixture());
+  base.transactions = base.transactions.map((transaction) => ({ ...transaction, status: "ignored" }));
+  base.vouchers = base.vouchers.map((voucher) => ({ ...voucher, status: "posted" }));
+  const v1 = freezeReportVersion(base, "测试会计");
+  const v1Id = v1.delivery.reportVersions[0].id;
+  v1.tax = {
+    ...v1.tax,
+    financeConfirmedAt: fixedNow().toISOString(),
+    payrollConfirmedAt: fixedNow().toISOString(),
+    ownerConfirmedAt: fixedNow().toISOString(),
+    financeConfirmedVersionId: v1Id,
+    payrollConfirmedVersionId: v1Id,
+    ownerConfirmedVersionId: v1Id,
+  };
+  v1.delivery.filing = {
+    ...v1.delivery.filing,
+    draftCreatedAt: fixedNow().toISOString(),
+    draftVersionId: v1Id,
+    finalConfirmedVersionId: v1Id,
+    exportedAt: fixedNow().toISOString(),
+    exportedPackage: { reportVersionId: v1Id },
+    receipt: { id: "receipt-v1", reportVersionId: v1Id },
+  };
+
+  const v2 = freezeReportVersion(v1, "测试会计");
+  assert.equal(v2.delivery.reportVersions[0].label, "V2");
+  assert.equal(v2.tax.financeConfirmedAt, null);
+  assert.equal(v2.tax.ownerConfirmedVersionId, null);
+  assert.equal(v2.delivery.filing.draftVersionId, null);
+  assert.equal(v2.delivery.filing.exportedPackage, null);
+  assert.equal(v2.delivery.filing.receipt, null);
 });

@@ -1,4 +1,6 @@
 import {
+  accountDefinition,
+  buildAttachmentPackage,
   buildFinancialStatements,
   buildManagementMetrics,
   buildTaxWorkpaper,
@@ -38,6 +40,8 @@ const emptyFiling = (period) => ({
   period,
   draftCreatedAt: null,
   draftVersionId: null,
+  initialConfirmationId: null,
+  finalConfirmedVersionId: null,
   exportedAt: null,
   exportedPackage: null,
   receipt: null,
@@ -81,6 +85,9 @@ export function ensureWorkspace(workspace) {
       payrollConfirmedAt: null,
       ownerConfirmedAt: null,
       confirmedBy: "",
+      financeConfirmedVersionId: null,
+      payrollConfirmedVersionId: null,
+      ownerConfirmedVersionId: null,
       ...(workspace.tax || {}),
     },
     delivery: {
@@ -153,7 +160,7 @@ function accountRows(workspace, accountNames) {
   );
   return periodVouchers
     .flatMap((voucher) => voucher.lines
-      .filter((line) => accountNames.includes(line.account))
+      .filter((line) => accountNames.includes(line.account) || (accountNames.some((account) => ["bank", "cash"].includes(account)) && accountDefinition(line.account, workspace).cash))
       .map((line) => ({
         id: `${voucher.id}-${line.account}`,
         date: voucher.date,
@@ -180,6 +187,7 @@ export function calculatePeriodLedger(workspace) {
     equity: engine.balanceSheet.equity.value,
     difference: engine.balanceSheet.difference.value,
     engineChecks: engine.checks,
+    cashFlow: engine.cashFlow,
   };
 }
 
@@ -223,10 +231,9 @@ export function buildReportSnapshot(workspace) {
   const managementById = Object.fromEntries(management.metrics.map((metric) => [metric.id, metric]));
   const engineTax = buildTaxWorkpaper(workspace, { period: workspace.currentPeriod });
   const periodTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
-  const inflows = periodTransactions.filter((item) => Number(item.amount) > 0);
-  const outflows = periodTransactions.filter((item) => Number(item.amount) < 0);
-  const cashIn = roundMoney(inflows.reduce((sum, item) => sum + Number(item.amount || 0), 0));
-  const cashOut = roundMoney(outflows.reduce((sum, item) => sum + Math.abs(Number(item.amount || 0)), 0));
+  const cashMovements = statements.cashFlow.movements || [];
+  const cashIn = roundMoney(cashMovements.filter((item) => item.amount > 0).reduce((sum, item) => sum + item.amount, 0));
+  const cashOut = roundMoney(cashMovements.filter((item) => item.amount < 0).reduce((sum, item) => sum + Math.abs(item.amount), 0));
   const receivable = managementById.receivable?.value ?? billOutstanding(workspace, "receivable");
   const payable = managementById.payable?.value ?? billOutstanding(workspace, "payable");
   const prepayment = managementById.prepayment?.value ?? billOutstanding(workspace, "prepaymentPaid");
@@ -237,7 +244,7 @@ export function buildReportSnapshot(workspace) {
   const estimatedSurtax = roundMoney(estimatedVat * 0.12);
   const estimatedIncomeTax = roundMoney(Math.max(0, statements.profit) * 0.05);
   const estimatedTax = roundMoney(estimatedVat + estimatedSurtax + estimatedIncomeTax);
-  const cashBalance = managementById.cash?.value ?? roundMoney(amountForAccount(statements.ledger, "bank") + amountForAccount(statements.ledger, "cash"));
+  const cashBalance = statements.cashFlow.closingCash.value;
 
   return {
     period: workspace.currentPeriod,
@@ -294,9 +301,10 @@ export function buildReportSnapshot(workspace) {
       cashflow: {
         label: "现金流量表",
         rows: [
-          makeRow("cashIn", "经营活动现金流入", cashIn, detailsFromTransactions(inflows)),
-          makeRow("cashOut", "经营活动现金流出", cashOut, detailsFromTransactions(outflows)),
-          makeRow("netCash", "现金净增加额", cashIn - cashOut, detailsFromTransactions(periodTransactions)),
+          makeRow("operating", "经营活动现金流量净额", statements.cashFlow.operating.value, statements.cashFlow.operating.rows.map((item) => ({ id: item.voucherId, date: item.date, title: item.summary, reference: "已入账凭证", amount: item.amount }))),
+          makeRow("investing", "投资活动现金流量净额", statements.cashFlow.investing.value, statements.cashFlow.investing.rows.map((item) => ({ id: item.voucherId, date: item.date, title: item.summary, reference: "已入账凭证", amount: item.amount }))),
+          makeRow("financing", "筹资活动现金流量净额", statements.cashFlow.financing.value, statements.cashFlow.financing.rows.map((item) => ({ id: item.voucherId, date: item.date, title: item.summary, reference: "已入账凭证", amount: item.amount }))),
+          makeRow("netCash", "现金净增加额", statements.cashFlow.netChange.value, cashMovements.map((item) => ({ id: item.voucherId, date: item.date, title: item.summary, reference: "已入账凭证", amount: item.amount }))),
           makeRow("closingCash", "期末现金余额", cashBalance, accountRows(workspace, ["bank", "cash"])),
         ],
       },
@@ -304,7 +312,7 @@ export function buildReportSnapshot(workspace) {
         label: "老板报表",
         rows: [
           makeRow("ownerCash", "现金余额", cashBalance, accountRows(workspace, ["bank", "cash"])),
-          makeRow("ownerCashIn", "本月收款", cashIn, detailsFromTransactions(inflows)),
+          makeRow("ownerCashIn", "本月收款", cashIn, cashMovements.filter((item) => item.amount > 0).map((item) => ({ id: item.voucherId, date: item.date, title: item.summary, reference: "已入账凭证", amount: item.amount }))),
           makeRow("ownerRevenue", "本月收入", statements.revenue, accountRows(workspace, ["revenuePrivate", "revenueGroup"])),
           makeRow("ownerProfit", "本月利润", statements.profit),
           makeRow("ownerPrepaid", "会员预收 / 未履约服务", contractLiability, detailsFromBills(workspace, "depositReceived")),
@@ -348,13 +356,25 @@ export function freezeReportVersion(workspace, actor = "周会计") {
     actor,
     frozen: true,
     snapshot,
+    sourceFingerprint: workflowSourceFingerprint(workspace),
   };
   const next = {
     ...workspace,
-    tax: { ...workspace.tax, frozenAt: version.createdAt },
+    tax: {
+      ...workspace.tax,
+      frozenAt: version.createdAt,
+      financeConfirmedAt: null,
+      payrollConfirmedAt: null,
+      ownerConfirmedAt: null,
+      confirmedBy: "",
+      financeConfirmedVersionId: null,
+      payrollConfirmedVersionId: null,
+      ownerConfirmedVersionId: null,
+    },
     delivery: {
       ...workspace.delivery,
       reportVersions: [version, ...workspace.delivery.reportVersions],
+      filing: emptyFiling(workspace.currentPeriod),
     },
   };
   return audit(next, "冻结报表版本", `${workspace.currentPeriod} ${version.label}，差异 ${snapshot.summary.difference.toFixed(2)}`, actor);
@@ -383,29 +403,94 @@ export function getLatestReportVersion(workspace) {
   return workspace.delivery.reportVersions.find((item) => item.period === workspace.currentPeriod) || null;
 }
 
+const WORKFLOW_SOURCE_KEYS = [
+  "accounts",
+  "bankAccounts",
+  "transactions",
+  "businessEvents",
+  "bills",
+  "documents",
+  "evidenceLinks",
+  "vouchers",
+  "exceptionTasks",
+  "counterparties",
+  "contracts",
+  "invoices",
+  "approvals",
+  "personnelRecords",
+  "rules",
+  "ruleSets",
+  "openingLedger",
+];
+
+export function workflowSourceFingerprint(workspace) {
+  const tax = workspace.tax || {};
+  return JSON.stringify({
+    currentPeriod: workspace.currentPeriod,
+    sources: Object.fromEntries(WORKFLOW_SOURCE_KEYS.map((key) => [key, workspace[key] || (key === "openingLedger" || key === "rules" ? {} : [])])),
+    tax: {
+      adjustments: Number(tax.adjustments || 0),
+      payroll: Number(tax.payroll || 0),
+      socialSecurity: Number(tax.socialSecurity || 0),
+      vatRate: Number(tax.vatRate ?? 0.03),
+      note: tax.note || "",
+      sourceIds: tax.sourceIds || [],
+      payrollSourceIds: tax.payrollSourceIds || [],
+      socialSecuritySourceIds: tax.socialSecuritySourceIds || [],
+    },
+  });
+}
+
+function comparableSnapshot(snapshot) {
+  if (!snapshot) return "";
+  const { generatedAt: _generatedAt, ...stable } = snapshot;
+  return JSON.stringify(stable);
+}
+
 export function workflowChecks(workspace) {
   const snapshot = buildReportSnapshot(workspace);
+  const statementsBalanced = Object.values(snapshot.summary.engineChecks || {}).every((check) => check.passed);
   const currentTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
-  const unresolved = currentTransactions.filter((item) => !["reconciled", "posted", "ignored"].includes(item.status));
-  const version = getLatestReportVersion(workspace);
+  const unresolved = currentTransactions.filter((item) => !["posted", "ignored"].includes(item.status));
+  const openExceptionTasks = (workspace.exceptionTasks || []).filter((task) => task.status !== "resolved");
+  const bankReconciliationIssues = (workspace.bankImports || []).filter((bankImport) => (
+    bankImport.period === workspace.currentPeriod
+    && (bankImport.status !== "completed" || !bankImport.reconciliation?.passed)
+  ));
+  const pendingVouchers = (workspace.vouchers || []).filter((voucher) => (
+    voucher.period === workspace.currentPeriod && !["posted", "superseded"].includes(voucher.status)
+  ));
+  const latestVersion = getLatestReportVersion(workspace);
+  const sourceIsCurrent = latestVersion?.sourceFingerprint
+    ? latestVersion.sourceFingerprint === workflowSourceFingerprint(workspace)
+    : Boolean(latestVersion)
+      && workspace.tax?.frozenAt === latestVersion.createdAt
+      && comparableSnapshot(latestVersion.snapshot) === comparableSnapshot(snapshot);
+  const version = sourceIsCurrent ? latestVersion : null;
   const filing = workspace.delivery.filing;
   const checks = [
-    { id: "balanced", label: "三表勾稽差异为 0", ok: Math.abs(snapshot.summary.difference) < 0.01, page: "reports" },
-    { id: "exceptions", label: "流水与异常事项已完成复核", ok: unresolved.length === 0, page: "reconcile", detail: unresolved.length ? `${unresolved.length} 笔未完成` : "已完成" },
-    { id: "frozen", label: "本期报表版本已冻结", ok: Boolean(version), page: "reports" },
-    { id: "finance", label: "客户已完成首次财务确认", ok: Boolean(workspace.tax.financeConfirmedAt), page: "tax" },
-    { id: "payroll", label: "工资与社保数据已确认", ok: Boolean(workspace.tax.payrollConfirmedAt), page: "tax" },
-    { id: "owner", label: "客户已完成最终责任确认", ok: Boolean(workspace.tax.ownerConfirmedAt), page: "tax" },
-    { id: "exported", label: "本地申报包已导出", ok: Boolean(filing.exportedAt), page: "tax" },
-    { id: "receipt", label: "外部办理回执已本地导入", ok: Boolean(filing.receipt), page: "archive" },
+    { id: "balanced", label: "试算、资产负债与现金变动勾稽通过", ok: statementsBalanced, page: "reports", detail: statementsBalanced ? "三项校验通过" : "至少一项校验存在差异" },
+    { id: "bank", label: "本期银行流水余额勾稽通过", ok: bankReconciliationIssues.length === 0, page: "setup", detail: bankReconciliationIssues.length ? `${bankReconciliationIssues.length} 份银行流水有差异或错误行` : "已完成" },
+    { id: "exceptions", label: "流水与异常事项已完成复核入账", ok: unresolved.length === 0 && openExceptionTasks.length === 0, page: "reconcile", detail: unresolved.length || openExceptionTasks.length ? `${unresolved.length} 笔流水、${openExceptionTasks.length} 项异常未完成` : "已完成" },
+    { id: "vouchers", label: "本期凭证已全部复核入账", ok: pendingVouchers.length === 0, page: "reconcile", detail: pendingVouchers.length ? `${pendingVouchers.length} 张草稿或更正待处理` : "已完成" },
+    { id: "frozen", label: "本期当前数据已有冻结版本", ok: Boolean(version), page: "reports", detail: latestVersion && !version ? "上游数据已变化，请重新冻结" : undefined },
+    { id: "finance", label: "客户已完成首次财务确认", ok: Boolean(version && workspace.tax.financeConfirmedAt && workspace.tax.financeConfirmedVersionId === version.id), page: "tax" },
+    { id: "payroll", label: "工资与社保数据已确认", ok: Boolean(version && workspace.tax.payrollConfirmedAt && workspace.tax.payrollConfirmedVersionId === version.id), page: "tax" },
+    { id: "owner", label: "客户已完成最终责任确认", ok: Boolean(version && workspace.tax.ownerConfirmedAt && workspace.tax.ownerConfirmedVersionId === version.id && filing.finalConfirmedVersionId === version.id), page: "tax" },
+    { id: "exported", label: "本地申报包已导出", ok: Boolean(version && filing.exportedAt && filing.exportedPackage?.reportVersionId === version.id), page: "tax" },
+    { id: "receipt", label: "外部办理回执已本地导入", ok: Boolean(version && filing.receipt?.reportVersionId === version.id), page: "archive" },
   ];
   return {
     checks,
-    prepare: checks.slice(0, 5),
-    export: checks.slice(0, 6),
+    prepare: checks.slice(0, 7),
+    export: checks.slice(0, 8),
     archive: checks,
     snapshot,
     unresolved,
+    openExceptionTasks,
+    bankReconciliationIssues,
+    pendingVouchers,
+    latestVersion,
     version,
   };
 }
@@ -481,6 +566,17 @@ export async function exportLocalFilingPackage(workspace) {
     ownerConfirmedAt: workspace.tax.ownerConfirmedAt,
     confirmedBy: workspace.tax.confirmedBy,
   }, null, 2));
+  const periodVouchers = (workspace.vouchers || []).filter((voucher) => voucher.period === workspace.currentPeriod && ["posted", "superseded"].includes(voucher.status));
+  folder.file("凭证与附件索引.json", JSON.stringify(periodVouchers.map((voucher) => ({
+    voucher,
+    attachmentPackage: buildAttachmentPackage(workspace, voucher.id),
+  })), null, 2));
+  folder.file("资料清单.json", JSON.stringify((workspace.documents || []).filter((document) => !document.period || document.period === workspace.currentPeriod), null, 2));
+  folder.file("银行勾稽记录.json", JSON.stringify((workspace.bankImports || []).filter((bankImport) => bankImport.period === workspace.currentPeriod), null, 2));
+  folder.file("异常与确认记录.json", JSON.stringify({
+    exceptions: workspace.exceptionTasks || [],
+    confirmations: (workspace.confirmations || []).filter((confirmation) => confirmation.period === workspace.currentPeriod),
+  }, null, 2));
   folder.file("操作日志.csv", auditCsv(workspace));
   const blob = await zip.generateAsync({ type: "blob" });
   const fileName = `${PRODUCT_NAME}-${workspace.name}-${workspace.currentPeriod}-本地申报包.zip`;
@@ -508,13 +604,14 @@ export async function importLocalReceipt(file) {
 }
 
 export function attachReceipt(workspace, receipt, actor = "周会计") {
+  const reportVersionId = workspace.delivery.filing.exportedPackage?.reportVersionId || workspace.delivery.filing.draftVersionId || null;
   const next = {
     ...workspace,
     delivery: {
       ...workspace.delivery,
       filing: {
         ...workspace.delivery.filing,
-        receipt,
+        receipt: { ...receipt, reportVersionId },
       },
     },
   };
@@ -555,8 +652,18 @@ export function archivePeriod(workspace, actor = "周会计") {
       confirmedBy: workspace.tax.confirmedBy,
     },
     unresolvedIds: flow.unresolved.map((item) => item.id),
+    carryForwardItems: workspace.transactions
+      .filter((item) => String(item.date || "").startsWith(workspace.currentPeriod) && item.status === "ignored")
+      .map((item) => ({ id: item.id, counterparty: item.counterparty, summary: item.summary, amount: item.amount, fromPeriod: workspace.currentPeriod })),
     closingLedger: flow.snapshot.ledger,
     summary: flow.snapshot.summary,
+    reportSnapshot: flow.version.snapshot,
+    vouchers: (workspace.vouchers || []).filter((voucher) => voucher.period === workspace.currentPeriod && ["posted", "superseded"].includes(voucher.status)),
+    attachmentPackages: (workspace.vouchers || []).filter((voucher) => voucher.period === workspace.currentPeriod && ["posted", "superseded"].includes(voucher.status)).map((voucher) => buildAttachmentPackage(workspace, voucher.id)),
+    documents: (workspace.documents || []).filter((document) => !document.period || document.period === workspace.currentPeriod),
+    confirmationPackages: (workspace.confirmations || []).filter((confirmation) => confirmation.period === workspace.currentPeriod),
+    exceptionRecords: (workspace.exceptionTasks || []).filter((task) => task.status === "resolved" || flow.unresolved.some((item) => item.id === task.sourceId)),
+    auditSnapshot: workspace.auditLog || [],
   };
   const next = {
     ...workspace,
@@ -581,23 +688,11 @@ export function enterNextPeriod(workspace, actor = "周会计") {
   if (!filing.archivedAt || !archive) return workspace;
   const target = nextPeriod(workspace.currentPeriod);
   const ledger = archive.closingLedger || {};
-  const openingLedger = {
-    bank: amountForAccount(ledger, "bank"),
-    cash: amountForAccount(ledger, "cash"),
-    receivable: amountForAccount(ledger, "receivable"),
-    prepayment: amountForAccount(ledger, "prepayment"),
-    equipment: amountForAccount(ledger, "equipment"),
-    payable: amountForAccount(ledger, "payable"),
-    contractLiability: amountForAccount(ledger, "contractLiability"),
-    equity: -Number(archive.summary?.equity || 0),
-    revenuePrivate: 0,
-    revenueGroup: 0,
-    expenseRent: 0,
-    expenseUtility: 0,
-    expenseFee: 0,
-    expenseCommission: 0,
-    expenseOther: 0,
-  };
+  const openingLedger = Object.fromEntries(Object.entries(ledger).map(([accountId, value]) => {
+    const category = accountDefinition(accountId, workspace).category;
+    const carriesForward = ["asset", "contraAsset", "liability", "equity"].includes(category);
+    return [accountId, carriesForward ? Number(value || 0) : 0];
+  }));
   const next = {
     ...workspace,
     currentPeriod: target,
@@ -616,6 +711,17 @@ export function enterNextPeriod(workspace, actor = "周会计") {
     },
     delivery: {
       ...workspace.delivery,
+      notices: [
+        ...(archive.carryForwardItems || []).map((item) => ({
+          id: `carry-${target}-${item.id}`,
+          period: target,
+          sourceId: item.id,
+          status: "open",
+          message: `${item.fromPeriod} 延期事项：${item.counterparty || "未命名对象"} · ${item.summary || "待处理"}`,
+          amount: item.amount,
+        })),
+        ...(workspace.delivery.notices || []),
+      ],
       filing: emptyFiling(target),
     },
   };

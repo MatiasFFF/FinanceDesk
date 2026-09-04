@@ -12,6 +12,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
+import { copyWorkspaceLocalFiles, refreshLocalFileAvailability } from "../intake/documentIntake.js";
 import "./foundation-ui.css";
 
 function downloadJson(text, fileName) {
@@ -37,7 +38,7 @@ export function WorkspaceTrigger({ onClick, className = "brand" }) {
 }
 
 export function WorkspaceManager({ open, onClose, onToast }) {
-  const { state, activeWorkspace, actions, fileVault } = useFinanceDesk();
+  const { state, activeWorkspace, actions, store, fileVault } = useFinanceDesk();
   const [createMode, setCreateMode] = useState("blank");
   const [sourceWorkspaceId, setSourceWorkspaceId] = useState(activeWorkspace.id);
   const [newName, setNewName] = useState("");
@@ -65,26 +66,47 @@ export function WorkspaceManager({ open, onClose, onToast }) {
     }
   }
 
-  function createWorkspace(event) {
+  async function createWorkspace(event) {
     event.preventDefault();
     const name = newName.trim();
     if (!name) {
       setError("请先填写工作台名称");
       return;
     }
-    const input = createMode === "copy"
-      ? { name, sourceWorkspaceId }
-      : { name, industry: "其他服务业", taxpayerType: "小规模纳税人" };
-    if (run(() => actions.createWorkspace(input), `已创建「${name}」`)) setNewName("");
+    setError("");
+    let created = null;
+    try {
+      const input = createMode === "copy"
+        ? { name, sourceWorkspaceId }
+        : { name, industry: "其他服务业", taxpayerType: "小规模纳税人" };
+      created = actions.createWorkspace(input);
+      if (createMode === "copy") {
+        await copyWorkspaceLocalFiles({ store, fileVault, sourceWorkspaceId, targetWorkspaceId: created.id });
+      }
+      setNewName("");
+      onToast?.(`已创建「${name}」`);
+    } catch (caught) {
+      if (created) {
+        try {
+          actions.deleteWorkspace(created.id);
+          if (fileVault) await fileVault.clearWorkspace(created.id);
+        } catch {
+          // Keep the original error; the remaining workspace is visible and can be removed manually.
+        }
+      }
+      setError(caught.message || "创建工作台失败");
+    }
   }
 
   async function deleteActive() {
     if (!window.confirm(`确定删除「${activeWorkspace.name}」吗？该工作台的浏览器本地数据将一并删除。`)) return;
     setError("");
+    const workspaceId = activeWorkspace.id;
+    const workspaceName = activeWorkspace.name;
     try {
-      if (fileVault) await fileVault.clearWorkspace(activeWorkspace.id);
-      actions.deleteWorkspace(activeWorkspace.id);
-      onToast?.(`已删除「${activeWorkspace.name}」`);
+      actions.deleteWorkspace(workspaceId);
+      if (fileVault) await fileVault.clearWorkspace(workspaceId);
+      onToast?.(`已删除「${workspaceName}」`);
     } catch (caught) {
       setError(caught.message || "删除工作台失败");
     }
@@ -93,9 +115,10 @@ export function WorkspaceManager({ open, onClose, onToast }) {
   async function clearActive() {
     if (!window.confirm(`确定清空「${activeWorkspace.name}」的流水、资料、证据和凭证吗？企业设置会保留。`)) return;
     setError("");
+    const workspaceId = activeWorkspace.id;
     try {
-      if (fileVault) await fileVault.clearWorkspace(activeWorkspace.id);
-      actions.clearWorkspace(activeWorkspace.id, { scope: "operational" });
+      actions.clearWorkspace(workspaceId, { scope: "operational" });
+      if (fileVault) await fileVault.clearWorkspace(workspaceId);
       onToast?.("当前工作台的业务数据已清空");
     } catch (caught) {
       setError(caught.message || "清空工作台失败");
@@ -109,11 +132,40 @@ export function WorkspaceManager({ open, onClose, onToast }) {
     setError("");
     try {
       const text = await file.text();
+      const previousWorkspaceIds = new Set(store.getState().workspaces.map((workspace) => workspace.id));
       actions.importBackup(text, { mode: importMode });
-      onToast?.(importMode === "merge" ? "备份已合并到本地工作台" : "本地数据已由备份替换");
+      if (importMode === "replace" && fileVault) {
+        const nextIds = new Set(store.getState().workspaces.map((workspace) => workspace.id));
+        for (const workspaceId of previousWorkspaceIds) {
+          if (!nextIds.has(workspaceId)) await fileVault.clearWorkspace(workspaceId);
+        }
+      }
+      const availability = await refreshLocalFileAvailability({ store, fileVault });
+      const current = store.getActiveWorkspace();
+      actions.replaceWorkspace(current.id, current, {
+        audit: {
+          actor: "本地用户",
+          action: "导入工作台备份",
+          detail: `${importMode === "merge" ? "合并" : "替换"}导入；${availability.available} 份原文件仍可用，${availability.missing} 份需重新关联`,
+        },
+      });
+      onToast?.(`${importMode === "merge" ? "备份已合并" : "本地数据已替换"}；${availability.missing ? `${availability.missing} 份原文件需重新关联` : "本地原文件状态已核对"}`);
     } catch (caught) {
       setError(caught.message || "备份导入失败");
     }
+  }
+
+  function exportBackup() {
+    const current = store.getActiveWorkspace();
+    actions.replaceWorkspace(current.id, current, {
+      audit: {
+        actor: "本地用户",
+        action: "导出工作台备份",
+        detail: "导出业务数据、资料元数据和审计记录；原文件仍保存在当前浏览器",
+      },
+    });
+    downloadJson(actions.exportBackup(), `财务工作台备份-${new Date().toISOString().slice(0, 10)}.json`);
+    onToast?.("工作台 JSON 备份已导出");
   }
 
   return (
@@ -164,7 +216,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
             <div className="foundation-section-heading"><div><small>备份</small><h3>本地 JSON</h3></div></div>
             <p className="foundation-hint">JSON 包含业务数据、资料元数据和审计记录；资料原文件仍留在本浏览器的 IndexedDB 文件保险箱。</p>
             <div className="foundation-inline-actions wrap">
-              <button className="secondary-button" type="button" onClick={() => downloadJson(actions.exportBackup(), `财务工作台备份-${new Date().toISOString().slice(0, 10)}.json`)}><DownloadSimple size={16} />导出备份</button>
+              <button className="secondary-button" type="button" onClick={exportBackup}><DownloadSimple size={16} />导出备份</button>
               <select className="compact-select" value={importMode} onChange={(event) => setImportMode(event.target.value)} aria-label="备份导入方式"><option value="merge">合并导入</option><option value="replace">替换本地数据</option></select>
               <button className="secondary-button" type="button" onClick={() => importRef.current?.click()}><UploadSimple size={16} />导入备份</button>
               <input ref={importRef} type="file" accept="application/json,.json" hidden onChange={importBackup} />

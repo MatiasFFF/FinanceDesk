@@ -8,12 +8,12 @@ import {
   prepareBankImport,
   readBankFile,
 } from "./bankStatementImport.js";
-import { hashLocalFile } from "./documentIntake.js";
+import { hashLocalFile, removeLocalDocument, saveLocalDocument } from "./documentIntake.js";
 
 const MAPPING_FIELDS = ["date", "amount", "credit", "debit", "direction", "counterparty", "counterpartyAccount", "summary", "serial", "balance", "channel", "currency"];
 
 export function BankImportPanel({ compact = false, onToast, onComplete }) {
-  const { activeWorkspace, actions } = useFinanceDesk();
+  const { activeWorkspace, actions, store, fileVault } = useFinanceDesk();
   const inputRef = useRef(null);
   const [accountId, setAccountId] = useState(activeWorkspace.bankAccounts[0]?.id || "");
   const [parsed, setParsed] = useState(null);
@@ -55,7 +55,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
     try {
       const result = await readBankFile(file);
       const fileHash = await hashLocalFile(file);
-      setParsed({ ...result, fileHash });
+      setParsed({ ...result, fileHash, file });
       setMapping(result.inspection.mapping);
     } catch (caught) {
       setParsed(null);
@@ -95,15 +95,46 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
     }
   }
 
-  function applyImport() {
+  async function applyImport() {
     setError("");
+    let sourceDocument = null;
     try {
-      actions.applyBankImport(activeWorkspace.id, plan);
+      if (!fileVault) throw new Error("当前浏览器无法保存银行流水原文件，请更换支持 IndexedDB 的浏览器");
+      sourceDocument = await saveLocalDocument({
+        store,
+        fileVault,
+        workspaceId: activeWorkspace.id,
+        file: parsed.file,
+        metadata: {
+          category: "银行流水",
+          period: plan.period,
+          relatedObjectIds: [plan.accountId],
+          actor: "本地用户",
+        },
+        relation: "bank-statement-source",
+        note: `银行导入 ${plan.id} 的原始文件`,
+      });
+      const finalPlan = {
+        ...plan,
+        sourceDocumentId: sourceDocument.id,
+        transactions: plan.transactions.map((transaction) => ({
+          ...transaction,
+          evidenceIds: [...new Set([...(transaction.evidenceIds || []), sourceDocument.id])],
+        })),
+      };
+      actions.applyBankImport(activeWorkspace.id, finalPlan);
       onToast?.(`已导入 ${plan.importableRowCount} 笔流水，跳过 ${plan.duplicateCount} 笔重复`);
-      onComplete?.(plan);
+      onComplete?.(finalPlan);
       setParsed(null);
       setPlan(null);
     } catch (caught) {
+      if (sourceDocument) {
+        try {
+          await removeLocalDocument({ store, fileVault, workspaceId: activeWorkspace.id, documentId: sourceDocument.id });
+        } catch {
+          // Keep the original import error; any local residue remains visible in the documents list.
+        }
+      }
       setError(caught.message || "导入失败");
     }
   }
