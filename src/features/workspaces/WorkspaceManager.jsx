@@ -17,6 +17,34 @@ import { WORKSPACE_MODULE_OPTIONS, defaultWorkspaceModules } from "../../product
 import { copyWorkspaceLocalFiles, pruneUnreferencedLocalFiles, refreshLocalFileAvailability } from "../intake/documentIntake.js";
 import "./foundation-ui.css";
 
+const DEFAULT_TERMINOLOGY = Object.freeze({
+  customer: "客户",
+  supplier: "供应商",
+  personnel: "员工",
+  location: "门店",
+  member: "会员",
+  coach: "教练",
+  service: "服务",
+});
+
+function workspaceTerminology(workspace) {
+  return Object.fromEntries(Object.entries(DEFAULT_TERMINOLOGY).map(([key, fallback]) => [
+    key,
+    String(workspace?.terminology?.[key] || "").trim() || fallback,
+  ]));
+}
+
+function businessTermCopy(value, terminology) {
+  return String(value || "")
+    .replaceAll("客户", terminology.customer)
+    .replaceAll("供应商", terminology.supplier)
+    .replaceAll("员工", terminology.personnel)
+    .replaceAll("门店", terminology.location)
+    .replaceAll("会员", terminology.member)
+    .replaceAll("教练", terminology.coach)
+    .replaceAll("服务", terminology.service);
+}
+
 function downloadJson(text, fileName) {
   const url = URL.createObjectURL(new Blob([text], { type: "application/json;charset=utf-8" }));
   const anchor = document.createElement("a");
@@ -58,6 +86,11 @@ export function WorkspaceManager({ open, onClose, onToast }) {
   const confirmationDialogRef = useRef(null);
   const confirmationCancelRef = useRef(null);
   const confirmationTriggerRef = useRef(null);
+  const activeTerminology = workspaceTerminology(activeWorkspace);
+  const copySourceWorkspace = state.workspaces.find((workspace) => workspace.id === sourceWorkspaceId);
+  const newWorkspaceTerminology = createMode === "copy"
+    ? workspaceTerminology(copySourceWorkspace)
+    : DEFAULT_TERMINOLOGY;
 
   function currentActorName() {
     const latest = store.getState();
@@ -221,9 +254,10 @@ export function WorkspaceManager({ open, onClose, onToast }) {
   }
 
   function toggleActiveModule(moduleId, enabled) {
+    const moduleLabel = WORKSPACE_MODULE_OPTIONS.find((item) => item.id === moduleId)?.label || "模块";
     run(
       () => actions.updateWorkspaceModules(activeWorkspace.id, { [moduleId]: enabled }),
-      `${WORKSPACE_MODULE_OPTIONS.find((item) => item.id === moduleId)?.label || "模块"}已${enabled ? "启用" : "停用"}`,
+      `${businessTermCopy(moduleLabel, activeTerminology)}已${enabled ? "启用" : "停用"}`,
     );
   }
 
@@ -424,8 +458,8 @@ export function WorkspaceManager({ open, onClose, onToast }) {
                       onChange={(event) => toggleActiveModule(module.id, event.target.checked)}
                     />
                     <span className="workspace-module-card-copy">
-                      <strong className="workspace-module-card-title">{module.label}</strong>
-                      <small className="workspace-module-card-description">{module.description}</small>
+                      <strong className="workspace-module-card-title">{businessTermCopy(module.label, activeTerminology)}</strong>
+                      <small className="workspace-module-card-description">{businessTermCopy(module.description, activeTerminology)}</small>
                     </span>
                   </label>
                 );
@@ -437,7 +471,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
           <section className="foundation-section">
             <div className="foundation-section-heading"><div><small>创建</small><h3>新工作台</h3></div><Plus size={19} /></div>
             <form className="foundation-form" onSubmit={createWorkspace}>
-              <label className="foundation-field"><span>名称</span><input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="例如：静安门店" /></label>
+              <label className="foundation-field"><span>名称</span><input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder={`例如：静安${newWorkspaceTerminology.location}`} /></label>
               <label className="foundation-field"><span>创建方式</span><select value={createMode} onChange={(event) => setCreationMode(event.target.value)}><option value="blank">空白工作台</option><option value="copy">复制现有工作台</option></select></label>
               {createMode === "copy" && <label className="foundation-field"><span>复制来源</span><select value={sourceWorkspaceId} onChange={(event) => selectCopySource(event.target.value)}>{state.workspaces.map((workspace) => <option value={workspace.id} key={workspace.id}>{workspace.name}</option>)}</select></label>}
               {createMode === "blank" && <>
@@ -460,8 +494,8 @@ export function WorkspaceManager({ open, onClose, onToast }) {
                         onChange={(event) => setNewModules((current) => ({ ...current, [module.id]: event.target.checked }))}
                       />
                       <span className="workspace-module-card-copy">
-                        <strong className="workspace-module-card-title">{module.label}</strong>
-                        <small className="workspace-module-card-description">{module.description}</small>
+                        <strong className="workspace-module-card-title">{businessTermCopy(module.label, newWorkspaceTerminology)}</strong>
+                        <small className="workspace-module-card-description">{businessTermCopy(module.description, newWorkspaceTerminology)}</small>
                       </span>
                     </label>
                   );

@@ -125,9 +125,34 @@ const RECORD_TYPE_LABELS = Object.freeze({
   commissionPayment: "提成付款",
 });
 
-function recordTypeLabel(item) {
+const TERMINOLOGY_TOKEN_KEYS = Object.freeze({
+  客户: "customer",
+  供应商: "supplier",
+  员工: "personnel",
+  门店: "location",
+  会员: "member",
+  教练: "coach",
+  服务: "service",
+});
+
+function localizeTerminologyText(value, terminology) {
+  if (typeof value !== "string") return value;
+  return value.replace(/客户|供应商|员工|门店|会员|教练|服务/g, (token) => terminology[TERMINOLOGY_TOKEN_KEYS[token]] || token);
+}
+
+function localizedRecordTypeLabels(terminology) {
+  return {
+    ...Object.fromEntries(Object.entries(RECORD_TYPE_LABELS).map(([id, label]) => [id, localizeTerminologyText(label, terminology)])),
+    memberConsumption: `${terminology.member}${terminology.service}核销`,
+    consumption: `${terminology.member}${terminology.service}核销`,
+    commission: `${terminology.coach}提成`,
+    commissionPayment: `${terminology.coach}提成付款`,
+  };
+}
+
+function recordTypeLabel(item, terminology) {
   const type = item.businessType || item.type || item.kind;
-  return item.businessTypeLabel || RECORD_TYPE_LABELS[type] || type || "";
+  return localizedRecordTypeLabels(terminology)[type] || item.businessTypeLabel || type || "";
 }
 
 const COLLECTION_CONFIG = {
@@ -282,6 +307,38 @@ const COLLECTION_CONFIG = {
   },
 };
 
+function localizedCollectionConfig(collection, terminology) {
+  const base = COLLECTION_CONFIG[collection];
+  const titles = {
+    stores: terminology.location,
+    users: `${terminology.personnel}操作用户`,
+    counterparties: `${terminology.customer}与${terminology.supplier}`,
+    bills: `${terminology.customer}与${terminology.supplier}往来账单`,
+    businessEvents: `${terminology.service}及其他业务事件`,
+    personnelRecords: `${terminology.personnel}资料`,
+  };
+  const fieldLabels = {
+    stores: { name: `${terminology.location}名称`, address: `${terminology.location}地址` },
+    users: { name: `${terminology.personnel}姓名` },
+    counterparties: { name: `${terminology.customer} / ${terminology.supplier}名称`, kind: `${terminology.customer} / ${terminology.supplier}类型` },
+    contracts: { counterpartyName: `签约方（${terminology.customer} / ${terminology.supplier}）` },
+    bills: { counterparty: `账单主体（${terminology.customer} / ${terminology.supplier}）` },
+    businessEvents: { summary: `${terminology.service} / 业务说明`, counterparty: `相关方（${terminology.customer} / ${terminology.supplier}）` },
+    personnelRecords: { name: `${terminology.personnel}姓名`, department: `部门 / ${terminology.location}`, role: `${terminology.personnel}岗位` },
+  };
+  const typeLabels = localizedRecordTypeLabels(terminology);
+  return {
+    ...base,
+    title: titles[collection] || localizeTerminologyText(base.title, terminology),
+    fields: base.fields.map((field) => ({
+      ...field,
+      label: fieldLabels[collection]?.[field.key] || localizeTerminologyText(field.label, terminology),
+      placeholder: localizeTerminologyText(field.placeholder, terminology),
+      ...(field.options ? { options: field.options.map(([id, label]) => [id, typeLabels[id] || localizeTerminologyText(label, terminology)]) } : {}),
+    })),
+  };
+}
+
 const MEMBER_BUSINESS_EVENT_TYPES = new Set([
   "memberRecharge",
   "memberConsumption",
@@ -373,14 +430,14 @@ function Field({ field, value, onChange }) {
   return <input {...common} type={field.type === "number" ? "number" : field.type === "date" ? "date" : field.type === "month" ? "month" : "text"} step={field.type === "number" ? "0.01" : undefined} placeholder={field.placeholder || ""} />;
 }
 
-function displayName(item, collection, fallbackLabel = "记录") {
+function displayName(item, collection, fallbackLabel = "记录", terminology = DEFAULT_WORKSPACE_TERMINOLOGY) {
   if (collection === "businessEvents") {
-    const type = recordTypeLabel(item) || "业务事件";
+    const type = recordTypeLabel(item, terminology) || `${terminology.service}业务事件`;
     const subject = item.summary || item.accountingLabel || item.memberName || item.counterparty || item.coach || "";
     return subject && subject !== type ? `${type} · ${subject}` : type;
   }
   if (collection === "bills") {
-    return item.no || item.summary || [recordTypeLabel(item), item.counterparty].filter(Boolean).join(" · ") || "往来账单";
+    return item.no || item.summary || [recordTypeLabel(item, terminology), item.counterparty].filter(Boolean).join(" · ") || `${terminology.customer}与${terminology.supplier}往来账单`;
   }
   return item.name || item.title || item.no || item.summary || item.invoiceNumber || `未命名${fallbackLabel}`;
 }
@@ -390,38 +447,38 @@ function amountSummary(label, value) {
   return `${label} ¥${Number(value || 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function recordDescription(item, collection, workspace) {
+function recordDescription(item, collection, workspace, terminology = DEFAULT_WORKSPACE_TERMINOLOGY) {
   const parts = [];
   if (collection === "books") {
     parts.push(item.accountingStandard || "会计准则未填写", item.currency ? `本位币 ${item.currency}` : "本位币未填写");
   } else if (collection === "stores") {
-    parts.push(item.address || "地址未填写");
+    parts.push(item.address || `${terminology.location}地址未填写`);
   } else if (collection === "users") {
     parts.push(workspace.roles.find((role) => role.id === item.roleId)?.name || item.role || "未分配角色");
     const personnel = workspace.personnelRecords.find((record) => record.id === item.personnelRecordId || record.userId === item.id);
-    if (personnel) parts.push(`人员资料 ${personnel.name}`);
+    if (personnel) parts.push(`${terminology.personnel}资料 ${personnel.name}`);
   } else if (collection === "roles") {
     parts.push((item.permissions || []).map((permission) => PERMISSION_LABELS[permission] || `扩展权限 ${permission}`).join("、") || "未配置权限");
   } else if (collection === "counterparties") {
-    parts.push(recordTypeLabel(item) || "往来单位", item.taxId ? `税号 ${item.taxId}` : "税号未填写");
+    parts.push(recordTypeLabel(item, terminology) || `${terminology.customer} / ${terminology.supplier}主体`, item.taxId ? `税号 ${item.taxId}` : "税号未填写");
   } else if (collection === "contracts") {
     parts.push(item.no ? `合同号 ${item.no}` : "合同号未填写", item.counterpartyName ? `签约方 ${item.counterpartyName}` : "签约方未填写", amountSummary("合同金额", item.amount));
   } else if (collection === "bills") {
-    parts.push(recordTypeLabel(item) || "往来账单", item.counterparty || "往来方未填写", amountSummary("账单金额", item.amount), item.date ? `业务日 ${item.date}` : "", item.dueDate ? `到期日 ${item.dueDate}` : "");
+    parts.push(recordTypeLabel(item, terminology) || "往来账单", item.counterparty || `${terminology.customer} / ${terminology.supplier}主体未填写`, amountSummary("账单金额", item.amount), item.date ? `业务日 ${item.date}` : "", item.dueDate ? `到期日 ${item.dueDate}` : "");
   } else if (collection === "businessEvents") {
-    parts.push(recordTypeLabel(item) || "业务事件", item.businessPeriod ? `业务期间 ${item.businessPeriod}` : "", item.date ? `发生日 ${item.date}` : "", amountSummary("业务金额", item.amount));
+    parts.push(recordTypeLabel(item, terminology) || "业务事件", item.businessPeriod ? `业务期间 ${item.businessPeriod}` : "", item.date ? `发生日 ${item.date}` : "", amountSummary("业务金额", item.amount));
   } else if (collection === "bankAccounts") {
     parts.push(item.accountNumber || item.number ? `账号 ${item.accountNumber || item.number}` : "账号未填写", amountSummary("期初余额", item.openingBalance), amountSummary("对账单期末", item.statementClosing));
   } else if (collection === "invoices") {
     parts.push(item.seller || item.sellerName ? `开票方 ${item.seller || item.sellerName}` : "开票方未填写", amountSummary("价税合计", item.amount), amountSummary("税额", item.taxAmount));
   } else if (collection === "approvals") {
-    parts.push(recordTypeLabel(item) || item.kind || "审批事项", item.no ? `审批号 ${item.no}` : "", amountSummary("金额", item.amount));
+    parts.push(recordTypeLabel(item, terminology) || item.kind || "审批事项", item.no ? `审批号 ${item.no}` : "", amountSummary("金额", item.amount));
   } else if (collection === "personnelRecords") {
-    parts.push(item.department ? `部门 ${item.department}` : "部门未填写", item.role ? `岗位 ${item.role}` : "岗位未填写", item.socialSecurityLocation ? `社保归属 ${item.socialSecurityLocation}` : "");
+    parts.push(item.department ? `归属 ${item.department}` : `部门 / ${terminology.location}未填写`, item.role ? `${terminology.personnel}岗位 ${item.role}` : `${terminology.personnel}岗位未填写`, item.socialSecurityLocation ? `社保归属 ${item.socialSecurityLocation}` : "");
     const user = workspace.users.find((candidate) => candidate.id === item.userId || candidate.personnelRecordId === item.id);
-    parts.push(user ? `操作用户 ${user.name}${user.status === "active" ? "" : "（已停用）"}` : "未关联操作用户");
+    parts.push(user ? `${terminology.personnel}操作用户 ${user.name}${user.status === "active" ? "" : "（已停用）"}` : `未关联${terminology.personnel}操作用户`);
   } else {
-    parts.push(recordTypeLabel(item));
+    parts.push(recordTypeLabel(item, terminology));
   }
   if (item.status) parts.push(statusLabel(item.status));
   return parts.filter(Boolean).join(" · ") || "未设置摘要";
@@ -431,8 +488,9 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
   const { activeWorkspace, actions } = useFinanceDesk();
   const membersEnabled = memberModuleEnabled(activeWorkspace);
   const hasActiveUsers = activeWorkspace.users.some((user) => user.status === "active");
+  const terminology = useMemo(() => normalizeWorkspaceTerminology(activeWorkspace.terminology), [activeWorkspace.terminology]);
   const config = useMemo(() => {
-    const base = COLLECTION_CONFIG[collection];
+    const base = localizedCollectionConfig(collection, terminology);
     if (collection === "users") {
       const activeRoles = activeWorkspace.roles.filter((role) => role.status === "active");
       const selectableRoles = hasActiveUsers
@@ -470,7 +528,7 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
       };
     }
     return base;
-  }, [collection, activeWorkspace.roles, activeWorkspace.users, activeWorkspace.modules, activeWorkspace.enabledModules, activeWorkspace.moduleSettings, hasActiveUsers, membersEnabled]);
+  }, [collection, activeWorkspace.roles, activeWorkspace.users, activeWorkspace.modules, activeWorkspace.enabledModules, activeWorkspace.moduleSettings, hasActiveUsers, membersEnabled, terminology]);
   const Icon = config.icon;
   const items = collection === "businessEvents" && !membersEnabled
     ? (activeWorkspace[collection] || []).filter((item) => !isMemberBusinessEvent(item))
@@ -533,13 +591,13 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
         values = { ...values, role: role.name };
       }
       if (collection === "businessEvents" && !membersEnabled && isMemberBusinessEvent(values)) {
-        throw new Error("当前工作台未启用会员业务，不能新增会员充值、耗课或教练提成事件");
+        throw new Error(`当前工作台未启用${terminology.member}业务，不能新增${terminology.member}充值、${terminology.service}核销或${terminology.coach}提成事件`);
       }
       const savedItem = actions.upsertEntity(activeWorkspace.id, collection, values, { label: config.title });
       const becameFirstUser = collection === "users" && !hasActiveUsers && savedItem.status === "active";
       setDraft(emptyDraft(config));
       setEditorOpen(false);
-      onToast?.(becameFirstUser ? `首位人员「${savedItem.name}」已保存并成为当前本地操作身份` : `${config.title}已保存`);
+      onToast?.(becameFirstUser ? `首位${terminology.personnel}操作用户「${savedItem.name}」已保存并成为当前本地操作身份` : `${config.title}已保存`);
     } catch (caught) {
       setError(caught.message || "保存失败");
     }
@@ -578,7 +636,7 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
         role: role.name,
         status: "active",
         personnelRecordId: personnel.id,
-      }, { label: "工作台人员" });
+      }, { label: `${terminology.personnel}操作用户` });
       onToast?.(`「${personnel.name}」已成为操作用户，角色为「${role.name}」${!hasActiveUsers ? "，并已切换为当前身份" : ""}`);
     } catch (caught) {
       setError(caught.message || "创建操作用户失败");
@@ -593,11 +651,11 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
   return (
     <section className="foundation-section entity-editor foundation-entity-editor">
       <div className="foundation-section-heading"><div><small>{collection === "users" ? "可新增、改名、调整角色、停用或删除" : "本地资料"}</small><h3><Icon size={18} />{config.title}</h3></div><span>{items.length} 条</span></div>
-      {collection === "users" && !hasActiveUsers && <p className="foundation-hint">当前没有启用人员。首位启用人员需选择具备“管理工作台”权限的启用角色；保存后会自动成为当前本地操作身份。</p>}
-      {collection === "personnelRecords" && <p className="foundation-hint">关联后两处共用同一姓名；人员资料状态与操作用户权限状态仍分别管理。</p>}
+      {collection === "users" && !hasActiveUsers && <p className="foundation-hint">当前没有启用{terminology.personnel}操作用户。首位启用用户需选择具备“管理工作台”权限的启用角色；保存后会自动成为当前本地操作身份。</p>}
+      {collection === "personnelRecords" && <p className="foundation-hint">关联后两处共用同一姓名；{terminology.personnel}资料状态与操作用户权限状态仍分别管理。</p>}
       <div className="foundation-record-list foundation-entity-record-list">
         {items.map((item, index) => {
-          const name = displayName(item, collection, config.title);
+          const name = displayName(item, collection, config.title, terminology);
           const linkedUser = collection === "personnelRecords"
             ? activeWorkspace.users.find((user) => user.id === item.userId || user.personnelRecordId === item.id)
             : null;
@@ -606,7 +664,7 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
           const descriptionId = `${collection}-delete-description-${index}`;
           return (
             <article className={`foundation-record foundation-entity-record${confirming ? " is-confirming-delete" : ""}`} key={item.id}>
-              <div className="foundation-entity-record-copy"><strong>{name}</strong><small>{recordDescription(item, collection, activeWorkspace)}</small></div>
+              <div className="foundation-entity-record-copy"><strong>{name}</strong><small>{recordDescription(item, collection, activeWorkspace, terminology)}</small></div>
               <span className="foundation-record-actions foundation-entity-record-actions">
                 {collection === "personnelRecords" && !linkedUser && <select className="compact-select" value="" aria-label={`将${name}设为操作用户`} disabled={!conversionRoles.length} onChange={(event) => event.target.value && convertPersonnelToUser(item, event.target.value)}><option value="">{conversionRoles.length ? "设为操作用户…" : "无可用角色"}</option>{conversionRoles.map((role) => <option value={role.id} key={role.id}>使用角色：{role.name}</option>)}</select>}
                 <button type="button" aria-label={`编辑${name}`} onClick={() => edit(item)}><PencilSimple size={15} /></button><button type="button" aria-label={`删除${name}`} aria-haspopup="dialog" aria-expanded={confirming} onClick={() => requestRemove(item)}><Trash size={15} /></button>
@@ -620,11 +678,11 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
             </article>
           );
         })}
-        {!items.length && <p className="foundation-empty">还没有记录。</p>}
+        {!items.length && <p className="foundation-empty">还没有{config.title}。</p>}
       </div>
       <button className="foundation-editor-toggle secondary-button" type="button" aria-expanded={editorOpen} aria-controls={`${collection}-editor`} onClick={create}><Plus size={16} />新增{config.title}</button>
       {editorOpen && <div className="foundation-editor-panel foundation-entity-editor-panel" id={`${collection}-editor`}>
-        <div className="foundation-section-heading foundation-entity-editor-heading"><div><small>{draft.id ? "编辑现有记录" : "新增本地记录"}</small><h4>{draft.id ? `编辑「${displayName(draft, collection, config.title)}」` : `新增${config.title}`}</h4></div></div>
+        <div className="foundation-section-heading foundation-entity-editor-heading"><div><small>{draft.id ? "编辑现有记录" : "新增本地记录"}</small><h4>{draft.id ? `编辑「${displayName(draft, collection, config.title, terminology)}」` : `新增${config.title}`}</h4></div></div>
         <form className="entity-form foundation-entity-form" onSubmit={save}>
           {config.fields.map((field) => field.type === "permissions"
             ? <div className="foundation-field permission-field foundation-entity-field" key={field.key}><span>{field.label}</span><Field field={field} value={draft[field.key]} onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))} /></div>
@@ -786,13 +844,16 @@ function AccountingRuleEditor({ onToast }) {
   const active = activeAccountingRuleSet(activeWorkspace);
   const effective = accountingRules(activeWorkspace);
   const membersEnabled = memberModuleEnabled(activeWorkspace);
+  const terminology = useMemo(() => normalizeWorkspaceTerminology(activeWorkspace.terminology), [activeWorkspace.terminology]);
   const activeAccounts = useMemo(
     () => workspaceAccountDefinitions(activeWorkspace).filter((account) => account.status !== "inactive"),
     [activeWorkspace],
   );
   const businessTypes = useMemo(
-    () => CATEGORY_RULE_BUSINESS_TYPES.filter((item) => membersEnabled || !item.memberOnly),
-    [membersEnabled],
+    () => CATEGORY_RULE_BUSINESS_TYPES
+      .filter((item) => membersEnabled || !item.memberOnly)
+      .map((item) => ({ ...item, label: localizeTerminologyText(item.label, terminology) })),
+    [membersEnabled, terminology],
   );
   const [draft, setDraft] = useState(() => ruleDraft(activeWorkspace));
   const [error, setError] = useState("");
@@ -831,7 +892,7 @@ function AccountingRuleEditor({ onToast }) {
         transaction,
         rule: matched.rule,
         ruleIndex: matched.index,
-        businessTypeLabel: businessDefinition?.label || matched.rule.businessType || "未设置业务类型",
+        businessTypeLabel: localizeTerminologyText(businessDefinition?.label, terminology) || matched.rule.businessType || "未设置业务类型",
         accountLabel: account?.label || `${matched.rule.account || "未选择科目"}（不可用）`,
       });
     });
@@ -842,7 +903,7 @@ function AccountingRuleEditor({ onToast }) {
       totalMatches,
       totalTransactions: (activeWorkspace.transactions || []).length,
     };
-  }, [draft.categoryKeywords, activeWorkspace.transactions, activeAccounts, membersEnabled]);
+  }, [draft.categoryKeywords, activeWorkspace.transactions, activeAccounts, membersEnabled, terminology]);
 
   useEffect(() => {
     setDraft(ruleDraft(activeWorkspace));
@@ -952,7 +1013,7 @@ function AccountingRuleEditor({ onToast }) {
                   <div className="entity-form category-rule-fields">
                     <label className="foundation-field"><span>关键词</span><input required value={rule.keyword} onChange={(event) => updateCategoryRule(rule.id, { keyword: event.target.value })} placeholder="例如：电费|国家电网" /></label>
                     {!businessTypeAvailable && selectedBusinessType
-                      ? <label className="foundation-field"><span>业务类型</span><input value={`${selectedBusinessType.label}（会员模块已停用）`} readOnly /></label>
+                      ? <label className="foundation-field"><span>业务类型</span><input value={`${localizeTerminologyText(selectedBusinessType.label, terminology)}（${terminology.member}模块已停用）`} readOnly /></label>
                       : <label className="foundation-field"><span>业务类型</span><select required value={rule.businessType} onChange={(event) => updateCategoryRule(rule.id, { businessType: event.target.value })}>{businessTypes.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>}
                     <label className="foundation-field"><span>目标有效科目</span><select required value={rule.account} onChange={(event) => updateCategoryRule(rule.id, { account: event.target.value })}>{!selectedAccount && rule.account && <option value={rule.account} disabled>{rule.account}（已停用或不存在）</option>}{activeAccounts.map((account) => <option value={account.id} key={account.id}>{account.label}</option>)}</select></label>
                     <label className="foundation-field"><span>状态</span><select value={String(rule.enabled)} onChange={(event) => updateCategoryRule(rule.id, { enabled: event.target.value === "true" })}><option value="true">启用</option><option value="false">停用</option></select></label>
@@ -977,7 +1038,7 @@ function AccountingRuleEditor({ onToast }) {
             {categoryRulePreview.totalTransactions === 0
               ? <p className="foundation-empty">当前工作台还没有真实银行流水，暂时无法预览命中结果。</p>
               : categoryRulePreview.eligibleRuleCount === 0
-                ? <p className="foundation-empty">当前没有可参与预览的启用规则；停用规则和已关闭模块的会员规则不会参与。</p>
+                ? <p className="foundation-empty">当前没有可参与预览的启用规则；停用规则和已关闭模块的{terminology.member}规则不会参与。</p>
                 : categoryRulePreview.totalMatches === 0
                   ? <p className="foundation-empty">当前工作台流水没有命中任何启用规则。</p>
                   : <div className="category-rule-preview-list">
@@ -1013,6 +1074,7 @@ function AccountingRuleEditor({ onToast }) {
 
 function LocalUserControl({ onToast }) {
   const { state, activeWorkspace, actions } = useFinanceDesk();
+  const terminology = useMemo(() => normalizeWorkspaceTerminology(activeWorkspace.terminology), [activeWorkspace.terminology]);
   const [error, setError] = useState("");
   const activeUsers = activeWorkspace.users.filter((user) => user.status === "active");
   const roleForUser = (user) => activeWorkspace.roles.find((item) => (
@@ -1037,10 +1099,10 @@ function LocalUserControl({ onToast }) {
   return (
     <section className="foundation-section local-user-control">
       <div className="foundation-section-heading"><div><small>审计与最小权限</small><h3><UsersThree size={18} />当前本地操作身份</h3></div><span>{role?.name || "无有效角色"}</span></div>
-      <label className="foundation-field"><span>以哪位人员操作</span><select value={currentUser?.id || ""} onChange={(event) => switchUser(event.target.value)} disabled={!switchableUsers.length}>{switchableUsers.map((user) => <option value={user.id} key={user.id}>{user.name} · {roleForUser(user)?.name || "未分配角色"}</option>)}</select></label>
+      <label className="foundation-field"><span>以哪位{terminology.personnel}操作</span><select value={currentUser?.id || ""} onChange={(event) => switchUser(event.target.value)} disabled={!switchableUsers.length}>{switchableUsers.map((user) => <option value={user.id} key={user.id}>{user.name} · {roleForUser(user)?.name || "未分配角色"}</option>)}</select></label>
       <div className="permission-chip-list">{(role?.permissions || []).map((permission) => <span key={permission}>{PERMISSION_LABELS[permission] || permission}</span>)}</div>
       <p className="foundation-hint">这是当前浏览器里的操作身份，用于真实权限拦截和审计归属；它不是联网登录或多因素认证。</p>
-      {unavailableUsers.length > 0 && <p className="foundation-hint">{unavailableUsers.map((user) => user.name).join("、")} 的角色已停用或不存在；请先在“工作台人员”中改为启用角色。</p>}
+      {unavailableUsers.length > 0 && <p className="foundation-hint">{unavailableUsers.map((user) => user.name).join("、")} 的角色已停用或不存在；请先在“{terminology.personnel}操作用户”中改为启用角色。</p>}
       {error && <p className="entity-error">{error}</p>}
     </section>
   );
@@ -1158,6 +1220,7 @@ function emptyAuthorizationDraft() {
 
 function AuthorizationEditor({ onToast, onBeginEditing }) {
   const { activeWorkspace, actions } = useFinanceDesk();
+  const terminology = useMemo(() => normalizeWorkspaceTerminology(activeWorkspace.terminology), [activeWorkspace.terminology]);
   const [draft, setDraft] = useState(emptyAuthorizationDraft);
   const [error, setError] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
@@ -1231,7 +1294,7 @@ function AuthorizationEditor({ onToast, onBeginEditing }) {
   return (
     <section className="foundation-section">
       <div className="foundation-section-heading"><div><small>不连接外部系统</small><h3><ShieldCheck size={18} />本地授权记录</h3></div><span>{activeWorkspace.authorizations.length} 条</span></div>
-      <div className="foundation-notice"><WarningCircle size={17} />此处只记录客户允许处理的范围，不会保存银行或税务密码，也不会连接银行、税务、AI 或 OCR。</div>
+      <div className="foundation-notice"><WarningCircle size={17} />此处只记录{terminology.customer}允许处理的范围，不会保存银行或税务密码，也不会连接银行、税务、AI 或 OCR。</div>
       <div className="foundation-record-list authorization-list">
         {activeWorkspace.authorizations.map((authorization) => <article className="foundation-record" key={authorization.id}><div><strong>{authorization.label || authorization.system}</strong><small>{effectiveStatus(authorization)} · {authorization.scope || "未填写范围"}{authorization.expiresAt ? ` · 至 ${String(authorization.expiresAt).slice(0, 10)}` : ""}</small></div><span className="foundation-record-actions"><button type="button" aria-label={`编辑${authorization.label || authorization.system}授权`} onClick={() => edit(authorization)}><PencilSimple size={15} /></button>{authorization.status !== "revoked" && <button type="button" aria-label={`撤回${authorization.label || authorization.system}授权`} title="撤回授权" onClick={() => revoke(authorization)}><Power size={15} /></button>}</span></article>)}
         {!activeWorkspace.authorizations.length && <p className="foundation-empty">还没有本地授权记录。</p>}

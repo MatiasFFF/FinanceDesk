@@ -15,11 +15,13 @@ import {
 
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
 import {
+  applyWorkspaceTerminology,
   buildVatReconciliationSummary,
   confirmPayrollSocialData,
   getPayrollSocialConfirmationState,
   recordVatReconciliation,
   workspaceModuleEnabled,
+  workspaceTerminology,
 } from "../../productWorkflow.js";
 import {
   CONTRACT_DUE_DATE_RULES,
@@ -114,15 +116,22 @@ function amountLabel(value) {
   return `¥${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function structuredDetailLines(document) {
+function categoryDisplayLabel(category, workspace) {
+  if (category === "人员资料") return `${workspaceTerminology(workspace).personnel}资料`;
+  return category;
+}
+
+function structuredDetailLines(document, workspace) {
   const kind = documentStructuredKind(document.category);
   const details = document.structuredData || {};
+  const terminology = workspaceTerminology(workspace);
+  const displayText = (value) => applyWorkspaceTerminology(value, workspace);
   if (kind === "contract") {
     return [
       `合同主体：${details.partyA || "未填写"} ↔ ${details.partyB || "未填写"} · 金额 ${amountLabel(details.amount)}`,
-      `合同类型：${CONTRACT_TYPES[details.contractType] || "未选择"} · ${CONTRACT_SETTLEMENT_MODES[details.settlementMode] || details.settlementCycle || "未设置结算"}`,
-      `账单计划：每期 ${amountLabel(details.periodAmount)} · 首次 ${details.firstBillDate || "未填写"} · 结束 ${details.billingEndDate || "未填写"} · ${CONTRACT_DUE_DATE_RULES[details.dueDateRule] || "未设置到期规则"}${details.dueDateRule === "days_after" ? ` ${details.dueDays || 0} 天` : ""}`,
-      `服务期限：${details.serviceStartDate || "未填写"} 至 ${details.serviceEndDate || "未填写"}`,
+      `合同类型：${displayText(CONTRACT_TYPES[details.contractType] || "未选择")} · ${CONTRACT_SETTLEMENT_MODES[details.settlementMode] ? displayText(CONTRACT_SETTLEMENT_MODES[details.settlementMode]) : (details.settlementCycle || "未设置结算")}`,
+      `账单计划：每期 ${amountLabel(details.periodAmount)} · 首次 ${details.firstBillDate || "未填写"} · 结束 ${details.billingEndDate || "未填写"} · ${displayText(CONTRACT_DUE_DATE_RULES[details.dueDateRule] || "未设置到期规则")}${details.dueDateRule === "days_after" ? ` ${details.dueDays || 0} 天` : ""}`,
+      `${terminology.service}期限：${details.serviceStartDate || "未填写"} 至 ${details.serviceEndDate || "未填写"}`,
       `退款条款：${details.refundTerms || "未填写"}`,
       `佣金条款：${details.commissionTerms || "未填写"}`,
     ];
@@ -130,7 +139,7 @@ function structuredDetailLines(document) {
   if (kind === "invoice") {
     return [
       `发票号码：${details.invoiceNumber || "未填写"} · 日期 ${details.invoiceDate || "未填写"} · ${statusLabel(INVOICE_TAX_DIRECTION_OPTIONS, details.taxDirection, "未分类")}`,
-      `${details.taxDirection === "output" ? "客户" : (details.taxDirection === "input" ? "供应商" : "往来单位")}：${details.counterparty || "未填写"} · 金额 ${amountLabel(details.amount)} · 税额 ${amountLabel(details.taxAmount)} · 税率 ${details.taxRate == null ? "未填写" : `${details.taxRate}%`}`,
+      `${details.taxDirection === "output" ? terminology.customer : (details.taxDirection === "input" ? terminology.supplier : "往来单位")}：${details.counterparty || "未填写"} · 金额 ${amountLabel(details.amount)} · 税额 ${amountLabel(details.taxAmount)} · 税率 ${details.taxRate == null ? "未填写" : `${details.taxRate}%`}`,
       `查验 ${statusLabel(INVOICE_STATUS_OPTIONS.verificationStatus, details.verificationStatus, "未查验")} · 红字 ${statusLabel(INVOICE_STATUS_OPTIONS.redLetterStatus, details.redLetterStatus, "正常蓝字")} · 作废 ${statusLabel(INVOICE_STATUS_OPTIONS.voidStatus, details.voidStatus, "有效")} · 认证 ${statusLabel(INVOICE_STATUS_OPTIONS.certificationStatus, details.certificationStatus, "无需认证")}`,
       details.redLetterStatus === "normal"
         ? `关联账单：${details.linkedBillId || "尚未确认"}`
@@ -139,8 +148,8 @@ function structuredDetailLines(document) {
   }
   if (kind === "approval") {
     return [
-      `审批类型：${APPROVAL_TYPES[details.approvalType] || "未选择"} · ${statusLabel(APPROVAL_STATUS_OPTIONS, details.approvalStatus, "草稿")} · 日期 ${details.approvalDate || "未填写"}`,
-      `申请人：${details.applicant || "未填写"} · 供应商／对象：${details.supplier || "未填写"} · 金额 ${amountLabel(details.amount)}`,
+      `审批类型：${displayText(APPROVAL_TYPES[details.approvalType] || "未选择")} · ${statusLabel(APPROVAL_STATUS_OPTIONS, details.approvalStatus, "草稿")} · 日期 ${details.approvalDate || "未填写"}`,
+      `申请人：${details.applicant || "未填写"} · ${terminology.supplier}／对象：${details.supplier || "未填写"} · 金额 ${amountLabel(details.amount)}`,
       `业务关联：${details.linkStatus === "linked" ? `${details.linkedTargetType === "bill" ? "账单" : "银行流水"} ${details.linkedTargetId}` : (details.linkStatus === "invalidated" ? "原关联已失效，等待重新处理" : "尚未确认")} · 业务事件 ${details.businessEventId || "未生成"}`,
     ];
   }
@@ -151,6 +160,8 @@ function StructuredDataFields({ category, value, onChange, workspace, currentDoc
   const kind = documentStructuredKind(category);
   if (!kind) return null;
   const details = value?.kind === kind ? value : normalizeDocumentStructuredData(category, {});
+  const terminology = workspaceTerminology(workspace);
+  const displayText = (text) => applyWorkspaceTerminology(text, workspace);
   const update = (key, nextValue) => onChange({ ...details, [key]: nextValue });
   if (kind === "contract") {
     const membershipEnabled = workspaceModuleEnabled(workspace, "members");
@@ -161,16 +172,16 @@ function StructuredDataFields({ category, value, onChange, workspace, currentDoc
       <div className="document-intake-controls document-structured-fields">
         <label className="foundation-field"><span>合同甲方</span><input value={details.partyA || ""} onChange={(event) => update("partyA", event.target.value)} /></label>
         <label className="foundation-field"><span>合同乙方</span><input value={details.partyB || ""} onChange={(event) => update("partyB", event.target.value)} /></label>
-        <label className="foundation-field"><span>合同类型</span><select value={details.contractType || "unclassified"} onChange={(event) => update("contractType", event.target.value)}>{contractTypes.map(([id, label]) => <option value={id} key={id}>{label}{id === "membership" && !membershipEnabled ? "（会员模块已停用）" : ""}</option>)}</select></label>
+        <label className="foundation-field"><span>合同类型</span><select value={details.contractType || "unclassified"} onChange={(event) => update("contractType", event.target.value)}>{contractTypes.map(([id, label]) => <option value={id} key={id}>{displayText(label)}{id === "membership" && !membershipEnabled ? `（${terminology.member}模块已停用）` : ""}</option>)}</select></label>
         <label className="foundation-field"><span>合同金额</span><input type="number" min="0" step="0.01" value={details.amount ?? ""} onChange={(event) => update("amount", event.target.value)} /></label>
-        <label className="foundation-field"><span>结算方式</span><select value={details.settlementMode || "unconfigured"} onChange={(event) => update("settlementMode", event.target.value)}>{Object.entries(CONTRACT_SETTLEMENT_MODES).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label>
+        <label className="foundation-field"><span>结算方式</span><select value={details.settlementMode || "unconfigured"} onChange={(event) => update("settlementMode", event.target.value)}>{Object.entries(CONTRACT_SETTLEMENT_MODES).map(([id, label]) => <option value={id} key={id}>{displayText(label)}</option>)}</select></label>
         <label className="foundation-field"><span>每期金额</span><input type="number" min="0" step="0.01" value={details.periodAmount ?? ""} onChange={(event) => update("periodAmount", event.target.value)} /></label>
         <label className="foundation-field"><span>首次账单日</span><input type="date" value={details.firstBillDate || ""} onChange={(event) => update("firstBillDate", event.target.value)} /></label>
-        <label className="foundation-field"><span>到期日规则</span><select value={details.dueDateRule || "on_bill_date"} onChange={(event) => update("dueDateRule", event.target.value)}>{Object.entries(CONTRACT_DUE_DATE_RULES).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label>
+        <label className="foundation-field"><span>到期日规则</span><select value={details.dueDateRule || "on_bill_date"} onChange={(event) => update("dueDateRule", event.target.value)}>{Object.entries(CONTRACT_DUE_DATE_RULES).map(([id, label]) => <option value={id} key={id}>{displayText(label)}</option>)}</select></label>
         {details.dueDateRule === "days_after" && <label className="foundation-field"><span>账单后多少天到期</span><input type="number" min="0" step="1" value={details.dueDays ?? 0} onChange={(event) => update("dueDays", event.target.value)} /></label>}
         <label className="foundation-field"><span>账单结束日期</span><input type="date" value={details.billingEndDate || ""} onChange={(event) => update("billingEndDate", event.target.value)} /></label>
-        <label className="foundation-field"><span>服务开始日期</span><input type="date" value={details.serviceStartDate || ""} onChange={(event) => update("serviceStartDate", event.target.value)} /></label>
-        <label className="foundation-field"><span>服务结束日期</span><input type="date" value={details.serviceEndDate || ""} onChange={(event) => update("serviceEndDate", event.target.value)} /></label>
+        <label className="foundation-field"><span>{terminology.service}开始日期</span><input type="date" value={details.serviceStartDate || ""} onChange={(event) => update("serviceStartDate", event.target.value)} /></label>
+        <label className="foundation-field"><span>{terminology.service}结束日期</span><input type="date" value={details.serviceEndDate || ""} onChange={(event) => update("serviceEndDate", event.target.value)} /></label>
         <label className="foundation-field"><span>退款条款</span><input value={details.refundTerms || ""} onChange={(event) => update("refundTerms", event.target.value)} placeholder="退款条件、扣费与时限" /></label>
         <label className="foundation-field"><span>佣金条款</span><input value={details.commissionTerms || ""} onChange={(event) => update("commissionTerms", event.target.value)} placeholder="佣金比例、计提与支付条件" /></label>
       </div>
@@ -211,7 +222,7 @@ function StructuredDataFields({ category, value, onChange, workspace, currentDoc
         <label className="foundation-field"><span>发票号码</span><input value={details.invoiceNumber || ""} onChange={(event) => update("invoiceNumber", event.target.value)} placeholder="保存时检查重复" /></label>
         <label className="foundation-field"><span>发票日期</span><input type="date" value={details.invoiceDate || ""} onChange={(event) => update("invoiceDate", event.target.value)} /></label>
         <label className="foundation-field"><span>增值税方向（人工选择）</span><select value={details.taxDirection || "unclassified"} onChange={(event) => update("taxDirection", event.target.value)}>{INVOICE_TAX_DIRECTION_OPTIONS.map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label>
-        <label className="foundation-field"><span>{details.taxDirection === "output" ? "客户" : (details.taxDirection === "input" ? "供应商" : "客户／供应商")}</span><input value={details.counterparty || ""} onChange={(event) => update("counterparty", event.target.value)} placeholder="用于建议匹配已有账单" /></label>
+        <label className="foundation-field"><span>{details.taxDirection === "output" ? terminology.customer : (details.taxDirection === "input" ? terminology.supplier : `${terminology.customer}／${terminology.supplier}`)}</span><input value={details.counterparty || ""} onChange={(event) => update("counterparty", event.target.value)} placeholder="用于建议匹配已有账单" /></label>
         <label className="foundation-field"><span>价税合计</span><input type="number" min="0" step="0.01" value={details.amount ?? ""} onChange={(event) => update("amount", event.target.value)} /></label>
         <label className="foundation-field"><span>税额</span><input type="number" min="0" step="0.01" value={details.taxAmount ?? ""} onChange={(event) => update("taxAmount", event.target.value)} /></label>
         <label className="foundation-field"><span>税率（%）</span><input type="number" min="0" max="100" step="0.01" value={details.taxRate ?? ""} onChange={(event) => update("taxRate", event.target.value)} /></label>
@@ -227,9 +238,9 @@ function StructuredDataFields({ category, value, onChange, workspace, currentDoc
   }
   return (
     <div className="document-intake-controls document-structured-fields">
-      <label className="foundation-field"><span>审批类型</span><select value={details.approvalType || "unclassified"} onChange={(event) => update("approvalType", event.target.value)}>{Object.entries(APPROVAL_TYPES).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label>
+      <label className="foundation-field"><span>审批类型</span><select value={details.approvalType || "unclassified"} onChange={(event) => update("approvalType", event.target.value)}>{Object.entries(APPROVAL_TYPES).map(([id, label]) => <option value={id} key={id}>{displayText(label)}</option>)}</select></label>
       <label className="foundation-field"><span>申请人</span><input value={details.applicant || ""} onChange={(event) => update("applicant", event.target.value)} /></label>
-      <label className="foundation-field"><span>供应商／收退款对象</span><input value={details.supplier || ""} onChange={(event) => update("supplier", event.target.value)} placeholder="报销可留空，使用申请人匹配" /></label>
+      <label className="foundation-field"><span>{terminology.supplier}／收退款对象</span><input value={details.supplier || ""} onChange={(event) => update("supplier", event.target.value)} placeholder="报销可留空，使用申请人匹配" /></label>
       <label className="foundation-field"><span>审批日期</span><input type="date" value={details.approvalDate || ""} onChange={(event) => update("approvalDate", event.target.value)} /></label>
       <label className="foundation-field"><span>审批金额</span><input type="number" min="0" step="0.01" value={details.amount ?? ""} onChange={(event) => update("amount", event.target.value)} /></label>
       <label className="foundation-field"><span>审批状态</span><select value={details.approvalStatus} onChange={(event) => update("approvalStatus", event.target.value)}>{APPROVAL_STATUS_OPTIONS.map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label>
@@ -262,6 +273,8 @@ function documentKindLabel(kind) {
 
 export function DocumentIntakePanel({ defaultCategory = "其他资料", compact = false, onToast }) {
   const { state, activeWorkspace, actions, store, fileVault } = useFinanceDesk();
+  const terminology = workspaceTerminology(activeWorkspace);
+  const displayText = (value) => applyWorkspaceTerminology(value, activeWorkspace);
   const actor = activeWorkspace.users?.find((user) => (
     user.id === state.activeUserId
     && user.status === "active"
@@ -297,11 +310,16 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const [error, setError] = useState("");
   const [uploadFeedback, setUploadFeedback] = useState(null);
   const [matchFeedback, setMatchFeedback] = useState(null);
-  const relatedGroups = useMemo(() => RELATED_GROUPS.map(([label, collection]) => ({
-    label,
-    collection,
-    items: activeWorkspace[collection] || [],
-  })).filter((group) => group.items.length), [activeWorkspace]);
+  const relatedGroups = useMemo(() => {
+    const currentTerminology = workspaceTerminology(activeWorkspace);
+    return RELATED_GROUPS.map(([label, collection]) => ({
+      label: collection === "personnelRecords"
+        ? currentTerminology.personnel
+        : applyWorkspaceTerminology(label, activeWorkspace),
+      collection,
+      items: activeWorkspace[collection] || [],
+    })).filter((group) => group.items.length);
+  }, [activeWorkspace]);
   const relatedLabels = useMemo(() => new Map(relatedGroups.flatMap((group) => group.items.map((item) => [
     item.id,
     `${group.label} · ${relatedLabel(item)}`,
@@ -670,7 +688,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         adjustmentAmount: draft.adjustmentAmount,
       }, { actor });
       actions.replaceWorkspace(current.id, next, { requiredPermission: "data.write" });
-      onToast?.(`${item.label}已保存；冻结版本与原确认如有，将按新底稿失效`);
+      onToast?.(`${displayText(item.label)}已保存；冻结版本与原确认如有，将按新底稿失效`);
     } catch (caught) {
       setError(caught.message || "增值税差异说明保存失败");
     }
@@ -800,7 +818,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
       actions.replaceWorkspace(current.id, next, { requiredPermission: "data.write" });
       setPayrollFilePreview(null);
       setPayrollFieldMapping({});
-      onToast?.(`${PAYROLL_SOCIAL_IMPORT_KINDS[currentPlan.sourceKind]}已写入 ${currentPlan.rows.length} 人次；旧冻结与确认已撤销`);
+      onToast?.(`${displayText(PAYROLL_SOCIAL_IMPORT_KINDS[currentPlan.sourceKind])}已写入 ${currentPlan.rows.length} 人次；旧冻结与确认已撤销`);
     } catch (caught) {
       setError(caught.message || "工资社保数据写入失败");
     }
@@ -810,9 +828,9 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     setError("");
     try {
       const current = store.getActiveWorkspace();
-      const next = confirmPayrollSocialData(current, { section, confirmed }, { actor: "客户负责人" });
+      const next = confirmPayrollSocialData(current, { section, confirmed }, { actor: `${terminology.customer}负责人` });
       actions.replaceWorkspace(current.id, next, { requiredPermission: "data.write" });
-      onToast?.(`${section === "payroll" ? "工资表" : "社保表"}${confirmed ? "已由客户确认" : "确认已撤销"}`);
+      onToast?.(`${section === "payroll" ? "工资表" : "社保表"}${confirmed ? `已由${terminology.customer}确认` : "确认已撤销"}`);
     } catch (caught) {
       setError(caught.message || "工资社保确认失败");
     }
@@ -883,30 +901,30 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
       <div className="foundation-section-heading"><div><small>IndexedDB · 不上传</small><h3><FileText size={18} />本地资料库</h3></div><span>{filteredDocuments.length} / {activeWorkspace.documents.length} 份</span></div>
       {!fileVault && <div className="foundation-error"><WarningCircle size={18} />当前环境不支持浏览器本地文件保险箱，只能查看已有资料元数据。</div>}
       <div className="document-intake-controls document-upload-controls">
-        <label className="foundation-field"><span>资料类别</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{CATEGORIES.map((item) => <option key={item}>{item}</option>)}</select></label>
+        <label className="foundation-field"><span>资料类别</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{CATEGORIES.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
         <label className="foundation-field"><span>业务期间</span><input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} /></label>
         <label className="foundation-field"><span>关联业务对象（可选）</span><select value={relatedObjectId} onChange={(event) => setRelatedObjectId(event.target.value)}><option value="">暂不关联</option>{relatedGroups.map((group) => <optgroup label={group.label} key={group.collection}>{group.items.map((item) => <option value={item.id} key={item.id}>{relatedLabel(item)} · {item.id}</option>)}</optgroup>)}</select></label>
         <button className="secondary-button" type="button" disabled={!fileVault || busy} onClick={() => inputRef.current?.click()}><FileArrowUp size={17} />{busy ? "正在保存…" : "上传原文件"}</button>
         <input ref={inputRef} type="file" multiple hidden onChange={addFiles} />
       </div>
       <p className="foundation-hint">合同、发票、审批单等原文件保存在当前浏览器 IndexedDB；分类、期间、校验哈希和业务关联保存在当前工作台，不会上传外部服务。</p>
-      {uploadFeedback && <div className={`${uploadFeedback.tone === "error" ? "foundation-error" : "foundation-notice"} import-feedback document-upload-feedback`} role={uploadFeedback.tone === "error" ? "alert" : "status"} aria-live="polite">{uploadFeedback.tone === "error" ? <WarningCircle size={18} /> : <CheckCircle size={18} weight="fill" />}<span>{uploadFeedback.message}</span></div>}
+      {uploadFeedback && <div className={`${uploadFeedback.tone === "error" ? "foundation-error" : "foundation-notice"} import-feedback document-upload-feedback`} role={uploadFeedback.tone === "error" ? "alert" : "status"} aria-live="polite">{uploadFeedback.tone === "error" ? <WarningCircle size={18} /> : <CheckCircle size={18} weight="fill" />}<span>{displayText(uploadFeedback.message)}</span></div>}
       <div className="foundation-notice" style={{ marginTop: 12 }}><WarningCircle size={18} /><span><strong>OCR 未连接。</strong> 合同、发票和审批字段必须由本地用户人工录入并核对，系统不会假装从原文件自动识别。</span></div>
       <div className="bank-import-workspace">
         <div className="foundation-section-heading">
           <div><small>结构化合同 · 预览后确认</small><h3>合同账单计划</h3></div>
           <span>{contractBillingPlans.length} 份合同 · 待生成 {contractBillingPlans.reduce((sum, plan) => sum + plan.items.length, 0)} 张</span>
         </div>
-        <p className="foundation-hint">{workspaceModuleEnabled(activeWorkspace, "members") ? "销售、会员和平台合同生成应收账单" : "销售和平台合同生成应收账单"}；采购和租赁合同生成应付账单。预览不会写入任何账单，只有点击确认后才写入现有账单列表并关联合同资料。</p>
+        <p className="foundation-hint">{workspaceModuleEnabled(activeWorkspace, "members") ? `销售、${terminology.member}和平台合同生成应收账单` : "销售和平台合同生成应收账单"}；采购和租赁合同生成应付账单。预览不会写入任何账单，只有点击确认后才写入现有账单列表并关联合同资料。</p>
         <div className="foundation-record-list">
           {contractBillingPlans.map((plan) => (
             <article className="foundation-record" key={plan.documentId}>
               <div style={{ width: "100%" }}>
                 <strong>{plan.document?.name || plan.documentId}</strong>
-                <small>{CONTRACT_TYPES[plan.contractType] || "未选择合同类型"} · {plan.billKind === "receivable" ? "将生成应收" : (plan.billKind === "payable" ? "将生成应付" : "尚未确定账单方向")} · 对方 {plan.counterparty || "未填写"}</small>
+                <small>{displayText(CONTRACT_TYPES[plan.contractType] || "未选择合同类型")} · {plan.billKind === "receivable" ? "将生成应收" : (plan.billKind === "payable" ? "将生成应付" : "尚未确定账单方向")} · 对方 {plan.counterparty || "未填写"}</small>
                 <p>合同金额 {amountLabel(plan.contractAmount)} · 每期 {amountLabel(plan.periodAmount)} · 计划总额 {amountLabel(plan.plannedTotalAmount)} · 已生成 {amountLabel(plan.generatedTotalAmount)} · 本次待生成 {amountLabel(plan.pendingTotalAmount)}</p>
                 {!!plan.duplicatePeriods.length && <p>已存在、不会重复生成：{plan.duplicatePeriods.map((item) => `${item.period}（${item.bill.no || item.bill.id}）`).join("、")}</p>}
-                {!!plan.errors.length && <div className="foundation-error"><WarningCircle size={18} /><span>{plan.errors.join("；")}</span></div>}
+                {!!plan.errors.length && <div className="foundation-error"><WarningCircle size={18} /><span>{plan.errors.map(displayText).join("；")}</span></div>}
                 <details open>
                   <summary>本次账单预览（{plan.items.length}）</summary>
                   {plan.items.map((item) => <p key={`${plan.documentId}-${item.billingPeriod}`}>{item.billingPeriod} · {item.billKind === "receivable" ? "应收" : "应付"} · 账单日 {item.date} · 到期日 {item.dueDate} · {amountLabel(item.amount)} · {item.counterparty}</p>)}
@@ -924,7 +942,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           <div><small>五类审批 · 人工确认</small><h3>审批单与业务链</h3></div>
           <span>{approvalConnections.filter((item) => item.details.linkStatus === "linked").length} / {approvalConnections.length} 已关联</span>
         </div>
-        <p className="foundation-hint">报销、付款申请、借款／还款、采购和退款仅在“已批准”后参与建议。系统按申请人／供应商、金额、日期与类型寻找账单或银行流水；只有人工确认才补充业务事件审批来源，不会自动付款、核销、制证或入账。</p>
+        <p className="foundation-hint">报销、付款申请、借款／还款、采购和退款仅在“已批准”后参与建议。系统按申请人／{terminology.supplier}、金额、日期与类型寻找账单或银行流水；只有人工确认才补充业务事件审批来源，不会自动付款、核销、制证或入账。</p>
         <div className="foundation-record-list">
           {approvalConnections.map((item) => {
             const { document, details, linkedTarget, businessEvent, pendingTask, suggestions } = item;
@@ -932,18 +950,18 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
             return (
               <article className="foundation-record" key={`approval-link-${document.id}`}>
                 <div style={{ width: "100%" }}>
-                  <strong>{document.name} · {APPROVAL_TYPES[details.approvalType] || "未选择类型"}</strong>
-                  <small>{statusLabel(APPROVAL_STATUS_OPTIONS, details.approvalStatus, "草稿")} · {details.approvalDate || "未填写日期"} · {details.supplier || details.applicant || "未填写申请人／供应商"} · {amountLabel(details.amount)}</small>
+                  <strong>{document.name} · {displayText(APPROVAL_TYPES[details.approvalType] || "未选择类型")}</strong>
+                  <small>{statusLabel(APPROVAL_STATUS_OPTIONS, details.approvalStatus, "草稿")} · {details.approvalDate || "未填写日期"} · {details.supplier || details.applicant || `未填写申请人／${terminology.supplier}`} · {amountLabel(details.amount)}</small>
                   {details.linkStatus === "linked" && linkedTarget && <p>已人工关联{details.linkedTargetType === "bill" ? "账单" : "银行流水"}：{linkedTarget.no || linkedTarget.summary || linkedTarget.id} · 业务事件 {businessEvent?.businessEventNo || businessEvent?.id || details.businessEventId} · 仍须后续人工付款／入账</p>}
                   {details.linkStatus === "invalidated" && <div className="foundation-error"><WarningCircle size={18} /><span>审批已驳回或撤回，原业务关系已失效，相关业务重新进入异常。</span></div>}
-                  {pendingTask && <p>{pendingTask.message}</p>}
+                  {pendingTask && <p>{displayText(pendingTask.message)}</p>}
                   {approved && details.linkStatus !== "linked" && suggestions.map((suggestion) => (
                     <div className="foundation-record" key={suggestion.id}>
-                      <div><strong>建议关联{suggestion.targetType === "bill" ? "账单" : "银行流水"}：{suggestion.target.no || suggestion.target.summary || suggestion.target.id}</strong><small>{suggestion.target.counterparty || "未填写往来单位"} · {suggestion.target.date || "未填写日期"} · {amountLabel(Math.abs(Number(suggestion.target.amount || 0)))}</small><p>{suggestion.reasons.join("；")} · 匹配分 {suggestion.score}</p></div>
+                      <div><strong>建议关联{suggestion.targetType === "bill" ? "账单" : "银行流水"}：{suggestion.target.no || suggestion.target.summary || suggestion.target.id}</strong><small>{suggestion.target.counterparty || "未填写往来单位"} · {suggestion.target.date || "未填写日期"} · {amountLabel(Math.abs(Number(suggestion.target.amount || 0)))}</small><p>{suggestion.reasons.map(displayText).join("；")} · 匹配分 {suggestion.score}</p></div>
                       <button className="primary-button" type="button" onClick={() => confirmApprovalLink(suggestion)}>人工确认关联</button>
                     </div>
                   ))}
-                  {approved && details.linkStatus !== "linked" && !suggestions.length && <p>当前没有类型、申请人／供应商、金额和日期同时一致的已有账单或银行流水，审批单保持待处理。</p>}
+                  {approved && details.linkStatus !== "linked" && !suggestions.length && <p>当前没有类型、申请人／{terminology.supplier}、金额和日期同时一致的已有账单或银行流水，审批单保持待处理。</p>}
                   {!approved && <p>当前状态不能进入后续业务；改为“已批准”并保存后，才会出现匹配建议。</p>}
                 </div>
               </article>
@@ -962,7 +980,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           <div><small>人工确认 · 不自动写账</small><h3>发票与应收应付账单</h3></div>
           <span>{invoiceBillConnections.filter((item) => item.linkedBill).length} / {invoiceBillConnections.length} 已关联</span>
         </div>
-        <p className="foundation-hint">销项按客户、价税合计和日期建议应收账单，进项按供应商、价税合计和日期建议应付账单。建议本身不写数据；人工确认后才关联，确认没有合适账单后才可新建。红字只冲减已关联的原账单。</p>
+        <p className="foundation-hint">销项按{terminology.customer}、价税合计和日期建议应收账单，进项按{terminology.supplier}、价税合计和日期建议应付账单。建议本身不写数据；人工确认后才关联，确认没有合适账单后才可新建。红字只冲减已关联的原账单。</p>
         <div className="foundation-record-list">
           {invoiceBillConnections.map((item) => {
             const { document, details, linkedBill, suggestions } = item;
@@ -975,7 +993,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
               <article className="foundation-record" key={`invoice-bill-${document.id}`}>
                 <div style={{ width: "100%" }}>
                   <strong>{details.invoiceNumber || document.name} · {details.taxDirection === "output" ? "销项 → 应收" : (details.taxDirection === "input" ? "进项 → 应付" : "请先选择销项／进项")}</strong>
-                  <small>{details.counterparty || "未填写客户／供应商"} · {details.invoiceDate || "未填写日期"} · 价税合计 {amountLabel(details.amount)}</small>
+                  <small>{details.counterparty || `未填写${terminology.customer}／${terminology.supplier}`} · {details.invoiceDate || "未填写日期"} · 价税合计 {amountLabel(details.amount)}</small>
                   {linkedBill && <p>已人工确认关联：{linkedBill.no || linkedBill.id} · {linkedBill.counterparty} · 当前账单金额 {amountLabel(linkedBill.amount)}</p>}
                   {!linkedBill && details.voidStatus === "voided" && <div className="foundation-error"><WarningCircle size={18} /><span>作废发票禁止关联、新建或调整账单。</span></div>}
                   {!linkedBill && details.voidStatus !== "voided" && details.redLetterStatus === "red_applied" && <p>红字申请中：当前不生成账单调整；开具红字后再关联原发票和原账单。</p>}
@@ -989,13 +1007,13 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                     <>
                       {suggestions.map((suggestion) => (
                         <div className="foundation-record" key={suggestion.id}>
-                          <div><strong>建议 {billKindLabel}：{suggestion.bill.no || suggestion.bill.id}</strong><small>{suggestion.bill.counterparty} · {amountLabel(suggestion.bill.amount)} · {suggestion.bill.date || "未填写账单日期"}</small><p>{suggestion.reasons.join("；")} · 匹配分 {suggestion.score}</p></div>
+                          <div><strong>建议 {billKindLabel}：{suggestion.bill.no || suggestion.bill.id}</strong><small>{suggestion.bill.counterparty} · {amountLabel(suggestion.bill.amount)} · {suggestion.bill.date || "未填写账单日期"}</small><p>{suggestion.reasons.map(displayText).join("；")} · 匹配分 {suggestion.score}</p></div>
                           <button className="primary-button" type="button" onClick={() => confirmInvoiceBill(suggestion)}>人工确认关联</button>
                         </div>
                       ))}
                       {!suggestions.length && <p>没有找到同时满足往来单位、金额和日期条件的已有{billKindLabel === "未确定" ? "" : billKindLabel}账单。</p>}
                       <button className="secondary-button" type="button" disabled={!canCreate} onClick={() => confirmInvoiceBillCreation(document.id)}>确认无合适账单并新建{billKindLabel}账单</button>
-                      {!canCreate && <p>请先在资料编辑中补齐销项／进项、客户／供应商、价税合计和发票日期。</p>}
+                      {!canCreate && <p>请先在资料编辑中补齐销项／进项、{terminology.customer}／{terminology.supplier}、价税合计和发票日期。</p>}
                     </>
                   )}
                 </div>
@@ -1020,7 +1038,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
             }[row.bucket];
             return (
               <article className="foundation-record" key={row.documentId}>
-                <div><strong>{row.invoiceNumber || "未填写发票号码"} · {row.name}</strong><small>{statusLabel(INVOICE_TAX_DIRECTION_OPTIONS, row.taxDirection, "未分类")} · {row.invoiceDate || "未填写日期"} · 关联 {row.linkedObjectIds.length} 个对象</small><p>价税合计 {amountLabel(row.grossAmount)} · 税额 {amountLabel(row.taxAmount)} · 税率 {row.taxRate ?? "未填"}% · {row.taxAmountSource === "derived_from_gross_and_rate" ? "税额由价税合计与税率计算" : "税额为人工录入"}</p><p>{row.reason}；查验 {statusLabel(INVOICE_STATUS_OPTIONS.verificationStatus, row.verificationStatus, "未查验")} · 红字 {statusLabel(INVOICE_STATUS_OPTIONS.redLetterStatus, row.redLetterStatus, "正常蓝字")} · 作废 {statusLabel(INVOICE_STATUS_OPTIONS.voidStatus, row.voidStatus, "有效")} · 认证 {statusLabel(INVOICE_STATUS_OPTIONS.certificationStatus, row.certificationStatus, "无需认证")}</p></div>
+                <div><strong>{row.invoiceNumber || "未填写发票号码"} · {row.name}</strong><small>{statusLabel(INVOICE_TAX_DIRECTION_OPTIONS, row.taxDirection, "未分类")} · {row.invoiceDate || "未填写日期"} · 关联 {row.linkedObjectIds.length} 个对象</small><p>价税合计 {amountLabel(row.grossAmount)} · 税额 {amountLabel(row.taxAmount)} · 税率 {row.taxRate ?? "未填"}% · {row.taxAmountSource === "derived_from_gross_and_rate" ? "税额由价税合计与税率计算" : "税额为人工录入"}</p><p>{displayText(row.reason)}；查验 {statusLabel(INVOICE_STATUS_OPTIONS.verificationStatus, row.verificationStatus, "未查验")} · 红字 {statusLabel(INVOICE_STATUS_OPTIONS.redLetterStatus, row.redLetterStatus, "正常蓝字")} · 作废 {statusLabel(INVOICE_STATUS_OPTIONS.voidStatus, row.voidStatus, "有效")} · 认证 {statusLabel(INVOICE_STATUS_OPTIONS.certificationStatus, row.certificationStatus, "无需认证")}</p></div>
                 <span><strong>{bucketLabel}</strong><small>来源 {row.documentId}</small></span>
               </article>
             );
@@ -1042,7 +1060,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
             return (
               <article className="foundation-record" key={item.kind}>
                 <div style={{ width: "100%" }}>
-                  <strong>{item.label}</strong>
+                  <strong>{displayText(item.label)}</strong>
                   <small>{VAT_RECONCILIATION_STATUS_LABELS[item.status]} · 当前口径：发票数 + 本地调整 − 账面数</small>
                   <p>账面数 {amountLabel(item.bookAmount)} · 发票数 {amountLabel(item.invoiceAmount)} · 调整前差额 {amountLabel(item.differenceBeforeAdjustment)}</p>
                   <div className="document-intake-controls document-reconciliation-controls">
@@ -1079,11 +1097,11 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           <div><small>{activeWorkspace.currentPeriod} · CSV / XLS / XLSX · 仅本地</small><h3>工资与社保导入核对</h3></div>
           <span>工资 {payrollSocialSummary.counts.payroll} 人 · 社保 {payrollSocialSummary.counts.socialSecurity} 人 · 差异 {payrollSocialSummary.counts.issues} 人</span>
         </div>
-        <p className="foundation-hint">每次选择工资表或社保表，字段确认后按“同类表＋员工＋所属期”覆盖去重写入当前工作台。文件只在当前浏览器解析，不上传；这里不会连接社保、个税或税务平台。</p>
+        <p className="foundation-hint">每次选择工资表或社保表，字段确认后按“同类表＋{terminology.personnel}＋所属期”覆盖去重写入当前工作台。文件只在当前浏览器解析，不上传；这里不会连接社保、个税或税务平台。</p>
         <div className="document-intake-controls document-import-controls">
-          <label className="foundation-field"><span>导入类型</span><select value={payrollImportKind} onChange={(event) => setPayrollImportKind(event.target.value)}>{Object.entries(PAYROLL_SOCIAL_IMPORT_KINDS).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label>
+        <label className="foundation-field"><span>导入类型</span><select value={payrollImportKind} onChange={(event) => setPayrollImportKind(event.target.value)}>{Object.entries(PAYROLL_SOCIAL_IMPORT_KINDS).map(([id, label]) => <option value={id} key={id}>{displayText(label)}</option>)}</select></label>
           <label className="foundation-field"><span>默认所属期</span><input type="month" value={payrollImportPeriod} onChange={(event) => setPayrollImportPeriod(event.target.value)} /></label>
-          <button className="secondary-button" type="button" disabled={payrollImportBusy} onClick={() => payrollFileInputRef.current?.click()}><FileArrowUp size={17} />{payrollImportBusy ? "读取中…" : `选择${PAYROLL_SOCIAL_IMPORT_KINDS[payrollImportKind]}`}</button>
+          <button className="secondary-button" type="button" disabled={payrollImportBusy} onClick={() => payrollFileInputRef.current?.click()}><FileArrowUp size={17} />{payrollImportBusy ? "读取中…" : `选择${displayText(PAYROLL_SOCIAL_IMPORT_KINDS[payrollImportKind])}`}</button>
           <input ref={payrollFileInputRef} type="file" accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={choosePayrollSocialFile} />
         </div>
         {payrollFilePreview && payrollImportPlan && (
@@ -1092,7 +1110,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
             <div className="document-intake-controls document-structured-fields">
               {Object.entries(PAYROLL_SOCIAL_FIELD_DEFINITIONS).map(([field, definition]) => (
                 <label className="foundation-field" key={field}>
-                  <span>{definition.label}{definition.required ? "（必填）" : ""}</span>
+                  <span>{displayText(definition.label)}{definition.required ? "（必填）" : ""}</span>
                   <select value={payrollFieldMapping[field] ?? ""} onChange={(event) => updatePayrollFieldMapping(field, event.target.value)}>
                     <option value="">不映射</option>
                     {payrollFilePreview.inspection.headers.map((header, index) => <option value={index} key={`${field}-${index}`}>{header || `第 ${index + 1} 列`}</option>)}
@@ -1100,46 +1118,46 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                 </label>
               ))}
             </div>
-            <p className="foundation-hint">文件内重复 {payrollImportPlan.duplicateRowCount} 行 · 将覆盖已有同员工同期间记录 {payrollImportPlan.replacementCount} 行。</p>
-            {!!payrollImportPlan.mappingErrors.length && <div className="foundation-error"><WarningCircle size={18} /><span>{payrollImportPlan.mappingErrors.join("；")}</span></div>}
-            {!!payrollImportPlan.errors.length && <div className="foundation-error"><WarningCircle size={18} /><span>{payrollImportPlan.errors.slice(0, 8).map((item) => `第 ${item.rowNumber} 行 ${item.employeeName || ""}：${item.message}`).join("；")}</span></div>}
+            <p className="foundation-hint">文件内重复 {payrollImportPlan.duplicateRowCount} 行 · 将覆盖已有同{terminology.personnel}同期间记录 {payrollImportPlan.replacementCount} 行。</p>
+            {!!payrollImportPlan.mappingErrors.length && <div className="foundation-error"><WarningCircle size={18} /><span>{payrollImportPlan.mappingErrors.map(displayText).join("；")}</span></div>}
+            {!!payrollImportPlan.errors.length && <div className="foundation-error"><WarningCircle size={18} /><span>{payrollImportPlan.errors.slice(0, 8).map((item) => `第 ${item.rowNumber} 行 ${item.employeeName || ""}：${displayText(item.message)}`).join("；")}</span></div>}
             <div className="foundation-record-list">
-              {payrollImportPlan.rows.slice(0, 5).map((row) => <article className="foundation-record" key={row.dedupeKey}><div><strong>{row.employeeName} · {row.period}</strong><small>{row.personnelId ? `已匹配人员 ${row.personnelId}` : "人员档案未匹配"}</small><p>应发 {amountLabel(row.grossSalary)} · 个人社保 {amountLabel(row.personalSocial)} · 企业社保 {amountLabel(row.employerSocial)} · 个税 {amountLabel(row.individualIncomeTax)} · 实发 {amountLabel(row.netSalary)}</p></div><span><strong>第 {row.sourceRowNumber} 行</strong><small>{PAYROLL_SOCIAL_IMPORT_KINDS[row.sourceKind]}</small></span></article>)}
+              {payrollImportPlan.rows.slice(0, 5).map((row) => <article className="foundation-record" key={row.dedupeKey}><div><strong>{row.employeeName} · {row.period}</strong><small>{row.personnelId ? `已匹配${terminology.personnel} ${row.personnelId}` : `${terminology.personnel}档案未匹配`}</small><p>应发 {amountLabel(row.grossSalary)} · 个人社保 {amountLabel(row.personalSocial)} · 企业社保 {amountLabel(row.employerSocial)} · 个税 {amountLabel(row.individualIncomeTax)} · 实发 {amountLabel(row.netSalary)}</p></div><span><strong>第 {row.sourceRowNumber} 行</strong><small>{displayText(PAYROLL_SOCIAL_IMPORT_KINDS[row.sourceKind])}</small></span></article>)}
             </div>
             <div className="foundation-inline-actions"><button className="primary-button" type="button" disabled={!payrollImportPlan.canApply} onClick={commitPayrollSocialImport}>确认映射并写入当前工作台</button><button className="secondary-button" type="button" onClick={() => { setPayrollFilePreview(null); setPayrollFieldMapping({}); }}>取消</button></div>
           </div>
         )}
         <div className="foundation-section-heading" style={{ marginTop: 18 }}>
-          <div><small>按员工归属 · 工资表对社保表</small><h3>逐人差异</h3></div>
-          <span>{payrollSocialSummary.hasDifferences ? `${payrollSocialSummary.counts.issues} 人待核对` : "人员与金额一致"}</span>
+          <div><small>按{terminology.personnel}归属 · 工资表对社保表</small><h3>逐人差异</h3></div>
+          <span>{payrollSocialSummary.hasDifferences ? `${payrollSocialSummary.counts.issues} 人待核对` : `${terminology.personnel}与金额一致`}</span>
         </div>
         <div className="foundation-record-list">
           {payrollSocialSummary.rows.map((row) => (
             <article className="foundation-record" key={row.key}>
               <div>
                 <strong>{row.employeeName}</strong>
-                <small>{!row.person ? "人员档案缺失" : (row.personnelStatus === "active" || !row.personnelStatus ? `在职 · ${row.person.department || "未填写部门"}` : `离职／非在职 · 状态 ${row.personnelStatus}`)}</small>
+                <small>{!row.person ? `${terminology.personnel}档案缺失` : (row.personnelStatus === "active" || !row.personnelStatus ? `在职 · ${row.person.department || "未填写部门"}` : `离职／非在职 · 状态 ${row.personnelStatus}`)}</small>
                 <p>工资表：应发 {amountLabel(row.payrollRecord?.grossSalary)} · 个人社保 {amountLabel(row.payrollRecord?.personalSocial)} · 企业社保 {amountLabel(row.payrollRecord?.employerSocial)} · 个税 {amountLabel(row.payrollRecord?.individualIncomeTax)} · 实发 {amountLabel(row.payrollRecord?.netSalary)}</p>
                 <p>社保表：工资／基数 {amountLabel(row.socialSecurityRecord?.grossSalary)} · 个人社保 {amountLabel(row.socialSecurityRecord?.personalSocial)} · 企业社保 {amountLabel(row.socialSecurityRecord?.employerSocial)}</p>
                 <p>金额差异（工资表 − 社保表）：应发／基数 {row.differences.grossSalary == null ? "不可比" : amountLabel(row.differences.grossSalary)} · 个人社保 {row.differences.personalSocial == null ? "不可比" : amountLabel(row.differences.personalSocial)} · 企业社保 {row.differences.employerSocial == null ? "不可比" : amountLabel(row.differences.employerSocial)}</p>
               </div>
-              <span><strong>{row.matched ? "一致" : row.issues.map((issue) => issue.label).join("；")}</strong><small>{row.payrollRecord?.sourceFileName || "缺工资表"} · {row.socialSecurityRecord?.sourceFileName || "缺社保表"}</small></span>
+              <span><strong>{row.matched ? "一致" : row.issues.map((issue) => displayText(issue.label)).join("；")}</strong><small>{row.payrollRecord?.sourceFileName || "缺工资表"} · {row.socialSecurityRecord?.sourceFileName || "缺社保表"}</small></span>
             </article>
           ))}
-          {!payrollSocialSummary.rows.length && <p className="foundation-empty">当前期间没有工资或社保记录，也没有在职人员可核对。</p>}
+          {!payrollSocialSummary.rows.length && <p className="foundation-empty">当前期间没有工资或社保记录，也没有在职{terminology.personnel}可核对。</p>}
         </div>
         <div className="foundation-section-heading" style={{ marginTop: 18 }}>
-          <div><small>绑定当前冻结版本 · 两项独立确认</small><h3>客户确认</h3></div>
+          <div><small>绑定当前冻结版本 · 两项独立确认</small><h3>{terminology.customer}确认</h3></div>
           <span>{payrollSocialConfirmation.version ? payrollSocialConfirmation.version.label : "需先重新冻结报表"}</span>
         </div>
-        <p className="foundation-hint">工资表与社保表必须分别由客户勾选。确认后数据才满足申报底稿与最终本地申报包的流程条件；重新导入或修改数据会自动撤销旧确认。</p>
+        <p className="foundation-hint">工资表与社保表必须分别由{terminology.customer}勾选。确认后数据才满足申报底稿与最终本地申报包的流程条件；重新导入或修改数据会自动撤销旧确认。</p>
         <div className="foundation-record-list">
           <article className="foundation-record">
-            <label><input type="checkbox" checked={payrollSocialConfirmation.payroll.confirmed} disabled={!payrollSocialConfirmation.version || !payrollSocialConfirmation.payroll.available} onChange={(event) => togglePayrollSocialConfirmation("payroll", event.target.checked)} /> 客户确认本期工资表</label>
+            <label><input type="checkbox" checked={payrollSocialConfirmation.payroll.confirmed} disabled={!payrollSocialConfirmation.version || !payrollSocialConfirmation.payroll.available} onChange={(event) => togglePayrollSocialConfirmation("payroll", event.target.checked)} /> {terminology.customer}确认本期工资表</label>
             <span><strong>{payrollSocialConfirmation.payroll.confirmed ? "已确认" : "未确认"}</strong><small>{payrollSocialConfirmation.payroll.available ? `${payrollSocialSummary.counts.payroll} 人 · 应发 ${amountLabel(payrollSocialSummary.totals.payroll.grossSalary)}` : "请先导入工资表"}</small></span>
           </article>
           <article className="foundation-record">
-            <label><input type="checkbox" checked={payrollSocialConfirmation.socialSecurity.confirmed} disabled={!payrollSocialConfirmation.version || !payrollSocialConfirmation.socialSecurity.available} onChange={(event) => togglePayrollSocialConfirmation("socialSecurity", event.target.checked)} /> 客户确认本期社保表</label>
+            <label><input type="checkbox" checked={payrollSocialConfirmation.socialSecurity.confirmed} disabled={!payrollSocialConfirmation.version || !payrollSocialConfirmation.socialSecurity.available} onChange={(event) => togglePayrollSocialConfirmation("socialSecurity", event.target.checked)} /> {terminology.customer}确认本期社保表</label>
             <span><strong>{payrollSocialConfirmation.socialSecurity.confirmed ? "已确认" : "未确认"}</strong><small>{payrollSocialConfirmation.socialSecurity.available ? `${payrollSocialSummary.counts.socialSecurity} 人 · 社保合计 ${amountLabel(payrollSocialSummary.totals.socialSecurityPayable)}` : "请先导入社保表"}</small></span>
           </article>
         </div>
@@ -1152,16 +1170,16 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         </div>
         <p className="foundation-hint">建议只比较资料名称、人工录入字段与业务的对方、金额、日期／期间；生成建议不会建立任何关联。</p>
         <div className="foundation-inline-actions"><button className="secondary-button" type="button" onClick={refreshMissingTasks}>刷新缺件待办</button></div>
-        {matchFeedback && <div className={`${matchFeedback.tone === "error" ? "foundation-error" : "foundation-notice"} import-feedback document-match-feedback`} role={matchFeedback.tone === "error" ? "alert" : "status"} aria-live="polite">{matchFeedback.tone === "error" ? <WarningCircle size={18} /> : <CheckCircle size={18} weight="fill" />}<span>{matchFeedback.message}</span></div>}
+        {matchFeedback && <div className={`${matchFeedback.tone === "error" ? "foundation-error" : "foundation-notice"} import-feedback document-match-feedback`} role={matchFeedback.tone === "error" ? "alert" : "status"} aria-live="polite">{matchFeedback.tone === "error" ? <WarningCircle size={18} /> : <CheckCircle size={18} weight="fill" />}<span>{displayText(matchFeedback.message)}</span></div>}
         {!!openDocumentTasks.length && (
           <div className="foundation-record-list">
-            {openDocumentTasks.map((task) => <article className="foundation-record" key={task.id}><div><strong>{task.message}</strong><small>{matchTargetLabel(task.sourceType)} · 等待补齐并确认关联</small></div></article>)}
+            {openDocumentTasks.map((task) => <article className="foundation-record" key={task.id}><div><strong>{displayText(task.message)}</strong><small>{matchTargetLabel(task.sourceType)} · 等待补齐并确认关联</small></div></article>)}
           </div>
         )}
         <div className="foundation-record-list">
           {matchSuggestions.map((suggestion) => (
             <article className="foundation-record" key={suggestion.id}>
-              <div><strong>{suggestion.documentName} → {suggestion.sourceLabel}</strong><small>{documentKindLabel(suggestion.documentKind)} · {matchTargetLabel(suggestion.sourceType)} · 匹配分 {suggestion.score}</small><p>{suggestion.reasons.join("；")}</p></div>
+              <div><strong>{suggestion.documentName} → {suggestion.sourceLabel}</strong><small>{documentKindLabel(suggestion.documentKind)} · {matchTargetLabel(suggestion.sourceType)} · 匹配分 {suggestion.score}</small><p>{suggestion.reasons.map(displayText).join("；")}</p></div>
               <button className="primary-button" type="button" disabled={confirmingSuggestionId === suggestion.id} onClick={() => confirmSuggestion(suggestion)}>{confirmingSuggestionId === suggestion.id ? "确认中…" : "确认关联"}</button>
             </article>
           ))}
@@ -1191,13 +1209,13 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                   : (section.records.length ? `另有本地记录 ${section.records.length} 条` : "没有关联记录");
                 return (
                   <article className="foundation-record" key={section.key}>
-                    <div><strong>{String(section.order).padStart(2, "0")} · {section.label}</strong><small>{documentText}</small><p>{recordText}</p></div>
+                    <div><strong>{String(section.order).padStart(2, "0")} · {displayText(section.label)}</strong><small>{documentText}</small><p>{displayText(recordText)}</p></div>
                     <span><strong>{statusText}</strong><small>{section.required ? "本包检查项" : "当前凭证未要求"}</small></span>
                   </article>
                 );
               })}
             </div>
-            {!!voucherPackagePlan.missingItems.length && <div className="foundation-notice"><WarningCircle size={18} /><span><strong>当前缺失：</strong> {voucherPackagePlan.missingItems.map((item) => `${item.label}（${item.reason}）`).join("；")}</span></div>}
+            {!!voucherPackagePlan.missingItems.length && <div className="foundation-notice"><WarningCircle size={18} /><span><strong>当前缺失：</strong> {voucherPackagePlan.missingItems.map((item) => `${displayText(item.label)}（${displayText(item.reason)}）`).join("；")}</span></div>}
             {!!selectedVoucher?.attachmentPackages?.length && <p className="foundation-hint">最近一次：{selectedVoucher.attachmentPackages.at(-1).generatedAt} · {selectedVoucher.attachmentPackages.at(-1).fileName} · 记录保存在当前工作台，ZIP 本体只下载到本机。</p>}
           </>
         ) : <p className="foundation-empty">当前工作台还没有可选凭证。</p>}
@@ -1217,21 +1235,21 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
             <div className="foundation-record-list">
               {monthlyArchivePlan.sections.map((section) => {
                 const statusText = section.status === "collected" ? "已收集" : (section.status === "missing" ? "缺失" : "点击后生成");
-                return <article className="foundation-record" key={section.key}><div><strong>{String(section.order).padStart(2, "0")} · {section.label}</strong><small>{section.detail}</small></div><span><strong>{statusText}</strong><small>{section.count == null ? "" : `${section.count} 项`}</small></span></article>;
+                return <article className="foundation-record" key={section.key}><div><strong>{String(section.order).padStart(2, "0")} · {displayText(section.label)}</strong><small>{displayText(section.detail)}</small></div><span><strong>{statusText}</strong><small>{section.count == null ? "" : `${section.count} 项`}</small></span></article>;
               })}
             </div>
-            {!!monthlyArchivePlan.missingItems.length && <div className="foundation-notice"><WarningCircle size={18} /><span><strong>不能标记为完整档案：</strong> {monthlyArchivePlan.missingItems.map((item) => `${item.label}（${item.reason}）`).join("；")}。仍可导出文件名和清单均明确标注的“不完整草稿包”。</span></div>}
+            {!!monthlyArchivePlan.missingItems.length && <div className="foundation-notice"><WarningCircle size={18} /><span><strong>不能标记为完整档案：</strong> {monthlyArchivePlan.missingItems.map((item) => `${displayText(item.label)}（${displayText(item.reason)}）`).join("；")}。仍可导出文件名和清单均明确标注的“不完整草稿包”。</span></div>}
             {!!monthlyArchiveExports.length && <p className="foundation-hint">本期间已导出 {monthlyArchiveExports.length} 次；最近一次为 {monthlyArchiveExports.at(-1).fileName}。这些是本地导出记录，不等于正式期间归档。</p>}
           </>
         ) : <p className="foundation-empty">当前工作台没有可导出的财务期间。</p>}
       </div>
       <div className="document-intake-controls document-filter-controls" style={{ marginTop: 14 }}>
         <label className="foundation-field"><span>搜索资料</span><span className="search-field"><MagnifyingGlass size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="文件名、哈希或关联对象" /></span></label>
-        <label className="foundation-field"><span>类别筛选</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="all">全部类别</option>{categories.map((item) => <option value={item} key={item}>{item}</option>)}</select></label>
+        <label className="foundation-field"><span>类别筛选</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="all">全部类别</option>{categories.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
         <label className="foundation-field"><span>状态筛选</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">全部状态</option><option value="active">未归档</option><option value="archived">已归档</option><option value="linked">已关联</option><option value="unlinked">未使用，可删除</option><option value="available">原文件可用</option><option value="missing">原文件缺失</option></select></label>
         <button className="secondary-button" type="button" onClick={() => { setQuery(""); setCategoryFilter("all"); setStatusFilter("all"); }}>清空筛选</button>
       </div>
-      {error && <div className="foundation-error" role="alert"><WarningCircle size={18} /><span>{error}</span></div>}
+      {error && <div className="foundation-error" role="alert"><WarningCircle size={18} /><span>{displayText(error)}</span></div>}
       {preview && (
         <div className="bank-import-workspace">
           <div className="foundation-section-heading"><div><small>浏览器本地预览</small><h3>{preview.document.name}</h3></div><button className="foundation-icon-button" type="button" aria-label="关闭预览" onClick={closePreview}><X size={17} /></button></div>
@@ -1257,16 +1275,16 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
               <span className="document-record-icon"><FileText size={20} /></span>
               <div>
                 <strong>{document.name}</strong>
-                <small>{document.category} · {document.period || "未分期"} · {fileSize(document.size)} · {archived ? "已归档" : document.lifecycleStatus || "已获取"}</small>
-                <p title={usage.map((item) => item.label).join("、")}>{usage.length ? `正在使用：${usage.map((item) => item.label).join("、")}` : "未使用，可安全删除"}</p>
+                <small>{categoryDisplayLabel(document.category, activeWorkspace)} · {document.period || "未分期"} · {fileSize(document.size)} · {archived ? "已归档" : document.lifecycleStatus || "已获取"}</small>
+                <p title={usage.map((item) => displayText(item.label)).join("、")}>{usage.length ? `正在使用：${usage.map((item) => displayText(item.label)).join("、")}` : "未使用，可安全删除"}</p>
                 <p>{document.hash ? `哈希 ${document.hash.slice(0, 12)}… · ${locallyAvailable ? "原文件可用" : "原文件缺失"}` : "仅有资料元数据；未保存原文件"}</p>
-                {structuredDetailLines(document).map((line) => <p key={line}>{line}</p>)}
+                {structuredDetailLines(document, activeWorkspace).map((line) => <p key={line}>{line}</p>)}
                 {documentStructuredKind(document.category) && <p>字段来源：人工录入 · OCR 未连接</p>}
                 {isEditing && (
                   <div className="bank-import-workspace">
                     <div className="document-intake-controls document-edit-controls">
                       <label className="foundation-field"><span>文件名称</span><input value={editing.name} onChange={(event) => setEditing((current) => ({ ...current, name: event.target.value }))} /></label>
-                      <label className="foundation-field"><span>资料类别</span><select value={editing.category} onChange={(event) => changeEditCategory(event.target.value)}>{CATEGORIES.map((item) => <option key={item}>{item}</option>)}</select></label>
+                      <label className="foundation-field"><span>资料类别</span><select value={editing.category} onChange={(event) => changeEditCategory(event.target.value)}>{CATEGORIES.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
                       <label className="foundation-field"><span>业务期间</span><input type="month" value={editing.period} onChange={(event) => setEditing((current) => ({ ...current, period: event.target.value }))} /></label>
                       <label className="foundation-field"><span>添加关联对象</span><select value="" onChange={(event) => addEditRelation(event.target.value)}><option value="">选择后加入</option>{relatedGroups.map((group) => <optgroup label={group.label} key={group.collection}>{group.items.filter((item) => !editing.relatedObjectIds.includes(item.id)).map((item) => <option value={item.id} key={item.id}>{relatedLabel(item)}</option>)}</optgroup>)}</select></label>
                     </div>
@@ -1309,7 +1327,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                 <button type="button" disabled={!locallyAvailable || !fileVault} aria-label="下载原文件" title="下载原文件" onClick={() => download(document)}><DownloadSimple size={15} /></button>
                 <button type="button" disabled={archived} aria-label="编辑资料详情" title={archived ? "已归档资料不能直接修改" : "编辑资料详情"} onClick={() => beginEdit(document)}><PencilSimple size={15} /></button>
                 <button type="button" disabled={archived} aria-label="标记归档" aria-haspopup="dialog" aria-expanded={pendingAction === "archive"} aria-controls={confirmationId} title={archived ? "资料已归档" : "标记归档"} onClick={(event) => requestDocumentAction(document, "archive", event.currentTarget)}><Archive size={15} /></button>
-                <button type="button" disabled={usage.length > 0} aria-label="删除未使用资料" aria-haspopup="dialog" aria-expanded={pendingAction === "delete"} aria-controls={confirmationId} title={usage.length ? `不能删除：${usage.map((item) => item.label).join("、")}` : "删除未使用资料"} onClick={(event) => requestDocumentAction(document, "delete", event.currentTarget)}><Trash size={15} /></button>
+                <button type="button" disabled={usage.length > 0} aria-label="删除未使用资料" aria-haspopup="dialog" aria-expanded={pendingAction === "delete"} aria-controls={confirmationId} title={usage.length ? `不能删除：${usage.map((item) => displayText(item.label)).join("、")}` : "删除未使用资料"} onClick={(event) => requestDocumentAction(document, "delete", event.currentTarget)}><Trash size={15} /></button>
               </span>
             </article>
           );

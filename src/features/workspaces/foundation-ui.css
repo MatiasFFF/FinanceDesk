@@ -2005,6 +2005,13 @@
   line-height: 1.5;
 }
 
+.foundation-entity-editor .foundation-section-heading h3,
+.foundation-entity-editor .foundation-editor-toggle,
+.foundation-entity-field > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .foundation-entity-record-actions {
   min-width: 0;
   flex-wrap: nowrap;
