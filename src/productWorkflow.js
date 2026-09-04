@@ -176,7 +176,7 @@ export function makeWorkspace(fields) {
   return ensureWorkspace(createBlankWorkspace(fields));
 }
 
-export function audit(workspace, action, detail, actor = "周会计") {
+export function audit(workspace, action, detail, actor = "本地用户") {
   return {
     ...workspace,
     auditLog: [
@@ -453,7 +453,7 @@ export function recordVatReconciliation(workspace, input, context = {}) {
   if (item.requiresExplanation && !reason) throw new Error("存在差额时必须填写真实原因");
 
   const at = context.at || new Date().toISOString();
-  const actor = context.actor || "周会计";
+  const actor = context.actor || "本地用户";
   const previous = item.storedRecord;
   const before = { ...item.before };
   const after = {
@@ -773,7 +773,7 @@ export function buildReportSnapshot(workspace) {
   };
 }
 
-export function freezeReportVersion(workspace, actor = "周会计") {
+export function freezeReportVersion(workspace, actor = "本地用户") {
   const snapshot = buildReportSnapshot(workspace);
   const periodVersions = workspace.delivery.reportVersions.filter((item) => item.period === workspace.currentPeriod);
   const version = {
@@ -950,7 +950,7 @@ export function confirmPayrollSocialData(workspace, input = {}, context = {}) {
   if (confirmed && !state.version) throw new Error("请先按当前工资社保数据重新冻结报表版本");
   if (confirmed && !sectionState.available) throw new Error(section === "payroll" ? "当前期间还没有工资表记录" : "当前期间还没有社保表记录");
   const at = context.at || new Date().toISOString();
-  const actor = context.actor || "客户负责人";
+  const actor = context.actor || "本地用户";
   const isPayroll = section === "payroll";
   const nextTax = {
     ...current.tax,
@@ -1053,7 +1053,7 @@ export function workflowChecks(workspace) {
   };
 }
 
-export function prepareFilingDraft(workspace, actor = "周会计") {
+export function prepareFilingDraft(workspace, actor = "本地用户") {
   const flow = workflowChecks(workspace);
   const ready = flow.prepare.every((item) => item.ok);
   if (!ready || !flow.version) {
@@ -1183,7 +1183,7 @@ export async function importLocalReceipt(file) {
   };
 }
 
-export function attachReceipt(workspace, receipt, actor = "周会计") {
+export function attachReceipt(workspace, receipt, actor = "本地用户") {
   const exportedPackage = workspace.delivery.filing.exportedPackage;
   if (!exportedPackage?.id || !exportedPackage.reportVersionId) throw new Error("请先导出当前版本的本地申报包，再导入对应回执");
   const currentVersion = workflowChecks(workspace).version;
@@ -1208,7 +1208,7 @@ export function attachReceipt(workspace, receipt, actor = "周会计") {
   return audit(next, "导入外部办理回执", `${receipt.name} · SHA-256 ${receipt.hash.slice(0, 12)}…`, actor);
 }
 
-export function markPackageExported(workspace, packageMeta, actor = "周会计") {
+export function markPackageExported(workspace, packageMeta, actor = "本地用户") {
   const next = {
     ...workspace,
     delivery: {
@@ -1225,7 +1225,7 @@ export function markPackageExported(workspace, packageMeta, actor = "周会计")
   return audit(next, "导出本地申报包", `${packageMeta.fileName} · 未连接税务局`, actor);
 }
 
-export function archivePeriod(workspace, actor = "周会计") {
+export function archivePeriod(workspace, actor = "本地用户") {
   const flow = workflowChecks(workspace);
   if (!flow.archive.every((item) => item.ok) || !flow.version) {
     const missing = flow.archive.filter((item) => !item.ok).map((item) => item.label);
@@ -1321,7 +1321,7 @@ export function resetTaxForPeriod(tax = {}, period) {
   };
 }
 
-export function enterNextPeriod(workspace, actor = "周会计") {
+export function enterNextPeriod(workspace, actor = "本地用户") {
   const filing = workspace.delivery.filing;
   const archive = workspace.delivery.archives.find((item) => item.period === workspace.currentPeriod);
   if (!filing.archivedAt || !archive) return workspace;

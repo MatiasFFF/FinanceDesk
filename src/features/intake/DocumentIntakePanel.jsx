@@ -252,7 +252,12 @@ function documentKindLabel(kind) {
 }
 
 export function DocumentIntakePanel({ defaultCategory = "其他资料", compact = false, onToast }) {
-  const { activeWorkspace, actions, store, fileVault } = useFinanceDesk();
+  const { state, activeWorkspace, actions, store, fileVault } = useFinanceDesk();
+  const actor = activeWorkspace.users?.find((user) => (
+    user.id === state.activeUserId
+    && user.status === "active"
+    && String(user.name || "").trim()
+  ))?.name || "本地用户";
   const inputRef = useRef(null);
   const payrollFileInputRef = useRef(null);
   const documentActionCancelRef = useRef(null);
@@ -638,7 +643,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         kind: item.kind,
         reason: draft.reason,
         adjustmentAmount: draft.adjustmentAmount,
-      }, { actor: "周会计" });
+      }, { actor });
       actions.replaceWorkspace(current.id, next, { requiredPermission: "data.write" });
       onToast?.(`${item.label}已保存；冻结版本与原确认如有，将按新底稿失效`);
     } catch (caught) {
@@ -650,7 +655,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     setError("");
     try {
       const current = store.getActiveWorkspace();
-      const result = applyContractBillingPlan(current, { documentId: plan.documentId, asOf: plan.asOf }, { actor: "周会计" });
+      const result = applyContractBillingPlan(current, { documentId: plan.documentId, asOf: plan.asOf }, { actor });
       actions.replaceWorkspace(current.id, result.workspace, { requiredPermission: "data.write" });
       onToast?.(`已按合同确认生成 ${result.bills.length} 张${result.plan.billKind === "receivable" ? "应收" : "应付"}账单，可直接进入现有核销链`);
     } catch (caught) {
@@ -666,7 +671,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         documentId: suggestion.documentId,
         billId: suggestion.billId,
         confirmed: true,
-      }, { actor: "周会计", mode: "manual" });
+      }, { actor, mode: "manual" });
       actions.replaceWorkspace(current.id, result.workspace, { requiredPermission: "data.write" });
       onToast?.(`已人工确认发票与${result.bill.kind === "receivable" ? "应收" : "应付"}账单 ${result.bill.no || result.bill.id} 的关联`);
     } catch (caught) {
@@ -682,7 +687,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         documentId,
         confirmed: true,
         confirmedNoSuitableBill: true,
-      }, { actor: "周会计", mode: "manual" });
+      }, { actor, mode: "manual" });
       actions.replaceWorkspace(current.id, result.workspace, { requiredPermission: "data.write" });
       onToast?.(`已确认无合适账单，并从发票生成${result.bill.kind === "receivable" ? "应收" : "应付"}账单 ${result.bill.no}`);
     } catch (caught) {
@@ -697,7 +702,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
       const result = applyRedInvoiceBillAdjustment(current, {
         documentId,
         confirmed: true,
-      }, { actor: "周会计", mode: "manual" });
+      }, { actor, mode: "manual" });
       actions.replaceWorkspace(current.id, result.workspace, { requiredPermission: "data.write" });
       onToast?.(`已用红字发票对原账单 ${result.bill.no || result.bill.id} 形成 ${amountLabel(result.adjustment.amount)} 负向调整`);
     } catch (caught) {
@@ -714,7 +719,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         targetType: suggestion.targetType,
         targetId: suggestion.targetId,
         confirmed: true,
-      }, { actor: "周会计", mode: "manual" });
+      }, { actor, mode: "manual" });
       actions.replaceWorkspace(current.id, result.workspace, { requiredPermission: "data.write" });
       onToast?.(`已人工确认审批单与${suggestion.targetType === "bill" ? "账单" : "银行流水"}的关系，并${result.businessEvent.source === "approved-document-manual-confirmation" ? "生成" : "补充"}业务事件审批来源；未自动付款或入账`);
     } catch (caught) {
@@ -766,7 +771,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         importedAt: payrollFilePreview.importedAt,
         id: payrollFilePreview.id,
       });
-      const next = applyPayrollSocialImport(current, currentPlan, { actor: "周会计" });
+      const next = applyPayrollSocialImport(current, currentPlan, { actor });
       actions.replaceWorkspace(current.id, next, { requiredPermission: "data.write" });
       setPayrollFilePreview(null);
       setPayrollFieldMapping({});

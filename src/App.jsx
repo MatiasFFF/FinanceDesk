@@ -1065,10 +1065,11 @@ function App() {
   const navigation = workspace ? primaryNavigationForWorkspace(workspace) : [];
   const enabledPageIds = new Set(navigation.map((item) => item.id));
   const activePage = enabledPageIds.has(page) ? page : "overview";
-  const operator = workspace?.users?.find((user) => user.id === state.activeUserId && user.status === "active")
+  const activeOperator = workspace?.users?.find((user) => user.id === state.activeUserId && user.status === "active") || null;
+  const operator = activeOperator
     || workspace?.users?.find((user) => user.status === "active")
     || null;
-  const actorName = operator?.name || "本地用户";
+  const actorName = activeOperator?.name?.trim() || "本地用户";
   useEffect(() => { if (page !== activePage) setPage(activePage); }, [page, activePage]);
   useEffect(() => { window.scrollTo({ top: 0, left: 0, behavior: "auto" }); }, [activePage, workspace?.id]);
   useEffect(() => { if (!toast) return undefined; const timer = window.setTimeout(() => setToast(null), 3200); return () => window.clearTimeout(timer); }, [toast]);
@@ -1387,7 +1388,7 @@ function App() {
           next = createCustomerConfirmationPackage(
             next,
             { period: next.currentPeriod, reportVersionId: flow.version.id },
-            { actor: decisionActor, at },
+            { actor: actorName, at },
           );
           confirmation = next.confirmations.at(-1);
         }
@@ -1400,7 +1401,7 @@ function App() {
           note: isMajor ? `重大事项：${note.trim()}` : note.trim(),
         }, { actor: decisionActor, at });
         if (decision === "approve" && ["payroll", "socialSecurity"].includes(section)) {
-          next = confirmPayrollSocialData(next, { section, confirmed: true }, { actor: decisionActor, at });
+          next = confirmPayrollSocialData(next, { section, confirmed: true }, { actor: actorName, at });
         }
 
         const savedConfirmation = next.confirmations.find((item) => item.id === confirmation.id);
@@ -1435,7 +1436,7 @@ function App() {
               ownerConfirmedVersionId: null,
             },
             delivery: { ...next.delivery, filing: resetFiling },
-          }, "客户异议退回 S7", `${section}：${note.trim()}`, decisionActor);
+          }, "客户异议退回 S7", `${section}：${note.trim()}`, actorName);
         }
 
         const withResetDownstream = {
@@ -1451,7 +1452,7 @@ function App() {
             financeConfirmedAt: savedConfirmation.updatedAt || at,
             financeConfirmedVersionId: flow.version.id,
           },
-        }, "客户第一次确认完成", "收入、成本费用、应交税额、进项税、工资、社保、财务报表与待核实事项均已逐项确认", decisionActor);
+        }, "客户第一次确认完成", "收入、成本费用、应交税额、进项税、工资、社保、财务报表与待核实事项均已逐项确认", actorName);
       });
       if (decision === "reject") {
         navigateToPage("reconcile");
@@ -1590,7 +1591,7 @@ function App() {
           },
         };
         const deductionLabel = selections.deductionAuthorization === "authorize_external" ? "授权外部办理扣款" : "不授权外部扣款";
-        return audit(next, "客户第二次最终确认", `${name.trim()}确认 ${versionId} 当前数字与风险；${deductionLabel}；仅保存本地记录，未提交税务局、未执行扣款`, name.trim());
+        return audit(next, "客户第二次最终确认", `${name.trim()}确认 ${versionId} 当前数字与风险；${deductionLabel}；仅保存本地记录，未提交税务局、未执行扣款`, actorName);
       });
       setToast({ tone: "success", message: "最终确认快照已保存；尚未提交税务局，也未执行扣款" });
     } catch (error) {

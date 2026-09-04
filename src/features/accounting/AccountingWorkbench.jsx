@@ -166,6 +166,13 @@ function balanceText(direction, balance) {
   return direction === "平" ? "平" : `${direction} ¥${money(balance)}`;
 }
 
+function currentActorName(state, workspace) {
+  const user = workspace?.users?.find((candidate) => (
+    candidate.id === state.activeUserId && candidate.status === "active"
+  ));
+  return user?.name?.trim() || "本地用户";
+}
+
 function LedgerTrace({ voucherId, voucherIds = [], sourceIds = [] }) {
   const vouchers = voucherId ? [voucherId] : voucherIds;
   return (
@@ -307,7 +314,7 @@ function MemberBusinessAccountingQueue({ onToast }) {
   const { activeWorkspace, actions, state, store } = useFinanceDesk();
   const [reviewNotes, setReviewNotes] = useState({});
   const [error, setError] = useState("");
-  const actor = activeWorkspace?.users?.find((user) => user.id === state.activeUserId)?.name || "本地用户";
+  const actor = currentActorName(state, activeWorkspace);
   const rows = useMemo(() => {
     if (!activeWorkspace) return [];
     return (activeWorkspace.businessEvents || [])
@@ -412,7 +419,7 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
   const [advanceUsage, setAdvanceUsage] = useState({});
   const [advanceVoucherNotes, setAdvanceVoucherNotes] = useState({});
   const [error, setError] = useState("");
-  const actor = activeWorkspace?.users?.find((user) => user.id === state.activeUserId)?.name || "本地用户";
+  const actor = currentActorName(state, activeWorkspace);
   const billRows = useMemo(() => {
     if (!activeWorkspace) return [];
     const transactionById = new Map((activeWorkspace.transactions || []).map((transaction) => [transaction.id, transaction]));
@@ -631,7 +638,8 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
 }
 
 export function AccountingWorkbench({ transactionId, onToast }) {
-  const { activeWorkspace, actions, store } = useFinanceDesk();
+  const { activeWorkspace, actions, state, store } = useFinanceDesk();
+  const actor = currentActorName(state, activeWorkspace);
   const transaction = activeWorkspace.transactions.find((item) => item.id === transactionId);
   const [allocationAmounts, setAllocationAmounts] = useState({});
   const [judgement, setJudgement] = useState({
@@ -793,9 +801,9 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   function inspect() {
     run(
       (workspace) => recordReconciliationSuggestions(
-        reviewTransactionEvidence(workspace, transaction.id, { actor: "周会计", mode: "local-rule" }),
+        reviewTransactionEvidence(workspace, transaction.id, { actor, mode: "local-rule" }),
         transaction.id,
-        { actor: "周会计", mode: "local-rule" },
+        { actor, mode: "local-rule" },
       ),
       "已完成本地分类、证据检查和疑似匹配；未自动入账",
     );
@@ -818,7 +826,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         evidenceIds: judgement.evidenceIds,
         confidence: judgement.confidence,
         reason: judgement.reason,
-      }, { actor: "周会计", mode: "manual" }),
+      }, { actor, mode: "manual" }),
       "业务事件已人工确认；仅完成分类与留痕，未生成或入账凭证",
     );
   }
@@ -852,7 +860,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         action,
         note,
         treatmentId: action === "adopt_treatment" ? treatmentId : undefined,
-      }, { actor: "周会计", mode: "manual" }),
+      }, { actor, mode: "manual" }),
       messages[action],
     );
   }
@@ -870,7 +878,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         transactionId,
         allocations: selected,
         note: reviewReason || "财务人员在单笔工作台确认",
-      }, { actor: "周会计", mode: "manual" }),
+      }, { actor, mode: "manual" }),
       "核销已保存；流水余额与账单余额已同步更新",
     )) setAllocationAmounts({});
   }
@@ -881,7 +889,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         transactionId,
         suggestionId: suggestion.id,
         note: reviewReason || "财务人员在匹配候选中明确确认",
-      }, { actor: "周会计", mode: "manual" }),
+      }, { actor, mode: "manual" }),
       `已确认${reconciliationSuggestionLabel(suggestion.type)}候选；只写入核销分配，未生成或入账凭证`,
     );
   }
@@ -891,7 +899,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
       (workspace) => reverseReconciliation(workspace, {
         allocationId,
         reason: reversalReason,
-      }, { actor: "周会计" }),
+      }, { actor }),
       "核销已撤销，原记录仍保留在审计链中",
     );
   }
@@ -903,7 +911,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         originalSourceId: refundSourceId,
         amount: Math.abs(Number(transaction.amount)),
         reason: reviewReason,
-      }, { actor: "周会计" }),
+      }, { actor }),
       "退款已与原收款建立可追溯关联",
     );
   }
@@ -915,7 +923,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
       (workspace) => linkInternalTransfer(workspace, {
         outgoingTransactionId: outgoing,
         incomingTransactionId: incoming,
-      }, { actor: "周会计" }),
+      }, { actor }),
       "两端银行流水已确认为内部转账，避免重复计入收支",
     );
   }
@@ -926,11 +934,11 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         ? createBankBusinessEventVoucherDraft(workspace, {
           eventId: businessEvent.id,
           note: voucherNote,
-        }, { actor: "周会计", mode: "manual" })
+        }, { actor, mode: "manual" })
         : createVoucherDraft(workspace, {
           transactionId,
           note: voucherNote,
-        }, { actor: "周会计" }),
+        }, { actor }),
       businessEvent ? "已由人工业务事件生成平衡凭证草稿；仍需填写复核意见后入账" : "已生成借贷平衡的凭证草稿与来源链",
     );
   }
@@ -942,7 +950,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
           voucherId,
           mode: "manual",
           reviewNote: voucherNote,
-        }, { actor: "周会计" });
+        }, { actor });
       },
       "凭证已人工复核入账，编号和附件来源已锁定",
     );
@@ -954,7 +962,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         voucherId: voucher.id,
         summary: voucherSummaries[voucher.id] ?? voucher.summary,
         reason: voucherNote,
-      }, { actor: "周会计" }),
+      }, { actor }),
       "凭证草稿已形成新版本，旧版本仍保留",
     );
   }
@@ -964,7 +972,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
       (workspace) => createPostedVoucherRevision(workspace, {
         voucherId,
         reason: voucherNote,
-      }, { actor: "周会计" }),
+      }, { actor }),
       "已入账凭证未被覆盖，已创建独立更正草稿",
     );
   }
@@ -975,7 +983,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         voucherId,
         decision: "reject",
         note: voucherNote,
-      }, { actor: "周会计" }),
+      }, { actor }),
       "凭证已退回修改，复核意见和状态已保存在本地",
     );
   }

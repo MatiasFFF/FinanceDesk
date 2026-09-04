@@ -695,7 +695,7 @@ export function applyContractBillingPlan(workspace, input = {}, context = {}) {
   const plan = buildContractBillingPlan(workspace, { documentId: input.documentId, asOf: input.asOf });
   if (!plan.canConfirm) throw new Error(`合同账单计划不能生成：${plan.errors.join("；") || "没有待生成账单"}`);
   const at = context.at || new Date().toISOString();
-  const actor = context.actor || "周会计";
+  const actor = context.actor || "本地用户";
   const existingNumbers = new Set((workspace.bills || []).map((bill) => bill.no));
   const bills = plan.items.map((item, index) => {
     let no = item.no;
@@ -955,7 +955,7 @@ export function confirmInvoiceBillMatch(workspace, input = {}, context = {}) {
   if (!bill || ["void", "inactive"].includes(bill.status)) throw new Error("找不到可关联的有效账单");
   if (bill.kind !== billKind) throw new Error(`销项发票只能关联应收账单，进项发票只能关联应付账单`);
   const at = context.at || new Date().toISOString();
-  const actor = context.actor || "周会计";
+  const actor = context.actor || "本地用户";
   const evidenceLink = {
     id: createId("evidence-link"),
     documentIds: [document.id],
@@ -1023,7 +1023,7 @@ export function createBillFromInvoice(workspace, input = {}, context = {}) {
   if (!(amount > 0)) throw new Error("发票价税合计必须大于 0");
   if (!details.invoiceDate) throw new Error("必须填写发票日期");
   const at = context.at || new Date().toISOString();
-  const actor = context.actor || "周会计";
+  const actor = context.actor || "本地用户";
   const businessPeriod = details.invoiceDate.slice(0, 7) || document.period || workspace.currentPeriod;
   const bill = {
     id: createId("bill"),
@@ -1108,7 +1108,7 @@ export function applyRedInvoiceBillAdjustment(workspace, input = {}, context = {
   if (adjustedBillAmount < 0) throw new Error("红字金额不能超过原账单当前金额");
 
   const at = context.at || new Date().toISOString();
-  const actor = context.actor || "周会计";
+  const actor = context.actor || "本地用户";
   const adjustment = {
     id: createId("bill-adjustment"),
     type: "red-invoice",
@@ -1440,7 +1440,7 @@ export function confirmApprovalBusinessLink(workspace, input = {}, context = {})
   const target = (workspace[targetCollection] || []).find((item) => item.id === suggestion.targetId);
   if (!target) throw new Error("找不到要关联的账单或银行流水，审批单继续保持待处理");
   const at = context.at || new Date().toISOString();
-  const actor = context.actor || "周会计";
+  const actor = context.actor || "本地用户";
   const rule = approvalRule(details);
   const existingEvent = approvalBusinessEventForTarget(workspace, suggestion.targetType, target, rule, details.approvalType);
   const eventId = existingEvent?.id || createId("business-event");
@@ -2186,7 +2186,7 @@ export function applyPayrollSocialImport(workspace, plan, context = {}) {
     throw new Error(reasons.length ? `工资社保导入前需修正：${reasons.join("；")}` : "工资社保导入没有可写入的有效记录");
   }
   const importedAt = context.at || plan.importedAt || new Date().toISOString();
-  const actor = context.actor || "周会计";
+  const actor = context.actor || "本地用户";
   const existing = workspace.payrollRecords || [];
   const existingByKey = new Map(existing.map((record) => [payrollSocialDedupeKey(record), record]));
   const importedRows = plan.rows.map((row) => {
