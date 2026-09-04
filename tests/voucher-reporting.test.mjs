@@ -25,6 +25,7 @@ import {
   recordManualConfirmation,
   reviewTransactionEvidence,
 } from "../src/features/evidence/evidenceEngine.js";
+import { applyReconciliation } from "../src/features/reconciliation/reconciliationEngine.js";
 
 const context = { actor: "测试会计", at: "2026-09-06T13:00:00.000Z" };
 
@@ -49,6 +50,31 @@ test("reconciled split receipt produces a balanced traceable draft and attachmen
   assert.equal(vouchersForSource(workspace, "bill-ar-1")[0].id, voucher.id);
   workspace = postVoucher(workspace, { voucherId: voucher.id, mode: "automatic" }, { ...context, at: "2026-09-06T13:00:30.000Z" });
   assert.equal(workspace.transactions.find((item) => item.id === "txn-split").status, "posted");
+});
+
+test("a partially allocated receipt stays open and later allocations create a second traceable voucher", () => {
+  let workspace = createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
+  workspace = applyReconciliation(workspace, {
+    transactionId: "txn-split",
+    allocations: [{ billId: "bill-ar-1", amount: 500 }],
+  }, context);
+  workspace = createVoucherDraft(workspace, { transactionId: "txn-split" }, context);
+  const firstVoucherId = workspace.vouchers.at(-1).id;
+  workspace = postVoucher(workspace, { voucherId: firstVoucherId, mode: "automatic" }, context);
+  assert.equal(workspace.transactions.find((item) => item.id === "txn-split").status, "pending");
+
+  workspace = applyReconciliation(workspace, {
+    transactionId: "txn-split",
+    allocations: [{ billId: "bill-ar-1", amount: 500 }, { billId: "bill-ar-2", amount: 500 }],
+  }, { ...context, at: "2026-09-06T13:01:00.000Z" });
+  workspace = createVoucherDraft(workspace, { transactionId: "txn-split" }, { ...context, at: "2026-09-06T13:02:00.000Z" });
+  const secondVoucher = workspace.vouchers.at(-1);
+  assert.notEqual(secondVoucher.id, firstVoucherId);
+  assert.ok(secondVoucher.sourceIds.includes("bill-ar-1"));
+  assert.ok(secondVoucher.sourceIds.includes("bill-ar-2"));
+  workspace = postVoucher(workspace, { voucherId: secondVoucher.id, mode: "automatic" }, { ...context, at: "2026-09-06T13:03:00.000Z" });
+  assert.equal(workspace.transactions.find((item) => item.id === "txn-split").status, "posted");
+  assert.deepEqual(workspace.transactions.find((item) => item.id === "txn-split").postedVoucherIds, [firstVoucherId, secondVoucher.id]);
 });
 
 test("manual posting still requires explicit confirmation when evidence is incomplete", () => {

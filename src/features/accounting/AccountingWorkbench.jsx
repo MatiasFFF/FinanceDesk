@@ -22,6 +22,8 @@ import {
   billSettlement,
   buildAttachmentPackage,
   classifyBankTransaction,
+  confirmedAllocationsForBill,
+  createSettlementBill,
   createPostedVoucherRevision,
   createVoucherDraft,
   linkInternalTransfer,
@@ -79,6 +81,118 @@ function statusLabel(status) {
   }[status] || status;
 }
 
+const BILL_KIND_META = {
+  receivable: { label: "客户应收", counterparty: "客户", balance: "未收余额" },
+  payable: { label: "供应商应付", counterparty: "供应商", balance: "未付余额" },
+  depositReceived: { label: "客户预收", counterparty: "客户", balance: "待到账" },
+  prepaymentPaid: { label: "供应商预付", counterparty: "供应商", balance: "待支付" },
+};
+
+function emptyBillForm(period) {
+  const date = `${period}-01`;
+  return { kind: BILL_KINDS.RECEIVABLE, counterparty: "", summary: "", amount: "", date, dueDate: date, no: "" };
+}
+
+export function ReceivablesPayablesPanel({ onToast }) {
+  const { activeWorkspace, actions, state, store } = useFinanceDesk();
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState(() => emptyBillForm(activeWorkspace?.currentPeriod || new Date().toISOString().slice(0, 7)));
+  const [error, setError] = useState("");
+  const actor = activeWorkspace?.users?.find((user) => user.id === state.activeUserId)?.name || "本地用户";
+  const billRows = useMemo(() => {
+    if (!activeWorkspace) return [];
+    const transactionById = new Map((activeWorkspace.transactions || []).map((transaction) => [transaction.id, transaction]));
+    return [...(activeWorkspace.bills || [])]
+      .map((bill) => ({
+        bill,
+        settlement: billSettlement(activeWorkspace, bill),
+        allocations: confirmedAllocationsForBill(activeWorkspace, bill.id).map((allocation) => ({
+          ...allocation,
+          transaction: transactionById.get(allocation.transactionId),
+        })),
+      }))
+      .sort((left, right) => String(right.bill.date || "").localeCompare(String(left.bill.date || "")) || String(right.bill.no || "").localeCompare(String(left.bill.no || "")));
+  }, [activeWorkspace]);
+
+  useEffect(() => {
+    setForm(emptyBillForm(activeWorkspace?.currentPeriod || new Date().toISOString().slice(0, 7)));
+    setShowForm(false);
+    setError("");
+  }, [activeWorkspace?.id, activeWorkspace?.currentPeriod]);
+
+  if (!activeWorkspace) return null;
+
+  const totalFor = (kind, field) => billRows
+    .filter((row) => row.bill.kind === kind)
+    .reduce((sum, row) => sum + Number(row.settlement[field] || 0), 0);
+  const metrics = [
+    { label: "应收未核销", value: totalFor(BILL_KINDS.RECEIVABLE, "remaining") },
+    { label: "应付未核销", value: totalFor(BILL_KINDS.PAYABLE, "remaining") },
+    { label: "客户预收", value: totalFor(BILL_KINDS.DEPOSIT_RECEIVED, "allocated") },
+    { label: "供应商预付", value: totalFor(BILL_KINDS.PREPAYMENT_PAID, "allocated") },
+  ];
+
+  function submitBill(event) {
+    event.preventDefault();
+    setError("");
+    try {
+      const current = store.getActiveWorkspace();
+      const next = createSettlementBill(current, { ...form, amount: Number(form.amount) }, { actor });
+      actions.replaceWorkspace(current.id, next);
+      setForm(emptyBillForm(current.currentPeriod));
+      setShowForm(false);
+      onToast?.("往来账单已保存，可在流水详情中做拆分或分次核销");
+    } catch (caught) {
+      setError(caught.message || "账单保存失败");
+    }
+  }
+
+  return (
+    <section className="panel settlement-panel">
+      <div className="settlement-heading">
+        <div><p className="eyebrow">应收应付与核销</p><h2>往来账单与实时余额</h2><p>新增账单后，在下方打开一笔流水，即可一次拆分核销多张账单；同一账单也可由多笔流水分次结清。</p></div>
+        <button className="secondary-button" type="button" onClick={() => { setShowForm((current) => !current); setError(""); }}><Plus size={16} />新增账单</button>
+      </div>
+
+      <div className="settlement-metrics">
+        {metrics.map((item) => <span key={item.label}><small>{item.label}</small><strong>¥{money(item.value)}</strong></span>)}
+      </div>
+
+      {showForm && (
+        <form className="settlement-form" onSubmit={submitBill}>
+          <label><span>账单类型 *</span><select value={form.kind} onChange={(event) => setForm((current) => ({ ...current, kind: event.target.value }))}>{Object.entries(BILL_KIND_META).map(([kind, meta]) => <option key={kind} value={kind}>{meta.label}</option>)}</select></label>
+          <label><span>{BILL_KIND_META[form.kind].counterparty}名称 *</span><input autoFocus value={form.counterparty} onChange={(event) => setForm((current) => ({ ...current, counterparty: event.target.value }))} placeholder={`填写${BILL_KIND_META[form.kind].counterparty}名称`} /></label>
+          <label><span>账单金额 *</span><input type="number" min="0.01" step="0.01" value={form.amount} onChange={(event) => setForm((current) => ({ ...current, amount: event.target.value }))} placeholder="0.00" /></label>
+          <label><span>账单编号</span><input value={form.no} onChange={(event) => setForm((current) => ({ ...current, no: event.target.value }))} placeholder="留空自动编号" /></label>
+          <label><span>账单日期 *</span><input type="date" value={form.date} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value, dueDate: !current.dueDate || current.dueDate === current.date ? event.target.value : current.dueDate }))} /></label>
+          <label><span>到期日期 *</span><input type="date" value={form.dueDate} onChange={(event) => setForm((current) => ({ ...current, dueDate: event.target.value }))} /></label>
+          <label className="full"><span>业务摘要</span><input value={form.summary} onChange={(event) => setForm((current) => ({ ...current, summary: event.target.value }))} placeholder="例如：9 月设计服务费" /></label>
+          {error && <div className="engine-error full"><WarningCircle size={16} />{error}</div>}
+          <div className="engine-inline full"><button className="secondary-button" type="button" onClick={() => { setShowForm(false); setError(""); }}>取消</button><button className="primary-button" type="submit"><SealCheck size={16} />保存账单</button></div>
+        </form>
+      )}
+
+      <div className="settlement-bill-list">
+        {billRows.length ? billRows.map(({ bill, settlement, allocations }) => {
+          const meta = BILL_KIND_META[bill.kind] || { label: bill.kind, balance: "未核销" };
+          const isAdvance = [BILL_KINDS.DEPOSIT_RECEIVED, BILL_KINDS.PREPAYMENT_PAID].includes(bill.kind);
+          const settledLabel = isAdvance ? (bill.kind === BILL_KINDS.DEPOSIT_RECEIVED ? "已形成预收" : "已形成预付") : "已核销";
+          return (
+            <article className="settlement-bill-row" key={bill.id}>
+              <div className="settlement-bill-main"><span className="settlement-kind">{meta.label}</span><strong>{bill.no || bill.id} · {bill.counterparty}</strong><small>{bill.summary} · {bill.date} 到期 {bill.dueDate || bill.date}</small></div>
+              <div className="settlement-bill-amounts"><span><small>账单金额</small><strong>¥{money(bill.amount)}</strong></span><span><small>{settledLabel}</small><strong>¥{money(settlement.allocated)}</strong></span><span><small>{meta.balance}</small><strong>¥{money(settlement.remaining)}</strong></span></div>
+              <details>
+                <summary>{allocations.length ? `${allocations.length} 次收付款 · 查看流水来源` : "尚无收付款核销"}</summary>
+                {allocations.length > 0 && <div className="settlement-source-list">{allocations.map((allocation) => <div key={allocation.id || `${bill.id}-${allocation.transactionId}`}><span><strong>{allocation.transaction?.date || "—"} · {allocation.transaction?.counterparty || "银行流水"}</strong><small>{allocation.transaction?.serial || allocation.transactionId} · 核销记录 {allocation.id || "历史记录"}</small></span><b>¥{money(allocation.amount)}</b></div>)}</div>}
+              </details>
+            </article>
+          );
+        }) : <p className="settlement-empty">还没有往来账单。新增第一张客户应收或供应商应付后即可开始核销。</p>}
+      </div>
+    </section>
+  );
+}
+
 export function AccountingWorkbench({ transactionId, onToast }) {
   const { activeWorkspace, actions, store } = useFinanceDesk();
   const transaction = activeWorkspace.transactions.find((item) => item.id === transactionId);
@@ -105,6 +219,13 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   const exceptions = transaction ? unresolvedExceptionTasks(activeWorkspace, transaction.id) : [];
   const allocations = transaction ? activeAllocations(transaction) : [];
   const vouchers = transaction ? vouchersForSource(activeWorkspace, transaction.id) : [];
+  const voucheredSourceIds = new Set(vouchers
+    .filter((voucher) => ["posted", "draft", "changes_requested"].includes(voucher.status))
+    .flatMap((voucher) => voucher.sourceIds || []));
+  const unvoucheredAllocations = allocations.filter((allocation) => (
+    !voucheredSourceIds.has(allocation.id) && (allocation.id || !voucheredSourceIds.has(allocation.billId))
+  ));
+  const canCreateDraft = allocations.length ? unvoucheredAllocations.length > 0 : vouchers.length === 0;
   const eligibleBills = transaction
     ? activeWorkspace.bills.filter((bill) => allocationDirectionMatchesBill(transaction, bill) && billSettlement(activeWorkspace, bill).remaining > 0.01)
     : [];
@@ -371,7 +492,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
       <div className="engine-vouchers">
         <div className="engine-subheading"><strong>凭证与附件包</strong><small>{vouchers.length} 张关联凭证</small></div>
         <label><span>复核意见 *</span><textarea value={voucherNote} onChange={(event) => setVoucherNote(event.target.value)} placeholder="说明业务性质、科目与金额的复核结论" /></label>
-        {!vouchers.length && <button className="secondary-button wide" type="button" onClick={createDraft}><Plus size={16} />生成凭证草稿</button>}
+        {canCreateDraft && <button className="secondary-button wide" type="button" onClick={createDraft}><Plus size={16} />{vouchers.length ? `为新增核销生成凭证草稿（${unvoucheredAllocations.length} 条）` : "生成凭证草稿"}</button>}
         {vouchers.map((voucher) => {
           const attachments = buildAttachmentPackage(activeWorkspace, voucher.id);
           const trace = traceVoucherSources(activeWorkspace, voucher.id);

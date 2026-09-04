@@ -37,6 +37,77 @@ function findBill(workspace, billId) {
   return bill;
 }
 
+const BILL_NUMBER_PREFIXES = {
+  [BILL_KINDS.RECEIVABLE]: "YS",
+  [BILL_KINDS.PAYABLE]: "YF",
+  [BILL_KINDS.DEPOSIT_RECEIVED]: "YSK",
+  [BILL_KINDS.PREPAYMENT_PAID]: "YFK",
+};
+
+function nextBillNumber(workspace, kind, date) {
+  const prefix = BILL_NUMBER_PREFIXES[kind];
+  const period = periodOf(date).replace("-", "") || "UNDATED";
+  const pattern = new RegExp(`^${prefix}-${period}-(\\d+)$`);
+  const maximum = (workspace.bills || []).reduce((current, bill) => {
+    const match = pattern.exec(String(bill.no || ""));
+    return match ? Math.max(current, Number(match[1])) : current;
+  }, 0);
+  return `${prefix}-${period}-${String(maximum + 1).padStart(3, "0")}`;
+}
+
+export function createSettlementBill(workspace, input, context = {}) {
+  const next = cloneAccountingState(workspace);
+  const resolvedContext = operationContext(context);
+  const kind = input?.kind;
+  if (!Object.values(BILL_KINDS).includes(kind)) {
+    throw new AccountingRuleError("INVALID_BILL_KIND", "请选择客户应收、供应商应付、客户预收或供应商预付");
+  }
+  const counterparty = String(input?.counterparty || "").trim();
+  if (!counterparty) throw new AccountingRuleError("BILL_COUNTERPARTY_REQUIRED", "请填写客户或供应商名称");
+  const amount = roundMoney(input?.amount);
+  if (!Number.isFinite(Number(input?.amount)) || amount <= 0) {
+    throw new AccountingRuleError("INVALID_BILL_AMOUNT", "账单金额必须大于 0");
+  }
+  const date = String(input?.date || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new AccountingRuleError("INVALID_BILL_DATE", "账单日期必须是有效的 YYYY-MM-DD 日期");
+  }
+  const dueDate = String(input?.dueDate || date).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
+    throw new AccountingRuleError("INVALID_BILL_DUE_DATE", "到期日期必须是有效的 YYYY-MM-DD 日期");
+  }
+  const no = String(input?.no || "").trim() || nextBillNumber(next, kind, date);
+  if ((next.bills || []).some((bill) => bill.no === no)) {
+    throw new AccountingRuleError("DUPLICATE_BILL_NUMBER", `账单编号已存在：${no}`);
+  }
+  const bill = {
+    id: nextRecordId(next.bills || [], "bill"),
+    no,
+    kind,
+    counterparty,
+    summary: String(input?.summary || "").trim() || counterparty,
+    amount,
+    date,
+    dueDate,
+    businessPeriod: input?.businessPeriod || periodOf(date),
+    evidenceIds: collectSourceIds(input?.evidenceIds || []),
+    source: input?.source || "手工新增",
+    status: "active",
+    createdAt: resolvedContext.at,
+    createdBy: resolvedContext.actor,
+  };
+  next.bills = [...(next.bills || []), bill];
+  appendAuditEntry(next, {
+    action: "reconciliation.bill_create",
+    entityType: "bill",
+    entityId: bill.id,
+    detail: `${bill.no} ${bill.counterparty}，金额 ${bill.amount.toFixed(2)}`,
+    after: bill,
+    sourceIds: collectSourceIds(bill.id, bill.evidenceIds),
+  }, resolvedContext);
+  return next;
+}
+
 export function confirmedAllocationsForBill(workspace, billId, { asOf } = {}) {
   return (workspace.transactions || []).flatMap((transaction) => (
     activeAllocations(transaction)

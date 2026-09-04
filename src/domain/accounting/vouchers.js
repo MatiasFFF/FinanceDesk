@@ -180,7 +180,9 @@ export function createVoucherDraft(workspace, { transactionId, summary, note = "
   const assessment = transaction.evidenceAssessment || assessTransactionEvidence(next, transaction, classification);
   const usedSources = postedSourceIds(next);
   const allocations = activeAllocations(transaction).filter((allocation) => (
-    allocation.status !== "suspected" && !usedSources.has(allocation.id)
+    allocation.status !== "suspected"
+    && !usedSources.has(allocation.id)
+    && (allocation.id || !usedSources.has(allocation.billId))
   ));
 
   let lines;
@@ -318,9 +320,20 @@ export function postVoucher(workspace, { voucherId, reviewNote, mode = "manual" 
   voucher.postedAt = resolvedContext.at;
   voucher.postedBy = resolvedContext.actor;
   voucher.versions = [...(voucher.versions || []), voucherSnapshot(voucher, resolvedContext, "凭证入账")];
+  const postedAllocationSourceIds = new Set((next.vouchers || [])
+    .filter((item) => ["posted", "superseded"].includes(item.status))
+    .flatMap((item) => item.sourceIds || []));
   sourceTransactionsForVoucher(next, voucher).forEach((transaction) => {
-    transaction.status = "posted";
+    const allocations = activeAllocations(transaction).filter((allocation) => allocation.status !== "suspected");
+    const remaining = Math.max(0, roundMoney(
+      absoluteAmount(transaction.amount) - sumMoney(allocations.map((allocation) => allocation.amount)),
+    ));
+    const allAllocationsPosted = allocations.every((allocation) => (
+      postedAllocationSourceIds.has(allocation.id) || (!allocation.id && postedAllocationSourceIds.has(allocation.billId))
+    ));
+    transaction.status = allocations.length && (remaining > 0.01 || !allAllocationsPosted) ? "pending" : "posted";
     transaction.postedVoucherId = voucher.id;
+    transaction.postedVoucherIds = collectSourceIds(transaction.postedVoucherIds || [], voucher.id);
     transaction.postedAt = resolvedContext.at;
   });
   if (voucher.revisionOf) {

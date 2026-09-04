@@ -3,11 +3,19 @@ import test from "node:test";
 
 import { createAccountingFixture } from "../src/domain/accounting/fixtures.js";
 import { AccountingRuleError } from "../src/domain/accounting/model.js";
+import { createVoucherDraft, vouchersForSource } from "../src/domain/accounting/vouchers.js";
+import {
+  createFinanceDeskStore,
+  createInitialState,
+  createLocalFoundationRepository,
+  createMemoryStorage,
+} from "../src/foundation.js";
 import {
   applyReconciliation,
   billSettlement,
   buildAdvanceBalances,
   buildAgeingSchedule,
+  createSettlementBill,
   linkInternalTransfer,
   linkRefundToOriginal,
   recordReconciliationSuggestions,
@@ -21,6 +29,39 @@ const context = { actor: "测试会计", at: "2026-09-06T12:00:00.000Z", mode: "
 function blankFixture() {
   return createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
 }
+
+test("new receivables persist with split and repeated payments and remain in voucher sources", () => {
+  const fixedNow = () => new Date("2026-09-06T12:00:00.000Z");
+  const repository = createLocalFoundationRepository({ storage: createMemoryStorage(), now: fixedNow });
+  repository.save(createInitialState({ now: fixedNow }));
+  const store = createFinanceDeskStore({ repository });
+  const workspaceId = store.getActiveWorkspace().id;
+  let workspace = store.getActiveWorkspace();
+  workspace = {
+    ...workspace,
+    transactions: [
+      ...workspace.transactions,
+      { id: "txn-new-split", accountId: workspace.accounts[0].id, date: "2026-08-20", counterparty: "新客户", summary: "两张账单合并回款", amount: 900, serial: "LOCAL-NEW-001", evidenceIds: [], allocations: [], status: "pending", classification: { eventType: "customerReceipt", account: "receivable", confidence: 100, reasons: ["人工确认客户回款"], riskFlags: [], candidateBillIds: [], requiresManualReview: false, source: "manual" } },
+      { id: "txn-new-followup", accountId: workspace.accounts[0].id, date: "2026-08-25", counterparty: "新客户", summary: "第二张账单补款", amount: 300, serial: "LOCAL-NEW-002", evidenceIds: [], allocations: [], status: "pending", classification: { eventType: "customerReceipt", account: "receivable", confidence: 100, reasons: ["人工确认客户回款"], riskFlags: [], candidateBillIds: [], requiresManualReview: false, source: "manual" } },
+    ],
+  };
+  workspace = createSettlementBill(workspace, { kind: "receivable", counterparty: "新客户", summary: "第一张服务账单", amount: 700, date: "2026-08-01", dueDate: "2026-08-31" }, context);
+  const firstBill = workspace.bills.at(-1);
+  workspace = createSettlementBill(workspace, { kind: "receivable", counterparty: "新客户", summary: "第二张服务账单", amount: 500, date: "2026-08-02", dueDate: "2026-08-31" }, context);
+  const secondBill = workspace.bills.at(-1);
+  workspace = applyReconciliation(workspace, { transactionId: "txn-new-split", allocations: [{ billId: firstBill.id, amount: 700 }, { billId: secondBill.id, amount: 200 }] }, context);
+  workspace = applyReconciliation(workspace, { transactionId: "txn-new-followup", allocations: [{ billId: secondBill.id, amount: 300 }] }, { ...context, at: "2026-09-06T12:05:00.000Z" });
+  workspace = createVoucherDraft(workspace, { transactionId: "txn-new-split" }, context);
+  workspace = createVoucherDraft(workspace, { transactionId: "txn-new-followup" }, { ...context, at: "2026-09-06T12:06:00.000Z" });
+  store.actions.replaceWorkspace(workspaceId, workspace);
+
+  const reloaded = createFinanceDeskStore({ repository }).getActiveWorkspace();
+  assert.equal(billSettlement(reloaded, firstBill.id).remaining, 0);
+  assert.equal(billSettlement(reloaded, secondBill.id).remaining, 0);
+  assert.deepEqual(billSettlement(reloaded, secondBill.id).transactionIds, ["txn-new-split", "txn-new-followup"]);
+  assert.equal(vouchersForSource(reloaded, secondBill.id).length, 2);
+  assert.ok(vouchersForSource(reloaded, secondBill.id).every((voucher) => voucher.sourceIds.includes(secondBill.id)));
+});
 
 test("one receipt splits across bills and one bill accepts multiple cross-month receipts", () => {
   let workspace = blankFixture();

@@ -39,7 +39,7 @@ import {
   recordReconciliationSuggestions,
   reviewTransactionEvidence,
 } from "./domain/accounting/index.js";
-import { AccountingWorkbench } from "./features/accounting/AccountingWorkbench.jsx";
+import { AccountingWorkbench, ReceivablesPayablesPanel } from "./features/accounting/AccountingWorkbench.jsx";
 import { BankImportPanel } from "./features/intake/BankImportPanel.jsx";
 import { copyWorkspaceLocalFiles, removeLocalDocument, saveLocalDocument } from "./features/intake/documentIntake.js";
 import { MemberLedgerPage } from "./features/members/MemberLedgerPage.jsx";
@@ -408,6 +408,7 @@ function ReconcilePage({ workspace, onPage, onStatus, onReview, onEvidence, onLi
       <div className="reconcile-main">
         <StageRail workspace={workspace} onPage={onPage} />
         {customerDisputes.length > 0 && <section className="panel dispute-review-panel"><div><p className="eyebrow">S7 · 客户异议退回</p><h2>先处理客户提出的差异</h2></div>{customerDisputes.map((task) => <article key={task.id}><span><strong>{task.message}</strong><small>{task.sourceId} · {formatDateTime(task.createdAt)}</small></span><button className="secondary-button" type="button" onClick={() => onResolveException(task.id)}>已处理，关闭异议</button></article>)}</section>}
+        <ReceivablesPayablesPanel onToast={onToast} />
         <section className="workspace-toolbar"><div className="filter-tabs" role="tablist" aria-label="流水状态筛选">{FILTERS.map((item) => <button className={filter === item.id ? "active" : ""} key={item.id} onClick={() => setFilter(item.id)} role="tab" type="button">{item.label}<span>{counts[item.id]}</span></button>)}</div><label className="search-field"><MagnifyingGlass size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索对方、摘要或流水号" /><button className={query ? "visible" : ""} onClick={() => setQuery("")} type="button" aria-label="清空搜索"><X size={15} /></button></label></section>
         {selection.length > 0 && <div className="batch-bar"><span><strong>已选择 {selection.length} 笔</strong><small>批量动作只作用于当前选择</small></span><div><button className="soft-button" onClick={() => onExportSelected(selection)} type="button"><DownloadSimple size={16} />导出所选</button><button className="secondary-button" onClick={() => onStatus([...selectedIds], "ignored")} type="button">暂不处理</button><button className="primary-button" onClick={() => onReview([...selectedIds])} type="button">运行规则复核</button><button className="icon-button compact" onClick={() => setSelectedIds(new Set())} type="button" aria-label="清除选择"><X size={17} /></button></div></div>}
         <section className="panel table-panel"><div className="table-heading"><span>本期流水</span><span>{filtered.length} / {periodTransactions.length} 笔</span></div><TransactionList items={filtered} selectedIds={selectedIds} focusedId={focusedId} onToggle={toggle} onToggleAll={toggleAll} onFocus={setFocusedId} /></section>

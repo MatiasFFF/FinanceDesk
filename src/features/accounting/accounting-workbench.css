@@ -288,6 +288,189 @@
   justify-self: end;
 }
 
+.settlement-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.settlement-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.settlement-heading > div {
+  display: grid;
+  gap: 4px;
+}
+
+.settlement-heading h2,
+.settlement-heading p {
+  margin: 0;
+}
+
+.settlement-heading p:last-child {
+  max-width: 720px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.settlement-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settlement-metrics > span {
+  display: grid;
+  gap: 4px;
+  padding: 11px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--paper-strong);
+}
+
+.settlement-metrics small,
+.settlement-bill-row small {
+  color: var(--quiet);
+  font-size: 10px;
+}
+
+.settlement-metrics strong {
+  font-size: 15px;
+}
+
+.settlement-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper-strong);
+}
+
+.settlement-form label {
+  display: grid;
+  gap: 5px;
+}
+
+.settlement-form label > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.settlement-form input,
+.settlement-form select {
+  min-width: 0;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  outline: none;
+  background: var(--paper);
+  color: var(--espresso);
+  font: inherit;
+  font-size: 12px;
+}
+
+.settlement-form .full {
+  grid-column: 1 / -1;
+}
+
+.settlement-bill-list {
+  display: grid;
+  gap: 8px;
+}
+
+.settlement-bill-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.25fr) minmax(280px, 1fr);
+  gap: 10px 18px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--paper-strong);
+}
+
+.settlement-bill-main {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.settlement-bill-main > small {
+  grid-column: 1 / -1;
+}
+
+.settlement-kind {
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: var(--sage-soft);
+  color: var(--sage);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.settlement-bill-amounts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settlement-bill-amounts > span {
+  display: grid;
+  gap: 2px;
+  text-align: right;
+}
+
+.settlement-bill-row details {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.settlement-bill-row summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.settlement-source-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.settlement-source-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: var(--paper);
+}
+
+.settlement-source-list span {
+  display: grid;
+  gap: 2px;
+}
+
+.settlement-empty {
+  margin: 0;
+  padding: 18px;
+  border: 1px dashed var(--line);
+  border-radius: 9px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 12px;
+}
+
 @media (max-width: 520px) {
   .engine-form {
     grid-template-columns: 1fr;
@@ -295,6 +478,45 @@
 
   .engine-form .full,
   .engine-form > button {
+    grid-column: auto;
+  }
+
+  .settlement-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settlement-metrics,
+  .settlement-form,
+  .settlement-bill-row {
+    grid-template-columns: 1fr;
+  }
+
+  .settlement-form .full,
+  .settlement-bill-row details {
+    grid-column: auto;
+  }
+
+  .settlement-bill-amounts > span {
+    text-align: left;
+  }
+}
+
+@media (min-width: 521px) and (max-width: 900px) {
+  .settlement-metrics,
+  .settlement-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settlement-form .full {
+    grid-column: 1 / -1;
+  }
+
+  .settlement-bill-row {
+    grid-template-columns: 1fr;
+  }
+
+  .settlement-bill-row details {
     grid-column: auto;
   }
 }
