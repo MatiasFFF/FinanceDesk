@@ -593,6 +593,59 @@
   color: var(--clay-dark);
 }
 
+.document-action-confirmation {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 11px 12px;
+  border-radius: 9px;
+  background: var(--sand);
+  color: var(--muted);
+}
+
+.document-action-confirmation.delete {
+  background: var(--clay-soft);
+  color: var(--clay-dark);
+}
+
+.document-action-confirmation > svg {
+  margin-top: 2px;
+}
+
+.document-action-confirmation-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.document-action-confirmation-copy strong {
+  color: inherit;
+  font-size: 11px;
+}
+
+.document-action-confirmation-copy p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.document-action-confirmation-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.document-action-confirmation-actions button {
+  min-height: 34px;
+  padding-inline: 11px;
+  font-size: 10px;
+}
+
 .foundation-record-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.35;
@@ -622,6 +675,15 @@
 
   .balance-inputs > span {
     padding: 0;
+  }
+
+  .document-action-confirmation {
+    grid-template-columns: 20px minmax(0, 1fr);
+  }
+
+  .document-action-confirmation-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
   }
 }
 
@@ -745,6 +807,42 @@
 .foundation-record:hover {
   border-radius: 6px;
   background: var(--paper);
+}
+
+.foundation-record.is-confirming-delete {
+  flex-wrap: wrap;
+  align-items: flex-start;
+  border-radius: 6px;
+  background: var(--paper);
+}
+
+.foundation-record > .foundation-record-delete-confirm {
+  display: grid;
+  flex: 1 0 100%;
+  max-width: none;
+  gap: 5px;
+  padding: 8px;
+  border-radius: 7px;
+  background: #fff7f4;
+  color: #7f3b2d;
+  text-align: left;
+}
+
+.foundation-record-delete-confirm > p {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.foundation-record-delete-confirm > small {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.foundation-record-delete-confirm .foundation-inline-actions {
+  justify-content: flex-end;
+  margin-top: 3px;
 }
 
 .foundation-record-list > .foundation-empty {

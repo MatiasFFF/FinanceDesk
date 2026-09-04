@@ -255,6 +255,8 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const { activeWorkspace, actions, store, fileVault } = useFinanceDesk();
   const inputRef = useRef(null);
   const payrollFileInputRef = useRef(null);
+  const documentActionCancelRef = useRef(null);
+  const documentActionTriggerRef = useRef(null);
   const [category, setCategory] = useState(defaultCategory);
   const [period, setPeriod] = useState(activeWorkspace.currentPeriod || "");
   const [relatedObjectId, setRelatedObjectId] = useState("");
@@ -263,6 +265,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const [statusFilter, setStatusFilter] = useState("all");
   const [editing, setEditing] = useState(null);
   const [preview, setPreview] = useState(null);
+  const [pendingDocumentAction, setPendingDocumentAction] = useState(null);
   const [confirmingSuggestionId, setConfirmingSuggestionId] = useState("");
   const [selectedVoucherId, setSelectedVoucherId] = useState(activeWorkspace.vouchers?.[0]?.id || "");
   const [generatingPackage, setGeneratingPackage] = useState(false);
@@ -370,6 +373,8 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     setRelatedObjectId("");
     setEditing(null);
     setPreview(null);
+    setPendingDocumentAction(null);
+    documentActionTriggerRef.current = null;
     setSelectedVoucherId(activeWorkspace.vouchers?.[0]?.id || "");
     setSelectedArchivePeriod(activeWorkspace.currentPeriod || "");
     setPayrollImportPeriod(activeWorkspace.currentPeriod || "");
@@ -377,6 +382,10 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     setPayrollFieldMapping({});
     setError("");
   }, [activeWorkspace.id, activeWorkspace.currentPeriod, defaultCategory]);
+
+  useEffect(() => {
+    if (pendingDocumentAction) documentActionCancelRef.current?.focus();
+  }, [pendingDocumentAction]);
 
   useEffect(() => {
     setVatReconciliationDrafts(Object.fromEntries(vatReconciliation.items.map((item) => [item.kind, {
@@ -461,6 +470,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   }
 
   async function showPreview(document) {
+    clearPendingDocumentAction();
     setError("");
     try {
       const record = await loadRecord(document);
@@ -480,13 +490,42 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     }
   }
 
-  async function remove(document) {
+  function clearPendingDocumentAction(restoreFocus = false) {
+    const trigger = documentActionTriggerRef.current;
+    setPendingDocumentAction(null);
+    documentActionTriggerRef.current = null;
+    if (restoreFocus && trigger) window.requestAnimationFrame(() => trigger.focus());
+  }
+
+  function closePreview() {
+    setPreview(null);
+    clearPendingDocumentAction();
+  }
+
+  function closeEditing() {
+    setEditing(null);
+    clearPendingDocumentAction();
+  }
+
+  function requestDocumentAction(document, action, trigger) {
     const usage = getLocalDocumentUsage(activeWorkspace, document.id);
-    if (usage.length) {
+    if (action === "delete" && usage.length) {
+      clearPendingDocumentAction();
       setError(`该资料正在使用，不能删除：${usage.map((item) => item.label).join("、")}`);
       return;
     }
-    if (!window.confirm(`确定删除「${document.name}」及其浏览器本地原文件吗？`)) return;
+    setError("");
+    documentActionTriggerRef.current = trigger;
+    setPendingDocumentAction({ action, documentId: document.id });
+  }
+
+  async function remove(document) {
+    const usage = getLocalDocumentUsage(activeWorkspace, document.id);
+    if (usage.length) {
+      clearPendingDocumentAction();
+      setError(`该资料正在使用，不能删除：${usage.map((item) => item.label).join("、")}`);
+      return;
+    }
     setError("");
     try {
       await removeLocalDocument({ store, fileVault, workspaceId: activeWorkspace.id, documentId: document.id });
@@ -495,11 +534,12 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
       onToast?.("未使用的本地资料已删除");
     } catch (caught) {
       setError(caught.message || "资料删除失败");
+    } finally {
+      clearPendingDocumentAction();
     }
   }
 
   function archive(document) {
-    if (!window.confirm(`归档后不能直接修改或删除「${document.name}」，确定继续吗？`)) return;
     setError("");
     try {
       actions.upsertEntity(activeWorkspace.id, "documents", { ...document, lifecycleStatus: "已归档", archiveStatus: "archived" }, { label: "资料状态" });
@@ -507,10 +547,13 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
       onToast?.("资料已标记归档");
     } catch (caught) {
       setError(caught.message || "资料归档失败");
+    } finally {
+      clearPendingDocumentAction();
     }
   }
 
   function beginEdit(document) {
+    clearPendingDocumentAction();
     setError("");
     setEditing({
       id: document.id,
@@ -560,7 +603,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           structuredData: editing.structuredData,
         },
       });
-      setEditing(null);
+      closeEditing();
       onToast?.("资料详情、分类与业务关联已更新");
     } catch (caught) {
       setError(caught.message || "资料修改失败");
@@ -1156,7 +1199,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
       {error && <div className="foundation-error"><WarningCircle size={18} />{error}</div>}
       {preview && (
         <div className="bank-import-workspace">
-          <div className="foundation-section-heading"><div><small>浏览器本地预览</small><h3>{preview.document.name}</h3></div><button className="foundation-icon-button" type="button" aria-label="关闭预览" onClick={() => setPreview(null)}><X size={17} /></button></div>
+          <div className="foundation-section-heading"><div><small>浏览器本地预览</small><h3>{preview.document.name}</h3></div><button className="foundation-icon-button" type="button" aria-label="关闭预览" onClick={closePreview}><X size={17} /></button></div>
           {preview.kind === "image" && <img src={preview.url} alt={preview.document.name} style={{ display: "block", maxWidth: "100%", maxHeight: 560, margin: "0 auto", objectFit: "contain" }} />}
           {preview.kind === "pdf" && <iframe src={preview.url} title={`预览 ${preview.document.name}`} style={{ width: "100%", minHeight: 520, border: "1px solid var(--line-soft)", borderRadius: 8 }} />}
           {preview.kind === "text" && <div className="bank-preview-scroll"><pre style={{ margin: 0, padding: 14, maxHeight: 520, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12 }}>{preview.text}</pre>{preview.truncated && <p className="foundation-hint">内容较长，页面仅显示前 300,000 个字符；下载可查看完整原文件。</p>}</div>}
@@ -1172,6 +1215,8 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           const usage = getLocalDocumentUsage(activeWorkspace, document.id);
           const archived = usage.some((item) => item.kind === "archive");
           const isEditing = editing?.id === document.id;
+          const pendingAction = pendingDocumentAction?.documentId === document.id ? pendingDocumentAction.action : null;
+          const confirmationId = `document-action-${document.id}`;
           return (
             <article className="document-record" key={document.id}>
               <span className="document-record-icon"><FileText size={20} /></span>
@@ -1192,7 +1237,35 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                     </div>
                     <StructuredDataFields category={editing.category} value={editing.structuredData} onChange={(structuredData) => setEditing((current) => ({ ...current, structuredData }))} workspace={activeWorkspace} currentDocumentId={editing.id} />
                     <div className="permission-chip-list">{editing.relatedObjectIds.map((objectId) => <span key={objectId}>{relatedLabels.get(objectId) || objectId} <button type="button" aria-label={`解除 ${relatedLabels.get(objectId) || objectId} 关联`} onClick={() => removeEditRelation(objectId)}>×</button></span>)}</div>
-                    <div className="foundation-inline-actions"><button className="primary-button" type="button" onClick={saveEdit}>保存资料详情</button><button className="secondary-button" type="button" onClick={() => setEditing(null)}>取消</button></div>
+                    <div className="foundation-inline-actions"><button className="primary-button" type="button" onClick={saveEdit}>保存资料详情</button><button className="secondary-button" type="button" onClick={closeEditing}>取消</button></div>
+                  </div>
+                )}
+                {pendingAction && (
+                  <div
+                    id={confirmationId}
+                    className={`document-action-confirmation ${pendingAction}`}
+                    role="alertdialog"
+                    aria-modal="false"
+                    aria-labelledby={`${confirmationId}-title`}
+                    aria-describedby={`${confirmationId}-description`}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Escape") return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      clearPendingDocumentAction(true);
+                    }}
+                  >
+                    {pendingAction === "delete" ? <WarningCircle size={19} /> : <Archive size={19} />}
+                    <div className="document-action-confirmation-copy">
+                      <strong id={`${confirmationId}-title`}>{pendingAction === "delete" ? "确认删除资料" : "确认归档资料"}</strong>
+                      <p id={`${confirmationId}-description`}>{pendingAction === "delete"
+                        ? <>将删除“{document.name}”的资料记录及当前浏览器中的本地原文件，无法从本页面恢复。</>
+                        : <>归档“{document.name}”后将不能直接修改或删除；资料记录和本地原文件仍会保留。</>}</p>
+                    </div>
+                    <div className="document-action-confirmation-actions">
+                      <button ref={documentActionCancelRef} className="secondary-button" type="button" onClick={() => clearPendingDocumentAction(true)}>取消</button>
+                      <button className={pendingAction === "delete" ? "danger-button" : "primary-button"} type="button" onClick={() => pendingAction === "delete" ? remove(document) : archive(document)}>{pendingAction === "delete" ? "确认删除" : "确认归档"}</button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1200,8 +1273,8 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                 <button type="button" disabled={!locallyAvailable || !fileVault} aria-label="页面预览" title="页面预览" onClick={() => showPreview(document)}><Eye size={15} /></button>
                 <button type="button" disabled={!locallyAvailable || !fileVault} aria-label="下载原文件" title="下载原文件" onClick={() => download(document)}><DownloadSimple size={15} /></button>
                 <button type="button" disabled={archived} aria-label="编辑资料详情" title={archived ? "已归档资料不能直接修改" : "编辑资料详情"} onClick={() => beginEdit(document)}><PencilSimple size={15} /></button>
-                <button type="button" disabled={archived} aria-label="标记归档" title={archived ? "资料已归档" : "标记归档"} onClick={() => archive(document)}><Archive size={15} /></button>
-                <button type="button" disabled={usage.length > 0} aria-label="删除未使用资料" title={usage.length ? `不能删除：${usage.map((item) => item.label).join("、")}` : "删除未使用资料"} onClick={() => remove(document)}><Trash size={15} /></button>
+                <button type="button" disabled={archived} aria-label="标记归档" aria-haspopup="dialog" aria-expanded={pendingAction === "archive"} aria-controls={confirmationId} title={archived ? "资料已归档" : "标记归档"} onClick={(event) => requestDocumentAction(document, "archive", event.currentTarget)}><Archive size={15} /></button>
+                <button type="button" disabled={usage.length > 0} aria-label="删除未使用资料" aria-haspopup="dialog" aria-expanded={pendingAction === "delete"} aria-controls={confirmationId} title={usage.length ? `不能删除：${usage.map((item) => item.label).join("、")}` : "删除未使用资料"} onClick={(event) => requestDocumentAction(document, "delete", event.currentTarget)}><Trash size={15} /></button>
               </span>
             </article>
           );

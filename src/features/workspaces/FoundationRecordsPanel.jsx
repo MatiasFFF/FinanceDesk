@@ -333,7 +333,7 @@ function recordDescription(item, collection, workspace) {
   return parts.filter(Boolean).join(" · ") || "未设置摘要";
 }
 
-function EntityEditor({ collection, onToast }) {
+function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, onCancelDelete }) {
   const { activeWorkspace, actions } = useFinanceDesk();
   const config = useMemo(() => {
     const base = COLLECTION_CONFIG[collection];
@@ -359,27 +359,37 @@ function EntityEditor({ collection, onToast }) {
   const items = activeWorkspace[collection] || [];
   const [draft, setDraft] = useState(() => emptyDraft(config));
   const [error, setError] = useState("");
+  const [deleteError, setDeleteError] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
+  const pendingDeleteId = pendingDeletion?.workspaceId === activeWorkspace.id && pendingDeletion?.collection === collection
+    ? pendingDeletion.itemId
+    : null;
 
   useEffect(() => {
     setDraft(emptyDraft(config));
     setError("");
+    setDeleteError("");
     setEditorOpen(false);
   }, [activeWorkspace.id, collection, config]);
 
+  useEffect(() => setDeleteError(""), [pendingDeleteId]);
+
   function create() {
+    onCancelDelete();
     setDraft(emptyDraft(config));
     setError("");
     setEditorOpen(true);
   }
 
   function edit(item) {
+    onCancelDelete();
     setDraft(config.toDraft ? config.toDraft(item) : { ...item });
     setError("");
     setEditorOpen(true);
   }
 
   function cancel() {
+    onCancelDelete();
     setDraft(emptyDraft(config));
     setError("");
     setEditorOpen(false);
@@ -408,14 +418,25 @@ function EntityEditor({ collection, onToast }) {
     }
   }
 
+  function requestRemove(item) {
+    setDeleteError("");
+    onRequestDelete({ workspaceId: activeWorkspace.id, collection, itemId: item.id });
+  }
+
+  function cancelRemove() {
+    setDeleteError("");
+    onCancelDelete();
+  }
+
   function remove(item) {
-    if (!window.confirm(`确定删除「${displayName(item, collection, config.title)}」吗？`)) return;
     try {
       actions.removeEntity(activeWorkspace.id, collection, item.id, { label: config.title });
       if (draft.id === item.id) cancel();
+      setDeleteError("");
+      onCancelDelete();
       onToast?.(`${config.title}已删除`);
     } catch (caught) {
-      setError(caught.message || "删除失败");
+      setDeleteError(caught.message || "删除失败");
     }
   }
 
@@ -424,12 +445,24 @@ function EntityEditor({ collection, onToast }) {
       <div className="foundation-section-heading"><div><small>{collection === "users" ? "可新增、改名、调整角色、停用或删除" : "本地资料"}</small><h3><Icon size={18} />{config.title}</h3></div><span>{items.length} 条</span></div>
       {collection === "users" && items.some((item) => ["周会计", "林岚"].includes(item.name)) && <p className="foundation-hint">周会计、林岚只是当前模板的示例人员，可直接修改或删除；左下身份切换器会即时读取这里的有效人员。</p>}
       <div className="foundation-record-list">
-        {items.map((item) => (
-          <article className="foundation-record" key={item.id}>
-            <div><strong>{displayName(item, collection, config.title)}</strong><small>{recordDescription(item, collection, activeWorkspace)}</small></div>
-            <span className="foundation-record-actions"><button type="button" aria-label="编辑" onClick={() => edit(item)}><PencilSimple size={15} /></button><button type="button" aria-label="删除" onClick={() => remove(item)}><Trash size={15} /></button></span>
-          </article>
-        ))}
+        {items.map((item, index) => {
+          const name = displayName(item, collection, config.title);
+          const confirming = pendingDeleteId === item.id;
+          const titleId = `${collection}-delete-title-${index}`;
+          const descriptionId = `${collection}-delete-description-${index}`;
+          return (
+            <article className={`foundation-record${confirming ? " is-confirming-delete" : ""}`} key={item.id}>
+              <div><strong>{name}</strong><small>{recordDescription(item, collection, activeWorkspace)}</small></div>
+              <span className="foundation-record-actions"><button type="button" aria-label={`编辑${name}`} onClick={() => edit(item)}><PencilSimple size={15} /></button><button type="button" aria-label={`删除${name}`} aria-haspopup="dialog" aria-expanded={confirming} onClick={() => requestRemove(item)}><Trash size={15} /></button></span>
+              {confirming && <div className="foundation-record-delete-confirm" role="alertdialog" aria-labelledby={titleId} aria-describedby={descriptionId} onKeyDown={(event) => { if (event.key === "Escape") cancelRemove(); }}>
+                <p id={titleId}><WarningCircle size={16} /><strong>确认删除「{name}」？</strong></p>
+                <small id={descriptionId}>删除后无法在本页面撤销，系统仍会执行原有的关联与权限检查。</small>
+                <div className="foundation-inline-actions"><button className="secondary-button" type="button" autoFocus onClick={cancelRemove}>取消</button><button className="danger-button" type="button" aria-label={`确认删除${name}`} onClick={() => remove(item)}>确认删除</button></div>
+                {deleteError && <p className="entity-error" role="alert">{deleteError}</p>}
+              </div>}
+            </article>
+          );
+        })}
         {!items.length && <p className="foundation-empty">还没有记录。</p>}
       </div>
       <button className="foundation-editor-toggle secondary-button" type="button" aria-expanded={editorOpen} aria-controls={`${collection}-editor`} onClick={create}><Plus size={16} />新增{config.title}</button>
@@ -685,7 +718,7 @@ function LocalUserControl({ onToast }) {
   );
 }
 
-function CompanyProfile({ onToast }) {
+function CompanyProfile({ onToast, onBeginEditing }) {
   const { activeWorkspace, actions } = useFinanceDesk();
   const [draft, setDraft] = useState(activeWorkspace.company);
   const [error, setError] = useState("");
@@ -697,6 +730,7 @@ function CompanyProfile({ onToast }) {
   }, [activeWorkspace.id]);
 
   function edit() {
+    onBeginEditing();
     setDraft(activeWorkspace.company);
     setError("");
     setEditorOpen(true);
@@ -746,7 +780,7 @@ function emptyAuthorizationDraft() {
   return { system: "bank", label: "银行数据", scope: "本地文件导入", status: "recorded", grantedBy: "", expiresAt: "", proofDocumentId: "", note: "" };
 }
 
-function AuthorizationEditor({ onToast }) {
+function AuthorizationEditor({ onToast, onBeginEditing }) {
   const { activeWorkspace, actions } = useFinanceDesk();
   const [draft, setDraft] = useState(emptyAuthorizationDraft);
   const [error, setError] = useState("");
@@ -759,6 +793,7 @@ function AuthorizationEditor({ onToast }) {
   }, [activeWorkspace.id]);
 
   function create() {
+    onBeginEditing();
     setDraft(emptyAuthorizationDraft());
     setError("");
     setEditorOpen(true);
@@ -828,14 +863,26 @@ function StageStatusControl({ stage, onToast }) {
 export function FoundationRecordsPanel({ initialStage = "s0", onToast }) {
   const { activeWorkspace } = useFinanceDesk();
   const [stage, setStage] = useState(initialStage);
+  const [pendingDeletion, setPendingDeletion] = useState(null);
+
+  useEffect(() => setPendingDeletion(null), [stage, activeWorkspace.id]);
+
   const body = useMemo(() => {
+    const entityEditor = (collection) => <EntityEditor
+      collection={collection}
+      key={collection}
+      onToast={onToast}
+      pendingDeletion={pendingDeletion}
+      onRequestDelete={setPendingDeletion}
+      onCancelDelete={() => setPendingDeletion(null)}
+    />;
     if (stage === "documents") return <div className="foundation-grid"><DocumentIntakePanel defaultCategory="其他资料" onToast={onToast} /></div>;
-    if (stage === "s0") return <div className="foundation-grid"><LocalUserControl onToast={onToast} /><CompanyProfile onToast={onToast} /><EntityEditor collection="books" onToast={onToast} /><EntityEditor collection="stores" onToast={onToast} /><EntityEditor collection="users" onToast={onToast} /><EntityEditor collection="roles" onToast={onToast} /><AuthorizationEditor onToast={onToast} /></div>;
+    if (stage === "s0") return <div className="foundation-grid"><LocalUserControl onToast={onToast} /><CompanyProfile onToast={onToast} onBeginEditing={() => setPendingDeletion(null)} />{entityEditor("books")}{entityEditor("stores")}{entityEditor("users")}{entityEditor("roles")}<AuthorizationEditor onToast={onToast} onBeginEditing={() => setPendingDeletion(null)} /></div>;
     if (stage === "s1") return <div className="foundation-grid"><AccountCatalogEditor onToast={onToast} /><AccountingRuleEditor onToast={onToast} /></div>;
-    if (stage === "s2") return <div className="foundation-grid"><EntityEditor collection="counterparties" onToast={onToast} /><EntityEditor collection="contracts" onToast={onToast} /><EntityEditor collection="bills" onToast={onToast} /><EntityEditor collection="businessEvents" onToast={onToast} /><DocumentIntakePanel defaultCategory="合同" onToast={onToast} /></div>;
-    if (stage === "s3") return <div className="foundation-grid"><EntityEditor collection="bankAccounts" onToast={onToast} /><BankImportPanel onToast={onToast} /></div>;
-    return <div className="foundation-grid"><EntityEditor collection="invoices" onToast={onToast} /><EntityEditor collection="approvals" onToast={onToast} /><EntityEditor collection="personnelRecords" onToast={onToast} /><DocumentIntakePanel defaultCategory="人员资料" onToast={onToast} /></div>;
-  }, [stage, activeWorkspace.id, onToast]);
+    if (stage === "s2") return <div className="foundation-grid">{entityEditor("counterparties")}{entityEditor("contracts")}{entityEditor("bills")}{entityEditor("businessEvents")}<DocumentIntakePanel defaultCategory="合同" onToast={onToast} /></div>;
+    if (stage === "s3") return <div className="foundation-grid">{entityEditor("bankAccounts")}<BankImportPanel onToast={onToast} /></div>;
+    return <div className="foundation-grid">{entityEditor("invoices")}{entityEditor("approvals")}{entityEditor("personnelRecords")}<DocumentIntakePanel defaultCategory="人员资料" onToast={onToast} /></div>;
+  }, [stage, activeWorkspace.id, onToast, pendingDeletion]);
 
   return (
     <div className="page-content foundation-page">

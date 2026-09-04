@@ -47,7 +47,13 @@ export function WorkspaceManager({ open, onClose, onToast }) {
   const [renameValue, setRenameValue] = useState(activeWorkspace.name);
   const [importMode, setImportMode] = useState("merge");
   const [error, setError] = useState("");
+  const [pendingConfirmation, setPendingConfirmation] = useState(null);
+  const [confirmationBusy, setConfirmationBusy] = useState(false);
   const importRef = useRef(null);
+  const importButtonRef = useRef(null);
+  const confirmationDialogRef = useRef(null);
+  const confirmationCancelRef = useRef(null);
+  const confirmationTriggerRef = useRef(null);
 
   useEffect(() => {
     setRenameValue(activeWorkspace.name);
@@ -55,7 +61,73 @@ export function WorkspaceManager({ open, onClose, onToast }) {
     setNewModules(createMode === "copy" ? { ...activeWorkspace.modules } : defaultWorkspaceModules("blank"));
   }, [activeWorkspace.id, activeWorkspace.name, createMode]);
 
+  useEffect(() => {
+    if (open) return;
+    setPendingConfirmation(null);
+    setConfirmationBusy(false);
+    confirmationTriggerRef.current = null;
+  }, [open]);
+
+  useEffect(() => {
+    if (pendingConfirmation) confirmationCancelRef.current?.focus();
+  }, [pendingConfirmation]);
+
+  useEffect(() => {
+    if (!pendingConfirmation) return undefined;
+    function handleConfirmationKeyDown(event) {
+      if (event.key === "Escape") {
+        if (confirmationBusy) return;
+        event.preventDefault();
+        const trigger = confirmationTriggerRef.current;
+        setPendingConfirmation(null);
+        confirmationTriggerRef.current = null;
+        window.requestAnimationFrame(() => {
+          if (trigger?.isConnected) trigger.focus();
+        });
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const buttons = Array.from(confirmationDialogRef.current?.querySelectorAll("button:not([disabled])") || []);
+      if (!buttons.length) return;
+      const first = buttons[0];
+      const last = buttons[buttons.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    document.addEventListener("keydown", handleConfirmationKeyDown);
+    return () => document.removeEventListener("keydown", handleConfirmationKeyDown);
+  }, [pendingConfirmation, confirmationBusy]);
+
   if (!open) return null;
+
+  function requestConfirmation(type, trigger, file = null) {
+    setError("");
+    setConfirmationBusy(false);
+    confirmationTriggerRef.current = trigger || null;
+    setPendingConfirmation({ type, file });
+  }
+
+  function cancelConfirmation() {
+    if (confirmationBusy) return;
+    const trigger = confirmationTriggerRef.current;
+    setPendingConfirmation(null);
+    confirmationTriggerRef.current = null;
+    window.requestAnimationFrame(() => {
+      if (trigger?.isConnected) trigger.focus();
+    });
+  }
+
+  function closeManager() {
+    setPendingConfirmation(null);
+    setConfirmationBusy(false);
+    confirmationTriggerRef.current = null;
+    onClose();
+  }
 
   function run(action, successMessage) {
     setError("");
@@ -121,7 +193,6 @@ export function WorkspaceManager({ open, onClose, onToast }) {
   }
 
   async function deleteActive() {
-    if (!window.confirm(`确定删除「${activeWorkspace.name}」吗？该工作台的浏览器本地数据将一并删除。`)) return;
     setError("");
     const workspaceId = activeWorkspace.id;
     const workspaceName = activeWorkspace.name;
@@ -144,7 +215,6 @@ export function WorkspaceManager({ open, onClose, onToast }) {
   }
 
   async function clearActive() {
-    if (!window.confirm(`确定清空「${activeWorkspace.name}」的流水、资料、证据和凭证吗？企业设置会保留。`)) return;
     setError("");
     const workspaceId = activeWorkspace.id;
     let savedFiles = [];
@@ -165,17 +235,13 @@ export function WorkspaceManager({ open, onClose, onToast }) {
     }
   }
 
-  async function importBackup(event) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    if (importMode === "replace" && !window.confirm("替换会覆盖当前所有工作台业务数据和元数据。原文件仅在仍能与导入记录匹配时保留，确定继续吗？")) return;
+  async function applyBackupImport(file, mode) {
     setError("");
     try {
       const text = await file.text();
       const previousWorkspaceIds = new Set(store.getState().workspaces.map((workspace) => workspace.id));
-      actions.importBackup(text, { mode: importMode });
-      if (importMode === "replace" && fileVault) {
+      actions.importBackup(text, { mode });
+      if (mode === "replace" && fileVault) {
         const nextIds = new Set(store.getState().workspaces.map((workspace) => workspace.id));
         for (const workspaceId of previousWorkspaceIds) {
           if (!nextIds.has(workspaceId)) await fileVault.clearWorkspace(workspaceId);
@@ -190,12 +256,43 @@ export function WorkspaceManager({ open, onClose, onToast }) {
         audit: {
           actor: "本地用户",
           action: "导入工作台备份",
-          detail: `${importMode === "merge" ? "合并" : "替换"}导入；${availability.available} 份原文件仍可用，${availability.repaired} 份旧副本已隔离，${availability.missing} 份需重新关联，清理 ${cleanup.removed} 份孤立文件`,
+          detail: `${mode === "merge" ? "合并" : "替换"}导入；${availability.available} 份原文件仍可用，${availability.repaired} 份旧副本已隔离，${availability.missing} 份需重新关联，清理 ${cleanup.removed} 份孤立文件`,
         },
       });
-      onToast?.(`${importMode === "merge" ? "备份已合并" : "本地数据已替换"}；${availability.missing ? `${availability.missing} 份原文件需重新关联` : "本地原文件状态已核对"}`);
+      onToast?.(`${mode === "merge" ? "备份已合并" : "本地数据已替换"}；${availability.missing ? `${availability.missing} 份原文件需重新关联` : "本地原文件状态已核对"}`);
     } catch (caught) {
       setError(caught.message || "备份导入失败");
+    }
+  }
+
+  async function importBackup(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (importMode === "replace") {
+      requestConfirmation("replace-backup", importButtonRef.current, file);
+      return;
+    }
+    await applyBackupImport(file, "merge");
+  }
+
+  async function confirmPendingAction() {
+    if (!pendingConfirmation || confirmationBusy) return;
+    const confirmation = pendingConfirmation;
+    setConfirmationBusy(true);
+    try {
+      if (confirmation.type === "delete-workspace") await deleteActive();
+      if (confirmation.type === "clear-business") await clearActive();
+      if (confirmation.type === "replace-backup") {
+        if (!confirmation.file) throw new Error("未找到待导入的备份文件，请重新选择");
+        await applyBackupImport(confirmation.file, "replace");
+      }
+    } catch (caught) {
+      setError(caught.message || "操作失败");
+    } finally {
+      setPendingConfirmation(null);
+      setConfirmationBusy(false);
+      confirmationTriggerRef.current = null;
     }
   }
 
@@ -219,12 +316,36 @@ export function WorkspaceManager({ open, onClose, onToast }) {
     }
   }
 
+  const confirmationDetails = pendingConfirmation ? {
+    "delete-workspace": {
+      eyebrow: "删除工作台",
+      title: `删除「${activeWorkspace.name}」？`,
+      summary: "这个工作台及其本地文件将被删除。",
+      description: "业务数据、资料元数据和浏览器本地原文件会一并删除，且无法从本页面恢复。其他工作台不受影响。",
+      confirmLabel: "确认删除",
+    },
+    "clear-business": {
+      eyebrow: "清空业务数据",
+      title: `清空「${activeWorkspace.name}」？`,
+      summary: "企业设置会保留，业务记录会被清空。",
+      description: "流水、资料、证据和凭证将被删除，且无法从本页面恢复。",
+      confirmLabel: "确认清空",
+    },
+    "replace-backup": {
+      eyebrow: "替换导入",
+      title: "用这份备份替换本地数据？",
+      summary: "当前所有工作台的业务数据和元数据会被覆盖。",
+      description: "只有仍能与导入记录匹配的原文件会保留；导入后会重新核对本地文件状态。",
+      confirmLabel: "确认替换并导入",
+    },
+  }[pendingConfirmation.type] : null;
+
   return (
-    <div className="modal-backdrop foundation-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className="modal-backdrop foundation-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeManager()}>
       <section className="modal-card foundation-manager" role="dialog" aria-modal="true" aria-labelledby="workspace-manager-title">
         <header className="modal-heading">
           <div><p className="eyebrow">浏览器本地</p><h2 id="workspace-manager-title">管理财务工作台</h2></div>
-          <button className="icon-button" type="button" aria-label="关闭" onClick={onClose}><X size={19} /></button>
+          <button className="icon-button" type="button" aria-label="关闭" onClick={closeManager}><X size={19} /></button>
         </header>
 
         {error && <div className="foundation-error"><WarningCircle size={18} />{error}</div>}
@@ -249,7 +370,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
             <label className="foundation-field"><span>重命名当前工作台</span><input value={renameValue} onChange={(event) => setRenameValue(event.target.value)} /></label>
             <div className="foundation-inline-actions">
               <button className="secondary-button" type="button" onClick={() => run(() => actions.renameWorkspace(activeWorkspace.id, renameValue), "工作台名称已更新")}>保存名称</button>
-              <button className="danger-button" type="button" disabled={state.workspaces.length === 1} onClick={deleteActive}><Trash size={16} />删除</button>
+              <button className="danger-button" type="button" disabled={state.workspaces.length === 1} onClick={(event) => requestConfirmation("delete-workspace", event.currentTarget)}><Trash size={16} />删除</button>
             </div>
             {state.workspaces.length === 1 && <p className="foundation-hint">至少保留一个工作台；先创建新工作台后即可删除当前模板。</p>}
             <div className="foundation-divider" />
@@ -314,7 +435,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
             <div className="foundation-inline-actions wrap">
               <button className="secondary-button" type="button" onClick={exportBackup}><DownloadSimple size={16} />导出备份</button>
               <select className="compact-select" value={importMode} onChange={(event) => setImportMode(event.target.value)} aria-label="备份导入方式"><option value="merge">合并导入</option><option value="replace">替换本地数据</option></select>
-              <button className="secondary-button" type="button" onClick={() => importRef.current?.click()}><UploadSimple size={16} />导入备份</button>
+              <button ref={importButtonRef} className="secondary-button" type="button" onClick={() => importRef.current?.click()}><UploadSimple size={16} />导入备份</button>
               <input ref={importRef} type="file" accept="application/json,.json" hidden onChange={importBackup} />
             </div>
           </section>
@@ -322,9 +443,39 @@ export function WorkspaceManager({ open, onClose, onToast }) {
 
         <footer className="foundation-manager-footer">
           <span><WarningCircle size={16} />银行、税务、AI 与 OCR 均未连接；当前只处理本地数据。</span>
-          <button className="text-danger-button" type="button" onClick={clearActive}>清空当前业务数据</button>
+          <button className="text-danger-button" type="button" onClick={(event) => requestConfirmation("clear-business", event.currentTarget)}>清空当前业务数据</button>
         </footer>
       </section>
+
+      {confirmationDetails && (
+        <div className="modal-backdrop foundation-backdrop workspace-confirm-backdrop">
+          <section
+            ref={confirmationDialogRef}
+            className="modal-card workspace-confirm-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="workspace-confirm-title"
+            aria-describedby="workspace-confirm-description"
+            aria-busy={confirmationBusy}
+          >
+            <header className="modal-heading">
+              <div><p className="eyebrow">{confirmationDetails.eyebrow}</p><h2 id="workspace-confirm-title">{confirmationDetails.title}</h2></div>
+            </header>
+            <div className="delete-warning" id="workspace-confirm-description">
+              <WarningCircle size={24} />
+              <div>
+                <strong>{confirmationDetails.summary}</strong>
+                <p>{confirmationDetails.description}</p>
+                {pendingConfirmation.type === "replace-backup" && <p>待导入文件：{pendingConfirmation.file?.name || "未选择文件"}</p>}
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button ref={confirmationCancelRef} className="secondary-button" type="button" disabled={confirmationBusy} onClick={cancelConfirmation}>取消</button>
+              <button className="danger-button" type="button" disabled={confirmationBusy} onClick={confirmPendingAction}>{confirmationBusy ? "处理中…" : confirmationDetails.confirmLabel}</button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
