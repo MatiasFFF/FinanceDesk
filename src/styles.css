@@ -3903,6 +3903,41 @@ summary.forecast-week-row {
   color: var(--sage);
 }
 
+.report-reconciliation-panel {
+  margin-bottom: 16px;
+}
+
+.report-check-rows button {
+  min-height: 48px;
+  padding: 9px 0;
+}
+
+.report-check-state {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.report-check-state.passed {
+  color: var(--sage);
+}
+
+.report-check-state.failed {
+  color: var(--clay-dark);
+}
+
+@media (max-width: 560px) {
+  .report-check-rows button {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .report-check-state {
+    margin-left: 31px;
+  }
+}
+
 .filing-timeline {
   display: flex;
   flex-direction: column;

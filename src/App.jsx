@@ -661,6 +661,13 @@ function OwnerLiquidityReport({ management }) {
   );
 }
 
+const REPORT_RECONCILIATION_COPY = {
+  trialBalance: { label: "借贷试算平衡", formula: "本期已入账凭证借方合计 = 贷方合计", page: "reconcile" },
+  balanceSheet: { label: "资产负债表平衡", formula: "资产合计 = 负债合计 + 所有者权益", section: "balance" },
+  cashMovement: { label: "现金变动勾稽", formula: "现金科目期末余额 = 现金流量表期末现金", page: "reconcile" },
+  memberService: { label: "业务履约勾稽", formula: "业务台账未履约余额 = 合同负债余额", page: "members" },
+};
+
 function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
   const [sectionId, setSectionId] = useState("balance");
   const [versionId, setVersionId] = useState("live");
@@ -676,7 +683,9 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
   const latest = versions[0];
   const previous = versions[1];
   const differences = latest && previous ? reportVersionDiff(latest, previous) : [];
-  const statementChecks = Object.values(live.summary.engineChecks || {});
+  const statementChecks = Object.entries(live.summary.engineChecks || {})
+    .filter(([id, check]) => id !== "memberService" || check.applicable)
+    .map(([id, check]) => ({ id, ...check, ...REPORT_RECONCILIATION_COPY[id] }));
   const balanced = statementChecks.every((check) => check.passed);
   const flow = workflowChecks(workspace);
   const readyToFreeze = balanced && flow.bankReconciliationIssues.length === 0 && flow.unresolved.length === 0 && flow.pendingVouchers.length === 0;
@@ -685,13 +694,32 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
   const reportExports = (workspace.delivery.reportExports || []).filter((item) => item.period === workspace.currentPeriod && item.kind === "xlsx");
   const memberBusinessEnabled = workspaceModuleEnabled(workspace, "members");
   const taxEnabled = workspaceModuleEnabled(workspace, "tax");
+  function openReconciliationSource(check) {
+    if (check.section) {
+      setSectionId(check.section);
+      setDrill(null);
+      return;
+    }
+    if (check.page) onPage(check.page);
+  }
   return (
     <div className="page-content reports-page">
       <StageRail workspace={workspace} onPage={onPage} />
       <section className="report-toolbar panel"><div><p className="eyebrow">S9 · 本地报表</p><h2>{selectedVersion ? `${selectedVersion.label} 冻结版本` : "实时草稿"}</h2><p>{selectedVersion ? `冻结于 ${formatDateTime(selectedVersion.createdAt)}，不会被后续修改覆盖。` : "数字会随本地凭证与税务调整更新。冻结后形成版本快照。"}</p></div><div className="report-toolbar-actions"><label className="compact-select"><span>查看版本</span><select value={versionId} onChange={(event) => setVersionId(event.target.value)}><option value="live">实时草稿</option>{versions.map((item) => <option key={item.id} value={item.id}>{item.label} · {formatDateTime(item.createdAt)}</option>)}</select><CaretDown size={13} /></label><button className="secondary-button" disabled={!excelExportReady} onClick={onExportExcel} title={excelExportReady ? `导出当前 ${currentFrozenVersion.label}，不上传网络` : "请先冻结当前数据；旧版本或已变化的数据不能导出"} type="button"><DownloadSimple size={17} />导出当前冻结版 Excel</button><button className="primary-button" disabled={!readyToFreeze} onClick={onFreeze} type="button"><SealCheck size={17} />冻结新版本</button></div></section>
-      {!balanced && <div className="danger-banner"><WarningCircle size={18} /><span><strong>报表尚未勾稽：</strong>{statementChecks.filter((check) => !check.passed).map((check) => formatCurrency(check.difference)).join(" / ")}，修正试算、资产负债或现金变动差异后才能冻结。</span></div>}
+      {!balanced && <div className="danger-banner"><WarningCircle size={18} /><span><strong>报表尚未勾稽：</strong>{statementChecks.filter((check) => !check.passed).map((check) => `${check.label}差额 ${formatCurrency(check.difference)}`).join("；")}。先处理下方对应来源，再冻结报表。</span></div>}
       {balanced && !readyToFreeze && <div className="danger-banner"><WarningCircle size={18} /><span><strong>月结链路尚未完成：</strong>{flow.bankReconciliationIssues.length ? `${flow.bankReconciliationIssues.length} 份银行流水勾稽未通过。` : flow.unresolved.length ? `${flow.unresolved.length} 笔流水尚未入账或暂不处理。` : `${flow.pendingVouchers.length} 张凭证草稿或更正尚未入账。`}</span></div>}
       <section className="metric-grid four report-summary"><MetricCard label="资产合计" value={formatCurrency(snapshot.summary.assets)} note="资产负债表" icon={Bank} /><MetricCard label="营业收入" value={formatCurrency(snapshot.summary.revenue)} note="利润表" icon={TrendUp} tone="sage" /><MetricCard label="本月利润" value={formatCurrency(snapshot.summary.profit)} note="税前本地口径" icon={ChartBar} /><MetricCard label="三表勾稽" value={Object.values(snapshot.summary.engineChecks || {}).every((check) => check.passed) ? "通过" : "需处理"} note="试算 · 资产负债 · 现金变动" icon={CheckCircle} tone={Object.values(snapshot.summary.engineChecks || {}).every((check) => check.passed) ? "sage" : "clay"} /></section>
+      <section className="panel report-reconciliation-panel">
+        <div className="panel-heading"><div><p className="eyebrow">报表勾稽</p><h2>每一项差额都有处理入口</h2><p>这里校验实时草稿；冻结版本只用于回看，不会掩盖当前数据变化。</p></div><TonePill tone={balanced ? "success" : "warning"}>{statementChecks.filter((check) => check.passed).length} / {statementChecks.length} 通过</TonePill></div>
+        <div className="check-rows report-check-rows">{statementChecks.map((check) => (
+          <button key={check.id} onClick={() => openReconciliationSource(check)} type="button">
+            <span className={`check-icon ${check.passed ? "ok" : ""}`}>{check.passed ? <Check size={13} weight="bold" /> : <WarningCircle size={15} />}</span>
+            <span><strong>{check.label}</strong><small>{check.formula}{check.sourceIds?.length ? ` · ${check.sourceIds.length} 条凭证或来源` : ""}</small></span>
+            <b className={check.passed ? "report-check-state passed" : "report-check-state failed"}>{check.passed ? "已勾稽" : `差额 ${formatCurrency(check.difference)}`}</b>
+            {!check.passed && <ArrowRight size={15} />}
+          </button>
+        ))}</div>
+      </section>
       <div className="reports-layout">
         <section className="panel statement-panel"><div className="report-tabs" role="tablist">{Object.entries(snapshot.sections).map(([id, value]) => <button className={sectionId === id ? "active" : ""} key={id} onClick={() => { setSectionId(id); setDrill(null); }} role="tab" type="button">{value.label}</button>)}</div><div className="statement-heading"><span>项目</span><span>本期金额</span></div><div className="statement-rows">{section.rows.map((row) => <button className={/(合计|利润|净增加|期末|缺口)/.test(row.label) ? "total" : ""} key={row.id} onClick={() => setDrill(row)} type="button"><span>{row.label}<small>{row.details?.length ? `${row.details.length} 条来源` : "查看口径"}</small></span><strong>{formatCurrency(row.value)}</strong><ArrowRight size={15} /></button>)}</div><div className="statement-foot"><span>{formatPeriod(snapshot.period)}</span><span>{selectedVersion ? `${selectedVersion.label} · 已冻结` : "实时草稿 · 未冻结"}</span></div></section>
         <aside className="panel version-panel"><div className="panel-heading"><div><p className="eyebrow">版本与差异</p><h2>不可覆盖的报表记录</h2></div><Clock size={21} /></div>{versions.length ? <div className="version-list">{versions.map((version, index) => <button className={version.id === versionId ? "active" : ""} key={version.id} onClick={() => setVersionId(version.id)} type="button"><span><strong>{version.label}</strong><small>{formatDateTime(version.createdAt)} · {version.actor}</small></span><TonePill tone="success">已冻结</TonePill>{index === 0 && <em>当前</em>}</button>)}</div> : <EmptyState title="还没有冻结版本" description="勾稽通过后冻结 V1，后续修改会形成 V2、V3，而不是覆盖旧数字。" />}<div className="version-diff"><div className="subheading"><strong>{previous ? `${latest.label} 对比 ${previous.label}` : "版本差异"}</strong><span>{differences.length} 项变化</span></div>{previous ? (differences.length ? differences.slice(0, 8).map((item) => <div key={item.id}><span><small>{item.section}</small><strong>{item.label}</strong></span><b className={item.delta > 0 ? "income" : "expense"}>{formatCurrency(item.delta, { sign: true })}</b></div>) : <p className="quiet-copy">最新两个版本的报表数字一致，时间与确认记录仍分别保留。</p>) : <p className="quiet-copy">冻结第二个版本后，这里会逐项显示与上一版本的差异。</p>}</div><div className="report-export-history"><div className="subheading"><strong>Excel 本地导出</strong><span>{reportExports.length} 次</span></div>{reportExports.length ? reportExports.slice(0, 3).map((item) => <article key={item.id}><DownloadSimple size={17} /><span><strong>{item.reportVersionLabel} · {item.fileName}</strong><small>{formatDateTime(item.exportedAt)} · {fileSize(item.size)} · 仅本地，未上传</small></span></article>) : <p className="quiet-copy">当前期间还没有 Excel 导出记录。</p>}</div>{taxEnabled && <button className="secondary-button wide" onClick={() => onPage("tax")} type="button">进入确认与申报<ArrowRight size={16} /></button>}</aside>

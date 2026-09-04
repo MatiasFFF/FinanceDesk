@@ -1761,6 +1761,91 @@ function validateAutomaticReconciliation(workspace, transaction) {
   }
 }
 
+export function buildReconciliationAllocationDraft(workspace, { transactionId, allocations = [] }) {
+  const transaction = findTransaction(workspace, transactionId);
+  const tolerance = accountingRules(workspace).amountTolerance;
+  const transactionRemaining = transactionUnallocatedAmount(transaction);
+  const temporaryBillUsage = new Map();
+  const issues = [];
+
+  const rows = allocations.map((input) => {
+    const bill = (workspace.bills || []).find((item) => item.id === input.billId);
+    const numericAmount = Number(input.amount);
+    const amount = Number.isFinite(numericAmount) ? roundMoney(numericAmount) : null;
+
+    if (!bill) {
+      const issue = {
+        code: "BILL_NOT_FOUND",
+        message: "所选账单已不存在，请重新选择",
+        details: { billId: input.billId },
+      };
+      issues.push(issue);
+      return { billId: input.billId, amount, billRemaining: 0, available: 0, issue };
+    }
+
+    const alreadyRequested = temporaryBillUsage.get(bill.id) || 0;
+    const billRemaining = billSettlement(workspace, bill).remaining;
+    const available = Math.max(0, roundMoney(billRemaining - alreadyRequested));
+    let issue = null;
+
+    if (amount === null || amount <= 0) {
+      issue = {
+        code: "INVALID_ALLOCATION_AMOUNT",
+        message: "核销金额必须是大于 0 的有效数字",
+        details: { amount: input.amount, billId: bill.id },
+      };
+    } else if (!allocationDirectionMatchesBill(transaction, bill)) {
+      issue = {
+        code: "DIRECTION_MISMATCH",
+        message: "收款只能核销应收/预收，付款只能核销应付/预付",
+        details: { transactionId, billId: bill.id },
+      };
+    } else if (amount - available > tolerance) {
+      issue = {
+        code: "BILL_OVER_ALLOCATED",
+        message: `核销金额超过账单 ${bill.no || bill.id} 的剩余余额`,
+        details: { amount, remaining: available },
+      };
+    }
+
+    if (amount !== null && amount > 0) {
+      temporaryBillUsage.set(bill.id, roundMoney(alreadyRequested + amount));
+    }
+    if (issue) issues.push(issue);
+
+    return {
+      billId: bill.id,
+      billNo: bill.no || bill.id,
+      amount,
+      billRemaining,
+      available,
+      issue,
+    };
+  });
+
+  const requested = sumMoney(rows.map((row) => (row.amount !== null && row.amount > 0 ? row.amount : 0)));
+  const overBy = Math.max(0, roundMoney(requested - transactionRemaining));
+  if (overBy > tolerance) {
+    issues.unshift({
+      code: "TRANSACTION_OVER_ALLOCATED",
+      message: `本次分配超过流水未核销余额 ${overBy.toFixed(2)}`,
+      details: { requested, transactionRemaining, overBy },
+    });
+  }
+
+  return {
+    transactionId,
+    transactionRemaining,
+    requested,
+    remainingAfter: Math.max(0, roundMoney(transactionRemaining - requested)),
+    overBy,
+    rows,
+    issues,
+    valid: rows.length > 0 && issues.length === 0,
+    message: rows.length ? issues[0]?.message || "" : "请至少填写一笔本次核销金额",
+  };
+}
+
 export function applyReconciliation(workspace, { transactionId, allocations, note = "" }, context = {}) {
   if (!Array.isArray(allocations) || !allocations.length) {
     throw new AccountingRuleError("ALLOCATION_REQUIRED", "至少需要一条核销分配");
@@ -1775,35 +1860,21 @@ export function applyReconciliation(workspace, { transactionId, allocations, not
   if (resolvedContext.mode === "automatic") validateAutomaticReconciliation(next, transaction);
 
   const before = transactionSettlement(transaction);
-  const requested = sumMoney(allocations.map((item) => item.amount));
-  const transactionRemaining = transactionUnallocatedAmount(transaction);
-  const tolerance = accountingRules(next).amountTolerance;
-  if (requested - transactionRemaining > tolerance) {
-    throw new AccountingRuleError("TRANSACTION_OVER_ALLOCATED", "本次核销超过流水未核销余额", { requested, transactionRemaining });
+  const allocationDraft = buildReconciliationAllocationDraft(next, { transactionId, allocations });
+  if (!allocationDraft.valid) {
+    const issue = allocationDraft.issues[0];
+    throw new AccountingRuleError(issue.code, issue.message, issue.details);
   }
+  const requested = allocationDraft.requested;
 
-  const temporaryBillUsage = new Map();
-  const created = allocations.map((input) => {
-    const bill = findBill(next, input.billId);
-    if (!allocationDirectionMatchesBill(transaction, bill)) {
-      throw new AccountingRuleError("DIRECTION_MISMATCH", "收款只能核销应收/预收，付款只能核销应付/预付", {
-        transactionId,
-        billId: bill.id,
-      });
-    }
-    const amount = roundMoney(input.amount);
-    if (amount <= 0) throw new AccountingRuleError("INVALID_ALLOCATION_AMOUNT", "核销金额必须大于 0", { amount });
-    const alreadyRequested = temporaryBillUsage.get(bill.id) || 0;
-    const remaining = roundMoney(billSettlement(next, bill).remaining - alreadyRequested);
-    if (amount - remaining > tolerance) {
-      throw new AccountingRuleError("BILL_OVER_ALLOCATED", `核销金额超过账单 ${bill.no || bill.id} 的剩余余额`, { amount, remaining });
-    }
-    temporaryBillUsage.set(bill.id, roundMoney(alreadyRequested + amount));
+  const created = allocationDraft.rows.map((row, index) => {
+    const input = allocations[index];
+    const bill = findBill(next, row.billId);
     return {
-      id: nextRecordId([...allAllocations(next), ...temporaryBillUsage.keys()].map((item) => typeof item === "string" ? { id: item } : item), "allocation"),
+      id: nextRecordId(allAllocations(next), "allocation"),
       transactionId: transaction.id,
       billId: bill.id,
-      amount,
+      amount: row.amount,
       status: "confirmed",
       mode: resolvedContext.mode,
       createdAt: resolvedContext.at,

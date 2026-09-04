@@ -774,22 +774,50 @@ export function buildReportSnapshot(workspace) {
 }
 
 export function freezeReportVersion(workspace, actor = "本地用户") {
-  const snapshot = buildReportSnapshot(workspace);
-  const periodVersions = workspace.delivery.reportVersions.filter((item) => item.period === workspace.currentPeriod);
+  const current = ensureWorkspace(workspace);
+  const payrollSocialBefore = buildPayrollSocialSummary(current, { period: current.currentPeriod });
+  const previousVersion = getLatestReportVersion(current);
+  const invalidatedConfirmations = [
+    {
+      label: "工资表",
+      confirmedAt: current.tax.payrollConfirmedAt,
+      confirmedVersionId: current.tax.payrollConfirmedVersionId,
+      storedFingerprint: current.tax.payrollConfirmedFingerprint,
+      currentFingerprint: payrollSocialBefore.fingerprints.payroll,
+    },
+    {
+      label: "社保表",
+      confirmedAt: current.tax.socialSecurityConfirmedAt,
+      confirmedVersionId: current.tax.socialSecurityConfirmedVersionId,
+      storedFingerprint: current.tax.socialSecurityConfirmedFingerprint,
+      currentFingerprint: payrollSocialBefore.fingerprints.socialSecurity,
+    },
+  ].filter((item) => item.confirmedAt).map((item) => ({
+    ...item,
+    reason: !item.storedFingerprint
+      ? "原确认缺少可验证数据指纹"
+      : item.storedFingerprint !== item.currentFingerprint
+        ? "确认后数据已变化"
+        : item.confirmedVersionId !== previousVersion?.id
+          ? "原确认绑定的报表版本已变化"
+          : "重新冻结生成了新报表版本",
+  }));
+  const snapshot = buildReportSnapshot(current);
+  const periodVersions = current.delivery.reportVersions.filter((item) => item.period === current.currentPeriod);
   const version = {
     id: uid("report-version"),
-    period: workspace.currentPeriod,
+    period: current.currentPeriod,
     label: `V${periodVersions.length + 1}`,
     createdAt: new Date().toISOString(),
     actor,
     frozen: true,
     snapshot,
-    sourceFingerprint: workflowSourceFingerprint(workspace),
+    sourceFingerprint: workflowSourceFingerprint(current),
   };
   const next = {
-    ...workspace,
+    ...current,
     tax: {
-      ...workspace.tax,
+      ...current.tax,
       frozenAt: version.createdAt,
       financeConfirmedAt: null,
       payrollConfirmedAt: null,
@@ -804,12 +832,22 @@ export function freezeReportVersion(workspace, actor = "本地用户") {
       ownerConfirmedVersionId: null,
     },
     delivery: {
-      ...workspace.delivery,
-      reportVersions: [version, ...workspace.delivery.reportVersions],
-      filing: emptyFiling(workspace.currentPeriod),
+      ...current.delivery,
+      reportVersions: [version, ...current.delivery.reportVersions],
+      filing: emptyFiling(current.currentPeriod),
     },
   };
-  return audit(next, "冻结报表版本", `${workspace.currentPeriod} ${version.label}，差异 ${snapshot.summary.difference.toFixed(2)}`, actor);
+  const frozen = audit(next, "冻结报表版本", `${current.currentPeriod} ${version.label}，差异 ${snapshot.summary.difference.toFixed(2)}`, actor);
+  if (!invalidatedConfirmations.length) return frozen;
+  const invalidationDetail = invalidatedConfirmations
+    .map((item) => `${item.label}（${item.reason}）`)
+    .join("、");
+  return audit(
+    frozen,
+    "工资社保独立确认失效",
+    `${current.currentPeriod} · ${invalidationDetail} · 已生成 ${version.label}，两项需按新版本分别重新确认`,
+    actor,
+  );
 }
 
 export function reportVersionDiff(currentVersion, previousVersion) {
@@ -952,6 +990,16 @@ export function confirmPayrollSocialData(workspace, input = {}, context = {}) {
   const at = context.at || new Date().toISOString();
   const actor = context.actor || "本地用户";
   const isPayroll = section === "payroll";
+  const sectionLabel = isPayroll ? "工资表" : "社保表";
+  const recordCount = isPayroll
+    ? state.summary.payrollRecords.length
+    : state.summary.socialSecurityRecords.length;
+  const storedVersionId = isPayroll
+    ? current.tax.payrollConfirmedVersionId
+    : current.tax.socialSecurityConfirmedVersionId;
+  const boundVersion = state.version
+    || current.delivery.reportVersions.find((version) => version.id === storedVersionId)
+    || null;
   const nextTax = {
     ...current.tax,
     ...(isPayroll ? {
@@ -982,7 +1030,12 @@ export function confirmPayrollSocialData(workspace, input = {}, context = {}) {
       },
     },
   };
-  return audit(next, confirmed ? `客户确认${isPayroll ? "工资表" : "社保表"}` : `撤销${isPayroll ? "工资表" : "社保表"}确认`, `${current.currentPeriod} · ${state.version?.label || "当前未冻结版本"} · 当前浏览器本地记录`, actor);
+  return audit(
+    next,
+    confirmed ? `客户确认${sectionLabel}` : `撤销${sectionLabel}确认`,
+    `${current.currentPeriod} · ${boundVersion?.label || "当前未冻结版本"} · ${recordCount} 条数据 · 当前浏览器本地记录`,
+    actor,
+  );
 }
 
 function comparableSnapshot(snapshot) {

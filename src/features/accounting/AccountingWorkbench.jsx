@@ -30,6 +30,7 @@ import {
   buildAttachmentPackage,
   buildAccountingLedgers,
   buildLedgerFilterOptions,
+  buildReconciliationAllocationDraft,
   buildReconciliationExceptionCases,
   classifyBankTransaction,
   confirmBankTransactionBusinessEvent,
@@ -722,6 +723,14 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   const eligibleBills = transaction
     ? activeWorkspace.bills.filter((bill) => allocationDirectionMatchesBill(transaction, bill) && billSettlement(activeWorkspace, bill).remaining > 0.01)
     : [];
+  const allocationInputs = transaction
+    ? Object.entries(allocationAmounts)
+      .filter(([, amount]) => String(amount).trim() !== "")
+      .map(([billId, amount]) => ({ billId, amount }))
+    : [];
+  const allocationDraft = transaction
+    ? buildReconciliationAllocationDraft(activeWorkspace, { transactionId, allocations: allocationInputs })
+    : null;
   const refundSources = transaction
     ? activeWorkspace.transactions.filter((item) => item.id !== transaction.id && Number(item.amount) > 0)
     : [];
@@ -866,13 +875,11 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   }
 
   function applyAllocations() {
-    const selected = Object.entries(allocationAmounts)
-      .map(([billId, amount]) => ({ billId, amount: Number(amount) }))
-      .filter((item) => item.amount > 0);
-    if (!selected.length) {
-      setError("请至少填写一笔本次核销金额");
+    if (!allocationDraft?.valid) {
+      setError(allocationDraft?.message || "请至少填写一笔本次核销金额");
       return;
     }
+    const selected = allocationDraft.rows.map((row) => ({ billId: row.billId, amount: row.amount }));
     if (run(
       (workspace) => applyReconciliation(workspace, {
         transactionId,
@@ -1105,12 +1112,25 @@ export function AccountingWorkbench({ transactionId, onToast }) {
 
       {eligibleBills.length > 0 && ![EVENT_TYPES.REFUND, EVENT_TYPES.INTERNAL_TRANSFER, EVENT_TYPES.UNKNOWN].includes(classification.eventType) && (
         <div className="engine-allocation">
-          <div className="engine-subheading"><strong>拆分 / 部分核销</strong><small>可一次填写多张账单</small></div>
+          <div className="engine-subheading"><strong>拆分 / 部分核销</strong><small>可一次填写多张账单，合计不超过流水未核销金额</small></div>
+          <div className="engine-summary">
+            <span><small>流水当前未核销</small><strong>¥{money(allocationDraft.transactionRemaining)}</strong></span>
+            <span><small>本次已分配</small><strong>¥{money(allocationDraft.requested)}</strong></span>
+            <span><small>确认后流水剩余</small><strong>¥{money(allocationDraft.remainingAfter)}</strong></span>
+          </div>
+          {allocationDraft.rows.length > 0 && !allocationDraft.valid && <div className="engine-missing"><span>{allocationDraft.message}</span></div>}
           {eligibleBills.map((bill) => {
             const remaining = billSettlement(activeWorkspace, bill).remaining;
-            return <label key={bill.id}><span><strong>{bill.no || bill.id}</strong><small>{bill.counterparty || bill.summary || "本地账单"} · 剩余 ¥{money(remaining)}</small></span><input type="number" min="0" max={remaining} step="0.01" value={allocationAmounts[bill.id] || ""} onChange={(event) => setAllocationAmounts((current) => ({ ...current, [bill.id]: event.target.value }))} placeholder="本次金额" /></label>;
+            const currentAmount = Number(allocationAmounts[bill.id]);
+            const currentRequested = Number.isFinite(currentAmount) && currentAmount > 0
+              ? Math.round(currentAmount * 100) / 100
+              : 0;
+            const otherRequested = Math.max(0, allocationDraft.requested - currentRequested);
+            const transactionAvailable = Math.max(0, settlement.remaining - otherRequested);
+            const maximum = Math.max(0, Math.min(remaining, Math.round(transactionAvailable * 100) / 100));
+            return <label key={bill.id}><span><strong>{bill.no || bill.id}</strong><small>{bill.counterparty || bill.summary || "本地账单"} · 账单剩余 ¥{money(remaining)} · 本行最多 ¥{money(maximum)}</small></span><input type="number" min="0" max={maximum} step="0.01" value={allocationAmounts[bill.id] || ""} onChange={(event) => setAllocationAmounts((current) => ({ ...current, [bill.id]: event.target.value }))} placeholder="本次金额" /></label>;
           })}
-          <button className="primary-button wide" type="button" onClick={applyAllocations}><SealCheck size={16} />确认本次核销</button>
+          <button className="primary-button wide" type="button" disabled={!allocationDraft.valid} onClick={applyAllocations}><SealCheck size={16} />确认本次核销</button>
         </div>
       )}
 
