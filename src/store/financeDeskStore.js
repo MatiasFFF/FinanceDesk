@@ -90,8 +90,12 @@ export function createFinanceDeskStore(options = {}) {
       return commit(renameWorkspace(state, workspaceId, name, withActor(workspaceId, actionOptions)));
     },
     switchWorkspace(workspaceId, actionOptions) {
+      const sourceActor = activeWorkspaceUser(state)?.name || "本地用户";
       assertWorkspaceAccess(workspaceId, "data.read");
-      return commit(switchWorkspace(state, workspaceId, withActor(workspaceId, actionOptions)));
+      return commit(switchWorkspace(state, workspaceId, {
+        ...(actionOptions || {}),
+        actor: actionOptions?.actor || sourceActor,
+      }));
     },
     switchUser(workspaceId, userId, actionOptions) {
       return commit(switchActiveUser(state, workspaceId, userId, actionOptions));

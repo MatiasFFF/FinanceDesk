@@ -622,7 +622,12 @@ export function buildContractBillingPlan(workspace, options = {}) {
   const endDate = details.billingEndDate;
   const asOf = String(options.asOf || new Date().toISOString().slice(0, 10));
   const counterparty = String(details.partyB || details.partyA || "").trim();
-  if (!billKind) errors.push("必须先选择销售、采购、租赁、会员或平台合同类型");
+  const membersSetting = workspace?.modules?.members ?? workspace?.moduleSettings?.members;
+  const membershipEnabled = typeof membersSetting === "object"
+    ? membersSetting.enabled !== false
+    : membersSetting !== false;
+  if (details.contractType === "membership" && !membershipEnabled) errors.push("当前工作台未启用会员业务模块，不能生成会员合同账单");
+  else if (!billKind) errors.push(`必须先选择销售、采购、租赁${membershipEnabled ? "、会员" : ""}或平台合同类型`);
   if (!counterparty) errors.push("必须填写合同对方");
   if (!(contractAmount > 0)) errors.push("合同金额不足：请填写大于 0 的合同金额");
   if (!(periodAmount > 0)) errors.push("每期金额必须大于 0");

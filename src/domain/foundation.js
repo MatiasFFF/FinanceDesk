@@ -700,14 +700,16 @@ export function updateWorkspaceModules(state, workspaceId, modules, options = {}
 export function switchWorkspace(state, workspaceId, options = {}) {
   const target = getWorkspace(state, workspaceId);
   if (!target) throw new Error(`找不到工作台：${workspaceId}`);
+  const source = getWorkspace(state);
+  const sourceActor = activeWorkspaceUser(state)?.name || "本地用户";
   const timestamp = options.timestamp || nowIso(options.now);
   const activeUserId = target.users.find((user) => user.id === state.activeUserId && user.status === "active")?.id
     || target.users.find((user) => user.status === "active")?.id
     || null;
   return assertValidState(appendRootAudit({ ...state, activeWorkspaceId: workspaceId, activeUserId, updatedAt: timestamp }, {
-    actor: options.actor,
+    actor: options.actor || sourceActor,
     action: "切换工作台",
-    detail: `切换到「${target.name}」`,
+    detail: source?.id === target.id ? `保持在「${target.name}」` : `「${source?.name || "未知工作台"}」切换到「${target.name}」`,
     workspaceId,
   }, timestamp));
 }

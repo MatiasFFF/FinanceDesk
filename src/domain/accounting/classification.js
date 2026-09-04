@@ -193,6 +193,9 @@ export function applyManualClassification(workspace, {
   const transaction = (next.transactions || []).find((item) => item.id === transactionId);
   if (!transaction) throw new Error(`找不到银行流水：${transactionId}`);
   const before = transaction.classification || classifyBankTransaction(next, transaction);
+  const retainedConfidence = Number.isFinite(Number(before.confidence))
+    ? roundMoney(before.confidence)
+    : 0;
   const confirmation = {
     at: resolvedContext.at,
     actor: resolvedContext.actor,
@@ -204,7 +207,7 @@ export function applyManualClassification(workspace, {
     ...before,
     eventType,
     account,
-    confidence: 100,
+    confidence: retainedConfidence,
     reasons: [reason.trim()],
     riskFlags: [],
     requiresManualReview: false,

@@ -18,6 +18,7 @@ import {
   confirmPayrollSocialData,
   getPayrollSocialConfirmationState,
   recordVatReconciliation,
+  workspaceModuleEnabled,
 } from "../../productWorkflow.js";
 import {
   CONTRACT_DUE_DATE_RULES,
@@ -151,11 +152,15 @@ function StructuredDataFields({ category, value, onChange, workspace, currentDoc
   const details = value?.kind === kind ? value : normalizeDocumentStructuredData(category, {});
   const update = (key, nextValue) => onChange({ ...details, [key]: nextValue });
   if (kind === "contract") {
+    const membershipEnabled = workspaceModuleEnabled(workspace, "members");
+    const contractTypes = Object.entries(CONTRACT_TYPES).filter(([id]) => (
+      id !== "membership" || membershipEnabled || details.contractType === "membership"
+    ));
     return (
       <div className="document-intake-controls">
         <label className="foundation-field"><span>合同甲方</span><input value={details.partyA || ""} onChange={(event) => update("partyA", event.target.value)} /></label>
         <label className="foundation-field"><span>合同乙方</span><input value={details.partyB || ""} onChange={(event) => update("partyB", event.target.value)} /></label>
-        <label className="foundation-field"><span>合同类型</span><select value={details.contractType || "unclassified"} onChange={(event) => update("contractType", event.target.value)}>{Object.entries(CONTRACT_TYPES).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label>
+        <label className="foundation-field"><span>合同类型</span><select value={details.contractType || "unclassified"} onChange={(event) => update("contractType", event.target.value)}>{contractTypes.map(([id, label]) => <option value={id} key={id}>{label}{id === "membership" && !membershipEnabled ? "（会员模块已停用）" : ""}</option>)}</select></label>
         <label className="foundation-field"><span>合同金额</span><input type="number" min="0" step="0.01" value={details.amount ?? ""} onChange={(event) => update("amount", event.target.value)} /></label>
         <label className="foundation-field"><span>结算方式</span><select value={details.settlementMode || "unconfigured"} onChange={(event) => update("settlementMode", event.target.value)}>{Object.entries(CONTRACT_SETTLEMENT_MODES).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label>
         <label className="foundation-field"><span>每期金额</span><input type="number" min="0" step="0.01" value={details.periodAmount ?? ""} onChange={(event) => update("periodAmount", event.target.value)} /></label>
@@ -871,7 +876,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           <div><small>结构化合同 · 预览后确认</small><h3>合同账单计划</h3></div>
           <span>{contractBillingPlans.length} 份合同 · 待生成 {contractBillingPlans.reduce((sum, plan) => sum + plan.items.length, 0)} 张</span>
         </div>
-        <p className="foundation-hint">销售、会员和平台合同生成应收账单；采购和租赁合同生成应付账单。预览不会写入任何账单，只有点击确认后才写入现有账单列表并关联合同资料。</p>
+        <p className="foundation-hint">{workspaceModuleEnabled(activeWorkspace, "members") ? "销售、会员和平台合同生成应收账单" : "销售和平台合同生成应收账单"}；采购和租赁合同生成应付账单。预览不会写入任何账单，只有点击确认后才写入现有账单列表并关联合同资料。</p>
         <div className="foundation-record-list">
           {contractBillingPlans.map((plan) => (
             <article className="foundation-record" key={plan.documentId}>

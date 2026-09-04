@@ -245,7 +245,16 @@ const COLLECTION_CONFIG = {
   },
 };
 
-const MEMBER_BUSINESS_EVENT_TYPES = new Set(["memberRecharge", "memberConsumption"]);
+const MEMBER_BUSINESS_EVENT_TYPES = new Set([
+  "memberRecharge",
+  "memberConsumption",
+  "recharge",
+  "consumption",
+  "commission",
+  "commissionPayment",
+  "coachCommission",
+  "coachCommissionPayment",
+]);
 
 function moduleSettingEnabled(value) {
   if (typeof value === "boolean") return value;
@@ -254,6 +263,10 @@ function moduleSettingEnabled(value) {
 }
 
 function memberModuleEnabled(workspace) {
+  const modules = workspace.modules;
+  const currentSetting = modules?.members ?? modules?.member;
+  if (currentSetting != null) return moduleSettingEnabled(currentSetting);
+
   const settings = workspace.moduleSettings;
   const explicitSetting = settings?.members ?? settings?.member;
   if (explicitSetting != null) return moduleSettingEnabled(explicitSetting);
@@ -270,6 +283,10 @@ function memberModuleEnabled(workspace) {
     return explicit == null ? false : moduleSettingEnabled(explicit);
   }
   return true;
+}
+
+function isMemberBusinessEvent(item) {
+  return MEMBER_BUSINESS_EVENT_TYPES.has(item.businessType || item.type || item.kind || item.eventType);
 }
 
 function emptyDraft(config) {
@@ -335,6 +352,7 @@ function recordDescription(item, collection, workspace) {
 
 function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, onCancelDelete }) {
   const { activeWorkspace, actions } = useFinanceDesk();
+  const membersEnabled = memberModuleEnabled(activeWorkspace);
   const config = useMemo(() => {
     const base = COLLECTION_CONFIG[collection];
     if (collection === "users") {
@@ -345,7 +363,7 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
           : field),
       };
     }
-    if (collection === "businessEvents" && !memberModuleEnabled(activeWorkspace)) {
+    if (collection === "businessEvents" && !membersEnabled) {
       return {
         ...base,
         fields: base.fields.map((field) => field.key === "type"
@@ -354,9 +372,11 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
       };
     }
     return base;
-  }, [collection, activeWorkspace.roles, activeWorkspace.enabledModules, activeWorkspace.moduleSettings]);
+  }, [collection, activeWorkspace.roles, activeWorkspace.modules, activeWorkspace.enabledModules, activeWorkspace.moduleSettings, membersEnabled]);
   const Icon = config.icon;
-  const items = activeWorkspace[collection] || [];
+  const items = collection === "businessEvents" && !membersEnabled
+    ? (activeWorkspace[collection] || []).filter((item) => !isMemberBusinessEvent(item))
+    : (activeWorkspace[collection] || []);
   const [draft, setDraft] = useState(() => emptyDraft(config));
   const [error, setError] = useState("");
   const [deleteError, setDeleteError] = useState("");
@@ -408,6 +428,9 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
         const role = activeWorkspace.roles.find((item) => item.id === values.roleId);
         if (!role || role.status !== "active") throw new Error("请选择一个有效角色");
         values = { ...values, role: role.name };
+      }
+      if (collection === "businessEvents" && !membersEnabled && isMemberBusinessEvent(values)) {
+        throw new Error("当前工作台未启用会员业务，不能新增会员充值、耗课或教练提成事件");
       }
       actions.upsertEntity(activeWorkspace.id, collection, values, { label: config.title });
       setDraft(emptyDraft(config));

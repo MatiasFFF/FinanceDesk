@@ -19,6 +19,7 @@ import {
   EVENT_TYPES,
   MANUAL_BUSINESS_EVENT_TYPES,
   accountDefinition,
+  accountingRules,
   activeAllocations,
   advanceApplicationTargets,
   allocationDirectionMatchesBill,
@@ -654,7 +655,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     taxTreatment: "",
     invoiceStatus: "",
     evidenceIds: [],
-    confidence: 100,
+    confidence: "",
     reason: "",
   });
   const [reviewReason, setReviewReason] = useState("");
@@ -671,6 +672,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     () => transaction ? (transaction.classification || classifyBankTransaction(activeWorkspace, transaction)) : null,
     [activeWorkspace, transaction],
   );
+  const accountingPolicy = useMemo(() => accountingRules(activeWorkspace), [activeWorkspace]);
   const assessment = useMemo(
     () => transaction ? (transaction.evidenceAssessment || assessTransactionEvidence(activeWorkspace, transaction, classification)) : null,
     [activeWorkspace, transaction, classification],
@@ -785,7 +787,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         taxTreatment: suggestedDefinition?.fixedTaxTreatment || "",
         invoiceStatus: suggestedDefinition?.invoiceRequired ? "" : "not_applicable",
         evidenceIds: [...(transaction?.evidenceIds || [])],
-        confidence: 100,
+        confidence: classification.confidence,
         reason: "",
       });
     }
@@ -820,6 +822,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
 
   function manualClassify(event) {
     event.preventDefault();
+    const needsExplicitReview = Number(judgement.confidence) < accountingPolicy.confidenceThreshold;
     run(
       (workspace) => confirmBankTransactionBusinessEvent(workspace, {
         transactionId,
@@ -836,7 +839,9 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         confidence: judgement.confidence,
         reason: judgement.reason,
       }, { actor, mode: "manual" }),
-      "业务事件已人工确认；仅完成分类与留痕，未生成或入账凭证",
+      needsExplicitReview
+        ? "业务事件已保存；低置信度保持不变，已进入 S7 人工复核，未生成或入账凭证"
+        : "业务事件已人工确认；仅完成分类与留痕，未生成或入账凭证",
     );
   }
 
@@ -1031,10 +1036,11 @@ export function AccountingWorkbench({ transactionId, onToast }) {
                 : <label><span>税务属性 *</span><select required value={judgement.taxTreatment} onChange={(event) => setJudgement((current) => ({ ...current, taxTreatment: event.target.value }))}><option value="">请选择税务属性</option>{BUSINESS_EVENT_TAX_TREATMENTS.filter((item) => selectedBusinessDefinition.taxTreatments.includes(item.id)).map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>}
               {selectedBusinessDefinition.invoiceRequired && <label><span>发票状态 *</span><select required value={judgement.invoiceStatus} onChange={(event) => setJudgement((current) => ({ ...current, invoiceStatus: event.target.value }))}><option value="">请选择发票状态</option>{BUSINESS_EVENT_INVOICE_STATUSES.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>}
               <label className="full"><span>关联证据（可多选）· 期望：{selectedBusinessDefinition.evidenceHint}</span><select multiple size={Math.min(5, Math.max(2, activeWorkspace.documents.length))} value={judgement.evidenceIds} onChange={(event) => setJudgement((current) => ({ ...current, evidenceIds: Array.from(event.target.selectedOptions, (option) => option.value) }))}>{activeWorkspace.documents.map((document) => <option value={document.id} key={document.id}>{document.name || document.title || document.id} · {document.type || "资料"}</option>)}</select></label>
-              <label><span>置信度（0–100）*</span><input required type="number" min="0" max="100" step="1" value={judgement.confidence} onChange={(event) => setJudgement((current) => ({ ...current, confidence: event.target.value }))} /></label>
+              <label><span>复核后置信度（0–100）* · 原判断 {classification.confidence}%</span><input required type="number" min="0" max="100" step="1" value={judgement.confidence} onChange={(event) => setJudgement((current) => ({ ...current, confidence: event.target.value }))} /></label>
               <label><span>处理说明</span><input readOnly value={selectedBusinessDefinition.accountingTreatment} /></label>
+              {Number(judgement.confidence) < accountingPolicy.confidenceThreshold && <div className="engine-missing full"><span>当前低于人工复核阈值 {accountingPolicy.confidenceThreshold}%。保存后仍会阻塞凭证；必须在 S7 填写复核说明并明确采用处理，才可继续。</span></div>}
               <label className="full"><span>人工判断依据 *</span><textarea required value={judgement.reason} onChange={(event) => setJudgement((current) => ({ ...current, reason: event.target.value }))} placeholder="写明核对了哪些对手、账单或订单、期间、税务和证据" /></label>
-              <button className="secondary-button wide" type="submit">确认业务事件（不入账）</button>
+              <button className="secondary-button wide" type="submit">{Number(judgement.confidence) < accountingPolicy.confidenceThreshold ? "保存判断并进入人工复核" : "确认业务事件（不入账）"}</button>
             </>
           )}
         </form>

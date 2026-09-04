@@ -582,7 +582,10 @@ export function confirmBankTransactionBusinessEvent(workspace, input, context = 
   if (!fundingPeriod) throw new AccountingRuleError("BUSINESS_EVENT_FUNDING_PERIOD_INVALID", "流水日期无法形成有效资金期间");
   const reason = String(input.reason || "").trim();
   if (!reason) throw new AccountingRuleError("BUSINESS_EVENT_REASON_REQUIRED", "人工确认必须填写判断依据");
-  const confidence = input.confidence == null || input.confidence === "" ? 100 : Number(input.confidence);
+  const seedClassification = seedTransaction.classification || classifyBankTransaction(seed, seedTransaction);
+  const confidence = input.confidence == null || input.confidence === ""
+    ? Number(seedClassification.confidence)
+    : Number(input.confidence);
   if (!Number.isFinite(confidence) || confidence < 0 || confidence > 100) {
     throw new AccountingRuleError("BUSINESS_EVENT_CONFIDENCE_INVALID", "置信度必须在 0 到 100 之间");
   }
