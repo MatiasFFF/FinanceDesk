@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Archive,
   ArrowRight,
@@ -31,6 +31,7 @@ import {
 } from "@phosphor-icons/react";
 import { transactionStatus, uid } from "./financeData.js";
 import {
+  attachEvidenceDocument,
   createCustomerConfirmationPackage,
   freezeReportVersion as freezeAccountingReportVersion,
   recordCustomerConfirmation,
@@ -174,7 +175,6 @@ function Sidebar({ state, workspace, page, onPage, onSwitchWorkspace, onOpenWork
     <aside className="sidebar">
       <div className="sidebar-brand-wrap">
         <button className="brand" onClick={() => setMenuOpen((value) => !value)} type="button">
-          <span className="brand-mark">财</span>
           <span className="brand-copy"><strong>{PRODUCT_NAME}</strong><small>{workspace?.name || "还没有工作台"}</small></span>
           <CaretDown size={14} />
         </button>
@@ -554,7 +554,7 @@ function LocalBankImportDialog({ open, onClose, onToast, onComplete }) {
 }
 
 function NoWorkspace({ onCreate }) {
-  return <main className="no-workspace"><span className="welcome-mark">财</span><p className="eyebrow">{PRODUCT_NAME}</p><h1>先创建一个属于你的工作台</h1><p>可以从空白开始，也可以复制“山岚健身工作室”行业模板。模板不是固定品牌，之后可以改名或删除。</p><button className="primary-button" onClick={onCreate} type="button"><Plus size={18} />新建工作台</button><BoundaryNote /></main>;
+  return <main className="no-workspace"><p className="eyebrow">{PRODUCT_NAME}</p><h1>先创建一个属于你的工作台</h1><p>可以从空白开始，也可以复制“山岚健身工作室”行业模板。模板不是固定品牌，之后可以改名或删除。</p><button className="primary-button" onClick={onCreate} type="button"><Plus size={18} />新建工作台</button><BoundaryNote /></main>;
 }
 
 function App() {
@@ -601,9 +601,10 @@ function App() {
         actions.renameWorkspace(workspace.id, name);
         setToast({ tone: "success", message: "工作台已改名为“" + name + "”" });
       } else if (workspaceDialog === "delete" && workspace) {
+        if (state.workspaces.length === 1) throw new Error("至少保留一个工作台；请先新建工作台，再删除当前工作台。");
         const deletedName = workspace.name;
-        if (fileVault) await fileVault.clearWorkspace(workspace.id);
         actions.deleteWorkspace(workspace.id);
+        if (fileVault) await fileVault.clearWorkspace(workspace.id);
         setPage("overview");
         setToast({ tone: "success", message: "已从本地删除“" + deletedName + "”" });
       }
@@ -653,15 +654,11 @@ function App() {
         relation: "supports",
         note: "单笔流水复核证据",
       });
-      mutateActive((current) => audit({
-        ...current,
-        transactions: current.transactions.map((item) => item.id === transactionId ? {
-          ...item,
-          evidenceIds: [...new Set([...(item.evidenceIds || []), document.id])],
-          status: "pending",
-          exceptionReason: "",
-        } : item),
-      }, "补充单笔证据", document.name + " · 关联 " + transactionId + " · SHA-256 " + document.hash.slice(0, 12) + "…"));
+      mutateActive((current) => attachEvidenceDocument(
+        current,
+        { transactionId, documentId: document.id },
+        { actor: "周会计", mode: "manual" },
+      ));
       setToast({ tone: "success", message: "原文件与证据关联已保存在当前浏览器，请完成人工确认" });
     } catch (error) {
       setToast({ tone: "danger", message: error.message || "本地证据保存失败" });

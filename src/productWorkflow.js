@@ -1,4 +1,3 @@
-import JSZip from "jszip";
 import {
   buildFinancialStatements,
   buildManagementMetrics,
@@ -456,6 +455,7 @@ export async function exportLocalFilingPackage(workspace) {
     throw new Error("提交前校验尚未全部通过");
   }
 
+  const { default: JSZip } = await import("jszip");
   const zip = new JSZip();
   const folder = zip.folder(`${PRODUCT_NAME}-${workspace.currentPeriod}-本地申报包`);
   folder.file("重要说明.txt", [
