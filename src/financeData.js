@@ -681,6 +681,7 @@ export function billKindLabel(kind) {
 
 export function transactionStatus(transaction) {
   if (transaction.status === "ignored") return { label: "暂不处理", tone: "neutral" };
+  if (transaction.status === "posted") return { label: "已入账", tone: "success" };
   if (transaction.status === "reconciled") return { label: "已核销", tone: "success" };
   if (transaction.status === "exception") return { label: "有异常", tone: "danger" };
   const allocated = allocatedForTransaction(transaction);

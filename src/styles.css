@@ -1122,6 +1122,13 @@ button:disabled {
   background: rgba(255, 253, 248, 0.96);
 }
 
+.detail-action-note {
+  color: var(--quiet);
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: right;
+}
+
 .page-tabs {
   display: flex;
   gap: 5px;
@@ -1411,7 +1418,7 @@ button:disabled {
     inset: auto 0 0;
     z-index: 45;
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     min-height: 64px;
     padding: 6px max(8px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
     border-top: 1px solid var(--line);
@@ -1492,4 +1499,3 @@ button:disabled {
     animation-iteration-count: 1 !important;
   }
 }
-

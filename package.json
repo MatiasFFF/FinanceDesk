@@ -8,6 +8,7 @@
     "build": "vite build && node scripts/prepare-sites-build.mjs && node scripts/build-standalone.mjs",
     "preview": "vite preview",
     "test:accounting": "node --test tests/accounting-classification.test.mjs tests/reconciliation-engine.test.mjs tests/voucher-reporting.test.mjs",
+    "test:foundation": "node --test tests/local-foundation.test.mjs tests/bank-intake.test.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs"
   },
   "dependencies": {

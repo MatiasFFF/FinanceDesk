@@ -1,5 +1,10 @@
 import JSZip from "jszip";
 import {
+  buildFinancialStatements,
+  buildManagementMetrics,
+  buildTaxWorkpaper,
+} from "./domain/accounting/index.js";
+import {
   ACCOUNT_LABELS,
   APP_STORAGE_KEY,
   allocatedForBill,
@@ -27,6 +32,7 @@ export const PRIMARY_NAV = [
   { id: "reports", label: "报表中心", shortLabel: "报表" },
   { id: "tax", label: "确认与申报", shortLabel: "确认" },
   { id: "archive", label: "资料归档", shortLabel: "归档" },
+  { id: "setup", label: "基础资料", shortLabel: "基础" },
 ];
 
 const emptyFiling = (period) => ({
@@ -160,46 +166,21 @@ function accountRows(workspace, accountNames) {
 }
 
 export function calculatePeriodLedger(workspace) {
-  const ledger = { ...(workspace.openingLedger || {}) };
+  const engine = buildFinancialStatements(workspace, { period: workspace.currentPeriod });
+  const ledger = Object.fromEntries(engine.ledger.accounts.map((account) => [account.accountId, account.closing]));
   Object.keys(ACCOUNT_LABELS).forEach((account) => {
     if (ledger[account] == null) ledger[account] = 0;
   });
-
-  workspace.vouchers
-    .filter((voucher) => voucher.status === "posted" && String(voucher.date || "").startsWith(workspace.currentPeriod))
-    .forEach((voucher) => voucher.lines.forEach((line) => {
-      ledger[line.account] = roundMoney(
-        Number(ledger[line.account] || 0) + Number(line.debit || 0) - Number(line.credit || 0),
-      );
-    }));
-
-  const revenue = roundMoney(-(amountForAccount(ledger, "revenuePrivate") + amountForAccount(ledger, "revenueGroup")));
-  const expenses = roundMoney([
-    "expenseRent",
-    "expenseUtility",
-    "expenseFee",
-    "expenseCommission",
-    "expenseOther",
-  ].reduce((sum, account) => sum + amountForAccount(ledger, account), 0));
-  const profit = roundMoney(revenue - expenses);
-  const assets = roundMoney([
-    "bank",
-    "cash",
-    "receivable",
-    "prepayment",
-    "equipment",
-  ].reduce((sum, account) => sum + amountForAccount(ledger, account), 0));
-  const liabilities = roundMoney(-(amountForAccount(ledger, "payable") + amountForAccount(ledger, "contractLiability")));
-  const equity = roundMoney(-amountForAccount(ledger, "equity") + profit);
   return {
     ledger,
-    revenue,
-    expenses,
-    profit,
-    assets,
-    liabilities,
-    equity,
-    difference: roundMoney(assets - liabilities - equity),
+    revenue: engine.incomeStatement.netRevenue.value,
+    expenses: engine.incomeStatement.expenses.value,
+    profit: engine.incomeStatement.profit.value,
+    assets: engine.balanceSheet.assets.value,
+    liabilities: engine.balanceSheet.liabilities.value,
+    equity: engine.balanceSheet.equity.value,
+    difference: engine.balanceSheet.difference.value,
+    engineChecks: engine.checks,
   };
 }
 
@@ -239,22 +220,25 @@ function makeRow(id, label, value, details = []) {
 
 export function buildReportSnapshot(workspace) {
   const statements = calculatePeriodLedger(workspace);
+  const management = buildManagementMetrics(workspace, { period: workspace.currentPeriod });
+  const managementById = Object.fromEntries(management.metrics.map((metric) => [metric.id, metric]));
+  const engineTax = buildTaxWorkpaper(workspace, { period: workspace.currentPeriod });
   const periodTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
   const inflows = periodTransactions.filter((item) => Number(item.amount) > 0);
   const outflows = periodTransactions.filter((item) => Number(item.amount) < 0);
   const cashIn = roundMoney(inflows.reduce((sum, item) => sum + Number(item.amount || 0), 0));
   const cashOut = roundMoney(outflows.reduce((sum, item) => sum + Math.abs(Number(item.amount || 0)), 0));
-  const receivable = billOutstanding(workspace, "receivable");
-  const payable = billOutstanding(workspace, "payable");
-  const prepayment = billOutstanding(workspace, "prepaymentPaid");
-  const contractLiability = roundMoney(Math.max(0, -amountForAccount(statements.ledger, "contractLiability")));
+  const receivable = managementById.receivable?.value ?? billOutstanding(workspace, "receivable");
+  const payable = managementById.payable?.value ?? billOutstanding(workspace, "payable");
+  const prepayment = managementById.prepayment?.value ?? billOutstanding(workspace, "prepaymentPaid");
+  const contractLiability = managementById.deposit?.value ?? roundMoney(Math.max(0, -amountForAccount(statements.ledger, "contractLiability")));
   const refunds = workspace.businessEvents.filter((item) => item.type === "refund" && String(item.date || "").startsWith(workspace.currentPeriod));
   const commissions = workspace.businessEvents.filter((item) => item.type === "commission" && String(item.date || "").startsWith(workspace.currentPeriod));
-  const estimatedVat = roundMoney(Math.max(0, statements.revenue + Number(workspace.tax.adjustments || 0)) * 0.03);
+  const estimatedVat = engineTax.vatPayable.value;
   const estimatedSurtax = roundMoney(estimatedVat * 0.12);
   const estimatedIncomeTax = roundMoney(Math.max(0, statements.profit) * 0.05);
   const estimatedTax = roundMoney(estimatedVat + estimatedSurtax + estimatedIncomeTax);
-  const cashBalance = roundMoney(amountForAccount(statements.ledger, "bank") + amountForAccount(statements.ledger, "cash"));
+  const cashBalance = managementById.cash?.value ?? roundMoney(amountForAccount(statements.ledger, "bank") + amountForAccount(statements.ledger, "cash"));
 
   return {
     period: workspace.currentPeriod,
@@ -276,6 +260,7 @@ export function buildReportSnapshot(workspace) {
       prepayment,
       contractLiability,
       estimatedTax,
+      engineChecks: statements.engineChecks,
     },
     sections: {
       balance: {
@@ -330,7 +315,7 @@ export function buildReportSnapshot(workspace) {
           makeRow("ownerRefund", "待处理退款", refunds.reduce((sum, item) => sum + Number(item.amount || 0), 0), refunds.map((item) => ({ id: item.id, date: item.date, title: item.memberName, reference: "会员退款", description: item.note, amount: item.amount }))),
           makeRow("ownerCommission", "教练提成", commissions.reduce((sum, item) => sum + Number(item.amount || 0), 0), commissions.map((item) => ({ id: item.id, date: item.date, title: item.memberName, reference: "提成", description: item.note, amount: item.amount }))),
           makeRow("ownerTax", "预计税款（演示估算）", estimatedTax),
-          makeRow("ownerGap", "未来现金缺口", Math.max(0, payable + estimatedTax - cashBalance)),
+          makeRow("ownerGap", "未来现金缺口", Math.abs(Math.min(0, managementById.cashGap?.value ?? (cashBalance - payable - estimatedTax)))),
         ],
       },
     },
@@ -341,6 +326,8 @@ export function buildReportSnapshot(workspace) {
         makeRow("taxAdjustments", "税会调整", Number(workspace.tax.adjustments || 0)),
         makeRow("taxBase", "增值税估算计税基础", Math.max(0, statements.revenue + Number(workspace.tax.adjustments || 0))),
         makeRow("vat", "增值税估算", estimatedVat),
+        makeRow("inputVat", "进项税额", engineTax.inputVat.value),
+        makeRow("vatPayable", "应交增值税", engineTax.vatPayable.value),
         makeRow("surtax", "附加税费估算", estimatedSurtax),
         makeRow("incomeTax", "所得税估算", estimatedIncomeTax),
         makeRow("payroll", "工资薪金", Number(workspace.tax.payroll || 0)),
@@ -400,7 +387,7 @@ export function getLatestReportVersion(workspace) {
 export function workflowChecks(workspace) {
   const snapshot = buildReportSnapshot(workspace);
   const currentTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
-  const unresolved = currentTransactions.filter((item) => item.status !== "reconciled");
+  const unresolved = currentTransactions.filter((item) => !["reconciled", "posted", "ignored"].includes(item.status));
   const version = getLatestReportVersion(workspace);
   const filing = workspace.delivery.filing;
   const checks = [
