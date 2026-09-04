@@ -181,7 +181,7 @@ const COLLECTION_CONFIG = {
     fields: [
       { key: "name", label: "姓名", required: true },
       { key: "roleId", label: "角色", type: "select", options: [] },
-      { key: "status", label: "状态", type: "status" },
+      { key: "status", label: "状态", type: "select", options: [["active", "已启用"], ["inactive", "已停用"]] },
     ],
   },
   roles: {
@@ -625,6 +625,22 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
     }
   }
 
+  function toggleUserStatus(user) {
+    onCancelDelete();
+    setError("");
+    try {
+      const nextStatus = user.status === "active" ? "inactive" : "active";
+      const savedUser = actions.upsertEntity(activeWorkspace.id, "users", { ...user, status: nextStatus }, { label: config.title });
+      if (draft.id === user.id) {
+        setDraft(emptyDraft(config));
+        setEditorOpen(false);
+      }
+      onToast?.(`${savedUser.name}已${nextStatus === "active" ? "启用，可从左侧切换" : "停用，不再出现在左侧切换列表"}`);
+    } catch (caught) {
+      setError(caught.message || `${user.name}状态更新失败`);
+    }
+  }
+
   function convertPersonnelToUser(personnel, roleId) {
     setError("");
     try {
@@ -649,7 +665,7 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
   ));
 
   return (
-    <section className="foundation-section entity-editor foundation-entity-editor">
+    <section className={`foundation-section entity-editor foundation-entity-editor${collection === "users" ? " foundation-user-editor" : ""}`}>
       <div className="foundation-section-heading"><div><small>{collection === "users" ? "可新增、改名、调整角色、停用或删除" : "本地资料"}</small><h3><Icon size={18} />{config.title}</h3></div><span>{items.length} 条</span></div>
       {collection === "users" && !hasActiveUsers && <p className="foundation-hint">当前没有启用{terminology.personnel}操作用户。首位启用用户需选择具备“管理工作台”权限的启用角色；保存后会自动成为当前本地操作身份。</p>}
       {collection === "personnelRecords" && <p className="foundation-hint">关联后两处共用同一姓名；{terminology.personnel}资料状态与操作用户权限状态仍分别管理。</p>}
@@ -663,10 +679,11 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
           const titleId = `${collection}-delete-title-${index}`;
           const descriptionId = `${collection}-delete-description-${index}`;
           return (
-            <article className={`foundation-record foundation-entity-record${confirming ? " is-confirming-delete" : ""}`} key={item.id}>
+            <article className={`foundation-record foundation-entity-record${collection === "users" ? ` foundation-user-record${item.status === "active" ? "" : " is-inactive"}` : ""}${confirming ? " is-confirming-delete" : ""}`} key={item.id}>
               <div className="foundation-entity-record-copy"><strong>{name}</strong><small>{recordDescription(item, collection, activeWorkspace, terminology)}</small></div>
               <span className="foundation-record-actions foundation-entity-record-actions">
                 {collection === "personnelRecords" && !linkedUser && <select className="compact-select" value="" aria-label={`将${name}设为操作用户`} disabled={!conversionRoles.length} onChange={(event) => event.target.value && convertPersonnelToUser(item, event.target.value)}><option value="">{conversionRoles.length ? "设为操作用户…" : "无可用角色"}</option>{conversionRoles.map((role) => <option value={role.id} key={role.id}>使用角色：{role.name}</option>)}</select>}
+                {collection === "users" && <button className={`foundation-user-status-action ${item.status === "active" ? "is-stop" : "is-enable"}`} type="button" aria-label={`${item.status === "active" ? "停用" : "启用"}${name}`} title={item.status === "active" ? "停用后将从左侧切换列表移除" : "启用后可从左侧切换"} onClick={() => toggleUserStatus(item)}><Power size={14} /><span>{item.status === "active" ? "停用" : "启用"}</span></button>}
                 <button type="button" aria-label={`编辑${name}`} onClick={() => edit(item)}><PencilSimple size={15} /></button><button type="button" aria-label={`删除${name}`} aria-haspopup="dialog" aria-expanded={confirming} onClick={() => requestRemove(item)}><Trash size={15} /></button>
               </span>
               {confirming && <div className="foundation-record-delete-confirm" role="alertdialog" aria-labelledby={titleId} aria-describedby={descriptionId} onKeyDown={(event) => { if (event.key === "Escape") cancelRemove(); }}>

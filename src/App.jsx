@@ -246,6 +246,7 @@ function Sidebar({ state, workspace, page, onPage, onSwitchWorkspace, onSwitchUs
   const accountSwitcherRef = useRef(null);
   const accountTriggerRef = useRef(null);
   const navigation = primaryNavigationForWorkspace(workspace);
+  const terminology = workspaceTerminology(workspace);
   const activeUsers = (workspace?.users || []).filter((user) => user.status === "active");
   const operator = activeUsers.find((user) => user.id === state.activeUserId)
     || activeUsers[0]
@@ -319,16 +320,16 @@ function Sidebar({ state, workspace, page, onPage, onSwitchWorkspace, onSwitchUs
       <div className="sidebar-bottom">
         {workspace && <div className="period-card"><CalendarBlank size={18} /><div><small>当前账期</small><strong>{formatPeriod(workspace.currentPeriod)}</strong></div></div>}
         <div className="account-switcher" ref={accountSwitcherRef}>
-          <button ref={accountTriggerRef} className="account-card account-switcher-trigger" aria-expanded={accountOpen} aria-haspopup="menu" aria-label="切换本地操作人员" onClick={() => { setMenuOpen(false); setAccountOpen((value) => !value); }} type="button"><span className="avatar">{operator?.name?.trim()?.slice(0, 1) || "—"}</span><div><strong>{operator?.name || "未设置操作人员"}</strong><small>{operatorRole}</small></div><CaretDown size={14} /></button>
+          <button ref={accountTriggerRef} className="account-card account-switcher-trigger" aria-expanded={accountOpen} aria-haspopup="menu" aria-label={`切换当前${terminology.personnel}操作人`} onClick={() => { setMenuOpen(false); setAccountOpen((value) => !value); }} type="button"><span className="avatar">{operator?.name?.trim()?.slice(0, 1) || "—"}</span><div aria-live="polite" aria-atomic="true"><strong>{operator?.name || `未设置${terminology.personnel}操作人`}</strong><small>{operatorRole}</small></div><CaretDown size={14} /></button>
           {accountOpen && (
             <div className="account-switcher-menu" role="menu">
               {activeUsers.length ? (
                 <>
                   {activeUsers.map((user) => <button className={user.id === operator?.id ? "active" : ""} disabled={user.id === operator?.id} key={user.id} onClick={() => { onSwitchUser(user.id); setAccountOpen(false); }} role="menuitem" type="button"><span className="avatar">{user.name?.trim()?.slice(0, 1) || "—"}</span><span><strong>{user.name}</strong><small>{roleName(user)}</small></span>{user.id === operator?.id && <Check size={16} weight="bold" />}</button>)}
-                  <button className="account-switcher-manage" onClick={() => { onPage("setup"); setAccountOpen(false); }} role="menuitem" type="button"><GearSix size={16} /><span><strong>管理人员与角色</strong><small>前往基础资料</small></span></button>
+                  <button className="account-switcher-manage" onClick={() => { onPage("setup"); setAccountOpen(false); }} role="menuitem" type="button"><GearSix size={16} /><span><strong>管理{terminology.personnel}与角色</strong><small>新增、改名、调角色或停用</small></span></button>
                 </>
               ) : (
-                <button className="account-switcher-empty" onClick={() => { onPage("setup"); setAccountOpen(false); }} role="menuitem" type="button"><Plus size={16} /><span><strong>去基础资料添加人员</strong><small>不创建虚构登录身份</small></span></button>
+                <button className="account-switcher-empty" onClick={() => { onPage("setup"); setAccountOpen(false); }} role="menuitem" type="button"><Plus size={16} /><span><strong>去基础资料添加{terminology.personnel}</strong><small>空白工作台不会锁定示例姓名</small></span></button>
               )}
             </div>
           )}

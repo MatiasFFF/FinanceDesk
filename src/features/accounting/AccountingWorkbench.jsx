@@ -262,6 +262,27 @@ function blankVoucherLine(voucher) {
   };
 }
 
+function voucherLineSourceIds(line) {
+  return [...new Set((Array.isArray(line?.sourceIds) ? line.sourceIds : [])
+    .map((sourceId) => String(sourceId || "").trim())
+    .filter(Boolean))];
+}
+
+function voucherLineSourceInput(line) {
+  return line?.sourceIdsText ?? voucherLineSourceIds(line).join("，");
+}
+
+function voucherLineAuxiliaryInput(line) {
+  return line?.auxiliaryIdText ?? line?.auxiliaryId ?? "";
+}
+
+function parseVoucherLineSourceIds(value) {
+  return [...new Set(String(value || "")
+    .split(/[,，;；\n]+/)
+    .map((sourceId) => sourceId.trim())
+    .filter(Boolean))];
+}
+
 function voucherDraftValidation(workspace, lines) {
   return validateVoucherBalance(
     { lines },
@@ -352,9 +373,10 @@ function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChan
         const debit = Number(line.debit || 0);
         const credit = Number(line.credit || 0);
         const unavailable = !accountIsActive(accounts, line.account);
+        const sourceIds = voucherLineSourceIds(line);
         if (editable) {
           return (
-            <div className="engine-voucher-line is-editable" key={`${index}-${line.auxiliaryId || "line"}`}>
+            <div className="engine-voucher-line is-editable" key={line.id || `voucher-line-${index}`}>
               <span className="engine-voucher-line-index">#{index + 1}</span>
               <label className="engine-voucher-line-field engine-voucher-line-account-field">
                 <span>会计科目</span>
@@ -368,11 +390,27 @@ function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChan
                 />
                 <small>{unavailable ? "请选择当前有效科目" : line.account}</small>
               </label>
-              <label className="engine-voucher-line-field">
+              <label className="engine-voucher-line-field engine-voucher-line-auxiliary-field">
+                <span>辅助核算</span>
+                <input value={voucherLineAuxiliaryInput(line)} onChange={(event) => {
+                  const auxiliaryIdText = event.target.value;
+                  onChange(index, { auxiliaryIdText, auxiliaryId: auxiliaryIdText.trim() || null });
+                }} aria-label={`第 ${index + 1} 行辅助核算`} placeholder="往来对象或辅助标识" />
+                <small>{line.auxiliaryId ? "随本行保存" : "未设置"}</small>
+              </label>
+              <label className="engine-voucher-line-field engine-voucher-line-source-field">
+                <span>来源说明（sourceIds）</span>
+                <input value={voucherLineSourceInput(line)} onChange={(event) => {
+                  const sourceIdsText = event.target.value;
+                  onChange(index, { sourceIdsText, sourceIds: parseVoucherLineSourceIds(sourceIdsText) });
+                }} aria-label={`第 ${index + 1} 行来源说明`} placeholder="用逗号或分号分隔来源标识" />
+                <small>{sourceIds.length ? `${sourceIds.length} 个来源标识，保存后进入追溯链` : "未设置分录来源"}</small>
+              </label>
+              <label className="engine-voucher-line-field engine-voucher-line-debit-field">
                 <span>借方金额</span>
                 <input type="number" min="0" step="0.01" inputMode="decimal" value={line.debit || ""} onChange={(event) => onChange(index, { debit: event.target.value })} aria-label={`第 ${index + 1} 行借方金额`} placeholder="0.00" />
               </label>
-              <label className="engine-voucher-line-field">
+              <label className="engine-voucher-line-field engine-voucher-line-credit-field">
                 <span>贷方金额</span>
                 <input type="number" min="0" step="0.01" inputMode="decimal" value={line.credit || ""} onChange={(event) => onChange(index, { credit: event.target.value })} aria-label={`第 ${index + 1} 行贷方金额`} placeholder="0.00" />
               </label>
@@ -381,7 +419,7 @@ function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChan
           );
         }
         return (
-          <div className="engine-voucher-line" key={`${index}-${line.auxiliaryId || "line"}`}>
+          <div className="engine-voucher-line" key={line.id || `voucher-line-${index}`}>
             <span className="engine-voucher-line-amount">
               <small>{debit ? "借方" : "贷方"}</small>
               <strong>¥{money(debit || credit)}</strong>
@@ -390,6 +428,10 @@ function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChan
               <small>科目</small>
               <strong>{workspaceAccountLabel(workspace, accounts, line.account)}</strong>
               <small>{line.account}{unavailable ? " · 当前已停用" : ""}</small>
+            </span>
+            <span className="engine-voucher-line-details">
+              <span><small>辅助核算</small><strong>{line.auxiliaryId || "未设置"}</strong></span>
+              <span><small>来源说明（sourceIds）</small><strong>{sourceIds.join("、") || "无分录来源"}</strong></span>
             </span>
           </div>
         );

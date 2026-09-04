@@ -554,8 +554,22 @@
 
 .mapping-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 9px;
+}
+
+.counterparty-mapping-list {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+
+.counterparty-mapping-card {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
 }
 
 .balance-inputs {
@@ -782,7 +796,7 @@
 
 @media (max-width: 1000px) {
   .mapping-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .document-intake-controls {
@@ -1134,6 +1148,18 @@
   flex: 1 1 280px;
 }
 
+.bank-file-summary > .foundation-inline-actions {
+  min-width: 0;
+  justify-content: flex-end;
+  margin-top: 0;
+}
+
+.bank-file-summary > .mapping-badge {
+  max-width: 100%;
+  white-space: normal;
+  text-align: center;
+}
+
 .bank-file-summary strong,
 .bank-file-summary small,
 .import-report strong,
@@ -1166,8 +1192,21 @@
   justify-content: flex-end;
 }
 
+.bank-import-actions > button {
+  min-width: 0;
+  flex: 1 1 220px;
+  white-space: normal;
+  line-height: 1.35;
+  text-align: center;
+}
+
 .bank-import-actions .text-danger-button {
+  flex: 0 1 auto;
   margin-left: auto;
+}
+
+.bank-import-panel .foundation-field > span {
+  overflow-wrap: anywhere;
 }
 
 .import-feedback {
@@ -1692,6 +1731,30 @@
     justify-self: stretch;
   }
 
+  .balance-inputs,
+  .bank-import-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .balance-inputs > span {
+    padding: 0;
+  }
+
+  .bank-import-actions > button {
+    width: 100%;
+    flex-basis: auto;
+  }
+
+  .bank-import-actions .text-danger-button {
+    margin-left: 0;
+  }
+
+  .bank-file-summary > .foundation-inline-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
 }
 
 @media (max-width: 560px) {
@@ -2025,6 +2088,41 @@
   flex: 1 1 170px;
 }
 
+.foundation-user-editor {
+  grid-column: 1 / -1;
+}
+
+.foundation-user-record.is-inactive .foundation-entity-record-copy {
+  opacity: 0.68;
+}
+
+.foundation-entity-record-actions > .foundation-user-status-action {
+  display: inline-flex;
+  width: auto;
+  min-width: 62px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 1px solid var(--line-soft);
+}
+
+.foundation-entity-record-actions > .foundation-user-status-action.is-enable {
+  border-color: rgba(128, 145, 119, 0.3);
+  background: var(--sage-soft);
+  color: var(--sage);
+}
+
+.foundation-entity-record-actions > .foundation-user-status-action.is-stop {
+  color: var(--quiet);
+}
+
+.foundation-entity-record-actions > .foundation-user-status-action:hover {
+  border-color: var(--line);
+  background: var(--sand);
+  color: var(--espresso);
+}
+
 .foundation-entity-record > .foundation-record-delete-confirm {
   width: 100%;
   grid-column: 1 / -1;
@@ -2115,6 +2213,10 @@
     min-width: 0;
     max-width: none;
     flex-basis: 100%;
+  }
+
+  .foundation-entity-record-actions > .foundation-user-status-action {
+    margin-right: auto;
   }
 
   .foundation-entity-editor-panel {

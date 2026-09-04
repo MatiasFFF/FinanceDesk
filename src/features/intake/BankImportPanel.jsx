@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle, FileArrowUp, Table, WarningCircle, X } from "@phosphor-icons/react";
 
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
+import { normalizeWorkspaceTerminology } from "../../domain/foundation.js";
 import {
   BANK_FIELD_DEFINITIONS,
   PLATFORM_SETTLEMENT_CHANNELS,
@@ -44,6 +45,7 @@ function displayAccountIdentity(account) {
 
 export function BankImportPanel({ compact = false, onToast, onComplete }) {
   const { activeWorkspace, actions, store, fileVault } = useFinanceDesk();
+  const terminology = useMemo(() => normalizeWorkspaceTerminology(activeWorkspace.terminology), [activeWorkspace.terminology]);
   const inputRef = useRef(null);
   const settlementInputRef = useRef(null);
   const applyingRef = useRef(false);
@@ -137,12 +139,12 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
       kind: item.kind || fallbackKind,
     }));
     return [
-      { label: "已有客户", items: targets(counterparties.filter((item) => item.kind === "customer"), "counterparty", "customer") },
-      { label: "已有供应商", items: targets(counterparties.filter((item) => item.kind === "supplier"), "counterparty", "supplier") },
-      { label: "已有员工", items: targets(activeWorkspace.personnelRecords || [], "personnelRecord", "employee") },
+      { label: `已有${terminology.customer}`, items: targets(counterparties.filter((item) => item.kind === "customer"), "counterparty", "customer") },
+      { label: `已有${terminology.supplier}`, items: targets(counterparties.filter((item) => item.kind === "supplier"), "counterparty", "supplier") },
+      { label: `已有${terminology.personnel}`, items: targets(activeWorkspace.personnelRecords || [], "personnelRecord", "employee") },
       { label: "已有关联方", items: targets(counterparties.filter((item) => item.kind === "related_party"), "counterparty", "related_party") },
     ].filter((group) => group.items.length);
-  }, [activeWorkspace]);
+  }, [activeWorkspace, terminology]);
   const counterpartyPreviewGroups = useMemo(() => {
     const groups = new Map();
     (plan?.transactions || []).forEach((transaction) => {
@@ -688,7 +690,29 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
 
           <div className="bank-preview-scroll"><table><thead><tr><th>原始行</th>{inspection.headers.slice(0, 7).map((header) => <th key={header}>{header}</th>)}</tr></thead><tbody>{inspection.preview.map((row) => <tr key={row.rowNumber}><td>{row.rowNumber}</td>{row.cells.slice(0, 7).map((cell, index) => <td key={`${row.rowNumber}-${index}`}>{String(cell.value)}</td>)}</tr>)}</tbody></table></div>
 
-          {plan && counterpartyPreviewGroups.length > 0 && <div><div className="bank-file-summary"><span><strong>交易对手标准化</strong><small>把原始名称映射到当前工作台对象，或填写手工标准名称；确认导入后保存为本地别名规则。</small></span><span className={counterpartyMappingDirty ? "mapping-badge warning" : "mapping-badge"}>{counterpartyMappingDirty ? "待重新预检查" : "映射已计入预览"}</span></div>{counterpartyPreviewGroups.map((group) => { const selected = counterpartyMappings[group.key]; return <div key={group.key}><div className="bank-file-summary"><span><strong>{group.rawName || "未提供对方名称"}</strong><small>{group.counterpartyAccount ? `账号 ${group.counterpartyAccount} · ` : ""}${group.rowCount} 笔流水</small></span><span className={group.mappingSource ? "mapping-badge" : "mapping-badge warning"}>{group.mappingSource ? `已套用：${group.standardName}` : "尚未标准化"}</span></div><div className="mapping-grid"><label className="foundation-field"><span>映射到标准对象</span><select value={selected?.targetKey || ""} onChange={(event) => chooseCounterpartyTarget(group, event.target.value)}><option value="">暂不映射</option>{counterpartyTargetGroups.map((targetGroup) => <optgroup label={targetGroup.label} key={targetGroup.label}>{targetGroup.items.map((target) => <option value={target.key} key={target.key}>{target.name}</option>)}</optgroup>)}<option value="manual">手工标准名称</option></select></label>{selected?.targetKey === "manual" && <><label className="foundation-field"><span>标准名称</span><input value={selected.standardName || ""} onChange={(event) => updateManualCounterparty(group, { standardName: event.target.value })} placeholder="例如：上海青禾科技有限公司" /></label><label className="foundation-field"><span>对象类型</span><select value={selected.kind || "other"} onChange={(event) => updateManualCounterparty(group, { kind: event.target.value })}><option value="customer">客户</option><option value="supplier">供应商</option><option value="employee">员工</option><option value="related_party">关联方</option><option value="other">其他</option></select></label></>}</div></div>; })}</div>}
+          {plan && counterpartyPreviewGroups.length > 0 && (
+            <div className="counterparty-mapping-list">
+              <div className="bank-file-summary">
+                <span><strong>交易对手标准化</strong><small>把原始名称映射到当前工作台对象，或填写手工标准名称；确认导入后保存为本地别名规则。</small></span>
+                <span className={counterpartyMappingDirty ? "mapping-badge warning" : "mapping-badge"}>{counterpartyMappingDirty ? "待重新预检查" : "映射已计入预览"}</span>
+              </div>
+              {counterpartyPreviewGroups.map((group) => {
+                const selected = counterpartyMappings[group.key];
+                return (
+                  <div className="counterparty-mapping-card" key={group.key}>
+                    <div className="bank-file-summary">
+                      <span><strong>{group.rawName || "未提供对方名称"}</strong><small>{group.counterpartyAccount ? `账号 ${group.counterpartyAccount} · ` : ""}${group.rowCount} 笔流水</small></span>
+                      <span className={group.mappingSource ? "mapping-badge" : "mapping-badge warning"}>{group.mappingSource ? `已套用：${group.standardName}` : "尚未标准化"}</span>
+                    </div>
+                    <div className="mapping-grid">
+                      <label className="foundation-field"><span>映射到标准对象</span><select value={selected?.targetKey || ""} onChange={(event) => chooseCounterpartyTarget(group, event.target.value)}><option value="">暂不映射</option>{counterpartyTargetGroups.map((targetGroup) => <optgroup label={targetGroup.label} key={targetGroup.label}>{targetGroup.items.map((target) => <option value={target.key} key={target.key}>{target.name}</option>)}</optgroup>)}<option value="manual">手工标准名称</option></select></label>
+                      {selected?.targetKey === "manual" && <><label className="foundation-field"><span>标准名称</span><input value={selected.standardName || ""} onChange={(event) => updateManualCounterparty(group, { standardName: event.target.value })} placeholder="例如：上海青禾科技有限公司" /></label><label className="foundation-field"><span>对象类型</span><select value={selected.kind || "other"} onChange={(event) => updateManualCounterparty(group, { kind: event.target.value })}><option value="customer">{terminology.customer}</option><option value="supplier">{terminology.supplier}</option><option value="employee">{terminology.personnel}</option><option value="related_party">关联方</option><option value="other">其他</option></select></label></>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           <div className="foundation-inline-actions bank-import-actions">
             <button className="secondary-button" disabled={busy} type="button" onClick={previewImport}>{counterpartyMappingDirty ? "保存映射并重新预检查" : "预检查去重、余额与异常"}</button>

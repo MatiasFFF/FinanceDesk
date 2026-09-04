@@ -573,7 +573,7 @@ export function createBlankWorkspace({ name, legalName, industry, taxpayerType, 
       autoDraftVoucher: false,
       categoryKeywords: [],
     },
-    users: [{ id: "user-accountant", name: "周会计", role: "财务负责人" }],
+    users: [],
     accounts: [],
     members: [],
     businessEvents: [],
@@ -594,7 +594,7 @@ export function createBlankWorkspace({ name, legalName, industry, taxpayerType, 
       ownerConfirmedAt: null,
       confirmedBy: "",
     },
-    auditLog: [{ id: `log-${Date.now()}`, at: new Date().toISOString(), actor: "周会计", action: "创建账套", detail: `创建空白账套「${name}」` }],
+    auditLog: [{ id: `log-${Date.now()}`, at: new Date().toISOString(), actor: "本地用户", action: "创建账套", detail: `创建空白账套「${name}」` }],
   };
 }
 
