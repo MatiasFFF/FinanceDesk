@@ -7,6 +7,11 @@ import {
   roundMoney,
   uid,
 } from "./financeData.js";
+import {
+  buildFinancialStatements,
+  buildManagementMetrics,
+  buildTaxWorkpaper as buildAccountingTaxWorkpaper,
+} from "./domain/accounting/index.js";
 
 export const PRODUCT_NAME = "财务工作台";
 export const PRODUCT_STATE_VERSION = 4;
@@ -237,28 +242,44 @@ function makeRow(id, label, value, details = []) {
 }
 
 export function buildReportSnapshot(workspace) {
-  const statements = calculatePeriodLedger(workspace);
+  const displayLedger = calculatePeriodLedger(workspace);
+  const financials = buildFinancialStatements(workspace, { period: workspace.currentPeriod });
+  const management = buildManagementMetrics(workspace, { period: workspace.currentPeriod });
+  const accountingTax = buildAccountingTaxWorkpaper(workspace, { period: workspace.currentPeriod });
+  const metricValue = (id, fallback = 0) => management.metrics.find((item) => item.id === id)?.value ?? fallback;
+  const statements = {
+    ledger: displayLedger.ledger,
+    revenue: financials.incomeStatement.netRevenue.value,
+    expenses: roundMoney(financials.incomeStatement.cost.value + financials.incomeStatement.expenses.value),
+    profit: financials.incomeStatement.profit.value,
+    assets: financials.balanceSheet.assets.value,
+    liabilities: financials.balanceSheet.liabilities.value,
+    equity: financials.balanceSheet.equity.value,
+    difference: financials.balanceSheet.difference.value,
+  };
   const periodTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
   const inflows = periodTransactions.filter((item) => Number(item.amount) > 0);
   const outflows = periodTransactions.filter((item) => Number(item.amount) < 0);
-  const cashIn = roundMoney(inflows.reduce((sum, item) => sum + Number(item.amount || 0), 0));
-  const cashOut = roundMoney(outflows.reduce((sum, item) => sum + Math.abs(Number(item.amount || 0)), 0));
-  const receivable = billOutstanding(workspace, "receivable");
-  const payable = billOutstanding(workspace, "payable");
-  const prepayment = billOutstanding(workspace, "prepaymentPaid");
-  const contractLiability = roundMoney(Math.max(0, -amountForAccount(statements.ledger, "contractLiability")));
+  const cashIn = roundMoney(financials.cashFlow.movements.filter((item) => item.amount > 0).reduce((sum, item) => sum + item.amount, 0));
+  const cashOut = roundMoney(financials.cashFlow.movements.filter((item) => item.amount < 0).reduce((sum, item) => sum + Math.abs(item.amount), 0));
+  const receivable = metricValue("receivable", billOutstanding(workspace, "receivable"));
+  const payable = metricValue("payable", billOutstanding(workspace, "payable"));
+  const prepayment = metricValue("prepayment", billOutstanding(workspace, "prepaymentPaid"));
+  const contractLiability = metricValue("deposit", Math.max(0, -amountForAccount(statements.ledger, "contractLiability")));
   const refunds = workspace.businessEvents.filter((item) => item.type === "refund" && String(item.date || "").startsWith(workspace.currentPeriod));
   const commissions = workspace.businessEvents.filter((item) => item.type === "commission" && String(item.date || "").startsWith(workspace.currentPeriod));
-  const estimatedVat = roundMoney(Math.max(0, statements.revenue + Number(workspace.tax.adjustments || 0)) * 0.03);
+  const taxableBase = Math.max(0, accountingTax.taxableRevenue.value + Number(workspace.tax.adjustments || 0));
+  const estimatedVat = roundMoney(Math.max(0, taxableBase * accountingTax.vatRate - accountingTax.inputVat.value));
   const estimatedSurtax = roundMoney(estimatedVat * 0.12);
   const estimatedIncomeTax = roundMoney(Math.max(0, statements.profit) * 0.05);
   const estimatedTax = roundMoney(estimatedVat + estimatedSurtax + estimatedIncomeTax);
-  const cashBalance = roundMoney(amountForAccount(statements.ledger, "bank") + amountForAccount(statements.ledger, "cash"));
+  const cashBalance = metricValue("cash", financials.cashFlow.closingCash.value);
 
   return {
     period: workspace.currentPeriod,
     generatedAt: new Date().toISOString(),
     ledger: statements.ledger,
+    engineChecks: financials.checks,
     summary: {
       revenue: statements.revenue,
       expenses: statements.expenses,
@@ -319,31 +340,33 @@ export function buildReportSnapshot(workspace) {
         label: "老板报表",
         rows: [
           makeRow("ownerCash", "现金余额", cashBalance, accountRows(workspace, ["bank", "cash"])),
-          makeRow("ownerCashIn", "本月收款", cashIn, detailsFromTransactions(inflows)),
+          makeRow("ownerCashIn", "本月收款", metricValue("collections", cashIn), detailsFromTransactions(inflows)),
           makeRow("ownerRevenue", "本月收入", statements.revenue, accountRows(workspace, ["revenuePrivate", "revenueGroup"])),
           makeRow("ownerProfit", "本月利润", statements.profit),
           makeRow("ownerPrepaid", "会员预收 / 未履约服务", contractLiability, detailsFromBills(workspace, "depositReceived")),
           makeRow("ownerReceivable", "应收账款", receivable, detailsFromBills(workspace, "receivable")),
           makeRow("ownerPayable", "供应商应付", payable, detailsFromBills(workspace, "payable")),
           makeRow("ownerPrepayment", "供应商预付", prepayment, detailsFromBills(workspace, "prepaymentPaid")),
-          makeRow("ownerRefund", "待处理退款", refunds.reduce((sum, item) => sum + Number(item.amount || 0), 0), refunds.map((item) => ({ id: item.id, date: item.date, title: item.memberName, reference: "会员退款", description: item.note, amount: item.amount }))),
+          makeRow("ownerRefund", "待处理退款", metricValue("refund", refunds.reduce((sum, item) => sum + Number(item.amount || 0), 0)), refunds.map((item) => ({ id: item.id, date: item.date, title: item.memberName, reference: "会员退款", description: item.note, amount: item.amount }))),
           makeRow("ownerCommission", "教练提成", commissions.reduce((sum, item) => sum + Number(item.amount || 0), 0), commissions.map((item) => ({ id: item.id, date: item.date, title: item.memberName, reference: "提成", description: item.note, amount: item.amount }))),
           makeRow("ownerTax", "预计税款（演示估算）", estimatedTax),
-          makeRow("ownerGap", "未来现金缺口", Math.max(0, payable + estimatedTax - cashBalance)),
+          makeRow("ownerGap", "未来现金缺口", Math.max(Math.abs(Math.min(0, metricValue("cashGap", 0))), payable + estimatedTax - cashBalance, 0)),
         ],
       },
     },
     taxWorkpaper: {
       disclaimer: "本地演示估算口径，不是正式申报结果；税务局连接将在后续阶段提供。",
       rows: [
-        makeRow("taxRevenue", "账面营业收入", statements.revenue),
+        makeRow("taxRevenue", "账面营业收入", accountingTax.taxableRevenue.value),
         makeRow("taxAdjustments", "税会调整", Number(workspace.tax.adjustments || 0)),
-        makeRow("taxBase", "增值税估算计税基础", Math.max(0, statements.revenue + Number(workspace.tax.adjustments || 0))),
+        makeRow("taxBase", "增值税估算计税基础", taxableBase),
+        makeRow("outputVat", "销项税额（本地计算）", roundMoney(taxableBase * accountingTax.vatRate)),
+        makeRow("inputVat", "可追溯进项税额", accountingTax.inputVat.value),
         makeRow("vat", "增值税估算", estimatedVat),
         makeRow("surtax", "附加税费估算", estimatedSurtax),
         makeRow("incomeTax", "所得税估算", estimatedIncomeTax),
-        makeRow("payroll", "工资薪金", Number(workspace.tax.payroll || 0)),
-        makeRow("socialSecurity", "社保数据", Number(workspace.tax.socialSecurity || 0)),
+        makeRow("payroll", "工资薪金", accountingTax.payroll.value),
+        makeRow("socialSecurity", "社保数据", accountingTax.socialSecurity.value),
         makeRow("taxTotal", "预计税费合计", estimatedTax),
       ],
     },

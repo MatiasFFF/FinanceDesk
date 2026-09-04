@@ -1,10 +1,13 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.jsx";
+import { FinanceDeskProvider } from "./store/FinanceDeskProvider.jsx";
 import "./styles.css";
 
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    <App />
+    <FinanceDeskProvider>
+      <App />
+    </FinanceDeskProvider>
   </React.StrictMode>,
 );

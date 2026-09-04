@@ -29,7 +29,10 @@ import {
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
-import { transactionStatus, uid } from "./financeData.js";
+import { transactionStatus } from "./financeData.js";
+import { BankImportPanel, FoundationRecordsPanel, useFinanceDesk } from "./foundation-react.js";
+import { saveLocalDocument } from "./foundation.js";
+import { attachEvidenceDocument, recordManualConfirmation, transactionSettlement } from "./domain/accounting/index.js";
 import {
   CLOSE_STAGES,
   PRIMARY_NAV,
@@ -46,10 +49,7 @@ import {
   formatPeriod,
   freezeReportVersion,
   importLocalReceipt,
-  loadProductState,
-  makeWorkspace,
   markPackageExported,
-  persistProductState,
   prepareFilingDraft,
   reportVersionDiff,
   workflowChecks,
@@ -69,6 +69,7 @@ const PAGE_HEADINGS = {
   reports: ["报表中心", "三大报表、老板视角、版本冻结与差异都在这里。"],
   tax: ["确认与申报", "本地准备底稿、两次确认和申报包，不伪装连接税务局。"],
   archive: ["资料归档", "把真实回执、报表版本、确认记录和操作日志收拢归档。"],
+  foundation: ["基础资料", "企业、规则、合同、流水与组织资料的浏览器本地入口。"],
 };
 
 const FILTERS = [
@@ -201,7 +202,7 @@ function BottomNav({ page, onPage }) {
   );
 }
 
-function Topbar({ state, workspace, page, onPeriod, onImport, onSwitchWorkspace, onOpenWorkspaceDialog }) {
+function Topbar({ state, workspace, page, onPeriod, onImport, onFoundation, onSwitchWorkspace, onOpenWorkspaceDialog }) {
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [title, subtitle] = PAGE_HEADINGS[page];
@@ -222,7 +223,7 @@ function Topbar({ state, workspace, page, onPeriod, onImport, onSwitchWorkspace,
         {workspace && (
           <div className="menu-wrap">
             <button className="icon-button" aria-label="更多操作" onClick={() => setMoreOpen((value) => !value)} type="button"><GearSix size={20} /></button>
-            {moreOpen && <div className="popover-menu"><button onClick={() => { onOpenWorkspaceDialog("rename"); setMoreOpen(false); }} type="button"><PencilSimple size={17} />重命名工作台</button><button onClick={() => { onOpenWorkspaceDialog("create"); setMoreOpen(false); }} type="button"><Plus size={17} />新建工作台</button><button onClick={() => { onOpenWorkspaceDialog("delete"); setMoreOpen(false); }} type="button"><Trash size={17} />删除工作台</button></div>}
+            {moreOpen && <div className="popover-menu"><button onClick={() => { onFoundation(); setMoreOpen(false); }} type="button"><GearSix size={17} />企业与基础资料</button><button onClick={() => { onOpenWorkspaceDialog("rename"); setMoreOpen(false); }} type="button"><PencilSimple size={17} />重命名工作台</button><button onClick={() => { onOpenWorkspaceDialog("create"); setMoreOpen(false); }} type="button"><Plus size={17} />新建工作台</button><button onClick={() => { onOpenWorkspaceDialog("delete"); setMoreOpen(false); }} type="button"><Trash size={17} />删除工作台</button></div>}
           </div>
         )}
       </div>
@@ -337,7 +338,7 @@ function TransactionDetail({ workspace, transaction, onClose, onStatus, onEviden
       <div className="detail-scroll">
         <section className="detail-section"><div className="detail-section-title"><i className="section-mark sage" />银行流水</div><dl className="detail-list"><div><dt>交易日期</dt><dd>{transaction.date}</dd></div><div><dt>流水号</dt><dd>{transaction.serial}</dd></div><div><dt>摘要</dt><dd>{transaction.summary}</dd></div><div><dt>金额</dt><dd className={Number(transaction.amount) < 0 ? "expense" : "income"}>{formatCurrency(transaction.amount, { sign: true })}</dd></div><div><dt>置信度</dt><dd>{transaction.confidence || 0}%</dd></div></dl></section>
         <section className="detail-section"><div className="detail-section-title"><i className="section-mark clay" />会计判断与核销</div><p className="match-reason"><Sparkle size={16} weight="fill" />{transaction.suggestion || "尚未形成建议处理"}</p>{allocations.length ? <div className="allocation-list">{allocations.map((allocation) => <div key={`${allocation.billId}-${allocation.amount}`}><span><strong>{allocation.bill?.no || allocation.billId}</strong><small>{allocation.bill?.summary || "本地账单"}</small></span><b>{formatCurrency(allocation.amount)}</b></div>)}</div> : <p className="quiet-copy">当前没有关联账单；人工复核后可以暂存判断，但不会伪造外部匹配。</p>}</section>
-        <section className="detail-section"><div className="detail-section-title"><i className="section-mark sage" />本地证据</div>{linkedDocuments.length ? <div className="evidence-file-list">{linkedDocuments.map((document) => <div key={document.id}><FileText size={18} /><span><strong>{document.name}</strong><small>{document.type} · {fileSize(document.size)}</small></span><CheckCircle size={17} weight="fill" /></div>)}</div> : <div className="missing-evidence"><WarningCircle size={20} /><span><strong>还没有关联证据</strong><small>{transaction.exceptionReason || "请选择本地文件补充证据。"}</small></span></div>}<input ref={evidenceInput} hidden type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) onEvidence(transaction.id, file); event.target.value = ""; }} /><button className="secondary-button wide" onClick={() => evidenceInput.current?.click()} type="button"><FileArrowUp size={17} />选择本地证据</button></section>
+        <section className="detail-section"><div className="detail-section-title"><i className="section-mark sage" />本地证据</div>{linkedDocuments.length ? <div className="evidence-file-list">{linkedDocuments.map((document) => <div key={document.id}><FileText size={18} /><span><strong>{document.name}</strong><small>{document.category || document.type || "本地资料"} · {fileSize(document.size)}</small></span><CheckCircle size={17} weight="fill" /></div>)}</div> : <div className="missing-evidence"><WarningCircle size={20} /><span><strong>还没有关联证据</strong><small>{transaction.exceptionReason || "请选择本地文件补充证据。"}</small></span></div>}<input ref={evidenceInput} hidden type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) onEvidence(transaction.id, file); event.target.value = ""; }} /><button className="secondary-button wide" onClick={() => evidenceInput.current?.click()} type="button"><FileArrowUp size={17} />选择本地证据</button></section>
         <label className="confirmation-check"><input type="checkbox" checked={reviewed} onChange={(event) => setReviewed(event.target.checked)} /><span><strong>我已人工核对业务性质、金额和当前证据</strong><small>此确认会写入本地操作日志，不会触发银行或税务操作。</small></span></label>
       </div>
       <div className="detail-actions"><button className="secondary-button" onClick={() => onStatus([transaction.id], "ignored")} type="button">暂不处理</button><button className="primary-button" disabled={!reviewed} onClick={() => onStatus([transaction.id], "reconciled", true)} type="button">人工确认核销</button></div>
@@ -454,7 +455,7 @@ function ArchivePage({ workspace, onPage, onDocuments, onReceipt, onArchive, onN
   const flow = workflowChecks(workspace);
   const filing = workspace.delivery.filing;
   const archived = workspace.delivery.archives.find((item) => item.period === workspace.currentPeriod);
-  const documents = workspace.documents.filter((item) => `${item.name} ${item.type} ${item.status}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const documents = workspace.documents.filter((item) => `${item.name} ${item.category || item.type} ${item.lifecycleStatus || item.status}`.toLowerCase().includes(query.trim().toLowerCase()));
   const archiveReady = flow.archive.every((item) => item.ok);
   return (
     <div className="page-content archive-page">
@@ -462,7 +463,7 @@ function ArchivePage({ workspace, onPage, onDocuments, onReceipt, onArchive, onN
       <section className="archive-hero"><div><p className="eyebrow">S13 · 回执、归档与下一期</p><h2>{archived ? `${formatPeriod(workspace.currentPeriod)} 已归档` : "让本期交付真正闭环"}</h2><p>{archived ? `归档于 ${formatDateTime(archived.archivedAt)}，报表、确认、回执与期末余额已经建立索引。` : "必须先导入真实外部办理回执，再把本地申报包、确认记录和操作日志一起归档。"}</p></div><div className="archive-hero-actions"><button className="secondary-button" onClick={onExportIndex} type="button"><DownloadSimple size={17} />导出归档索引</button>{archived ? <button className="primary-button" onClick={onNextPeriod} type="button">进入下一期<ArrowRight size={17} /></button> : <button className="primary-button" disabled={!archiveReady} onClick={onArchive} type="button"><Archive size={17} />完成本期归档</button>}</div></section>
       <section className="metric-grid four archive-status-grid"><MetricCard label="冻结报表" value={flow.version?.label || "未完成"} note={flow.version ? formatDateTime(flow.version.createdAt) : "先去报表中心"} icon={ChartBar} tone={flow.version ? "sage" : "clay"} onClick={() => onPage("reports")} /><MetricCard label="两次确认" value={workspace.tax.ownerConfirmedAt ? "已完成" : "未完成"} note={workspace.tax.confirmedBy || "等待客户"} icon={ShieldCheck} tone={workspace.tax.ownerConfirmedAt ? "sage" : "clay"} onClick={() => onPage("tax")} /><MetricCard label="本地申报包" value={filing.exportedAt ? "已导出" : "未导出"} note={formatDateTime(filing.exportedAt)} icon={DownloadSimple} /><MetricCard label="真实回执" value={filing.receipt ? "已导入" : "待导入"} note={filing.receipt?.name || "来自外部办理"} icon={Receipt} tone={filing.receipt ? "sage" : "clay"} /></section>
       {!filing.receipt && <section className="receipt-upload-card"><span><Receipt size={25} /></span><div><strong>导入真实外部办理回执</strong><p>选择在电子税务局或本地安全执行器中取得的 PDF、XML、JSON 或文本回执。文件只在本地读取并记录哈希。</p></div><input ref={receiptInput} hidden type="file" accept=".pdf,.json,.xml,.txt,.csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) onReceipt(file); event.target.value = ""; }} /><button className="primary-button" disabled={!filing.exportedAt} onClick={() => receiptInput.current?.click()} type="button"><UploadSimple size={17} />选择回执</button></section>}
-      <section className="panel archive-content-panel"><div className="archive-toolbar"><div className="report-tabs"><button className={tab === "documents" ? "active" : ""} onClick={() => setTab("documents")} type="button">本地资料</button><button className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")} type="button">操作日志</button><button className={tab === "periods" ? "active" : ""} onClick={() => setTab("periods")} type="button">历史归档</button></div>{tab === "documents" && <div className="archive-tools"><label className="search-field"><MagnifyingGlass size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件" /></label><input ref={docsInput} hidden type="file" multiple onChange={(event) => { onDocuments(Array.from(event.target.files || [])); event.target.value = ""; }} /><button className="secondary-button" onClick={() => docsInput.current?.click()} type="button"><FileArrowUp size={17} />添加本地资料</button></div>}</div>{tab === "documents" && (documents.length ? <div className="document-grid">{documents.map((document) => <article className="document-card" key={document.id}><span className="document-icon"><FileText size={22} /></span><div><small>{document.type} · {document.period || "未分期"}</small><strong>{document.name}</strong><p>{fileSize(document.size)} · {document.hash ? "已记录校验标识" : "本地元数据"}</p></div><TonePill tone={document.status?.includes("待") ? "warning" : "success"}>{document.status || "已获取"}</TonePill></article>)}</div> : <EmptyState title="没有符合条件的资料" description="添加本地文件或清空搜索条件。" />)}{tab === "logs" && (workspace.auditLog.length ? <div className="audit-list">{workspace.auditLog.map((item) => <div key={item.id}><span className="audit-dot" /><span><strong>{item.action}</strong><small>{item.detail}</small></span><span><strong>{item.actor}</strong><small>{formatDateTime(item.at)}</small></span></div>)}</div> : <EmptyState title="还没有操作日志" description="确认、导出、导入和归档动作都会记录在这里。" />)}{tab === "periods" && (workspace.delivery.archives.length ? <div className="period-archive-list">{workspace.delivery.archives.map((item) => <article key={item.id}><span className="archive-badge"><Archive size={20} /></span><div><strong>{formatPeriod(item.period)}</strong><small>{item.reportVersionLabel} · {item.confirmations.confirmedBy || "客户"} · {formatDateTime(item.archivedAt)}</small></div><span><strong>{formatCurrency(item.summary.profit)}</strong><small>本期利润</small></span><TonePill tone="success">已归档</TonePill></article>)}</div> : <EmptyState title="还没有历史归档" description="本期回执导入并通过校验后，可以形成第一条归档记录。" />)}</section>
+      <section className="panel archive-content-panel"><div className="archive-toolbar"><div className="report-tabs"><button className={tab === "documents" ? "active" : ""} onClick={() => setTab("documents")} type="button">本地资料</button><button className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")} type="button">操作日志</button><button className={tab === "periods" ? "active" : ""} onClick={() => setTab("periods")} type="button">历史归档</button></div>{tab === "documents" && <div className="archive-tools"><label className="search-field"><MagnifyingGlass size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件" /></label><input ref={docsInput} hidden type="file" multiple onChange={(event) => { onDocuments(Array.from(event.target.files || [])); event.target.value = ""; }} /><button className="secondary-button" onClick={() => docsInput.current?.click()} type="button"><FileArrowUp size={17} />添加本地资料</button></div>}</div>{tab === "documents" && (documents.length ? <div className="document-grid">{documents.map((document) => { const status = document.lifecycleStatus || document.status || "已获取"; return <article className="document-card" key={document.id}><span className="document-icon"><FileText size={22} /></span><div><small>{document.category || document.type || "本地资料"} · {document.period || "未分期"}</small><strong>{document.name}</strong><p>{fileSize(document.size)} · {document.hash ? "已记录校验标识" : "本地元数据"}</p></div><TonePill tone={status.includes("待") ? "warning" : "success"}>{status}</TonePill></article>; })}</div> : <EmptyState title="没有符合条件的资料" description="添加本地文件或清空搜索条件。" />)}{tab === "logs" && (workspace.auditLog.length ? <div className="audit-list">{workspace.auditLog.map((item) => <div key={item.id}><span className="audit-dot" /><span><strong>{item.action}</strong><small>{item.detail}</small></span><span><strong>{item.actor}</strong><small>{formatDateTime(item.at)}</small></span></div>)}</div> : <EmptyState title="还没有操作日志" description="确认、导出、导入和归档动作都会记录在这里。" />)}{tab === "periods" && (workspace.delivery.archives.length ? <div className="period-archive-list">{workspace.delivery.archives.map((item) => <article key={item.id}><span className="archive-badge"><Archive size={20} /></span><div><strong>{formatPeriod(item.period)}</strong><small>{item.reportVersionLabel} · {item.confirmations.confirmedBy || "客户"} · {formatDateTime(item.archivedAt)}</small></div><span><strong>{formatCurrency(item.summary.profit)}</strong><small>本期利润</small></span><TonePill tone="success">已归档</TonePill></article>)}</div> : <EmptyState title="还没有历史归档" description="本期回执导入并通过校验后，可以形成第一条归档记录。" />)}</section>
       {!archived && <div className="archive-check-panel panel"><div className="panel-heading"><div><p className="eyebrow">归档校验</p><h2>{archiveReady ? "全部条件已满足" : "还不能完成归档"}</h2></div><TonePill tone={archiveReady ? "success" : "warning"}>{flow.archive.filter((item) => item.ok).length} / {flow.archive.length}</TonePill></div><CheckRows items={flow.archive} onNavigate={onPage} /></div>}
       <BoundaryNote />
     </div>
@@ -480,50 +481,23 @@ function WorkspaceDialog({ mode, workspace, onClose, onSubmit }) {
   );
 }
 
-function parseCsvLine(line) {
-  const cells = [];
-  let cell = "";
-  let quoted = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    if (char === '"' && line[index + 1] === '"') { cell += '"'; index += 1; }
-    else if (char === '"') quoted = !quoted;
-    else if (char === "," && !quoted) { cells.push(cell.trim()); cell = ""; }
-    else cell += char;
-  }
-  cells.push(cell.trim());
-  return cells;
-}
-
-function ImportDialog({ open, workspace, onClose, onImport }) {
-  const [dragging, setDragging] = useState(false);
-  const [error, setError] = useState("");
-  const inputRef = useRef(null);
+function FoundationImportDialog({ open, onClose, onToast, onComplete }) {
   if (!open) return null;
-  function readFile(file) {
-    if (!file) return;
-    if (!/\.csv$/i.test(file.name)) { setError("当前产品壳只接收 CSV；Excel 解析由本地导入模块后续接入。"); return; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const lines = String(reader.result || "").replace(/^\ufeff/, "").split(/\r?\n/).filter((line) => line.trim());
-      if (lines.length < 2) { setError("CSV 至少需要表头和一行数据。"); return; }
-      const headers = parseCsvLine(lines[0]).map((item) => item.toLowerCase());
-      const find = (...names) => headers.findIndex((header) => names.some((name) => header.includes(name)));
-      const indexes = { date: find("日期", "date"), counterparty: find("对方", "counterparty"), summary: find("摘要", "summary"), amount: find("金额", "amount") };
-      if (Object.values(indexes).some((index) => index < 0)) { setError("需要包含日期、对方、摘要、金额四列。"); return; }
-      const rows = lines.slice(1).map((line, index) => {
-        const cells = parseCsvLine(line);
-        const amount = Number(String(cells[indexes.amount] || "0").replaceAll(",", ""));
-        return { id: uid("txn-local"), accountId: workspace.accounts[0]?.id || "bank-local-import", date: /^\d{4}-\d{2}-\d{2}$/.test(cells[indexes.date]) ? cells[indexes.date] : `${workspace.currentPeriod}-01`, counterparty: cells[indexes.counterparty] || "未识别交易对象", summary: cells[indexes.summary] || "本地导入流水", amount: Number.isFinite(amount) ? amount : 0, serial: `LOCAL-${Date.now()}-${index + 1}`, suggestion: "待人工确认", confidence: 0, evidenceIds: [], allocations: [], status: "pending", exceptionReason: "本地导入后尚未完成业务匹配与证据关联" };
-      });
-      onImport(rows, file);
-      onClose();
-    };
-    reader.onerror = () => setError("无法读取该文件，请确认它是 UTF-8 CSV。");
-    reader.readAsText(file, "UTF-8");
-  }
-  function template() { downloadText("\ufeff日期,对方,摘要,金额\n2026-08-31,示例客户,课程收入,880.00", "财务工作台-银行流水模板.csv", "text/csv;charset=utf-8"); }
-  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="modal-card import-dialog" role="dialog" aria-modal="true"><div className="modal-heading"><div><p className="eyebrow">浏览器本地处理</p><h2>导入银行流水 CSV</h2></div><button className="icon-button compact" onClick={onClose} type="button" aria-label="关闭"><X size={19} /></button></div><p className="modal-intro">文件不会上传网络。导入后先进入待复核状态，不会因为“建议匹配”自动入账。</p><div className={`drop-zone ${dragging ? "dragging" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); readFile(event.dataTransfer.files?.[0]); }} onClick={() => inputRef.current?.click()}><input ref={inputRef} hidden type="file" accept=".csv,text/csv" onChange={(event) => readFile(event.target.files?.[0])} /><span><UploadSimple size={27} /></span><strong>拖入 CSV，或点击选择文件</strong><small>字段：日期、对方、摘要、金额</small></div>{error && <p className="form-error"><WarningCircle size={16} />{error}</p>}<div className="modal-actions"><button className="secondary-button" onClick={template} type="button"><DownloadSimple size={17} />下载模板</button><button className="primary-button" onClick={() => inputRef.current?.click()} type="button">选择 CSV</button></div></section></div>;
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="modal-card import-dialog foundation-import-dialog" role="dialog" aria-modal="true">
+        <div className="modal-heading">
+          <div><p className="eyebrow">浏览器本地处理</p><h2>导入银行流水</h2></div>
+          <button className="icon-button compact" onClick={onClose} type="button" aria-label="关闭"><X size={19} /></button>
+        </div>
+        <p className="modal-intro">支持 CSV 与 Excel。先预检查字段、重复数据和余额，再由你确认写入；文件不会上传网络。</p>
+        <BankImportPanel
+          onToast={(message) => onToast({ tone: "success", message })}
+          onComplete={() => { onComplete(); onClose(); }}
+        />
+      </section>
+    </div>
+  );
 }
 
 function NoWorkspace({ onCreate }) {
@@ -531,27 +505,142 @@ function NoWorkspace({ onCreate }) {
 }
 
 function App() {
-  const [state, setState] = useState(loadProductState);
+  const { state, activeWorkspace, actions, store, fileVault } = useFinanceDesk();
   const [page, setPage] = useState("overview");
   const [workspaceDialog, setWorkspaceDialog] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
   const [toast, setToast] = useState(null);
-  const workspace = state.workspaces.find((item) => item.id === state.activeWorkspaceId) || null;
-  useEffect(() => { try { persistProductState(state); } catch { setToast({ tone: "danger", message: "浏览器本地存储空间不足，最新状态暂未保存。" }); } }, [state]);
+  const workspace = activeWorkspace ? ensureWorkspace(activeWorkspace) : null;
   useEffect(() => { window.scrollTo({ top: 0, left: 0, behavior: "auto" }); }, [page, workspace?.id]);
   useEffect(() => { if (!toast) return undefined; const timer = window.setTimeout(() => setToast(null), 3200); return () => window.clearTimeout(timer); }, [toast]);
-  function mutateActive(updater) { if (!workspace) return; setState((current) => ({ ...current, workspaces: current.workspaces.map((item) => item.id === current.activeWorkspaceId ? ensureWorkspace(updater(ensureWorkspace(item))) : item) })); }
-  function switchWorkspace(id) { setState((current) => ({ ...current, activeWorkspaceId: id })); setPage("overview"); setToast({ tone: "success", message: `已切换到${state.workspaces.find((item) => item.id === id)?.name || "工作台"}` }); }
-  function submitWorkspaceDialog(form) {
-    if (workspaceDialog === "create") { const created = makeWorkspace({ ...form, name: form.name.trim(), legalName: form.legalName.trim() }); setState((current) => ({ ...current, activeWorkspaceId: created.id, workspaces: [created, ...current.workspaces] })); setPage("overview"); setToast({ tone: "success", message: `已创建“${created.name}”` }); }
-    else if (workspaceDialog === "rename" && workspace) { const name = form.name.trim(); mutateActive((current) => audit({ ...current, name }, "重命名工作台", `${current.name} → ${name}`)); setToast({ tone: "success", message: `工作台已改名为“${name}”` }); }
-    else if (workspaceDialog === "delete" && workspace) { const deletedName = workspace.name; setState((current) => { const workspaces = current.workspaces.filter((item) => item.id !== current.activeWorkspaceId); return { ...current, workspaces, activeWorkspaceId: workspaces[0]?.id || null }; }); setPage("overview"); setToast({ tone: "success", message: `已从本地删除“${deletedName}”` }); }
-    setWorkspaceDialog(null);
+  function mutateActive(updater, auditEvent) {
+    if (!workspace) return null;
+    return actions.updateWorkspace(
+      workspace.id,
+      (current) => ensureWorkspace(updater(ensureWorkspace(current))),
+      auditEvent,
+    );
   }
-  function changePeriod(period) { if (!workspace || period === workspace.currentPeriod) return; mutateActive((current) => audit({ ...current, currentPeriod: period, tax: { ...current.tax, period }, delivery: { ...current.delivery, filing: { ...current.delivery.filing, period } } }, "切换账期", `${current.currentPeriod} → ${period}`)); setToast({ tone: "success", message: `已切换到${formatPeriod(period)}` }); }
-  function importRows(rows, file) { mutateActive((current) => { const account = current.accounts[0] || { id: "bank-local-import", name: "本地导入账户", openingBalance: 0, statementClosing: rows.reduce((sum, item) => sum + Number(item.amount || 0), 0), currency: "CNY" }; const document = { id: uid("doc"), name: file.name, type: "银行流水", size: file.size, status: "已获取", period: current.currentPeriod, relatedIds: rows.map((item) => item.id), createdAt: new Date().toISOString(), hash: `local-${file.size}-${file.lastModified}` }; return audit({ ...current, accounts: current.accounts.length ? current.accounts : [account], transactions: [...rows, ...current.transactions], documents: [document, ...current.documents] }, "导入银行流水", `${file.name} · ${rows.length} 笔 · 浏览器本地读取`); }); setPage("reconcile"); setToast({ tone: "success", message: `已导入 ${rows.length} 笔本地流水，全部进入待复核` }); }
-  function setTransactionStatus(ids, status, manualOverride = false) { if (!workspace || !ids.length) return; const idSet = new Set(ids); const candidates = workspace.transactions.filter((item) => idSet.has(item.id)); const eligible = candidates.filter((item) => manualOverride || (item.status !== "reconciled" && !item.exceptionReason && Number(item.confidence || 0) >= Number(workspace.rules.confidenceThreshold || 85) && (item.evidenceIds?.length || item.directAccount))); if (status === "reconciled" && !eligible.length) { setToast({ tone: "warning", message: "所选流水仍有低置信度或缺证据事项，请进入单笔复核。" }); return; } const affected = status === "reconciled" ? new Set(eligible.map((item) => item.id)) : idSet; mutateActive((current) => audit({ ...current, transactions: current.transactions.map((item) => affected.has(item.id) ? { ...item, status, reviewedAt: new Date().toISOString(), exceptionReason: status === "reconciled" ? "" : item.exceptionReason } : item) }, status === "reconciled" ? "确认流水核销" : "暂不处理流水", `${affected.size} 笔 · ${manualOverride ? "人工复核" : "规则条件通过"}`)); setToast({ tone: "success", message: status === "reconciled" ? `已确认 ${affected.size} 笔核销` : `已将 ${affected.size} 笔设为暂不处理` }); }
-  async function addEvidence(transactionId, file) { const buffer = await file.arrayBuffer(); const digest = await window.crypto.subtle.digest("SHA-256", buffer); const hash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(""); const document = { id: uid("doc"), name: file.name, type: "复核证据", size: file.size, status: "已获取", period: workspace.currentPeriod, relatedIds: [transactionId], createdAt: new Date().toISOString(), hash }; mutateActive((current) => audit({ ...current, documents: [document, ...current.documents], transactions: current.transactions.map((item) => item.id === transactionId ? { ...item, evidenceIds: [...new Set([...(item.evidenceIds || []), document.id])], status: "pending", exceptionReason: "" } : item) }, "补充单笔证据", `${file.name} · 关联 ${transactionId} · SHA-256 ${hash.slice(0, 12)}…`)); setToast({ tone: "success", message: "本地证据已关联，请完成一次人工确认" }); }
+  function switchWorkspace(id) {
+    actions.switchWorkspace(id, { actor: "周会计" });
+    setPage("overview");
+    setToast({ tone: "success", message: `已切换到${state.workspaces.find((item) => item.id === id)?.name || "工作台"}` });
+  }
+  async function submitWorkspaceDialog(form) {
+    try {
+      if (workspaceDialog === "create") {
+        const template = state.workspaces.find((item) => item.templateId === "fitness-studio" || item.isDemo);
+        const created = actions.createWorkspace({
+          name: form.name.trim(),
+          legalName: form.legalName.trim(),
+          industry: form.industry,
+          taxpayerType: form.taxpayerType,
+          sourceWorkspaceId: form.mode === "template" ? template?.id : undefined,
+          actor: "周会计",
+        });
+        actions.updateCompanyProfile(created.id, {
+          legalName: form.legalName.trim() || created.name,
+          industry: form.industry,
+          taxpayerType: form.taxpayerType,
+        }, { actor: "周会计", detail: "创建工作台时填写企业基本资料" });
+        setPage("overview");
+        setToast({ tone: "success", message: `已创建“${created.name}”` });
+      } else if (workspaceDialog === "rename" && workspace) {
+        const name = form.name.trim();
+        actions.renameWorkspace(workspace.id, name, { actor: "周会计" });
+        setToast({ tone: "success", message: `工作台已改名为“${name}”` });
+      } else if (workspaceDialog === "delete" && workspace) {
+        if (state.workspaces.length === 1) throw new Error("至少保留一个工作台；请先新建工作台，再删除当前工作台。");
+        const deletedName = workspace.name;
+        actions.deleteWorkspace(workspace.id, { actor: "周会计" });
+        await fileVault?.clearWorkspace(workspace.id);
+        setPage("overview");
+        setToast({ tone: "success", message: `已从当前浏览器删除“${deletedName}”及其本地文件` });
+      }
+      setWorkspaceDialog(null);
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "工作台操作失败" });
+    }
+  }
+  function changePeriod(period) {
+    if (!workspace || period === workspace.currentPeriod) return;
+    mutateActive((current) => ({
+      ...current,
+      currentPeriod: period,
+      periods: [period, ...current.periods.filter((item) => item !== period)],
+      tax: { ...current.tax, period },
+      delivery: { ...current.delivery, filing: { ...current.delivery.filing, period } },
+    }), { actor: "周会计", action: "切换账期", detail: `${workspace.currentPeriod} → ${period}` });
+    setToast({ tone: "success", message: `已切换到${formatPeriod(period)}` });
+  }
+  function setTransactionStatus(ids, status, manualOverride = false) {
+    if (!workspace || !ids.length) return;
+    const idSet = new Set(ids);
+    const candidates = workspace.transactions.filter((item) => idSet.has(item.id));
+    if (status === "ignored") {
+      mutateActive((current) => audit({
+        ...current,
+        transactions: current.transactions.map((item) => idSet.has(item.id) ? { ...item, status: "ignored", reviewedAt: new Date().toISOString() } : item),
+      }, "暂不处理流水", `${idSet.size} 笔`));
+      setToast({ tone: "success", message: `已将 ${idSet.size} 笔设为暂不处理` });
+      return;
+    }
+    if (manualOverride) {
+      let fullyReconciled = false;
+      mutateActive((current) => {
+        let next = recordManualConfirmation(current, {
+          transactionId: ids[0],
+          decision: "approve",
+          reason: "财务负责人已在单笔证据面板核对业务性质、金额与本地证据",
+        }, { actor: "周会计", mode: "manual" });
+        const transaction = next.transactions.find((item) => item.id === ids[0]);
+        const settlement = transactionSettlement(transaction);
+        fullyReconciled = settlement.status === "fully_reconciled" || Boolean(transaction.directAccount);
+        transaction.status = fullyReconciled ? "reconciled" : "pending";
+        transaction.reviewedAt = new Date().toISOString();
+        if (fullyReconciled) transaction.exceptionReason = "";
+        return next;
+      });
+      setToast({
+        tone: fullyReconciled ? "success" : "warning",
+        message: fullyReconciled ? "人工确认已记录，流水已核销" : "人工确认已记录；尚有未分配金额，流水继续待处理",
+      });
+      return;
+    }
+    const threshold = Number(workspace.rules?.confidenceThreshold ?? workspace.ruleSets?.[0]?.confidenceThreshold ?? 85);
+    const eligible = candidates.filter((item) => {
+      const settlement = transactionSettlement(item);
+      return item.status !== "reconciled" && !item.exceptionReason && Number(item.confidence || 0) >= threshold &&
+        (item.evidenceIds?.length || item.directAccount) && (settlement.status === "fully_reconciled" || item.directAccount);
+    });
+    if (!eligible.length) {
+      setToast({ tone: "warning", message: "所选流水仍有低置信度、缺证据或未分配金额，请进入单笔复核。" });
+      return;
+    }
+    const affected = new Set(eligible.map((item) => item.id));
+    mutateActive((current) => audit({
+      ...current,
+      transactions: current.transactions.map((item) => affected.has(item.id) ? { ...item, status: "reconciled", reviewedAt: new Date().toISOString(), exceptionReason: "" } : item),
+    }, "确认流水核销", `${affected.size} 笔 · 规则条件与真实分配均通过`));
+    setToast({ tone: "success", message: `已确认 ${affected.size} 笔核销` });
+  }
+  async function addEvidence(transactionId, file) {
+    try {
+      const document = await saveLocalDocument({
+        store,
+        fileVault,
+        workspaceId: workspace.id,
+        file,
+        metadata: { category: "复核证据", period: workspace.currentPeriod, relatedObjectIds: [transactionId], actor: "周会计" },
+        relation: "supports-transaction",
+        note: "单笔流水人工复核证据",
+      });
+      mutateActive((current) => attachEvidenceDocument(current, { transactionId, documentId: document.id }, { actor: "周会计", mode: "manual" }));
+      setToast({ tone: "success", message: "本地文件内容与证据关系均已保存，请完成人工确认" });
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "本地证据保存失败" });
+    }
+  }
   function exportSelected(items) { const rows = [["日期", "对方", "摘要", "金额", "状态", "流水号"], ...items.map((item) => [item.date, item.counterparty, item.summary, item.amount, transactionStatus(item).label, item.serial])]; const csv = `\ufeff${rows.map((row) => row.map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`).join(",")).join("\n")}`; downloadText(csv, `${PRODUCT_NAME}-${workspace.currentPeriod}-所选流水.csv`, "text/csv;charset=utf-8"); mutateActive((current) => audit(current, "导出所选流水", `${items.length} 笔 · CSV`)); setToast({ tone: "success", message: `已导出 ${items.length} 笔所选流水` }); }
   function freezeReport() { const snapshot = buildReportSnapshot(workspace); if (Math.abs(snapshot.summary.difference) >= 0.01) { setToast({ tone: "danger", message: "三表尚未勾稽，不能冻结版本。" }); return; } mutateActive((current) => freezeReportVersion(current)); setToast({ tone: "success", message: `已冻结 ${workspace.currentPeriod} 新报表版本` }); }
   function changeTax(field, value) { mutateActive((current) => ({ ...current, tax: { ...current.tax, [field]: value, frozenAt: null, financeConfirmedAt: null, payrollConfirmedAt: null, ownerConfirmedAt: null, confirmedBy: "" }, delivery: { ...current.delivery, filing: { period: current.currentPeriod, draftCreatedAt: null, draftVersionId: null, exportedAt: null, exportedPackage: null, receipt: null, archivedAt: null } } })); }
@@ -560,13 +649,46 @@ function App() {
   function prepareDraft() { mutateActive((current) => prepareFilingDraft(current)); setToast({ tone: "success", message: "本地申报底稿已生成，尚未连接税务局" }); }
   function finalConfirm(name) { const now = new Date().toISOString(); mutateActive((current) => audit({ ...current, tax: { ...current.tax, ownerConfirmedAt: now, confirmedBy: name } }, "客户第二次最终确认", `${name}确认本地申报数据并知晓需外部办理`)); setToast({ tone: "success", message: "第二次最终确认已记录，可以导出本地申报包" }); }
   async function exportPackage() { try { const meta = await exportLocalFilingPackage(workspace); mutateActive((current) => markPackageExported(current, meta)); setToast({ tone: "success", message: "本地申报包已导出；这不代表已提交税务局" }); } catch (error) { setToast({ tone: "danger", message: error.message || "本地申报包导出失败" }); } }
-  async function receiveReceipt(file) { try { const receipt = await importLocalReceipt(file); mutateActive((current) => attachReceipt(current, receipt)); setToast({ tone: "success", message: "真实外部回执已在浏览器本地建立索引" }); } catch { setToast({ tone: "danger", message: "无法读取该回执文件，请换一个本地文件。" }); } }
-  async function addDocuments(files) { if (!files.length) return; const docs = await Promise.all(files.map(async (file) => { const buffer = await file.arrayBuffer(); const digest = await window.crypto.subtle.digest("SHA-256", buffer); const hash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(""); return { id: uid("doc"), name: file.name, type: "本地资料", size: file.size, status: "已获取", period: workspace.currentPeriod, relatedIds: [], createdAt: new Date().toISOString(), hash }; })); mutateActive((current) => audit({ ...current, documents: [...docs, ...current.documents] }, "添加本地资料", `${docs.length} 份 · 仅记录本地元数据与哈希`)); setToast({ tone: "success", message: `已添加 ${docs.length} 份本地资料` }); }
+  async function receiveReceipt(file) {
+    try {
+      const receipt = await importLocalReceipt(file);
+      const document = await saveLocalDocument({
+        store,
+        fileVault,
+        workspaceId: workspace.id,
+        file,
+        metadata: { category: "申报回执", period: workspace.currentPeriod, actor: "周会计" },
+      });
+      mutateActive((current) => attachReceipt(current, { ...receipt, documentId: document.id }));
+      setToast({ tone: "success", message: "真实外部回执文件及其校验标识已保存在当前浏览器" });
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "无法读取该回执文件，请换一个本地文件。" });
+    }
+  }
+  async function addDocuments(files) {
+    if (!files.length) return;
+    let saved = 0;
+    try {
+      for (const file of files) {
+        await saveLocalDocument({
+          store,
+          fileVault,
+          workspaceId: workspace.id,
+          file,
+          metadata: { category: "本地资料", period: workspace.currentPeriod, actor: "周会计" },
+        });
+        saved += 1;
+      }
+      setToast({ tone: "success", message: `已将 ${saved} 份文件及元数据保存在当前浏览器` });
+    } catch (error) {
+      setToast({ tone: "danger", message: `${saved ? `已保存 ${saved} 份；` : ""}${error.message || "其余文件保存失败"}` });
+    }
+  }
   function completeArchive() { mutateActive((current) => archivePeriod(current)); setToast({ tone: "success", message: `${workspace.currentPeriod} 已完成本地归档` }); }
   function goNextPeriod() { const next = enterNextPeriod(workspace); if (next.currentPeriod === workspace.currentPeriod) { setToast({ tone: "warning", message: "请先完成本期归档。" }); return; } mutateActive(() => next); setPage("overview"); setToast({ tone: "success", message: `已进入${formatPeriod(next.currentPeriod)}，期末余额已继承` }); }
   function exportArchiveIndex() { const index = { product: PRODUCT_NAME, workspace: workspace.name, exportedAt: new Date().toISOString(), archives: workspace.delivery.archives, activeFiling: workspace.delivery.filing, auditLog: workspace.auditLog }; downloadText(JSON.stringify(index, null, 2), `${PRODUCT_NAME}-${workspace.name}-归档索引.json`, "application/json;charset=utf-8"); mutateActive((current) => audit(current, "导出归档索引", `${current.delivery.archives.length} 个期间 · JSON`)); setToast({ tone: "success", message: "归档索引已导出到本地" }); }
   if (!workspace) return <div className="app-shell empty-shell"><NoWorkspace onCreate={() => setWorkspaceDialog("create")} /><WorkspaceDialog mode={workspaceDialog} workspace={null} onClose={() => setWorkspaceDialog(null)} onSubmit={submitWorkspaceDialog} />{toast && <div className={`toast ${toast.tone}`}><CheckCircle size={19} weight="fill" />{toast.message}</div>}</div>;
-  return <div className="app-shell"><Sidebar state={state} workspace={workspace} page={page} onPage={setPage} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={setWorkspaceDialog} /><div className="app-main"><Topbar state={state} workspace={workspace} page={page} onPeriod={changePeriod} onImport={() => setImportOpen(true)} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={setWorkspaceDialog} />{page === "overview" && <OverviewPage workspace={workspace} onPage={setPage} />}{page === "reconcile" && <ReconcilePage workspace={workspace} onPage={setPage} onStatus={setTransactionStatus} onEvidence={addEvidence} onExportSelected={exportSelected} />}{page === "reports" && <ReportsPage workspace={workspace} onPage={setPage} onFreeze={freezeReport} />}{page === "tax" && <TaxPage workspace={workspace} onPage={setPage} onTaxChange={changeTax} onTaxCommit={commitTax} onInitialConfirm={initialConfirm} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} />}{page === "archive" && <ArchivePage workspace={workspace} onPage={setPage} onDocuments={addDocuments} onReceipt={receiveReceipt} onArchive={completeArchive} onNextPeriod={goNextPeriod} onExportIndex={exportArchiveIndex} />}</div><BottomNav page={page} onPage={setPage} /><WorkspaceDialog mode={workspaceDialog} workspace={workspace} onClose={() => setWorkspaceDialog(null)} onSubmit={submitWorkspaceDialog} /><ImportDialog open={importOpen} workspace={workspace} onClose={() => setImportOpen(false)} onImport={importRows} />{toast && <div className={`toast ${toast.tone}`}><CheckCircle size={19} weight="fill" />{toast.message}</div>}</div>;
+  return <div className="app-shell"><Sidebar state={state} workspace={workspace} page={page} onPage={setPage} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={setWorkspaceDialog} /><div className="app-main"><Topbar state={state} workspace={workspace} page={page} onPeriod={changePeriod} onImport={() => setImportOpen(true)} onFoundation={() => setPage("foundation")} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={setWorkspaceDialog} />{page === "overview" && <OverviewPage workspace={workspace} onPage={setPage} />}{page === "reconcile" && <ReconcilePage workspace={workspace} onPage={setPage} onStatus={setTransactionStatus} onEvidence={addEvidence} onExportSelected={exportSelected} />}{page === "reports" && <ReportsPage workspace={workspace} onPage={setPage} onFreeze={freezeReport} />}{page === "tax" && <TaxPage workspace={workspace} onPage={setPage} onTaxChange={changeTax} onTaxCommit={commitTax} onInitialConfirm={initialConfirm} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} />}{page === "archive" && <ArchivePage workspace={workspace} onPage={setPage} onDocuments={addDocuments} onReceipt={receiveReceipt} onArchive={completeArchive} onNextPeriod={goNextPeriod} onExportIndex={exportArchiveIndex} />}{page === "foundation" && <FoundationRecordsPanel onToast={(message) => setToast({ tone: "success", message })} />}</div><BottomNav page={page} onPage={setPage} /><WorkspaceDialog mode={workspaceDialog} workspace={workspace} onClose={() => setWorkspaceDialog(null)} onSubmit={submitWorkspaceDialog} /><FoundationImportDialog open={importOpen} onClose={() => setImportOpen(false)} onToast={setToast} onComplete={() => setPage("reconcile")} />{toast && <div className={`toast ${toast.tone}`}><CheckCircle size={19} weight="fill" />{toast.message}</div>}</div>;
 }
 
 export default App;

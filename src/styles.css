@@ -1316,6 +1316,18 @@ button:disabled {
   box-shadow: var(--shadow);
 }
 
+.foundation-import-dialog {
+  width: min(1040px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+
+.foundation-import-dialog .foundation-section {
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+}
+
 .modal-intro {
   margin: 14px 0 18px;
   color: var(--muted);
