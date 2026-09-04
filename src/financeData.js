@@ -509,7 +509,7 @@ export function createDemoWorkspace() {
     members: [
       { id: "member-li", name: "李女士", phone: "138****2187", coach: "陈教练", status: "在籍" },
       { id: "member-wang", name: "王先生", phone: "136****4062", coach: "陈教练", status: "在籍" },
-      { id: "member-zhao", name: "赵女士", phone: "139****1750", coach: "宋教练", status: "退款中" },
+      { id: "member-zhao", name: "赵女士", phone: "139****1750", coach: "宋教练", status: "退款中", openingSessions: 2, openingBalance: 600 },
     ],
     businessEvents: demoBusinessEvents,
     bills: demoBills,

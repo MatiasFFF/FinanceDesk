@@ -26,6 +26,7 @@ import {
   Trash,
   TrendUp,
   UploadSimple,
+  UsersThree,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
@@ -41,6 +42,15 @@ import {
 import { AccountingWorkbench } from "./features/accounting/AccountingWorkbench.jsx";
 import { BankImportPanel } from "./features/intake/BankImportPanel.jsx";
 import { copyWorkspaceLocalFiles, removeLocalDocument, saveLocalDocument } from "./features/intake/documentIntake.js";
+import { MemberLedgerPage } from "./features/members/MemberLedgerPage.jsx";
+import {
+  MEMBER_EVENT_DEFINITIONS,
+  MEMBER_STATUS_OPTIONS,
+  addMember,
+  addMemberBusinessEvent,
+  updateMemberBusinessEventStatus,
+  updateMemberStatus,
+} from "./features/members/memberLedger.js";
 import { FoundationRecordsPanel } from "./features/workspaces/FoundationRecordsPanel.jsx";
 import { WorkspaceManager } from "./features/workspaces/WorkspaceManager.jsx";
 import {
@@ -68,6 +78,7 @@ import { useFinanceDesk } from "./store/FinanceDeskProvider.jsx";
 
 const PAGE_ICONS = {
   overview: HouseLine,
+  members: UsersThree,
   reconcile: SealCheck,
   reports: ChartBar,
   tax: ShieldCheck,
@@ -77,6 +88,7 @@ const PAGE_ICONS = {
 
 const PAGE_HEADINGS = {
   overview: ["月结总览", "一眼看清本期进度、风险和下一步。"],
+  members: ["会员业务台账", "真实记录充值、耗课、退款、余额与教练提成。"],
   reconcile: ["批量核销", "先处理整月流水，再深入单笔证据。"],
   reports: ["报表中心", "三大报表、老板视角、版本冻结与差异都在这里。"],
   tax: ["确认与申报", "本地准备底稿、两次确认和申报包，不伪装连接税务局。"],
@@ -766,6 +778,66 @@ function App() {
       return false;
     }
   }
+  function addLedgerMember(values) {
+    try {
+      mutateActive((current) => audit(
+        addMember(current, values, { actor: actorName }),
+        "新增会员",
+        `${values.name} · ${values.coach || "未分配教练"}`,
+        actorName,
+      ));
+      setToast({ tone: "success", message: `会员“${values.name}”已保存到当前工作台` });
+      return true;
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "会员保存失败" });
+      return false;
+    }
+  }
+  function changeLedgerMemberStatus(memberId, status) {
+    try {
+      const member = workspace.members.find((item) => item.id === memberId);
+      const label = MEMBER_STATUS_OPTIONS.find((item) => item.value === status)?.label || status;
+      mutateActive((current) => audit(
+        updateMemberStatus(current, memberId, status, { actor: actorName }),
+        "更新会员状态",
+        `${member?.name || memberId} → ${label}`,
+        actorName,
+      ));
+      setToast({ tone: "success", message: `${member?.name || "会员"}已更新为“${label}”` });
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "会员状态更新失败" });
+    }
+  }
+  function addLedgerEvent(values) {
+    try {
+      const definition = MEMBER_EVENT_DEFINITIONS[values.kind];
+      mutateActive((current) => audit(
+        addMemberBusinessEvent(current, values, { actor: actorName }),
+        `新增${definition?.label || "会员业务"}`,
+        `${values.date} · ${values.amount} 元 · 待确认`,
+        actorName,
+      ));
+      setToast({ tone: "success", message: `${definition?.label || "业务"}已新增，等待确认` });
+      return true;
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "会员业务保存失败" });
+      return false;
+    }
+  }
+  function changeLedgerEventStatus(eventId, status) {
+    try {
+      const event = workspace.businessEvents.find((item) => item.id === eventId);
+      mutateActive((current) => audit(
+        updateMemberBusinessEventStatus(current, eventId, status, { actor: actorName }),
+        "更新会员业务状态",
+        `${event?.accountingLabel || event?.memberName || eventId} → ${status}`,
+        actorName,
+      ));
+      setToast({ tone: "success", message: status === "void" ? "业务已作废，余额已同步恢复" : "业务状态与会员余额已更新" });
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "业务状态更新失败" });
+    }
+  }
   function exportSelected(items) {
     try {
       const rows = [["日期", "对方", "摘要", "金额", "状态", "流水号"], ...items.map((item) => [item.date, item.counterparty, item.summary, item.amount, transactionStatus(item).label, item.serial])];
@@ -1008,6 +1080,7 @@ function App() {
         <Topbar state={state} workspace={workspace} page={page} onImport={() => setImportOpen(true)} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={openWorkspaceDialog} />
         {loadReport.recovered && <div className="danger-banner recovery-banner"><WarningCircle size={18} /><span><strong>{loadReport.source === "backup" ? "本地数据已从上一次有效副本恢复。" : "本地主副本与备用副本均无法读取，当前已加载初始模板。"}</strong>{loadReport.errors?.length ? ` 原因：${loadReport.errors.join("；")}` : " 请先核对数据并导出备份。"}</span></div>}
         {page === "overview" && <OverviewPage workspace={workspace} onPage={setPage} onResolveNotice={resolveNotice} />}
+        {page === "members" && <MemberLedgerPage workspace={workspace} onAddMember={addLedgerMember} onMemberStatus={changeLedgerMemberStatus} onAddEvent={addLedgerEvent} onEventStatus={changeLedgerEventStatus} />}
         {page === "reconcile" && <ReconcilePage workspace={workspace} onPage={setPage} onStatus={setTransactionStatus} onReview={reviewTransactions} onEvidence={addEvidence} onLinkEvidence={linkExistingEvidence} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} />}
         {page === "reports" && <ReportsPage workspace={workspace} onPage={setPage} onFreeze={freezeReport} />}
         {page === "tax" && <TaxPage workspace={workspace} onPage={setPage} onTaxChange={changeTax} onTaxCommit={commitTax} onInitialConfirm={initialConfirm} onDispute={disputeConfirmation} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} />}

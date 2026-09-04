@@ -29,6 +29,7 @@ export const CLOSE_STAGES = [
 
 export const PRIMARY_NAV = [
   { id: "overview", label: "月结总览", shortLabel: "总览" },
+  { id: "members", label: "会员台账", shortLabel: "会员" },
   { id: "reconcile", label: "批量核销", shortLabel: "核销" },
   { id: "reports", label: "报表中心", shortLabel: "报表" },
   { id: "tax", label: "确认与申报", shortLabel: "确认" },
@@ -286,8 +287,9 @@ export function buildReportSnapshot(workspace) {
   const payable = roundMoney(Math.max(0, -amountForAccount(statements.ledger, "payable")));
   const prepayment = roundMoney(Math.max(0, amountForAccount(statements.ledger, "prepayment")));
   const contractLiability = roundMoney(Math.max(0, -amountForAccount(statements.ledger, "contractLiability")));
-  const refunds = workspace.businessEvents.filter((item) => item.type === "refund" && String(item.date || "").startsWith(workspace.currentPeriod));
-  const commissions = workspace.businessEvents.filter((item) => item.type === "commission" && String(item.date || "").startsWith(workspace.currentPeriod));
+  const currentBusinessEvents = workspace.businessEvents.filter((item) => item.status !== "void" && String(item.date || "").startsWith(workspace.currentPeriod));
+  const refunds = currentBusinessEvents.filter((item) => item.kind === "refund" || item.type === "refund");
+  const commissions = currentBusinessEvents.filter((item) => item.kind === "commission" || item.type === "commission" || item.accountingSubtype === "coachCommission");
   const estimatedOutputVat = engineTax.outputVat.value;
   const estimatedVat = engineTax.vatPayable.value;
   const estimatedSurtax = roundMoney(estimatedVat * 0.12);
@@ -395,7 +397,7 @@ export function buildReportSnapshot(workspace) {
           makeTraceableRow("ownerPayable", "供应商应付", payable, payableDetails, "应付账款科目期末贷方余额"),
           makeTraceableRow("ownerPrepayment", "供应商预付", prepayment, prepaymentDetails, "预付款项科目期末借方余额"),
           makeRow("ownerRefund", "待处理退款", refunds.reduce((sum, item) => sum + Number(item.amount || 0), 0), refunds.map((item) => ({ id: item.id, date: item.date, title: item.memberName, reference: "会员退款", description: item.note, amount: item.amount }))),
-          makeRow("ownerCommission", "教练提成", commissions.reduce((sum, item) => sum + Number(item.amount || 0), 0), commissions.map((item) => ({ id: item.id, date: item.date, title: item.memberName, reference: "提成", description: item.note, amount: item.amount }))),
+          makeRow("ownerCommission", "教练提成", commissions.reduce((sum, item) => sum + Number(item.amount || 0), 0), commissions.map((item) => ({ id: item.id, date: item.date, title: item.coach || item.memberName, reference: "提成", description: item.note, amount: item.amount }))),
           makeTraceableRow("ownerTax", "预计税款（演示估算）", estimatedTax, taxEstimateDetails, "增值税估算 + 附加税费估算 + 所得税估算"),
           makeTraceableRow("ownerGap", "未来现金缺口", cashGapValue, cashGapDetails, "max(0，应付与预计税费 − 可用现金)"),
         ],
