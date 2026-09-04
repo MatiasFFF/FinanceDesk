@@ -2099,6 +2099,14 @@ button.metric-card:hover {
   color: var(--clay-dark);
 }
 
+.existing-evidence-link {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
 .missing-evidence span {
   display: flex;
   flex-direction: column;
@@ -2660,7 +2668,8 @@ button.metric-card:hover {
 .tax-input-grid textarea,
 .form-grid input,
 .form-grid select,
-.field-label input {
+.field-label input,
+.field-label select {
   width: 100%;
   min-height: 40px;
   padding: 9px 10px;

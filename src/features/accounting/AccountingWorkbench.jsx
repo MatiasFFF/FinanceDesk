@@ -30,6 +30,7 @@ import {
   recordManualConfirmation,
   recordReconciliationSuggestions,
   reviseDraftVoucher,
+  reviewVoucher,
   reviewTransactionEvidence,
   reverseReconciliation,
   suggestReconciliations,
@@ -283,6 +284,17 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     );
   }
 
+  function requestVoucherChanges(voucherId) {
+    run(
+      (workspace) => reviewVoucher(workspace, {
+        voucherId,
+        decision: "reject",
+        note: voucherNote,
+      }, { actor: "周会计" }),
+      "凭证已退回修改，复核意见和状态已保存在本地",
+    );
+  }
+
   return (
     <section className="accounting-workbench">
       <div className="accounting-heading">
@@ -368,6 +380,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
               <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借贷 ¥{money(voucher.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0))} · 附件包 {attachments.status === "complete" ? "完整" : "待补"} · V{voucher.version}</small></span><em>{voucher.status}</em></div>
               {voucher.status !== "posted" && voucher.status !== "superseded" && <input value={voucherSummaries[voucher.id] ?? voucher.summary} onChange={(event) => setVoucherSummaries((current) => ({ ...current, [voucher.id]: event.target.value }))} aria-label="凭证摘要" />}
               <div className="engine-inline">
+                {voucher.status === "draft" && <button className="secondary-button" type="button" onClick={() => requestVoucherChanges(voucher.id)}>退回修改</button>}
                 {voucher.status !== "posted" && voucher.status !== "superseded" && <button className="secondary-button" type="button" onClick={() => reviseVoucher(voucher)}>保存修订</button>}
                 {voucher.status !== "posted" && voucher.status !== "superseded" && <button className="primary-button" type="button" onClick={() => postDraft(voucher.id)}><CheckCircle size={16} />复核入账</button>}
                 {voucher.status === "posted" && <button className="secondary-button" type="button" onClick={() => createRevision(voucher.id)}><Plus size={16} />创建更正草稿</button>}

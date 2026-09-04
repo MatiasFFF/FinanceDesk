@@ -31,6 +31,7 @@ import {
 } from "@phosphor-icons/react";
 import { transactionStatus, uid } from "./financeData.js";
 import {
+  attachEvidenceDocument,
   createCustomerConfirmationPackage,
   freezeReportVersion as freezeAccountingReportVersion,
   recordCustomerConfirmation,
@@ -343,12 +344,17 @@ function TransactionList({ items, selectedIds, focusedId, onToggle, onToggleAll,
   );
 }
 
-function TransactionDetail({ workspace, transaction, onClose, onStatus, onEvidence, onToast }) {
+function TransactionDetail({ workspace, transaction, onClose, onStatus, onEvidence, onLinkEvidence, onToast }) {
   const evidenceInput = useRef(null);
   const [evidenceCategory, setEvidenceCategory] = useState("发票");
-  useEffect(() => setEvidenceCategory("发票"), [transaction?.id]);
+  const [existingEvidenceId, setExistingEvidenceId] = useState("");
+  useEffect(() => {
+    setEvidenceCategory("发票");
+    setExistingEvidenceId("");
+  }, [transaction?.id]);
   if (!transaction) return null;
   const linkedDocuments = workspace.documents.filter((item) => transaction.evidenceIds?.includes(item.id));
+  const availableDocuments = workspace.documents.filter((item) => !transaction.evidenceIds?.includes(item.id));
   const allocations = (transaction.allocations || []).map((allocation) => ({ ...allocation, bill: workspace.bills.find((bill) => bill.id === allocation.billId) }));
   return (
     <aside className="detail-panel">
@@ -356,7 +362,14 @@ function TransactionDetail({ workspace, transaction, onClose, onStatus, onEviden
       <div className="detail-scroll">
         <section className="detail-section"><div className="detail-section-title"><i className="section-mark sage" />银行流水</div><dl className="detail-list"><div><dt>交易日期</dt><dd>{transaction.date}</dd></div><div><dt>流水号</dt><dd>{transaction.serial}</dd></div><div><dt>摘要</dt><dd>{transaction.summary}</dd></div><div><dt>金额</dt><dd className={Number(transaction.amount) < 0 ? "expense" : "income"}>{formatCurrency(transaction.amount, { sign: true })}</dd></div><div><dt>置信度</dt><dd>{transaction.classification?.confidence ?? transaction.confidence ?? 0}%</dd></div></dl></section>
         <section className="detail-section"><div className="detail-section-title"><i className="section-mark clay" />会计判断与核销</div><p className="match-reason"><Sparkle size={16} weight="fill" />{transaction.suggestion || "尚未形成建议处理"}</p>{allocations.length ? <div className="allocation-list">{allocations.map((allocation) => <div key={`${allocation.billId}-${allocation.amount}`}><span><strong>{allocation.bill?.no || allocation.billId}</strong><small>{allocation.bill?.summary || "本地账单"}</small></span><b>{formatCurrency(allocation.amount)}</b></div>)}</div> : <p className="quiet-copy">当前没有关联账单；人工复核后可以暂存判断，但不会伪造外部匹配。</p>}</section>
-        <section className="detail-section"><div className="detail-section-title"><i className="section-mark sage" />本地证据</div>{linkedDocuments.length ? <div className="evidence-file-list">{linkedDocuments.map((document) => <div key={document.id}><FileText size={18} /><span><strong>{document.name}</strong><small>{document.type || document.category || "本地资料"} · {fileSize(document.size)}</small></span><CheckCircle size={17} weight="fill" /></div>)}</div> : <div className="missing-evidence"><WarningCircle size={20} /><span><strong>还没有关联证据</strong><small>{transaction.exceptionReason || "请选择本地文件补充证据。"}</small></span></div>}<label className="field-label"><span>这份证据属于</span><select value={evidenceCategory} onChange={(event) => setEvidenceCategory(event.target.value)}><option>发票</option><option>合同</option><option>审批单</option><option>采购单</option><option>结算单</option><option>会员协议</option><option>签到记录</option><option>工资表</option><option>社保数据</option><option>退款申请</option><option>内部转账回单</option><option>其他资料</option></select></label><input ref={evidenceInput} hidden type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) onEvidence(transaction.id, file, evidenceCategory); event.target.value = ""; }} /><button className="secondary-button wide" onClick={() => evidenceInput.current?.click()} type="button"><FileArrowUp size={17} />选择本地证据</button></section>
+        <section className="detail-section">
+          <div className="detail-section-title"><i className="section-mark sage" />本地证据</div>
+          {linkedDocuments.length ? <div className="evidence-file-list">{linkedDocuments.map((document) => <div key={document.id}><FileText size={18} /><span><strong>{document.name}</strong><small>{document.type || document.category || "本地资料"} · {fileSize(document.size)}</small></span><CheckCircle size={17} weight="fill" /></div>)}</div> : <div className="missing-evidence"><WarningCircle size={20} /><span><strong>还没有关联证据</strong><small>{transaction.exceptionReason || "请选择本地文件补充证据。"}</small></span></div>}
+          {availableDocuments.length > 0 && <div className="existing-evidence-link"><label className="field-label"><span>关联资料库中的已有文件</span><select value={existingEvidenceId} onChange={(event) => setExistingEvidenceId(event.target.value)}><option value="">请选择已有资料</option>{availableDocuments.map((document) => <option value={document.id} key={document.id}>{document.name} · {document.category || document.type || "本地资料"}</option>)}</select></label><button className="secondary-button wide" disabled={!existingEvidenceId} onClick={() => { if (onLinkEvidence(transaction.id, existingEvidenceId)) setExistingEvidenceId(""); }} type="button"><FileText size={17} />关联已有资料</button></div>}
+          <label className="field-label"><span>上传新证据的类别</span><select value={evidenceCategory} onChange={(event) => setEvidenceCategory(event.target.value)}><option>发票</option><option>合同</option><option>审批单</option><option>采购单</option><option>结算单</option><option>会员协议</option><option>签到记录</option><option>工资表</option><option>社保数据</option><option>退款申请</option><option>内部转账回单</option><option>其他资料</option></select></label>
+          <input ref={evidenceInput} hidden type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) onEvidence(transaction.id, file, evidenceCategory); event.target.value = ""; }} />
+          <button className="secondary-button wide" onClick={() => evidenceInput.current?.click()} type="button"><FileArrowUp size={17} />上传新的本地证据</button>
+        </section>
         <AccountingWorkbench transactionId={transaction.id} onToast={onToast} />
       </div>
       <div className="detail-actions"><button className="secondary-button" onClick={() => onStatus([transaction.id], "ignored")} type="button">暂不处理</button><span className="detail-action-note">核销与入账请使用上方真实会计处理区</span></div>
@@ -364,7 +377,7 @@ function TransactionDetail({ workspace, transaction, onClose, onStatus, onEviden
   );
 }
 
-function ReconcilePage({ workspace, onPage, onStatus, onReview, onEvidence, onExportSelected, onResolveException, onToast }) {
+function ReconcilePage({ workspace, onPage, onStatus, onReview, onEvidence, onLinkEvidence, onExportSelected, onResolveException, onToast }) {
   const [filter, setFilter] = useState("unresolved");
   const [query, setQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
@@ -388,7 +401,7 @@ function ReconcilePage({ workspace, onPage, onStatus, onReview, onEvidence, onEx
         <section className="panel table-panel"><div className="table-heading"><span>本期流水</span><span>{filtered.length} / {periodTransactions.length} 笔</span></div><TransactionList items={filtered} selectedIds={selectedIds} focusedId={focusedId} onToggle={toggle} onToggleAll={toggleAll} onFocus={setFocusedId} /></section>
         <BoundaryNote />
       </div>
-      <TransactionDetail workspace={workspace} transaction={focused} onClose={() => setFocusedId(null)} onStatus={onStatus} onEvidence={onEvidence} onToast={onToast} />
+      <TransactionDetail workspace={workspace} transaction={focused} onClose={() => setFocusedId(null)} onStatus={onStatus} onEvidence={onEvidence} onLinkEvidence={onLinkEvidence} onToast={onToast} />
     </div>
   );
 }
@@ -712,6 +725,47 @@ function App() {
       setToast({ tone: "danger", message: error.message || "本地证据保存失败" });
     }
   }
+  function linkExistingEvidence(transactionId, documentId) {
+    if (!documentId) return false;
+    try {
+      mutateActive((current) => {
+        const linkedAt = new Date().toISOString();
+        const linked = attachEvidenceDocument(
+          current,
+          { transactionId, documentId },
+          { actor: actorName, mode: "manual", at: linkedAt },
+        );
+        const relationExists = (linked.evidenceLinks || []).some((item) => (
+          item.status !== "inactive"
+          && item.documentIds?.includes(documentId)
+          && item.objectIds?.includes(transactionId)
+        ));
+        return {
+          ...linked,
+          documents: linked.documents.map((document) => document.id === documentId ? {
+            ...document,
+            relatedObjectIds: [...new Set([...(document.relatedObjectIds || []), transactionId])],
+            updatedAt: linkedAt,
+          } : document),
+          evidenceLinks: relationExists ? linked.evidenceLinks : [...(linked.evidenceLinks || []), {
+            id: uid("evidence-link"),
+            documentIds: [documentId],
+            objectIds: [transactionId],
+            relation: "supports",
+            note: "单笔流水复核证据",
+            status: "active",
+            createdAt: linkedAt,
+            updatedAt: linkedAt,
+          }],
+        };
+      }, { requiredPermission: "documents.add" });
+      setToast({ tone: "success", message: "已有资料已关联到流水，并同步更新凭证证据来源" });
+      return true;
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "已有资料关联失败" });
+      return false;
+    }
+  }
   function exportSelected(items) {
     try {
       const rows = [["日期", "对方", "摘要", "金额", "状态", "流水号"], ...items.map((item) => [item.date, item.counterparty, item.summary, item.amount, transactionStatus(item).label, item.serial])];
@@ -954,7 +1008,7 @@ function App() {
         <Topbar state={state} workspace={workspace} page={page} onImport={() => setImportOpen(true)} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={openWorkspaceDialog} />
         {loadReport.recovered && <div className="danger-banner recovery-banner"><WarningCircle size={18} /><span><strong>{loadReport.source === "backup" ? "本地数据已从上一次有效副本恢复。" : "本地主副本与备用副本均无法读取，当前已加载初始模板。"}</strong>{loadReport.errors?.length ? ` 原因：${loadReport.errors.join("；")}` : " 请先核对数据并导出备份。"}</span></div>}
         {page === "overview" && <OverviewPage workspace={workspace} onPage={setPage} onResolveNotice={resolveNotice} />}
-        {page === "reconcile" && <ReconcilePage workspace={workspace} onPage={setPage} onStatus={setTransactionStatus} onReview={reviewTransactions} onEvidence={addEvidence} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} />}
+        {page === "reconcile" && <ReconcilePage workspace={workspace} onPage={setPage} onStatus={setTransactionStatus} onReview={reviewTransactions} onEvidence={addEvidence} onLinkEvidence={linkExistingEvidence} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} />}
         {page === "reports" && <ReportsPage workspace={workspace} onPage={setPage} onFreeze={freezeReport} />}
         {page === "tax" && <TaxPage workspace={workspace} onPage={setPage} onTaxChange={changeTax} onTaxCommit={commitTax} onInitialConfirm={initialConfirm} onDispute={disputeConfirmation} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} />}
         {page === "archive" && <ArchivePage workspace={workspace} onPage={setPage} onDocuments={addDocuments} onReceipt={receiveReceipt} onArchive={completeArchive} onNextPeriod={goNextPeriod} onExportIndex={exportArchiveIndex} />}
