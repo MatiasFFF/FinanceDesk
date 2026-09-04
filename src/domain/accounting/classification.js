@@ -13,11 +13,12 @@ import {
   periodOf,
   roundMoney,
 } from "./model.js";
+import { normalizeWorkspaceModules } from "../foundation.js";
 
 const CLASSIFICATION_RULES = [
   { id: "internal-transfer", eventType: EVENT_TYPES.INTERNAL_TRANSFER, pattern: /内部转账|账户调拨|转存|划转/, account: "bank", confidence: 93 },
   { id: "refund", eventType: EVENT_TYPES.REFUND, pattern: /退款|退费|冲退|返还/, direction: "out", account: "salesReturns", confidence: 88 },
-  { id: "member-recharge", eventType: EVENT_TYPES.MEMBER_RECHARGE, pattern: /会员|充值|储值|预收|课包/, direction: "in", account: "contractLiability", confidence: 88 },
+  { id: "member-recharge", eventType: EVENT_TYPES.MEMBER_RECHARGE, pattern: /会员|充值|储值|预收|课包/, direction: "in", account: "contractLiability", confidence: 88, requiresMemberModule: true },
   { id: "supplier-prepayment", eventType: EVENT_TYPES.SUPPLIER_PREPAYMENT, pattern: /预付|充值/, direction: "out", account: "prepayment", confidence: 84 },
   { id: "bank-fee", eventType: EVENT_TYPES.BANK_FEE, pattern: /手续费|服务费|拉卡拉|银联/, direction: "out", account: "expenseFee", confidence: 94 },
   { id: "rent", eventType: EVENT_TYPES.RENT_AND_PROPERTY, pattern: /房租|租金|物业/, direction: "out", account: "expenseRent", confidence: 90 },
@@ -34,11 +35,21 @@ function directionOf(transaction) {
   return Number(transaction.amount || 0) >= 0 ? "in" : "out";
 }
 
-function billEventType(bill) {
+export function memberBusinessEnabled(workspace) {
+  const hasMemberBusiness = workspace?.templateId === "fitness-studio"
+    || workspace?.isDemo
+    || (workspace?.members || []).length > 0
+    || (workspace?.businessEvents || []).some((event) => event.memberId || event.memberName || event.coach);
+  return normalizeWorkspaceModules(workspace?.modules, { fitnessTemplate: hasMemberBusiness }).members !== false;
+}
+
+function billEventType(workspace, bill) {
   return {
     [BILL_KINDS.RECEIVABLE]: EVENT_TYPES.CUSTOMER_RECEIPT,
     [BILL_KINDS.PAYABLE]: EVENT_TYPES.SUPPLIER_SETTLEMENT,
-    [BILL_KINDS.DEPOSIT_RECEIVED]: EVENT_TYPES.MEMBER_RECHARGE,
+    [BILL_KINDS.DEPOSIT_RECEIVED]: memberBusinessEnabled(workspace)
+      ? EVENT_TYPES.MEMBER_RECHARGE
+      : EVENT_TYPES.CUSTOMER_RECEIPT,
     [BILL_KINDS.PREPAYMENT_PAID]: EVENT_TYPES.SUPPLIER_PREPAYMENT,
   }[bill.kind] || EVENT_TYPES.UNKNOWN;
 }
@@ -93,7 +104,9 @@ export function classifyBankTransaction(workspace, transaction) {
     return fragments.some((fragment) => normalizedText.includes(fragment));
   });
   const rule = CLASSIFICATION_RULES.find((candidate) => (
-    (!candidate.direction || candidate.direction === direction) && candidate.pattern.test(text)
+    (!candidate.requiresMemberModule || memberBusinessEnabled(workspace))
+    && (!candidate.direction || candidate.direction === direction)
+    && candidate.pattern.test(text)
   ));
   const custom = configuredRule(rules, transaction, text);
 
@@ -110,7 +123,7 @@ export function classifyBankTransaction(workspace, transaction) {
     confidence = Math.max(confidence, ownAccountMatch ? 96 : 92);
     reasons.push("交易对象可对应本账套的另一银行账户");
   } else if (leadingBill) {
-    eventType = billEventType(leadingBill.bill);
+    eventType = billEventType(workspace, leadingBill.bill);
     account = billAccount(leadingBill.bill);
     confidence = Math.max(confidence, leadingBill.score);
     reasons.push(`可对应${leadingBill.bill.no || leadingBill.bill.id}`);
@@ -146,8 +159,15 @@ export function classifyBankTransaction(workspace, transaction) {
   };
 }
 
+export function effectiveBankTransactionClassification(workspace, transaction) {
+  const stored = transaction?.classification;
+  const storedMemberClassification = stored?.eventType === EVENT_TYPES.MEMBER_RECHARGE;
+  if (stored && (!storedMemberClassification || memberBusinessEnabled(workspace))) return stored;
+  return classifyBankTransaction(workspace, transaction);
+}
+
 export function recognizeBusinessEvent(workspace, transaction) {
-  const classification = transaction.classification || classifyBankTransaction(workspace, transaction);
+  const classification = effectiveBankTransactionClassification(workspace, transaction);
   return {
     id: `event-${transaction.id}`,
     type: classification.eventType,
@@ -192,7 +212,7 @@ export function applyManualClassification(workspace, {
   const resolvedContext = operationContext(context);
   const transaction = (next.transactions || []).find((item) => item.id === transactionId);
   if (!transaction) throw new Error(`找不到银行流水：${transactionId}`);
-  const before = transaction.classification || classifyBankTransaction(next, transaction);
+  const before = effectiveBankTransactionClassification(next, transaction);
   const retainedConfidence = Number.isFinite(Number(before.confidence))
     ? roundMoney(before.confidence)
     : 0;

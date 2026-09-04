@@ -21,6 +21,8 @@ import {
 import {
   applyManualClassification,
   classifyBankTransaction,
+  effectiveBankTransactionClassification,
+  memberBusinessEnabled,
 } from "../../domain/accounting/classification.js";
 import {
   assessTransactionEvidence,
@@ -101,6 +103,7 @@ export const MANUAL_BUSINESS_EVENT_TYPES = Object.freeze([
   {
     id: "memberRecharge",
     label: "会员充值",
+    requiresMemberModule: true,
     eventType: EVENT_TYPES.MEMBER_RECHARGE,
     allowedDirections: ["in"],
     account: "contractLiability",
@@ -300,8 +303,15 @@ export const MANUAL_BUSINESS_EVENT_TYPES = Object.freeze([
   },
 ]);
 
-export function manualBusinessEventDefinition(businessType) {
-  return MANUAL_BUSINESS_EVENT_TYPES.find((definition) => definition.id === businessType) || null;
+export function manualBusinessEventTypesForWorkspace(workspace) {
+  return MANUAL_BUSINESS_EVENT_TYPES.filter((definition) => (
+    !definition.requiresMemberModule || memberBusinessEnabled(workspace)
+  ));
+}
+
+export function manualBusinessEventDefinition(businessType, workspace) {
+  const definitions = workspace ? manualBusinessEventTypesForWorkspace(workspace) : MANUAL_BUSINESS_EVENT_TYPES;
+  return definitions.find((definition) => definition.id === businessType) || null;
 }
 
 function isAdvanceBill(bill) {
@@ -557,7 +567,10 @@ function validateRelatedBusinessTransaction(workspace, transaction, definition, 
 }
 
 export function confirmBankTransactionBusinessEvent(workspace, input, context = {}) {
-  const definition = manualBusinessEventDefinition(input?.businessType);
+  const definition = manualBusinessEventDefinition(input?.businessType, workspace);
+  if (input?.businessType === "memberRecharge" && !memberBusinessEnabled(workspace)) {
+    throw new AccountingRuleError("MEMBER_MODULE_DISABLED", "当前工作台未启用会员模块，不能选择会员充值业务");
+  }
   if (!definition) throw new AccountingRuleError("BUSINESS_EVENT_TYPE_REQUIRED", "请选择明确的业务类型");
   const resolvedContext = operationContext({ ...context, mode: "manual" });
   const seed = cloneAccountingState(workspace);
@@ -582,7 +595,7 @@ export function confirmBankTransactionBusinessEvent(workspace, input, context = 
   if (!fundingPeriod) throw new AccountingRuleError("BUSINESS_EVENT_FUNDING_PERIOD_INVALID", "流水日期无法形成有效资金期间");
   const reason = String(input.reason || "").trim();
   if (!reason) throw new AccountingRuleError("BUSINESS_EVENT_REASON_REQUIRED", "人工确认必须填写判断依据");
-  const seedClassification = seedTransaction.classification || classifyBankTransaction(seed, seedTransaction);
+  const seedClassification = effectiveBankTransactionClassification(seed, seedTransaction);
   const confidence = input.confidence == null || input.confidence === ""
     ? Number(seedClassification.confidence)
     : Number(input.confidence);
@@ -800,7 +813,7 @@ function reassessBankTransactionBusinessEvent(workspace, transactionId, context)
   const transaction = findTransaction(next, transactionId);
   const event = transactionBusinessEvent(next, transaction);
   if (!event) return null;
-  const definition = manualBusinessEventDefinition(event.businessType);
+  const definition = manualBusinessEventDefinition(event.businessType, next);
   if (!definition) return null;
   const relatedBill = event.relatedBillId ? findBill(next, event.relatedBillId) : null;
   const relatedTransaction = event.relatedTransactionId ? findTransaction(next, event.relatedTransactionId) : null;
@@ -1305,7 +1318,7 @@ function candidateKey(candidate) {
 
 function buildReconciliationCandidates(workspace, transactionId) {
   const focusTransaction = findTransaction(workspace, transactionId);
-  const classification = focusTransaction.classification || classifyBankTransaction(workspace, focusTransaction);
+  const classification = effectiveBankTransactionClassification(workspace, focusTransaction);
   const tolerance = accountingRules(workspace).amountTolerance;
   if (NON_BILL_EVENT_TYPES.has(classification.eventType)) return [];
   const expectedBillKind = TRANSACTION_BILL_KINDS[classification.eventType];
@@ -1354,7 +1367,7 @@ function buildReconciliationCandidates(workspace, transactionId) {
       .filter((transaction) => transactionUnallocatedAmount(transaction) > tolerance)
       .filter((transaction) => allocationDirectionMatchesBill(transaction, bill))
       .filter((transaction) => {
-        const candidateClassification = transaction.classification || classifyBankTransaction(workspace, transaction);
+        const candidateClassification = effectiveBankTransactionClassification(workspace, transaction);
         return TRANSACTION_BILL_KINDS[candidateClassification.eventType] === bill.kind;
       })
       .filter((transaction) => counterpartyMatch(workspace, transaction, bill).matched)
@@ -1544,7 +1557,7 @@ export function buildReconciliationExceptionCases(workspace, transactionId) {
     .filter((task) => task.sourceType === "bankTransaction" || !task.sourceType);
   return tasks.map((task) => {
     const transaction = findTransaction(workspace, task.sourceId);
-    const classification = transaction.classification || classifyBankTransaction(workspace, transaction);
+    const classification = effectiveBankTransactionClassification(workspace, transaction);
     const assessment = transaction.evidenceAssessment || assessTransactionEvidence(workspace, transaction, classification);
     const suggestions = (transaction.matchSuggestions || []).length
       ? transaction.matchSuggestions
@@ -1751,7 +1764,7 @@ export function handleReconciliationException(workspace, {
 
 function validateAutomaticReconciliation(workspace, transaction) {
   const rules = accountingRules(workspace);
-  const classification = transaction.classification || classifyBankTransaction(workspace, transaction);
+  const classification = effectiveBankTransactionClassification(workspace, transaction);
   const assessment = transaction.evidenceAssessment || assessTransactionEvidence(workspace, transaction, classification);
   if (!rules.allowAutomaticReconciliation) {
     throw new AccountingRuleError("FINANCE_REVIEW_REQUIRED", "客户和供应商核销必须由财务人员确认；本地规则只能形成建议");
@@ -1856,7 +1869,7 @@ export function applyReconciliation(workspace, { transactionId, allocations, not
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext(context);
   const transaction = findTransaction(next, transactionId);
-  const classification = transaction.classification || classifyBankTransaction(next, transaction);
+  const classification = effectiveBankTransactionClassification(next, transaction);
   if ([EVENT_TYPES.INTERNAL_TRANSFER, EVENT_TYPES.REFUND, EVENT_TYPES.UNKNOWN].includes(classification.eventType)) {
     throw new AccountingRuleError("NON_BILL_EVENT", "退款、内部转账或未知事项不能按普通应收应付核销");
   }
@@ -2034,7 +2047,7 @@ export function linkRefundToOriginal(workspace, {
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext(context);
   const refund = findTransaction(next, refundTransactionId);
-  const classification = refund.classification || classifyBankTransaction(next, refund);
+  const classification = effectiveBankTransactionClassification(next, refund);
   if (classification.eventType !== EVENT_TYPES.REFUND || Number(refund.amount) >= 0) {
     throw new AccountingRuleError("NOT_A_REFUND", "只有支出的退款流水可以关联原业务");
   }

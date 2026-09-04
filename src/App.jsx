@@ -673,6 +673,7 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
   const [versionId, setVersionId] = useState("live");
   const [drill, setDrill] = useState(null);
   useEffect(() => { setVersionId("live"); setDrill(null); }, [workspace.id, workspace.currentPeriod]);
+  const memberBusinessEnabled = workspaceModuleEnabled(workspace, "members");
   const live = buildReportSnapshot(workspace);
   const management = buildManagementMetrics(workspace, { period: workspace.currentPeriod });
   const storeReport = management.storeReport;
@@ -684,15 +685,18 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
   const previous = versions[1];
   const differences = latest && previous ? reportVersionDiff(latest, previous) : [];
   const statementChecks = Object.entries(live.summary.engineChecks || {})
-    .filter(([id, check]) => id !== "memberService" || check.applicable)
+    .filter(([id, check]) => id !== "memberService" || (memberBusinessEnabled && check.applicable))
     .map(([id, check]) => ({ id, ...check, ...REPORT_RECONCILIATION_COPY[id] }));
   const balanced = statementChecks.every((check) => check.passed);
+  const snapshotChecks = Object.entries(snapshot.summary.engineChecks || {})
+    .filter(([id]) => id !== "memberService" || memberBusinessEnabled)
+    .map(([, check]) => check);
+  const snapshotBalanced = snapshotChecks.every((check) => check.passed);
   const flow = workflowChecks(workspace);
   const readyToFreeze = balanced && flow.bankReconciliationIssues.length === 0 && flow.unresolved.length === 0 && flow.pendingVouchers.length === 0;
   const currentFrozenVersion = flow.version;
   const excelExportReady = Boolean(currentFrozenVersion?.sourceFingerprint);
   const reportExports = (workspace.delivery.reportExports || []).filter((item) => item.period === workspace.currentPeriod && item.kind === "xlsx");
-  const memberBusinessEnabled = workspaceModuleEnabled(workspace, "members");
   const taxEnabled = workspaceModuleEnabled(workspace, "tax");
   function openReconciliationSource(check) {
     if (check.section) {
@@ -708,7 +712,7 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
       <section className="report-toolbar panel"><div><p className="eyebrow">S9 · 本地报表</p><h2>{selectedVersion ? `${selectedVersion.label} 冻结版本` : "实时草稿"}</h2><p>{selectedVersion ? `冻结于 ${formatDateTime(selectedVersion.createdAt)}，不会被后续修改覆盖。` : "数字会随本地凭证与税务调整更新。冻结后形成版本快照。"}</p></div><div className="report-toolbar-actions"><label className="compact-select"><span>查看版本</span><select value={versionId} onChange={(event) => setVersionId(event.target.value)}><option value="live">实时草稿</option>{versions.map((item) => <option key={item.id} value={item.id}>{item.label} · {formatDateTime(item.createdAt)}</option>)}</select><CaretDown size={13} /></label><button className="secondary-button" disabled={!excelExportReady} onClick={onExportExcel} title={excelExportReady ? `导出当前 ${currentFrozenVersion.label}，不上传网络` : "请先冻结当前数据；旧版本或已变化的数据不能导出"} type="button"><DownloadSimple size={17} />导出当前冻结版 Excel</button><button className="primary-button" disabled={!readyToFreeze} onClick={onFreeze} type="button"><SealCheck size={17} />冻结新版本</button></div></section>
       {!balanced && <div className="danger-banner"><WarningCircle size={18} /><span><strong>报表尚未勾稽：</strong>{statementChecks.filter((check) => !check.passed).map((check) => `${check.label}差额 ${formatCurrency(check.difference)}`).join("；")}。先处理下方对应来源，再冻结报表。</span></div>}
       {balanced && !readyToFreeze && <div className="danger-banner"><WarningCircle size={18} /><span><strong>月结链路尚未完成：</strong>{flow.bankReconciliationIssues.length ? `${flow.bankReconciliationIssues.length} 份银行流水勾稽未通过。` : flow.unresolved.length ? `${flow.unresolved.length} 笔流水尚未入账或暂不处理。` : `${flow.pendingVouchers.length} 张凭证草稿或更正尚未入账。`}</span></div>}
-      <section className="metric-grid four report-summary"><MetricCard label="资产合计" value={formatCurrency(snapshot.summary.assets)} note="资产负债表" icon={Bank} /><MetricCard label="营业收入" value={formatCurrency(snapshot.summary.revenue)} note="利润表" icon={TrendUp} tone="sage" /><MetricCard label="本月利润" value={formatCurrency(snapshot.summary.profit)} note="税前本地口径" icon={ChartBar} /><MetricCard label="三表勾稽" value={Object.values(snapshot.summary.engineChecks || {}).every((check) => check.passed) ? "通过" : "需处理"} note="试算 · 资产负债 · 现金变动" icon={CheckCircle} tone={Object.values(snapshot.summary.engineChecks || {}).every((check) => check.passed) ? "sage" : "clay"} /></section>
+      <section className="metric-grid four report-summary"><MetricCard label="资产合计" value={formatCurrency(snapshot.summary.assets)} note="资产负债表" icon={Bank} /><MetricCard label="营业收入" value={formatCurrency(snapshot.summary.revenue)} note="利润表" icon={TrendUp} tone="sage" /><MetricCard label="本月利润" value={formatCurrency(snapshot.summary.profit)} note="税前本地口径" icon={ChartBar} /><MetricCard label="三表勾稽" value={snapshotBalanced ? "通过" : "需处理"} note="试算 · 资产负债 · 现金变动" icon={CheckCircle} tone={snapshotBalanced ? "sage" : "clay"} /></section>
       <section className="panel report-reconciliation-panel">
         <div className="panel-heading"><div><p className="eyebrow">报表勾稽</p><h2>每一项差额都有处理入口</h2><p>这里校验实时草稿；冻结版本只用于回看，不会掩盖当前数据变化。</p></div><TonePill tone={balanced ? "success" : "warning"}>{statementChecks.filter((check) => check.passed).length} / {statementChecks.length} 通过</TonePill></div>
         <div className="check-rows report-check-rows">{statementChecks.map((check) => (

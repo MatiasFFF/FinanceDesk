@@ -238,6 +238,7 @@ export function normalizeWorkspace(input, options = {}) {
   }));
   const roleSource = workspace.roles?.length ? workspace.roles : DEFAULT_ROLE_DEFINITIONS;
   const roles = roleSource.map((role) => ({
+    status: "active",
     ...role,
     permissions: [...new Set([
       ...(role.permissions || []),
@@ -879,6 +880,17 @@ export function upsertWorkspaceEntity(state, workspaceId, collection, values, op
   const item = timestamped({ ...deepClone(values), id: values.id || createId(collection.slice(0, -1) || "item") }, timestamp);
   const currentWorkspace = getWorkspace(state, workspaceId);
   if (!currentWorkspace) throw new Error(`找不到工作台：${workspaceId}`);
+  const hasActiveUser = (currentWorkspace.users || []).some((user) => user.status === "active");
+  const bootstrappingFirstUser = collection === "users" && !hasActiveUser && item.status === "active";
+  if (bootstrappingFirstUser) {
+    const role = currentWorkspace.roles.find((candidate) => (
+      candidate.id === item.roleId || candidate.name === item.role
+    ));
+    const permissions = role?.permissions || [];
+    if (!role || role.status !== "active" || (!permissions.includes("*") && !permissions.includes("workspace.manage"))) {
+      throw new Error("首位启用人员必须选择具备“管理工作台”权限的启用角色，避免首次配置后无法继续管理");
+    }
+  }
   if (collection === "users" && item.id === state.activeUserId && item.status !== "active") {
     throw new Error("当前正在使用的本地用户不能停用；请先切换到其他启用用户");
   }
@@ -903,7 +915,10 @@ export function upsertWorkspaceEntity(state, workspaceId, collection, values, op
     objectType: collection,
     objectId: item.id,
   }, { ...options, timestamp });
-  return { state: next, item: getWorkspace(next, workspaceId)[collection].find((candidate) => candidate.id === item.id), created };
+  const finalState = bootstrappingFirstUser
+    ? switchActiveUser(next, workspaceId, item.id, { actor: item.name, timestamp })
+    : next;
+  return { state: finalState, item: getWorkspace(finalState, workspaceId)[collection].find((candidate) => candidate.id === item.id), created };
 }
 
 function collectReferencePaths(workspace, collection, itemId) {

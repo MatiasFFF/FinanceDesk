@@ -353,13 +353,20 @@ function recordDescription(item, collection, workspace) {
 function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, onCancelDelete }) {
   const { activeWorkspace, actions } = useFinanceDesk();
   const membersEnabled = memberModuleEnabled(activeWorkspace);
+  const hasActiveUsers = activeWorkspace.users.some((user) => user.status === "active");
   const config = useMemo(() => {
     const base = COLLECTION_CONFIG[collection];
     if (collection === "users") {
+      const selectableRoles = hasActiveUsers
+        ? activeWorkspace.roles
+        : activeWorkspace.roles.filter((role) => (
+          role.status === "active"
+          && ((role.permissions || []).includes("*") || (role.permissions || []).includes("workspace.manage"))
+        ));
       return {
         ...base,
         fields: base.fields.map((field) => field.key === "roleId"
-          ? { ...field, options: activeWorkspace.roles.map((role) => [role.id, `${role.name}${role.status === "active" ? "" : "（停用）"}`]) }
+          ? { ...field, options: selectableRoles.map((role) => [role.id, `${role.name}${role.status === "active" ? "" : "（停用）"}`]) }
           : field),
       };
     }
@@ -372,7 +379,7 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
       };
     }
     return base;
-  }, [collection, activeWorkspace.roles, activeWorkspace.modules, activeWorkspace.enabledModules, activeWorkspace.moduleSettings, membersEnabled]);
+  }, [collection, activeWorkspace.roles, activeWorkspace.modules, activeWorkspace.enabledModules, activeWorkspace.moduleSettings, hasActiveUsers, membersEnabled]);
   const Icon = config.icon;
   const items = collection === "businessEvents" && !membersEnabled
     ? (activeWorkspace[collection] || []).filter((item) => !isMemberBusinessEvent(item))
@@ -432,10 +439,11 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
       if (collection === "businessEvents" && !membersEnabled && isMemberBusinessEvent(values)) {
         throw new Error("当前工作台未启用会员业务，不能新增会员充值、耗课或教练提成事件");
       }
-      actions.upsertEntity(activeWorkspace.id, collection, values, { label: config.title });
+      const savedItem = actions.upsertEntity(activeWorkspace.id, collection, values, { label: config.title });
+      const becameFirstUser = collection === "users" && !hasActiveUsers && savedItem.status === "active";
       setDraft(emptyDraft(config));
       setEditorOpen(false);
-      onToast?.(`${config.title}已保存`);
+      onToast?.(becameFirstUser ? `首位人员「${savedItem.name}」已保存并成为当前本地操作身份` : `${config.title}已保存`);
     } catch (caught) {
       setError(caught.message || "保存失败");
     }
@@ -466,6 +474,7 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
   return (
     <section className="foundation-section entity-editor">
       <div className="foundation-section-heading"><div><small>{collection === "users" ? "可新增、改名、调整角色、停用或删除" : "本地资料"}</small><h3><Icon size={18} />{config.title}</h3></div><span>{items.length} 条</span></div>
+      {collection === "users" && !hasActiveUsers && <p className="foundation-hint">当前没有启用人员。首位启用人员需选择具备“管理工作台”权限的启用角色；保存后会自动成为当前本地操作身份。</p>}
       {collection === "users" && items.some((item) => ["周会计", "林岚"].includes(item.name)) && <p className="foundation-hint">周会计、林岚只是当前模板的示例人员，可直接修改或删除；左下身份切换器会即时读取这里的有效人员。</p>}
       <div className="foundation-record-list">
         {items.map((item, index) => {

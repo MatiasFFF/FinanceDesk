@@ -17,7 +17,6 @@ import {
   BUSINESS_EVENT_INVOICE_STATUSES,
   BUSINESS_EVENT_TAX_TREATMENTS,
   EVENT_TYPES,
-  MANUAL_BUSINESS_EVENT_TYPES,
   accountDefinition,
   accountingRules,
   activeAllocations,
@@ -33,7 +32,6 @@ import {
   buildLedgerFilterOptions,
   buildReconciliationAllocationDraft,
   buildReconciliationExceptionCases,
-  classifyBankTransaction,
   confirmBankTransactionBusinessEvent,
   confirmReconciliationSuggestion,
   confirmedAdvanceApplications,
@@ -44,11 +42,14 @@ import {
   createSettlementBill,
   createPostedVoucherRevision,
   createVoucherDraft,
+  effectiveBankTransactionClassification,
   handleReconciliationException,
   linkInternalTransfer,
   linkRefundToOriginal,
   ledgerToCsv,
   manualBusinessEventDefinition,
+  manualBusinessEventTypesForWorkspace,
+  memberBusinessEnabled,
   postVoucher,
   recordReconciliationSuggestions,
   reviseDraftVoucher,
@@ -549,7 +550,7 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
 
   return (
     <>
-      {showMemberBusiness && <MemberBusinessAccountingQueue onToast={onToast} />}
+      {showMemberBusiness && memberBusinessEnabled(activeWorkspace) && <MemberBusinessAccountingQueue onToast={onToast} />}
       <section className="panel settlement-panel">
       <div className="settlement-heading">
         <div><p className="eyebrow">应收应付与核销</p><h2>往来账单与实时余额</h2><p>新增账单后，在下方打开一笔流水，即可一次拆分核销多张账单；同一账单也可由多笔流水分次结清。</p></div>
@@ -669,12 +670,21 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   const [error, setError] = useState("");
 
   const classification = useMemo(
-    () => transaction ? (transaction.classification || classifyBankTransaction(activeWorkspace, transaction)) : null,
+    () => transaction ? effectiveBankTransactionClassification(activeWorkspace, transaction) : null,
     [activeWorkspace, transaction],
   );
   const accountingPolicy = useMemo(() => accountingRules(activeWorkspace), [activeWorkspace]);
+  const availableBusinessTypes = useMemo(
+    () => manualBusinessEventTypesForWorkspace(activeWorkspace),
+    [activeWorkspace],
+  );
+  const memberModuleEnabled = memberBusinessEnabled(activeWorkspace);
   const assessment = useMemo(
-    () => transaction ? (transaction.evidenceAssessment || assessTransactionEvidence(activeWorkspace, transaction, classification)) : null,
+    () => transaction
+      ? (transaction.evidenceAssessment && transaction.classification === classification
+        ? transaction.evidenceAssessment
+        : assessTransactionEvidence(activeWorkspace, transaction, classification))
+      : null,
     [activeWorkspace, transaction, classification],
   );
   const businessEvent = transaction
@@ -683,7 +693,12 @@ export function AccountingWorkbench({ transactionId, onToast }) {
       || (event.sourceType === "bankTransaction" && event.transactionId === transaction.id)
     ))
     : null;
-  const selectedBusinessDefinition = manualBusinessEventDefinition(judgement.businessType);
+  const memberBusinessEventBlocked = Boolean(
+    businessEvent
+    && !memberModuleEnabled
+    && (businessEvent.businessType === "memberRecharge" || businessEvent.eventType === EVENT_TYPES.MEMBER_RECHARGE),
+  );
+  const selectedBusinessDefinition = manualBusinessEventDefinition(judgement.businessType, activeWorkspace);
   const requiresBusinessEventConfirmation = Boolean(transaction && !businessEvent && (
     classification?.eventType === EVENT_TYPES.UNKNOWN
     || classification?.requiresManualReview
@@ -708,7 +723,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   const unvoucheredAllocations = allocations.filter((allocation) => (
     !voucheredSourceIds.has(allocation.id) && (allocation.id || !voucheredSourceIds.has(allocation.billId))
   ));
-  const businessEventReadyForDraft = !businessEvent || (
+  const businessEventReadyForDraft = !businessEvent || (!memberBusinessEventBlocked && (
     businessEvent.status === "confirmed"
     && Number(businessEvent.evidenceCompleteness) === 100
     && businessEvent.taxAttributes?.status === "confirmed"
@@ -716,7 +731,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     && !businessEvent.review?.required
     && (!(businessEvent.crossPeriod || REVIEW_REQUIRED_BANK_BUSINESS_TYPES.has(businessEvent.businessType)) || businessEvent.review?.status === "approved")
     && !["voucher_draft", "posted"].includes(businessEvent.accountingStatus)
-  );
+  ));
   const canCreateDraft = !requiresBusinessEventConfirmation
     && classification?.eventType !== EVENT_TYPES.UNKNOWN
     && exceptions.length === 0
@@ -773,7 +788,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
       const direction = Number(transaction?.amount || 0) >= 0 ? "in" : "out";
       const suggestedDefinition = classification.eventType === EVENT_TYPES.UNKNOWN
         ? null
-        : MANUAL_BUSINESS_EVENT_TYPES.find((definition) => (
+        : availableBusinessTypes.find((definition) => (
           definition.eventType === classification.eventType && definition.allowedDirections.includes(direction)
         ));
       setJudgement({
@@ -791,7 +806,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         reason: "",
       });
     }
-  }, [transactionId]);
+  }, [transactionId, activeWorkspace.modules?.members]);
 
   if (!transaction || !classification || !assessment) return null;
 
@@ -846,7 +861,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   }
 
   function selectBusinessType(businessType) {
-    const definition = manualBusinessEventDefinition(businessType);
+    const definition = manualBusinessEventDefinition(businessType, activeWorkspace);
     setJudgement((current) => ({
       ...current,
       businessType,
@@ -941,6 +956,10 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   }
 
   function createDraft() {
+    if (memberBusinessEventBlocked) {
+      setError("会员模块已关闭；历史会员业务仅保留查看，不能继续生成凭证");
+      return;
+    }
     run(
       (workspace) => businessEvent
         ? createBankBusinessEventVoucherDraft(workspace, {
@@ -956,6 +975,10 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   }
 
   function postDraft(voucherId) {
+    if (memberBusinessEventBlocked) {
+      setError("会员模块已关闭；历史会员业务凭证保持未入账");
+      return;
+    }
     run(
       (workspace) => {
         return postVoucher(workspace, {
@@ -1021,7 +1044,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
       {requiresBusinessEventConfirmation && (
         <form className="engine-form" onSubmit={manualClassify}>
           <div className="engine-subheading full"><strong>人工确认业务事件</strong><small>只形成业务事件和复核任务，不自动生成或入账凭证</small></div>
-          <label className="full"><span>业务类型 *</span><select required value={judgement.businessType} onChange={(event) => selectBusinessType(event.target.value)}><option value="">请选择业务类型</option>{MANUAL_BUSINESS_EVENT_TYPES.map((definition) => <option value={definition.id} key={definition.id} disabled={!definition.allowedDirections.includes(Number(transaction.amount) >= 0 ? "in" : "out")}>{definition.label}</option>)}</select></label>
+          <label className="full"><span>业务类型 *</span><select required value={judgement.businessType} onChange={(event) => selectBusinessType(event.target.value)}><option value="">请选择业务类型</option>{availableBusinessTypes.map((definition) => <option value={definition.id} key={definition.id} disabled={!definition.allowedDirections.includes(Number(transaction.amount) >= 0 ? "in" : "out")}>{definition.label}</option>)}</select></label>
           {selectedBusinessDefinition && (
             <>
               {selectedBusinessDefinition.counterpartyRequired && <label><span>交易对手 *</span><input required value={judgement.counterparty} onChange={(event) => setJudgement((current) => ({ ...current, counterparty: event.target.value }))} placeholder="客户、供应商、员工或资金方" /></label>}
@@ -1057,8 +1080,9 @@ export function AccountingWorkbench({ transactionId, onToast }) {
             <span><small>凭证状态</small><strong>{businessEvent.accountingStatus || "unprocessed"}</strong></span>
           </div>
           <ul className="engine-reasons">{businessEvent.reasons.map((reason) => <li key={`${businessEvent.id}-${reason}`}>{reason}</li>)}</ul>
+          {memberBusinessEventBlocked && <div className="engine-missing"><span>会员模块已关闭；这条历史会员业务保留只读，不能继续生成、修改或入账凭证。重新启用会员模块后才可继续处理。</span></div>}
           {businessEvent.review?.required && <div className="engine-missing"><span>仍需人工复核：{businessEvent.review.reasons.join("；")}</span></div>}
-          {businessEvent.accountingStatus === "unprocessed" && !businessEventReadyForDraft && <div className="engine-missing"><span>凭证草稿暂不可生成：请先补齐证据、确认税务属性并完成全部 S7 复核。</span></div>}
+          {!memberBusinessEventBlocked && businessEvent.accountingStatus === "unprocessed" && !businessEventReadyForDraft && <div className="engine-missing"><span>凭证草稿暂不可生成：请先补齐证据、确认税务属性并完成全部 S7 复核。</span></div>}
         </div>
       )}
 
@@ -1167,7 +1191,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
 
       <div className="engine-vouchers">
         <div className="engine-subheading"><strong>凭证与附件包</strong><small>{vouchers.length} 张关联凭证</small></div>
-        <label><span>复核意见 *</span><textarea value={voucherNote} onChange={(event) => setVoucherNote(event.target.value)} placeholder="说明业务性质、科目与金额的复核结论" /></label>
+        <label><span>复核意见 *</span><textarea disabled={memberBusinessEventBlocked} value={voucherNote} onChange={(event) => setVoucherNote(event.target.value)} placeholder={memberBusinessEventBlocked ? "会员模块已关闭，历史业务仅供查看" : "说明业务性质、科目与金额的复核结论"} /></label>
         {canCreateDraft && <button className="secondary-button wide" type="button" onClick={createDraft}><Plus size={16} />{businessEvent ? `由 ${businessEvent.businessEventNo} 生成凭证草稿` : (vouchers.length ? `为新增核销生成凭证草稿（${unvoucheredAllocations.length} 条）` : "生成凭证草稿")}</button>}
         {vouchers.map((voucher) => {
           const attachments = buildAttachmentPackage(activeWorkspace, voucher.id);
@@ -1175,12 +1199,12 @@ export function AccountingWorkbench({ transactionId, onToast }) {
           return (
             <article className="engine-voucher-card" key={voucher.id}>
               <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借贷 ¥{money(voucher.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0))} · 附件包 {attachments.status === "complete" ? "完整" : "待补"} · V{voucher.version}</small></span><em>{voucher.status}</em></div>
-              {voucher.status !== "posted" && voucher.status !== "superseded" && <input value={voucherSummaries[voucher.id] ?? voucher.summary} onChange={(event) => setVoucherSummaries((current) => ({ ...current, [voucher.id]: event.target.value }))} aria-label="凭证摘要" />}
+              {!memberBusinessEventBlocked && voucher.status !== "posted" && voucher.status !== "superseded" && <input value={voucherSummaries[voucher.id] ?? voucher.summary} onChange={(event) => setVoucherSummaries((current) => ({ ...current, [voucher.id]: event.target.value }))} aria-label="凭证摘要" />}
               <div className="engine-inline">
-                {voucher.status === "draft" && <button className="secondary-button" type="button" onClick={() => requestVoucherChanges(voucher.id)}>退回修改</button>}
-                {voucher.status !== "posted" && voucher.status !== "superseded" && <button className="secondary-button" type="button" onClick={() => reviseVoucher(voucher)}>保存修订</button>}
-                {voucher.status !== "posted" && voucher.status !== "superseded" && <button className="primary-button" disabled={!voucherNote.trim()} type="button" onClick={() => postDraft(voucher.id)}><CheckCircle size={16} />填写意见后复核入账</button>}
-                {voucher.status === "posted" && <button className="secondary-button" type="button" onClick={() => createRevision(voucher.id)}><Plus size={16} />创建更正草稿</button>}
+                {!memberBusinessEventBlocked && voucher.status === "draft" && <button className="secondary-button" type="button" onClick={() => requestVoucherChanges(voucher.id)}>退回修改</button>}
+                {!memberBusinessEventBlocked && voucher.status !== "posted" && voucher.status !== "superseded" && <button className="secondary-button" type="button" onClick={() => reviseVoucher(voucher)}>保存修订</button>}
+                {voucher.status !== "posted" && voucher.status !== "superseded" && <button className="primary-button" disabled={!voucherNote.trim() || memberBusinessEventBlocked} type="button" onClick={() => postDraft(voucher.id)}><CheckCircle size={16} />{memberBusinessEventBlocked ? "会员模块关闭，暂不可入账" : "填写意见后复核入账"}</button>}
+                {!memberBusinessEventBlocked && voucher.status === "posted" && <button className="secondary-button" type="button" onClick={() => createRevision(voucher.id)}><Plus size={16} />创建更正草稿</button>}
               </div>
               <details>
                 <summary>查看来源与附件清单</summary>

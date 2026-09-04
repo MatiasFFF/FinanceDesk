@@ -10,6 +10,7 @@ import {
   roundMoney,
   sumMoney,
 } from "./model.js";
+import { normalizeWorkspaceModules } from "../foundation.js";
 import * as XLSX from "xlsx";
 import { classifyBankTransaction } from "./classification.js";
 import { buildAdvanceBalances, buildAgeingSchedule } from "../../features/reconciliation/reconciliationEngine.js";
@@ -27,6 +28,14 @@ function valueWithSources(value, sourceIds = [], extra = {}) {
     sourceIds: collectSourceIds(sourceIds),
     ...extra,
   };
+}
+
+function reportMemberBusinessEnabled(workspace) {
+  const hasMemberBusiness = workspace?.templateId === "fitness-studio"
+    || workspace?.isDemo
+    || (workspace?.members || []).length > 0
+    || (workspace?.businessEvents || []).some((event) => event.memberId || event.memberName || event.coach);
+  return normalizeWorkspaceModules(workspace?.modules, { fitnessTemplate: hasMemberBusiness }).members !== false;
 }
 
 function activePostedVouchers(workspace, period) {
@@ -186,7 +195,17 @@ export function buildFinancialStatements(workspace, { period = workspace.current
   const incomeStatement = buildIncomeStatement(workspace, { period, ledger });
   const balanceSheet = buildBalanceSheet(workspace, { period, ledger, incomeStatement });
   const cashFlow = buildCashFlowStatement(workspace, { period });
-  const memberServiceReconciliation = buildMemberServiceReconciliation(workspace, { period });
+  const memberServiceReconciliation = reportMemberBusinessEnabled(workspace)
+    ? buildMemberServiceReconciliation(workspace, { period })
+    : {
+        passed: true,
+        applicable: false,
+        difference: 0,
+        memberBalance: 0,
+        contractLiabilityBalance: 0,
+        message: "可选业务履约模块未启用，不参与本期报表勾稽",
+        sourceIds: [],
+      };
   const ledgerCash = sumMoney(ledger.accounts.filter((item) => item.account.cash).map((item) => item.closing));
   return {
     period,
@@ -882,7 +901,7 @@ function frozenSnapshotRowSourceIds(row) {
   );
 }
 
-function sourceDescriptionIndex(workspace) {
+function sourceDescriptionIndex(workspace, { memberBusinessEnabled = true } = {}) {
   const index = new Map();
   const add = (items, type, summary) => (items || []).forEach((item) => {
     if (!item?.id) return;
@@ -897,7 +916,7 @@ function sourceDescriptionIndex(workspace) {
   add(workspace.vouchers, "会计凭证", (item) => `${item.no || item.id} ${item.summary || ""}`.trim());
   add(workspace.bills, "应收应付", (item) => `${item.no || item.billNo || item.id} ${item.counterparty || ""}`.trim());
   add(workspace.documents, "本地资料", (item) => item.name || item.id);
-  add(workspace.businessEvents, "会员业务", (item) => item.accountingLabel || item.memberName || item.summary || item.id);
+  add(workspace.businessEvents, memberBusinessEnabled ? "会员业务" : "业务事件", (item) => item.accountingLabel || item.memberName || item.summary || item.id);
   add(workspace.payrollRecords, "工资社保记录", (item) => `${item.employeeName || "员工"} ${item.sourceFileName || item.sourceKind || ""}`.trim());
   add(workspace.invoices, "发票", (item) => item.invoiceNumber || item.name || item.id);
   add(workspace.confirmations, "客户确认", (item) => `${item.period || ""} ${item.kind || "确认"}`.trim());
@@ -973,12 +992,10 @@ export function buildFrozenReportExcelWorkbook(workspace, {
   generatedAt = new Date().toISOString(),
 } = {}) {
   const version = validateFrozenReportExcelRequest(workspace, { reportVersion, currentSourceFingerprint });
+  const memberBusinessEnabled = reportMemberBusinessEnabled(workspace);
   const snapshot = version.snapshot;
   const management = buildManagementMetrics(workspace, { period: workspace.currentPeriod });
-  const memberBusinessEnabled = typeof workspace.modules?.members === "boolean"
-    ? workspace.modules.members
-    : Boolean(workspace.templateId === "fitness-studio" || workspace.isDemo || (workspace.members || []).length || (workspace.businessEvents || []).some((event) => event.memberId || event.memberName || event.coach));
-  const sourceIndex = sourceDescriptionIndex(workspace);
+  const sourceIndex = sourceDescriptionIndex(workspace, { memberBusinessEnabled });
   const metricSources = [];
   const addMetric = (sheetName, metricId, label, value, sourceIds, unit = "CNY") => {
     const ids = collectSourceIds(sourceIds);
