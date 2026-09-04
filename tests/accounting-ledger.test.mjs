@@ -69,7 +69,7 @@ function ledgerWorkspace() {
         sourceIds: ["event-customer"],
         evidenceIds: ["document-customer"],
         lines: [
-          { account: "cash", debit: 300, credit: 0, sourceIds: ["event-customer"] },
+          { account: "cash", debit: 300, credit: 0, taxAmount: 18.87, sourceIds: ["event-customer"] },
           { account: "contractLiability", debit: 0, credit: 300, sourceIds: ["event-customer"] },
         ],
       },
@@ -199,6 +199,7 @@ test("总账以期初加期间发生额计算期末余额", () => {
     openingSignedBalance: 1200,
     debit: 300,
     credit: 40,
+    taxAmount: 18.87,
     closingBalance: 1460,
     closingDirection: "借",
     closingSignedBalance: 1460,

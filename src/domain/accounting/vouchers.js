@@ -130,6 +130,10 @@ function aggregateLines(lines) {
   const grouped = new Map();
   lines.forEach((line) => {
     const direction = Number(line.debit || 0) > 0 ? "debit" : Number(line.credit || 0) > 0 ? "credit" : "empty";
+    const rawTaxAmount = line.taxAmount;
+    const taxAmount = rawTaxAmount == null || String(rawTaxAmount).trim() === "" || !Number.isFinite(Number(rawTaxAmount))
+      ? null
+      : roundMoney(rawTaxAmount);
     const dimensions = {
       auxiliaryId: voucherLineDimension(line, "auxiliaryId", "counterpartyId"),
       auxiliaryLabel: voucherLineDimension(line, "auxiliaryLabel", "counterparty", "counterpartyName"),
@@ -155,10 +159,12 @@ function aggregateLines(lines) {
       ...dimensions,
       debit: 0,
       credit: 0,
+      taxAmount: null,
       sourceIds: [],
     };
     current.debit = roundMoney(current.debit + Number(line.debit || 0));
     current.credit = roundMoney(current.credit + Number(line.credit || 0));
+    if (taxAmount != null) current.taxAmount = roundMoney(Number(current.taxAmount || 0) + taxAmount);
     current.sourceIds = collectSourceIds(current.sourceIds, line.sourceIds || []);
     grouped.set(key, current);
   });

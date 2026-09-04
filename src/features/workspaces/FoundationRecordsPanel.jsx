@@ -1215,9 +1215,31 @@ function ManagementReportDisplayEditor({ onToast }) {
         },
       });
       setDraft(managementReport);
-      onToast?.("管理报表显示项已保存在当前工作台");
+      onToast?.(visibleCount === 0
+        ? "管理报表显示项已保存；报表将显示空状态"
+        : "管理报表显示项已保存在当前工作台");
     } catch (caught) {
       setError(caught.message || "管理报表显示项保存失败");
+    }
+  }
+
+  function restoreDefault() {
+    setError("");
+    try {
+      const managementReport = normalizeManagementReportConfig();
+      actions.replaceWorkspace(activeWorkspace.id, { ...activeWorkspace, managementReport }, {
+        requiredPermission: "workspace.manage",
+        audit: {
+          action: "恢复管理报表默认显示项",
+          detail: `恢复默认显示 ${managementReport.displayItems.length} 项并清除自定义名称；未修改计算公式与来源`,
+          objectType: "managementReport",
+          objectId: activeWorkspace.id,
+        },
+      });
+      setDraft(managementReport);
+      onToast?.("管理报表显示项已恢复默认并保存在当前工作台");
+    } catch (caught) {
+      setError(caught.message || "恢复管理报表默认显示项失败");
     }
   }
 
@@ -1247,7 +1269,8 @@ function ManagementReportDisplayEditor({ onToast }) {
             );
           })}
         </div>
-        <div className="foundation-inline-actions"><button className="primary-button" type="submit">保存管理报表显示项</button></div>
+        {visibleCount === 0 && <p className="foundation-notice management-report-empty-notice" role="status"><WarningCircle size={17} /><span>当前已隐藏全部指标。保存会成功，管理报表将显示空状态；这不是保存失败。可随时恢复默认显示项。</span></p>}
+        <div className="foundation-inline-actions wrap management-report-display-actions"><button className="secondary-button" type="button" onClick={restoreDefault}>恢复默认显示项</button><button className="primary-button" type="submit">保存管理报表显示项</button></div>
         {error && <p className="entity-error">{error}</p>}
       </form>
     </section>

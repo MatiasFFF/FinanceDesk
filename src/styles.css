@@ -2099,8 +2099,54 @@ button.metric-card:hover {
   line-height: 1.55;
 }
 
-.evidence-file-list > div > svg:last-child {
+.evidence-file-list > div > svg:last-child,
+.evidence-file-summary > svg:last-child {
   color: var(--sage);
+}
+
+.evidence-file-list > .evidence-file-item {
+  display: grid;
+  align-items: stretch;
+  gap: 9px;
+}
+
+.evidence-file-summary {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 18px minmax(0, 1fr) 17px;
+  align-items: center;
+  gap: 10px;
+}
+
+.evidence-file-actions {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.evidence-file-actions .text-button {
+  min-width: 0;
+  min-height: 30px;
+  gap: 5px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: var(--canvas);
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.evidence-file-actions .text-button:first-child {
+  justify-content: flex-start;
+}
+
+.evidence-file-actions .evidence-unlink-button {
+  justify-content: flex-end;
+  background: transparent;
+  color: #a44936;
 }
 
 .missing-evidence {
@@ -5966,6 +6012,14 @@ summary.forecast-week-row {
 }
 
 @media (max-width: 640px) {
+  .evidence-file-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .evidence-file-actions .evidence-unlink-button {
+    justify-content: flex-start;
+  }
+
   .transaction-detail-panel .detail-actions {
     grid-template-columns: 1fr;
   }

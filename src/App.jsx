@@ -44,7 +44,15 @@ import {
 } from "./domain/accounting/index.js";
 import { AccountingWorkbench, ReceivablesPayablesPanel } from "./features/accounting/AccountingWorkbench.jsx";
 import { BankImportPanel } from "./features/intake/BankImportPanel.jsx";
-import { copyWorkspaceLocalFiles, removeLocalDocument, saveLocalDocument } from "./features/intake/documentIntake.js";
+import {
+  copyWorkspaceLocalFiles,
+  downloadStoredDocument,
+  getDocumentRelatedObjectIds,
+  getStoredDocumentRecord,
+  removeLocalDocument,
+  saveLocalDocument,
+  updateLocalDocumentMetadata,
+} from "./features/intake/documentIntake.js";
 import { MemberLedgerPage } from "./features/members/MemberLedgerPage.jsx";
 import {
   MEMBER_EVENT_DEFINITIONS,
@@ -537,15 +545,17 @@ function TransactionList({ items, selectedIds, focusedId, onToggle, onToggleAll,
   );
 }
 
-function TransactionDetail({ workspace, transaction, onClose, onStatus, onSaveReview, onEvidence, onLinkEvidence, onToast }) {
+function TransactionDetail({ workspace, transaction, onClose, onStatus, onSaveReview, onEvidence, onLinkEvidence, onDownloadEvidence, onUnlinkEvidence, onToast }) {
   const terminology = workspaceTerminology(workspace);
   const evidenceInput = useRef(null);
   const [evidenceCategory, setEvidenceCategory] = useState("发票");
   const [existingEvidenceId, setExistingEvidenceId] = useState("");
+  const [evidenceAction, setEvidenceAction] = useState("");
   const [reviewNote, setReviewNote] = useState("");
   useEffect(() => {
     setEvidenceCategory("发票");
     setExistingEvidenceId("");
+    setEvidenceAction("");
   }, [transaction?.id]);
   useEffect(() => {
     setReviewNote(transaction?.manualReview?.note || "");
@@ -557,6 +567,16 @@ function TransactionDetail({ workspace, transaction, onClose, onStatus, onSaveRe
   const linkedDocuments = workspace.documents.filter((item) => transaction.evidenceIds?.includes(item.id));
   const availableDocuments = workspace.documents.filter((item) => !transaction.evidenceIds?.includes(item.id));
   const allocations = (transaction.allocations || []).map((allocation) => ({ ...allocation, bill: workspace.bills.find((bill) => bill.id === allocation.billId) }));
+  async function runEvidenceAction(action, documentId) {
+    const actionKey = `${action}:${documentId}`;
+    setEvidenceAction(actionKey);
+    try {
+      if (action === "download") await onDownloadEvidence(transaction.id, documentId);
+      else await onUnlinkEvidence(transaction.id, documentId);
+    } finally {
+      setEvidenceAction((current) => current === actionKey ? "" : current);
+    }
+  }
   return (
     <aside className="detail-panel transaction-detail-panel">
       <div className="detail-heading"><div><p className="eyebrow">单笔证据复核</p><h2>{transaction.counterparty}</h2></div><button className="icon-button compact" onClick={onClose} aria-label="关闭详情" type="button"><X size={19} /></button></div>
@@ -565,7 +585,17 @@ function TransactionDetail({ workspace, transaction, onClose, onStatus, onSaveRe
         <section className="detail-section"><div className="detail-section-title"><i className="section-mark clay" />会计判断与核销</div><p className="match-reason"><Sparkle size={16} weight="fill" />{businessTermCopy(transaction.suggestion || "尚未形成建议处理", terminology)}</p>{allocations.length ? <div className="allocation-list">{allocations.map((allocation) => <div key={`${allocation.billId}-${allocation.amount}`}><span><strong>{allocation.bill?.no || allocation.billId}</strong><small>{businessTermCopy(allocation.bill?.summary || "本地账单", terminology)}</small></span><b>{formatCurrency(allocation.amount)}</b></div>)}</div> : <p className="quiet-copy">当前没有关联账单；人工复核后可以暂存判断，但不会伪造外部匹配。</p>}</section>
         <section className="detail-section">
           <div className="detail-section-title"><i className="section-mark sage" />本地证据</div>
-          {linkedDocuments.length ? <div className="evidence-file-list">{linkedDocuments.map((document) => <div key={document.id}><FileText size={18} /><span><strong>{document.name}</strong><small>{businessTermCopy(document.type || document.category || "本地资料", terminology)} · {fileSize(document.size)}</small></span><CheckCircle size={17} weight="fill" /></div>)}</div> : <div className="missing-evidence"><WarningCircle size={20} /><span><strong>还没有关联证据</strong><small>{businessTermCopy(transaction.exceptionReason || "请选择本地文件补充证据。", terminology)}</small></span></div>}
+          {linkedDocuments.length ? <div className="evidence-file-list">{linkedDocuments.map((document) => {
+            const downloading = evidenceAction === `download:${document.id}`;
+            const unlinking = evidenceAction === `unlink:${document.id}`;
+            return <div className="evidence-file-item" key={document.id}>
+              <div className="evidence-file-summary"><FileText size={18} /><span><strong>{document.name}</strong><small>{businessTermCopy(document.type || document.category || "本地资料", terminology)} · {fileSize(document.size)}</small></span><CheckCircle size={17} weight="fill" /></div>
+              <div className="evidence-file-actions">
+                <button className="text-button" disabled={Boolean(evidenceAction)} onClick={() => runEvidenceAction("download", document.id)} type="button"><DownloadSimple size={14} />{downloading ? "正在读取原文件…" : "查看/下载原文件"}</button>
+                <button className="text-button evidence-unlink-button" disabled={Boolean(evidenceAction)} onClick={() => runEvidenceAction("unlink", document.id)} type="button"><X size={14} />{unlinking ? "正在解除…" : "解除与本流水关联"}</button>
+              </div>
+            </div>;
+          })}</div> : <div className="missing-evidence"><WarningCircle size={20} /><span><strong>还没有关联证据</strong><small>{businessTermCopy(transaction.exceptionReason || "请选择本地文件补充证据。", terminology)}</small></span></div>}
           {availableDocuments.length > 0 && <div className="existing-evidence-link"><label className="field-label"><span>关联资料库中的已有文件</span><select value={existingEvidenceId} onChange={(event) => setExistingEvidenceId(event.target.value)}><option value="">请选择已有资料</option>{availableDocuments.map((document) => <option value={document.id} key={document.id}>{document.name} · {businessTermCopy(document.category || document.type || "本地资料", terminology)}</option>)}</select></label><button className="secondary-button wide" disabled={!existingEvidenceId} onClick={() => { if (onLinkEvidence(transaction.id, existingEvidenceId)) setExistingEvidenceId(""); }} type="button"><FileText size={17} />关联已有资料</button></div>}
           <label className="field-label"><span>上传新证据的类别</span><select value={evidenceCategory} onChange={(event) => setEvidenceCategory(event.target.value)}><option>发票</option><option>合同</option><option>审批单</option><option>采购单</option><option>结算单</option>{workspaceModuleEnabled(workspace, "members") && <><option value="会员协议">{terminology.member}协议</option><option value="签到记录">{terminology.member}签到记录</option></>}<option value="工资表">{terminology.personnel}工资表</option><option value="社保数据">{terminology.personnel}社保数据</option><option>退款申请</option><option>内部转账回单</option><option>其他资料</option></select></label>
           <input ref={evidenceInput} hidden type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) onEvidence(transaction.id, file, evidenceCategory); event.target.value = ""; }} />
@@ -587,7 +617,7 @@ function TransactionDetail({ workspace, transaction, onClose, onStatus, onSaveRe
   );
 }
 
-function ReconcilePage({ workspace, onPage, onStatus, onReview, onSaveReview, onEvidence, onLinkEvidence, onExportSelected, onResolveException, onToast }) {
+function ReconcilePage({ workspace, onPage, onStatus, onReview, onSaveReview, onEvidence, onLinkEvidence, onDownloadEvidence, onUnlinkEvidence, onExportSelected, onResolveException, onToast }) {
   const terminology = workspaceTerminology(workspace);
   const [filter, setFilter] = useState("unresolved");
   const [query, setQuery] = useState("");
@@ -618,7 +648,7 @@ function ReconcilePage({ workspace, onPage, onStatus, onReview, onSaveReview, on
         <section className="panel table-panel"><div className="table-heading"><span>本期流水</span><span>{filtered.length} / {periodTransactions.length} 笔</span></div><TransactionList items={filtered} selectedIds={selectedIds} focusedId={focusedId} onToggle={toggle} onToggleAll={toggleAll} onFocus={setFocusedId} /></section>
         <BoundaryNote />
       </div>
-      <TransactionDetail workspace={workspace} transaction={focused} onClose={() => setFocusedId(null)} onStatus={onStatus} onSaveReview={onSaveReview} onEvidence={onEvidence} onLinkEvidence={onLinkEvidence} onToast={onToast} />
+      <TransactionDetail workspace={workspace} transaction={focused} onClose={() => setFocusedId(null)} onStatus={onStatus} onSaveReview={onSaveReview} onEvidence={onEvidence} onLinkEvidence={onLinkEvidence} onDownloadEvidence={onDownloadEvidence} onUnlinkEvidence={onUnlinkEvidence} onToast={onToast} />
     </div>
   );
 }
@@ -1494,6 +1524,62 @@ function App() {
       return false;
     }
   }
+  async function downloadLinkedEvidence(transactionId, documentId) {
+    let documentName = "这份证据";
+    try {
+      const current = store.getActiveWorkspace();
+      const transaction = current?.transactions?.find((item) => item.id === transactionId);
+      const documentMetadata = current?.documents?.find((item) => item.id === documentId);
+      documentName = documentMetadata?.name || documentMetadata?.title || documentName;
+      if (!current || !transaction) throw new Error("找不到当前流水");
+      if (!documentMetadata || !transaction.evidenceIds?.includes(documentId)) throw new Error("这份资料已不再关联当前流水");
+      const record = await getStoredDocumentRecord({ fileVault, workspaceId: current.id, document: documentMetadata });
+      downloadStoredDocument(record);
+      actions.replaceWorkspace(current.id, current, {
+        allowArchivedTransition: true,
+        requiredPermission: "data.read",
+        audit: {
+          actor: actorName,
+          action: "查看或下载流水证据原文件",
+          detail: `${transaction.serial || transaction.id} · ${documentName} · 原文件未离开当前设备`,
+        },
+      });
+      setToast({ tone: "success", message: `已开始下载“${documentName}”的本地原文件` });
+      return true;
+    } catch (error) {
+      setToast({ tone: "danger", message: `无法查看或下载“${documentName}”：${error.message || "当前设备中不存在该原文件"}` });
+      return false;
+    }
+  }
+  function unlinkEvidenceFromTransaction(transactionId, documentId) {
+    try {
+      const current = store.getActiveWorkspace();
+      const transaction = current?.transactions?.find((item) => item.id === transactionId);
+      const documentMetadata = current?.documents?.find((item) => item.id === documentId);
+      if (!current || !transaction) throw new Error("找不到当前流水");
+      if (!documentMetadata) throw new Error("找不到要解除关联的资料");
+      const relatedObjectIds = getDocumentRelatedObjectIds(current, documentId);
+      if (!transaction.evidenceIds?.includes(documentId) && !relatedObjectIds.includes(transactionId)) {
+        throw new Error("这份资料已不再关联当前流水");
+      }
+      updateLocalDocumentMetadata({
+        store,
+        workspaceId: current.id,
+        documentId,
+        patch: { relatedObjectIds: relatedObjectIds.filter((objectId) => objectId !== transactionId) },
+        actor: actorName,
+        audit: {
+          action: "解除流水证据关联",
+          detail: `${transaction.serial || transaction.id} · ${documentMetadata.name || documentMetadata.title || documentId}；资料本体仍保留在本地资料库`,
+        },
+      });
+      setToast({ tone: "success", message: `已解除“${documentMetadata.name || documentMetadata.title || documentId}”与当前流水的关联；原文件仍保留` });
+      return true;
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "解除本地证据关联失败" });
+      return false;
+    }
+  }
   function addLedgerMember(values) {
     try {
       mutateActive((current) => audit(
@@ -1942,7 +2028,7 @@ function App() {
         {loadReport.recovered && <div className="danger-banner recovery-banner"><WarningCircle size={18} /><span><strong>{loadReport.source === "backup" ? "本地数据已从上一次有效副本恢复。" : "本地主副本与备用副本均无法读取，当前已加载初始模板。"}</strong>{loadReport.errors?.length ? ` 原因：${loadReport.errors.join("；")}` : " 请先核对数据并导出备份。"}</span></div>}
         {activePage === "overview" && <OverviewPage workspace={workspace} onPage={navigateToPage} onResolveNotice={resolveNotice} />}
         {activePage === "members" && workspaceModuleEnabled(workspace, "members") && <MemberLedgerPage workspace={workspace} onAddMember={addLedgerMember} onMemberStatus={changeLedgerMemberStatus} onAddEvent={addLedgerEvent} onEventStatus={changeLedgerEventStatus} />}
-        {activePage === "reconcile" && <ReconcilePage workspace={workspace} onPage={navigateToPage} onStatus={setTransactionStatus} onReview={reviewTransactions} onSaveReview={saveTransactionReview} onEvidence={addEvidence} onLinkEvidence={linkExistingEvidence} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} />}
+        {activePage === "reconcile" && <ReconcilePage workspace={workspace} onPage={navigateToPage} onStatus={setTransactionStatus} onReview={reviewTransactions} onSaveReview={saveTransactionReview} onEvidence={addEvidence} onLinkEvidence={linkExistingEvidence} onDownloadEvidence={downloadLinkedEvidence} onUnlinkEvidence={unlinkEvidenceFromTransaction} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} />}
         {activePage === "reports" && <ReportsPage workspace={workspace} onPage={navigateToPage} onFreeze={freezeReport} onExportExcel={exportReportExcel} />}
         {activePage === "tax" && <TaxPage workspace={workspace} onPage={navigateToPage} onTaxChange={changeTax} onTaxCommit={commitTax} onSectionDecision={recordInitialConfirmationSection} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} />}
         {activePage === "archive" && <ArchivePage workspace={workspace} onPage={navigateToPage} onDocuments={addDocuments} onReceipt={receiveReceipt} onArchive={completeArchive} onNextPeriod={goNextPeriod} onExportIndex={exportArchiveIndex} />}

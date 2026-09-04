@@ -201,6 +201,9 @@ export function postedLedgerEntries(workspace = {}) {
       const storeNames = dimensionValues(line, voucher, records, ["storeName", "store"]);
       const departments = dimensionValues(line, voucher, records, ["department", "departmentName"]);
       const projects = dimensionValues(line, voucher, records, ["project", "projectName"]);
+      const taxAmount = line.taxAmount == null || String(line.taxAmount).trim() === "" || !Number.isFinite(Number(line.taxAmount))
+        ? null
+        : roundMoney(line.taxAmount);
       const originalSourceIds = collectSourceIds(
         line.sourceIds || [],
         line.businessEventId,
@@ -226,6 +229,7 @@ export function postedLedgerEntries(workspace = {}) {
         normalSide: definition.normalSide || "debit",
         debit: roundMoney(line.debit),
         credit: roundMoney(line.credit),
+        taxAmount,
         auxiliaries,
         auxiliaryIds: unique(auxiliaries.map((item) => item.id)),
         auxiliaryLabels: unique(auxiliaries.map((item) => item.label)),
@@ -320,6 +324,7 @@ export function buildJournalLedger(workspace = {}, rawFilters = {}) {
     totals: {
       debit: sumMoney(rows.map((row) => row.debit)),
       credit: sumMoney(rows.map((row) => row.credit)),
+      taxAmount: sumMoney(rows.map((row) => row.taxAmount || 0)),
     },
     sourceVoucherIds: unique(rows.map((row) => row.voucherId)),
     sourceIds: unique(rows.map((row) => row.originalSourceIds)),
@@ -351,6 +356,9 @@ export function buildGeneralLedger(workspace = {}, rawFilters = {}) {
       openingSignedBalance: openingDetails.signed,
       debit,
       credit,
+      taxAmount: accountRows.some((row) => row.taxAmount != null)
+        ? sumMoney(accountRows.map((row) => row.taxAmount || 0))
+        : null,
       closingBalance: closingDetails.balance,
       closingDirection: closingDetails.direction,
       closingSignedBalance: closingDetails.signed,
@@ -461,7 +469,7 @@ function csvDocument(headers, rows) {
 export function ledgerToCsv(kind, ledger) {
   if (kind === "general") {
     return csvDocument(
-      ["期间起", "期间止", "科目编码", "科目名称", "期初方向", "期初余额", "借方发生", "贷方发生", "期末方向", "期末余额", "有效凭证IDs", "原始sourceIds"],
+      ["期间起", "期间止", "科目编码", "科目名称", "期初方向", "期初余额", "借方发生", "贷方发生", "税额", "期末方向", "期末余额", "有效凭证IDs", "原始sourceIds"],
       ledger.rows.map((row) => [
         ledger.filters.periodFrom,
         ledger.filters.periodTo,
@@ -471,6 +479,7 @@ export function ledgerToCsv(kind, ledger) {
         row.openingBalance,
         row.debit,
         row.credit,
+        row.taxAmount,
         row.closingDirection,
         row.closingBalance,
         row.voucherIds,
@@ -480,7 +489,7 @@ export function ledgerToCsv(kind, ledger) {
   }
   if (kind === "detail") {
     return csvDocument(
-      ["日期", "期间", "凭证号", "凭证ID", "摘要", "科目编码", "科目名称", "借方", "贷方", "余额方向", "运行余额", "客户/供应商/员工", "辅助类型", "门店", "部门", "项目", "原始sourceIds", "凭证版本"],
+      ["日期", "期间", "凭证号", "凭证ID", "摘要", "科目编码", "科目名称", "借方", "贷方", "税额", "余额方向", "运行余额", "客户/供应商/员工", "辅助类型", "门店", "部门", "项目", "原始sourceIds", "凭证版本"],
       ledger.rows.map((row) => [
         row.date,
         row.period,
@@ -491,6 +500,7 @@ export function ledgerToCsv(kind, ledger) {
         row.accountLabel,
         row.debit,
         row.credit,
+        row.taxAmount,
         row.runningDirection,
         row.runningBalance,
         row.auxiliaryLabels,
@@ -504,7 +514,7 @@ export function ledgerToCsv(kind, ledger) {
     );
   }
   return csvDocument(
-    ["日期", "期间", "凭证号", "凭证ID", "摘要", "科目编码", "科目名称", "客户/供应商/员工", "辅助类型", "门店", "部门", "项目", "借方", "贷方", "原始sourceIds", "证据IDs", "凭证版本"],
+    ["日期", "期间", "凭证号", "凭证ID", "摘要", "科目编码", "科目名称", "客户/供应商/员工", "辅助类型", "门店", "部门", "项目", "借方", "贷方", "税额", "原始sourceIds", "证据IDs", "凭证版本"],
     ledger.rows.map((row) => [
       row.date,
       row.period,
@@ -520,6 +530,7 @@ export function ledgerToCsv(kind, ledger) {
       row.projects,
       row.debit,
       row.credit,
+      row.taxAmount,
       row.originalSourceIds,
       row.evidenceIds,
       row.voucherVersion,

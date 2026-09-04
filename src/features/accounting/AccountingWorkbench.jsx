@@ -264,6 +264,7 @@ function blankVoucherLine(voucher) {
     project: null,
     debit: "",
     credit: "",
+    taxAmount: "",
     sourceIds: [...new Set(voucher.sourceIds || [])],
   };
 }
@@ -497,6 +498,11 @@ function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChan
                 <datalist id={`${projectListId}-${index}`}>{dimensionOptions.projects.map((item) => <option value={item} key={item} />)}</datalist>
                 <small>{voucherLineDimensionInput(line, "project", "projectName") || "未设置"}</small>
               </label>
+              <label className="engine-voucher-line-field engine-voucher-line-tax-field">
+                <span>税额（可选）</span>
+                <input type="number" step="0.01" inputMode="decimal" value={line.taxAmount ?? ""} onChange={(event) => onChange(index, { taxAmount: event.target.value })} aria-label={`第 ${index + 1} 行税额`} placeholder="0.00" />
+                <small>不参与借贷平衡</small>
+              </label>
               <label className="engine-voucher-line-field engine-voucher-line-source-field">
                 <span>来源说明（sourceIds）</span>
                 <input value={voucherLineSourceInput(line)} onChange={(event) => {
@@ -535,6 +541,7 @@ function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChan
                 voucherLineDimensionInput(line, "department", "departmentName"),
                 voucherLineDimensionInput(line, "project", "projectName"),
               ].filter(Boolean).join(" · ") || "未设置"}</strong></span>
+              <span><small>税额</small><strong>{line.taxAmount == null || line.taxAmount === "" ? "—" : `¥${money(line.taxAmount)}`}</strong></span>
               <span><small>来源说明（sourceIds）</small><strong>{sourceIds.join("、") || "无分录来源"}</strong></span>
             </span>
           </div>
@@ -545,12 +552,13 @@ function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChan
   );
 }
 
-function LedgerTrace({ voucherId, voucherIds = [], sourceIds = [] }) {
+function LedgerTrace({ voucherId, voucherIds = [], sourceIds = [], taxAmount = null }) {
   const vouchers = voucherId ? [voucherId] : voucherIds;
   return (
     <details className="ledger-trace">
       <summary>查看追溯</summary>
       <span><b>凭证</b>{vouchers.join("、") || "期初余额"}</span>
+      <span><b>税额</b>{taxAmount == null ? "—" : `¥${money(taxAmount)}`}</span>
       <span><b>sourceIds</b>{sourceIds.join("、") || "无原始来源"}</span>
     </details>
   );
@@ -654,7 +662,7 @@ function AccountingLedgerPanel({ workspace, onToast }) {
         {view === "journal" && <table className="ledger-table">
           <thead><tr><th>日期 / 凭证</th><th>摘要 / 科目</th><th>辅助维度</th><th className="number">借方</th><th className="number">贷方</th></tr></thead>
           <tbody>{ledger.rows.map((row) => <tr key={row.id}>
-            <td><strong>{row.date}</strong><small>{row.voucherNo} · V{row.voucherVersion}</small><LedgerTrace voucherId={row.voucherId} sourceIds={row.originalSourceIds} /></td>
+            <td><strong>{row.date}</strong><small>{row.voucherNo} · V{row.voucherVersion}</small><LedgerTrace voucherId={row.voucherId} sourceIds={row.originalSourceIds} taxAmount={row.taxAmount} /></td>
             <td><strong>{row.voucherSummary}</strong><small>{displayText(row.accountLabel)} · {row.account}</small></td>
             <td><span>{row.auxiliaryLabels.join("、") || "—"}</span><small>{[row.storeNames.join("、"), row.departments.join("、"), row.projects.join("、")].filter(Boolean).join(" · ") || `无${terminology.location} / 部门 / 项目`}</small></td>
             <td className="number">{row.debit ? money(row.debit) : "—"}</td>
@@ -666,7 +674,7 @@ function AccountingLedgerPanel({ workspace, onToast }) {
         {view === "general" && <table className="ledger-table">
           <thead><tr><th>科目</th><th className="number">期初</th><th className="number">借方发生</th><th className="number">贷方发生</th><th className="number">期末</th></tr></thead>
           <tbody>{ledger.rows.map((row) => <tr key={row.account}>
-            <td><strong>{displayText(row.accountLabel)}</strong><small>{row.account}</small><LedgerTrace voucherIds={row.voucherIds} sourceIds={row.originalSourceIds} /></td>
+            <td><strong>{displayText(row.accountLabel)}</strong><small>{row.account}</small><LedgerTrace voucherIds={row.voucherIds} sourceIds={row.originalSourceIds} taxAmount={row.taxAmount} /></td>
             <td className="number">{balanceText(row.openingDirection, row.openingBalance)}</td>
             <td className="number">{money(row.debit)}</td>
             <td className="number">{money(row.credit)}</td>
@@ -677,7 +685,7 @@ function AccountingLedgerPanel({ workspace, onToast }) {
         {view === "detail" && <table className="ledger-table">
           <thead><tr><th>日期 / 凭证</th><th>科目 / 摘要</th><th className="number">借方</th><th className="number">贷方</th><th className="number">运行余额</th></tr></thead>
           <tbody>{ledger.rows.map((row) => <tr key={row.id}>
-            <td><strong>{row.date}</strong><small>{row.voucherNo} · V{row.voucherVersion}</small><LedgerTrace voucherId={row.voucherId} sourceIds={row.originalSourceIds} /></td>
+            <td><strong>{row.date}</strong><small>{row.voucherNo} · V{row.voucherVersion}</small><LedgerTrace voucherId={row.voucherId} sourceIds={row.originalSourceIds} taxAmount={row.taxAmount} /></td>
             <td><strong>{displayText(row.accountLabel)}</strong><small>{row.voucherSummary}</small></td>
             <td className="number">{row.debit ? money(row.debit) : "—"}</td>
             <td className="number">{row.credit ? money(row.credit) : "—"}</td>

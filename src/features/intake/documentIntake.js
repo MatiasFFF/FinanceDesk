@@ -2531,9 +2531,9 @@ export function updateLocalDocumentMetadata(input) {
   store.actions.replaceWorkspace(workspaceId, next, {
     requiredPermission: "documents.add",
     audit: {
-      actor,
-      action: "更新本地资料",
-      detail: `${updatedDocument.name}（${updatedDocument.category}）· 关联 ${relatedObjectIds.length} 个业务对象`,
+      actor: input.audit?.actor || actor,
+      action: input.audit?.action || "更新本地资料",
+      detail: input.audit?.detail || `${updatedDocument.name}（${updatedDocument.category}）· 关联 ${relatedObjectIds.length} 个业务对象`,
     },
   });
   return store.getState().workspaces.find((item) => item.id === workspaceId)?.documents?.find((item) => item.id === documentId);

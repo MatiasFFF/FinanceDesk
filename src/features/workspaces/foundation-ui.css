@@ -2481,6 +2481,19 @@
   gap: 11px;
 }
 
+.management-report-empty-notice {
+  margin: 0;
+}
+
+.management-report-empty-notice > svg {
+  flex: 0 0 auto;
+}
+
+.management-report-display-actions {
+  justify-content: flex-end;
+  margin-top: 0;
+}
+
 .management-report-display-grid {
   display: grid;
   min-width: 0;

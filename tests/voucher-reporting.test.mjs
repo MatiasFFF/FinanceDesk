@@ -417,6 +417,7 @@ test("draft revision keeps versions, while posted voucher requires a separate re
     storeName: "东区门店",
     department: "运营部",
     project: "年度项目",
+    taxAmount: index === 0 ? 18.87 : null,
   }));
   workspace = reviseDraftVoucher(workspace, {
     voucherId,
@@ -434,6 +435,7 @@ test("draft revision keeps versions, while posted voucher requires a separate re
     storeName: line.storeName,
     department: line.department,
     project: line.project,
+    taxAmount: line.taxAmount,
   })), dimensionedLines.map((line) => ({
     auxiliaryId: line.auxiliaryId,
     auxiliaryLabel: line.auxiliaryLabel,
@@ -442,6 +444,7 @@ test("draft revision keeps versions, while posted voucher requires a separate re
     storeName: line.storeName,
     department: line.department,
     project: line.project,
+    taxAmount: line.taxAmount,
   })));
   workspace = postVoucher(workspace, { voucherId, mode: "automatic" }, { ...context, at: "2026-09-06T13:06:00.000Z" });
 
