@@ -16,20 +16,26 @@ import {
   COMMISSION_RULE_BASES,
   COMMISSION_RULE_BASE_DEFINITIONS,
   COMMISSION_RULE_METHODS,
+  MEMBERSHIP_PACKAGE_DISCOUNT_DEFINITIONS,
+  MEMBERSHIP_PACKAGE_DISCOUNT_TYPES,
   MEMBER_EVENT_DEFINITIONS,
   MEMBER_EVENT_KINDS,
   MEMBER_STATUS_OPTIONS,
   buildCommissionRuleCalculation,
   buildMemberLedger,
+  buildMemberPackageBalances,
   buildMemberServiceReconciliation,
   buildRechargeRefundOptions,
   confirmCommissionAccrual,
+  calculateMembershipConsumptionAmount,
   memberEventActions,
   memberEventKind,
   memberEventStatusLabel,
+  membershipPackagePrice,
   normalizedEventStatus,
   normalizedMemberStatus,
   saveCommissionRule,
+  saveMembershipPackage,
   synchronizeMemberServiceException,
 } from "./memberLedger.js";
 import "./member-ledger.css";
@@ -48,8 +54,114 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function defaultDimensions(workspace, member = null) {
+  const defaultStore = (workspace.stores || []).find((store) => store.status !== "inactive") || workspace.stores?.[0];
+  return {
+    storeId: member?.storeId || defaultStore?.id || "",
+    coach: member?.coach || "",
+    department: member?.department || "",
+    project: member?.project || "",
+  };
+}
+
 function Metric({ label, value, note, icon: Icon }) {
   return <article className="member-metric"><span><Icon size={20} /></span><div><small>{label}</small><strong>{value}</strong><p>{note}</p></div></article>;
+}
+
+function emptyMembershipPackage() {
+  return {
+    id: "",
+    name: "",
+    listPrice: "",
+    totalSessions: "",
+    validityDays: "",
+    discountType: MEMBERSHIP_PACKAGE_DISCOUNT_TYPES.NONE,
+    discountValue: "",
+  };
+}
+
+function membershipPackageDiscountLabel(packageRule) {
+  if (packageRule.discountType === MEMBERSHIP_PACKAGE_DISCOUNT_TYPES.PERCENTAGE) {
+    return "优惠 " + packageRule.discountValue + "%";
+  }
+  if (packageRule.discountType === MEMBERSHIP_PACKAGE_DISCOUNT_TYPES.FIXED) {
+    return "减免 " + formatCurrency(packageRule.discountValue);
+  }
+  return "无折扣";
+}
+
+function MembershipPackagesPanel({ workspace }) {
+  const { actions, state, store } = useFinanceDesk();
+  const [form, setForm] = useState(emptyMembershipPackage);
+  const [feedback, setFeedback] = useState(null);
+  const packages = workspace.membershipPackages || [];
+  const actor = workspace.users?.find((user) => user.id === state.activeUserId)?.name || "本地用户";
+  const previewPrice = membershipPackagePrice(form);
+
+  function run(change, successMessage) {
+    setFeedback(null);
+    try {
+      const current = store.getActiveWorkspace();
+      const next = change(current);
+      actions.replaceWorkspace(current.id, next);
+      setFeedback({ tone: "success", message: successMessage });
+      return true;
+    } catch (error) {
+      setFeedback({ tone: "danger", message: error.message || "会员套餐处理失败" });
+      return false;
+    }
+  }
+
+  function submitPackage(event) {
+    event.preventDefault();
+    if (run(
+      (current) => saveMembershipPackage(current, form, { actor }),
+      form.id ? "会员套餐已更新；既往充值仍保留原套餐快照" : "会员套餐已保存到当前工作台",
+    )) setForm(emptyMembershipPackage());
+  }
+
+  function editPackage(packageRule) {
+    setFeedback(null);
+    setForm({
+      id: packageRule.id,
+      name: packageRule.name,
+      listPrice: packageRule.listPrice,
+      totalSessions: packageRule.totalSessions,
+      validityDays: packageRule.validityDays,
+      discountType: packageRule.discountType,
+      discountValue: packageRule.discountValue || "",
+    });
+  }
+
+  function togglePackage(packageRule) {
+    run(
+      (current) => saveMembershipPackage(current, {
+        ...packageRule,
+        enabled: packageRule.enabled === false,
+      }, { actor }),
+      packageRule.enabled === false ? "会员套餐已启用" : "会员套餐已停用",
+    );
+  }
+
+  return (
+    <section className="panel membership-packages-panel">
+      <div className="panel-heading"><div><p className="eyebrow">会员套餐与价格</p><h2>建立可复用的充值规则</h2><p>套餐修改只影响以后充值；每笔会员充值都会保留当时的价格、课时、折扣和有效期快照。</p></div><span>{packages.length} 个套餐</span></div>
+      <form className="member-entry-form membership-package-form" onSubmit={submitPackage}>
+        <label><span>套餐名称</span><input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required placeholder="例如：私教 10 节包" /></label>
+        <label><span>挂牌售价</span><input type="number" min="0.01" step="0.01" value={form.listPrice} onChange={(event) => setForm((current) => ({ ...current, listPrice: event.target.value }))} required /></label>
+        <label><span>总课时</span><input type="number" min="0.01" step="0.01" value={form.totalSessions} onChange={(event) => setForm((current) => ({ ...current, totalSessions: event.target.value }))} required /></label>
+        <label><span>有效期（天）</span><input type="number" min="1" step="1" value={form.validityDays} onChange={(event) => setForm((current) => ({ ...current, validityDays: event.target.value }))} required /></label>
+        <label><span>折扣规则</span><select value={form.discountType} onChange={(event) => setForm((current) => ({ ...current, discountType: event.target.value, discountValue: "" }))}>{Object.entries(MEMBERSHIP_PACKAGE_DISCOUNT_DEFINITIONS).map(([value, definition]) => <option value={value} key={value}>{definition.label}</option>)}</select></label>
+        {form.discountType !== MEMBERSHIP_PACKAGE_DISCOUNT_TYPES.NONE && <label><span>{form.discountType === MEMBERSHIP_PACKAGE_DISCOUNT_TYPES.PERCENTAGE ? "优惠比例（%）" : "固定减免金额"}</span><input type="number" min="0.01" max={form.discountType === MEMBERSHIP_PACKAGE_DISCOUNT_TYPES.PERCENTAGE ? "99.99" : undefined} step="0.01" value={form.discountValue} onChange={(event) => setForm((current) => ({ ...current, discountValue: event.target.value }))} required /></label>}
+        <div className="membership-package-preview"><span><small>本次规则售价</small><strong>{formatCurrency(previewPrice)}</strong></span><span><small>单课参考价</small><strong>{formatCurrency(Number(form.totalSessions) > 0 ? previewPrice / Number(form.totalSessions) : 0)}</strong></span></div>
+        <div className="commission-rule-form-actions"><button className="primary-button" type="submit">{form.id ? "保存套餐修改" : "保存套餐"}</button>{form.id && <button className="soft-button" type="button" onClick={() => setForm(emptyMembershipPackage())}>取消编辑</button>}</div>
+      </form>
+      <div className="membership-package-rule-list">
+        {packages.length ? packages.map((packageRule) => <article className={packageRule.enabled === false ? "disabled" : ""} key={packageRule.id}><div><span>{packageRule.enabled === false ? "已停用" : "可充值"}</span><strong>{packageRule.name}</strong><small>{membershipPackageDiscountLabel(packageRule)} · 有效 {packageRule.validityDays} 天</small></div><div><span><small>挂牌售价</small><strong>{formatCurrency(packageRule.listPrice)}</strong></span><span><small>实际售价</small><strong>{formatCurrency(packageRule.salePrice)}</strong></span><span><small>总课时</small><strong>{packageRule.totalSessions} 节</strong></span></div><footer><button className="soft-button" type="button" onClick={() => editPackage(packageRule)}>编辑</button><button className="soft-button" type="button" onClick={() => togglePackage(packageRule)}>{packageRule.enabled === false ? "启用" : "停用"}</button></footer></article>) : <p className="membership-package-empty">还没有会员套餐。先保存套餐，才能新增会员充值。</p>}
+      </div>
+      {feedback && <p className={"commission-rule-feedback " + feedback.tone}>{feedback.message}</p>}
+    </section>
+  );
 }
 
 function emptyCommissionRule(coach = "") {
@@ -212,29 +324,57 @@ function MemberServiceReconciliationPanel({ reconciliation }) {
   );
 }
 
+function MemberPackageBalancesPanel({ packageBalances }) {
+  return (
+    <section className="panel member-package-balances-panel">
+      <div className="panel-heading"><div><p className="eyebrow">会员已购套餐</p><h2>逐笔查看课时、有效期与未履约余额</h2></div><span>{packageBalances.length} 个</span></div>
+      {packageBalances.length ? <div className="member-package-balance-table">
+        <div className="member-package-balance-row heading"><span>会员 / 套餐</span><span>原始课时</span><span>已耗</span><span>剩余</span><span>到期日</span><span>未履约余额</span></div>
+        {packageBalances.map((packageBalance) => <div className="member-package-balance-row" key={packageBalance.rechargeEventId}>
+          <span><strong>{packageBalance.memberName} · {packageBalance.packageName}</strong><small>{packageBalance.purchasedAt} 充值 · {packageBalance.rechargeEventId}</small></span>
+          <span>{packageBalance.originalSessions} 节</span>
+          <span>{packageBalance.consumedSessions} 节</span>
+          <span><strong>{packageBalance.remainingSessions} 节</strong>{packageBalance.refundedSessions > 0 && <small>另退款 {packageBalance.refundedSessions} 节</small>}</span>
+          <span><strong>{packageBalance.expiresAt}</strong><small>{packageBalance.expired ? "已过期，不可耗课" : "有效"}</small></span>
+          <span><strong>{formatCurrency(packageBalance.unfulfilledBalance)}</strong></span>
+        </div>)}
+      </div> : <div className="member-empty"><Clock size={26} /><strong>还没有已确认的套餐充值</strong><span>会员充值确认后会在这里形成独立套餐余额。</span></div>}
+    </section>
+  );
+}
+
 function EventForm({ workspace, members, onSubmit }) {
-  const [form, setForm] = useState({ kind: MEMBER_EVENT_KINDS.RECHARGE, memberId: members[0]?.id || "", originalRechargeId: "", date: today(), amount: "", quantity: "", coach: members[0]?.coach || "", note: "" });
+  const [form, setForm] = useState({ kind: MEMBER_EVENT_KINDS.RECHARGE, memberId: members[0]?.id || "", packageId: "", packageRechargeId: "", originalRechargeId: "", date: today(), amount: "", quantity: "", ...defaultDimensions(workspace, members[0]), note: "" });
   const definition = MEMBER_EVENT_DEFINITIONS[form.kind];
   const needsMember = form.kind !== MEMBER_EVENT_KINDS.COMMISSION;
+  const enabledPackages = (workspace.membershipPackages || []).filter((packageRule) => packageRule.enabled !== false);
+  const selectedPackage = enabledPackages.find((packageRule) => packageRule.id === form.packageId);
+  const availableMemberPackages = useMemo(() => buildMemberPackageBalances(workspace, form.memberId, {
+    asOfDate: form.date,
+  }).filter((packageBalance) => !packageBalance.expired && packageBalance.remainingSessions > 0 && packageBalance.unfulfilledBalance > 0), [workspace, form.memberId, form.date]);
+  const selectedMemberPackage = availableMemberPackages.find((packageBalance) => packageBalance.rechargeEventId === form.packageRechargeId);
+  const consumptionPreviewAmount = selectedMemberPackage && Number(form.quantity) > 0
+    ? calculateMembershipConsumptionAmount(selectedMemberPackage, form.quantity)
+    : 0;
   const refundOptions = useMemo(() => buildRechargeRefundOptions(workspace, form.memberId)
     .filter((option) => option.refundableAmount > 0 && option.refundableSessions > 0), [workspace, form.memberId]);
   const selectedRecharge = refundOptions.find((option) => option.rechargeId === form.originalRechargeId);
 
   function changeMember(memberId) {
     const member = members.find((item) => item.id === memberId);
-    setForm((current) => ({ ...current, memberId, originalRechargeId: "", coach: member?.coach || current.coach }));
+    setForm((current) => ({ ...current, memberId, packageRechargeId: "", originalRechargeId: "", ...defaultDimensions(workspace, member) }));
   }
 
   function changeKind(kind) {
     const member = members.find((item) => item.id === form.memberId) || members[0];
-    setForm((current) => ({ ...current, kind, memberId: member?.id || "", originalRechargeId: "", coach: kind === MEMBER_EVENT_KINDS.COMMISSION ? current.coach : (member?.coach || "") }));
+    setForm((current) => ({ ...current, kind, memberId: member?.id || "", packageId: "", packageRechargeId: "", originalRechargeId: "", amount: "", quantity: "", ...(kind === MEMBER_EVENT_KINDS.COMMISSION ? {} : defaultDimensions(workspace, member)) }));
   }
 
   function submit(event) {
     event.preventDefault();
     const saved = onSubmit(form);
     if (saved === false) return;
-    setForm((current) => ({ ...current, originalRechargeId: "", amount: "", quantity: "", note: "" }));
+    setForm((current) => ({ ...current, packageId: "", packageRechargeId: "", originalRechargeId: "", amount: "", quantity: "", note: "" }));
   }
 
   return (
@@ -243,27 +383,52 @@ function EventForm({ workspace, members, onSubmit }) {
       <form className="member-entry-form" onSubmit={submit}>
         <label><span>业务类型</span><select value={form.kind} onChange={(event) => changeKind(event.target.value)}>{Object.entries(MEMBER_EVENT_DEFINITIONS).filter(([, item]) => item.creatable !== false).map(([value, item]) => <option value={value} key={value}>{item.label}</option>)}</select></label>
         {needsMember && <label><span>会员</span><select value={form.memberId} onChange={(event) => changeMember(event.target.value)} required><option value="">请选择会员</option>{members.map((member) => <option value={member.id} key={member.id}>{member.name}</option>)}</select></label>}
+        {form.kind === MEMBER_EVENT_KINDS.RECHARGE && (
+          <label className="full">
+            <span>充值套餐</span>
+            <select value={form.packageId} onChange={(event) => setForm((current) => ({ ...current, packageId: event.target.value }))} required>
+              <option value="">请选择会员套餐</option>
+              {enabledPackages.map((packageRule) => <option value={packageRule.id} key={packageRule.id}>{packageRule.name} · {packageRule.totalSessions} 节 · {formatCurrency(packageRule.salePrice)} · {packageRule.validityDays} 天</option>)}
+            </select>
+            {!enabledPackages.length && <small>请先在上方建立并启用会员套餐。</small>}
+          </label>
+        )}
+        {form.kind === MEMBER_EVENT_KINDS.CONSUMPTION && (
+          <label className="full">
+            <span>使用套餐</span>
+            <select value={form.packageRechargeId} onChange={(event) => setForm((current) => ({ ...current, packageRechargeId: event.target.value }))} required>
+              <option value="">请选择本次耗课使用的有效套餐</option>
+              {availableMemberPackages.map((packageBalance) => <option value={packageBalance.rechargeEventId} key={packageBalance.rechargeEventId}>{packageBalance.packageName} · 剩余 {packageBalance.remainingSessions} 节 / {formatCurrency(packageBalance.unfulfilledBalance)} · {packageBalance.expiresAt} 到期</option>)}
+            </select>
+            {selectedMemberPackage && <small>本次收入按该套餐当前未履约余额与剩余课时同比计算。</small>}
+            {!availableMemberPackages.length && <small>该会员在所选日期没有可用且未过期的套餐。</small>}
+          </label>
+        )}
         {form.kind === MEMBER_EVENT_KINDS.REFUND && <label className="full"><span>原充值</span><select value={form.originalRechargeId} onChange={(event) => setForm((current) => ({ ...current, originalRechargeId: event.target.value }))} required><option value="">请选择本次退款对应的原充值</option>{refundOptions.map((option) => <option value={option.rechargeId} key={option.rechargeId}>{option.date} · 原充值 {formatCurrency(option.amount)} / {option.sessions} 节 · 可退 {formatCurrency(option.refundableAmount)} / {option.refundableSessions} 节</option>)}</select>{selectedRecharge && <small>按充值日期先进先出分摊已耗课；本笔最多可退 {formatCurrency(selectedRecharge.refundableAmount)}、{selectedRecharge.refundableSessions} 节。</small>}{!refundOptions.length && <small>该会员暂无同时具备可退金额和课时的已确认充值。</small>}</label>}
         <label><span>业务日期</span><input type="date" value={form.date} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value }))} required /></label>
-        <label><span>{form.kind === MEMBER_EVENT_KINDS.COMMISSION ? "涉及耗课数（选填）" : "课时"}</span><input type="number" min={form.kind === MEMBER_EVENT_KINDS.COMMISSION ? "0" : "0.01"} max={form.kind === MEMBER_EVENT_KINDS.REFUND ? selectedRecharge?.refundableSessions : undefined} step="0.01" value={form.quantity} onChange={(event) => setForm((current) => ({ ...current, quantity: event.target.value }))} required={form.kind !== MEMBER_EVENT_KINDS.COMMISSION} /></label>
-        <label><span>{form.kind === MEMBER_EVENT_KINDS.COMMISSION ? "提成金额" : "金额"}</span><input type="number" min="0.01" max={form.kind === MEMBER_EVENT_KINDS.REFUND ? selectedRecharge?.refundableAmount : undefined} step="0.01" value={form.amount} onChange={(event) => setForm((current) => ({ ...current, amount: event.target.value }))} required /></label>
+        <label><span>{form.kind === MEMBER_EVENT_KINDS.COMMISSION ? "涉及耗课数（选填）" : form.kind === MEMBER_EVENT_KINDS.RECHARGE ? "套餐课时" : "课时"}</span><input type="number" min={form.kind === MEMBER_EVENT_KINDS.COMMISSION ? "0" : "0.01"} max={form.kind === MEMBER_EVENT_KINDS.REFUND ? selectedRecharge?.refundableSessions : form.kind === MEMBER_EVENT_KINDS.CONSUMPTION ? selectedMemberPackage?.remainingSessions : undefined} step="0.01" value={form.kind === MEMBER_EVENT_KINDS.RECHARGE ? selectedPackage?.totalSessions || "" : form.quantity} onChange={(event) => setForm((current) => ({ ...current, quantity: event.target.value }))} readOnly={form.kind === MEMBER_EVENT_KINDS.RECHARGE} required={form.kind !== MEMBER_EVENT_KINDS.COMMISSION} /></label>
+        <label><span>{form.kind === MEMBER_EVENT_KINDS.COMMISSION ? "提成金额" : form.kind === MEMBER_EVENT_KINDS.RECHARGE ? "套餐售价" : form.kind === MEMBER_EVENT_KINDS.CONSUMPTION ? "本次确认收入" : "金额"}</span><input type="number" min="0.01" max={form.kind === MEMBER_EVENT_KINDS.REFUND ? selectedRecharge?.refundableAmount : undefined} step="0.01" value={form.kind === MEMBER_EVENT_KINDS.RECHARGE ? selectedPackage?.salePrice || "" : form.kind === MEMBER_EVENT_KINDS.CONSUMPTION ? consumptionPreviewAmount || "" : form.amount} onChange={(event) => setForm((current) => ({ ...current, amount: event.target.value }))} readOnly={[MEMBER_EVENT_KINDS.RECHARGE, MEMBER_EVENT_KINDS.CONSUMPTION].includes(form.kind)} required /></label>
         <label><span>教练</span><input value={form.coach} onChange={(event) => setForm((current) => ({ ...current, coach: event.target.value }))} required={form.kind === MEMBER_EVENT_KINDS.COMMISSION} placeholder="例如：陈教练" /></label>
+        <label><span>归属门店</span><select value={form.storeId} onChange={(event) => setForm((current) => ({ ...current, storeId: event.target.value }))}><option value="">未归属门店</option>{(workspace.stores || []).map((store) => <option value={store.id} key={store.id}>{store.name}</option>)}</select></label>
+        <label><span>部门</span><input value={form.department} onChange={(event) => setForm((current) => ({ ...current, department: event.target.value }))} placeholder="例如：教练部" /></label>
+        <label><span>项目</span><input value={form.project} onChange={(event) => setForm((current) => ({ ...current, project: event.target.value }))} placeholder="例如：私教课" /></label>
+        <p className="form-help dimension-help">门店、教练、部门和项目默认带入会员资料，本笔业务可单独调整并随事件保存。</p>
         <label className="full"><span>备注</span><textarea value={form.note} onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))} placeholder={definition.suggestedEntry} /></label>
         <div className="member-accounting-hint"><CurrencyCircleDollar size={18} /><span><strong>{definition.accountingLabel}</strong><small>{definition.suggestedEntry}；确认业务后进入待会计处理状态。</small></span></div>
-        <button className="primary-button wide" type="submit" disabled={needsMember && members.length === 0}>新增待确认记录<ArrowRight size={16} /></button>
+        <button className="primary-button wide" type="submit" disabled={(needsMember && members.length === 0) || (form.kind === MEMBER_EVENT_KINDS.RECHARGE && !selectedPackage) || (form.kind === MEMBER_EVENT_KINDS.CONSUMPTION && !selectedMemberPackage)}>新增待确认记录<ArrowRight size={16} /></button>
         {needsMember && members.length === 0 && <p className="form-help">请先在右侧新增会员。</p>}
       </form>
     </section>
   );
 }
 
-function MemberForm({ onSubmit }) {
-  const [form, setForm] = useState({ name: "", phone: "", coach: "" });
+function MemberForm({ workspace, onSubmit }) {
+  const [form, setForm] = useState({ name: "", phone: "", ...defaultDimensions(workspace) });
   function submit(event) {
     event.preventDefault();
     const saved = onSubmit(form);
     if (saved === false) return;
-    setForm({ name: "", phone: "", coach: "" });
+    setForm({ name: "", phone: "", ...defaultDimensions(workspace) });
   }
   return (
     <section className="panel member-create-panel">
@@ -272,6 +437,9 @@ function MemberForm({ onSubmit }) {
         <label><span>会员姓名</span><input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required placeholder="例如：李女士" /></label>
         <label><span>手机 / 联系方式</span><input value={form.phone} onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))} placeholder="选填" /></label>
         <label><span>负责教练</span><input value={form.coach} onChange={(event) => setForm((current) => ({ ...current, coach: event.target.value }))} placeholder="选填" /></label>
+        <label><span>默认门店</span><select value={form.storeId} onChange={(event) => setForm((current) => ({ ...current, storeId: event.target.value }))}><option value="">未归属门店</option>{(workspace.stores || []).map((store) => <option value={store.id} key={store.id}>{store.name}</option>)}</select></label>
+        <label><span>默认部门</span><input value={form.department} onChange={(event) => setForm((current) => ({ ...current, department: event.target.value }))} placeholder="例如：教练部" /></label>
+        <label><span>默认项目</span><input value={form.project} onChange={(event) => setForm((current) => ({ ...current, project: event.target.value }))} placeholder="例如：私教课" /></label>
         <button className="secondary-button wide" type="submit"><UserPlus size={16} />保存会员</button>
       </form>
     </section>
@@ -281,6 +449,10 @@ function MemberForm({ onSubmit }) {
 export function MemberLedgerPage({ workspace, onAddMember, onMemberStatus, onAddEvent, onEventStatus }) {
   const { actions, store } = useFinanceDesk();
   const ledger = useMemo(() => buildMemberLedger(workspace, { period: workspace.currentPeriod }), [workspace]);
+  const packageBalances = useMemo(() => buildMemberPackageBalances(workspace, null, {
+    asOfDate: today(),
+    period: workspace.currentPeriod,
+  }), [workspace]);
   const reconciliation = useMemo(() => buildMemberServiceReconciliation(workspace, {
     period: workspace.currentPeriod,
   }), [workspace]);
@@ -303,21 +475,25 @@ export function MemberLedgerPage({ workspace, onAddMember, onMemberStatus, onAdd
         <Metric label="待确认 / 待付提成" value={`${ledger.totals.pendingEvents} 笔`} note={`提成 ${formatCurrency(ledger.totals.commissionPayable)}`} icon={CheckCircle} />
       </section>
 
+      <MembershipPackagesPanel workspace={workspace} />
+
       <CommissionRulesPanel workspace={workspace} />
 
       <div className="member-entry-layout">
         <EventForm workspace={workspace} members={ledger.members} onSubmit={onAddEvent} />
-        <MemberForm onSubmit={onAddMember} />
+        <MemberForm workspace={workspace} onSubmit={onAddMember} />
       </div>
 
       <section className="panel member-balance-panel">
         <div className="panel-heading"><div><p className="eyebrow">会员余额</p><h2>剩余课时与未履约金额</h2></div><span>{ledger.members.length} 名</span></div>
         {ledger.members.length ? <div className="member-card-grid">{ledger.members.map((member) => <article className="member-balance-card" key={member.id}>
-          <div className="member-card-head"><span className="member-avatar">{member.name.slice(0, 1)}</span><div><strong>{member.name}</strong><small>{member.phone || "未留联系方式"} · {member.coach || "未分配教练"}</small></div></div>
+          <div className="member-card-head"><span className="member-avatar">{member.name.slice(0, 1)}</span><div><strong>{member.name}</strong><small>{member.phone || "未留联系方式"} · {member.storeName || workspace.stores?.find((store) => store.id === member.storeId)?.name || "未归属门店"} · {member.coach || "未分配教练"}</small><small>{[member.department, member.project].filter(Boolean).join(" · ") || "未设置部门 / 项目"}</small></div></div>
           <div className="member-balance-values"><span><small>累计充值</small><strong>{formatCurrency(member.recharged)}</strong></span><span><small>已确认收入</small><strong>{formatCurrency(member.recognizedRevenue)}</strong></span><span><small>已退款</small><strong>{formatCurrency(member.refunded)}</strong></span><span><small>剩余课时</small><strong>{member.remainingSessions} 节</strong></span><span className="primary"><small>未履约余额</small><strong>{formatCurrency(member.unfulfilledBalance)}</strong></span></div>
           <div className="member-card-foot"><span>已耗 {member.consumedSessions} 节 · 已退 {formatCurrency(member.refunded)}</span><label><span>状态</span><select value={normalizedMemberStatus(member.status)} onChange={(event) => onMemberStatus(member.id, event.target.value)}>{MEMBER_STATUS_OPTIONS.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label></div>
         </article>)}</div> : <div className="member-empty"><UsersThree size={26} /><strong>还没有会员</strong><span>先新增会员，再记录充值或耗课。</span></div>}
       </section>
+
+      <MemberPackageBalancesPanel packageBalances={packageBalances} />
 
       <MemberServiceReconciliationPanel reconciliation={reconciliation} />
 
@@ -328,7 +504,7 @@ export function MemberLedgerPage({ workspace, onAddMember, onMemberStatus, onAdd
           const definition = MEMBER_EVENT_DEFINITIONS[kind];
           const status = normalizedEventStatus(event);
           return <article className={status === "void" ? "void" : ""} key={event.id}>
-            <div className="member-event-main"><span className={`member-event-mark ${kind}`} /><span><strong>{definition.label} · {event.memberName || event.coach}</strong><small>{event.date} · {event.coach || "未记录教练"}{event.note ? ` · ${event.note}` : ""}</small></span></div>
+            <div className="member-event-main"><span className={`member-event-mark ${kind}`} /><span><strong>{definition.label} · {event.memberName || event.coach}</strong><small>{event.date} · {event.storeName || workspace.stores?.find((store) => store.id === event.storeId)?.name || "未归属门店"} · {event.coach || "未记录教练"}</small><small>{[event.department, event.project, event.note].filter(Boolean).join(" · ") || "未记录部门 / 项目"}</small></span></div>
             <span className="member-event-quantity"><small>课时</small><strong>{Number(event.quantity || 0)} 节</strong></span>
             <span className="member-event-amount"><small>金额</small><strong>{formatCurrency(event.amount)}</strong></span>
             <span className="member-event-accounting"><small>会计事件</small><strong>{event.accountingLabel || definition.accountingLabel}</strong><em>{event.accountingStatus === "ready" ? "待会计处理" : event.accountingStatus === "void" ? "已作废" : "随业务状态生成"}</em></span>

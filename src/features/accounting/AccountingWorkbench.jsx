@@ -14,25 +14,40 @@ import {
 import {
   ACCOUNT_CATALOG,
   BILL_KINDS,
+  BUSINESS_EVENT_INVOICE_STATUSES,
+  BUSINESS_EVENT_TAX_TREATMENTS,
   EVENT_TYPES,
+  MANUAL_BUSINESS_EVENT_TYPES,
   accountDefinition,
   activeAllocations,
+  advanceApplicationTargets,
   allocationDirectionMatchesBill,
-  applyManualClassification,
+  applyAdvanceToBill,
   applyReconciliation,
   assessTransactionEvidence,
   billSettlement,
+  buildAdvanceBalances,
   buildAttachmentPackage,
+  buildAccountingLedgers,
+  buildLedgerFilterOptions,
+  buildReconciliationExceptionCases,
   classifyBankTransaction,
+  confirmBankTransactionBusinessEvent,
+  confirmReconciliationSuggestion,
+  confirmedAdvanceApplications,
   confirmedAllocationsForBill,
+  createAdvanceApplicationVoucherDraft,
+  createBankBusinessEventVoucherDraft,
   createMemberEventVoucherDraft,
   createSettlementBill,
   createPostedVoucherRevision,
   createVoucherDraft,
+  handleReconciliationException,
   linkInternalTransfer,
   linkRefundToOriginal,
+  ledgerToCsv,
+  manualBusinessEventDefinition,
   postVoucher,
-  recordManualConfirmation,
   recordReconciliationSuggestions,
   reviseDraftVoucher,
   reviewVoucher,
@@ -73,6 +88,15 @@ const EVENT_LABELS = {
   unknown: "待判断",
 };
 
+const REVIEW_REQUIRED_BANK_BUSINESS_TYPES = new Set([
+  "loanBorrowing",
+  "loanRepayment",
+  "employeeAdvance",
+  "relatedParty",
+  "refund",
+  "internalTransfer",
+]);
+
 function money(value) {
   return Number(value || 0).toLocaleString("zh-CN", {
     minimumFractionDigits: 2,
@@ -90,6 +114,26 @@ function statusLabel(status) {
     refund_matched: "退款已关联",
     internal_transfer: "内部转账已关联",
   }[status] || status;
+}
+
+function reconciliationSuggestionLabel(type) {
+  return {
+    one_to_one: "一对一",
+    one_to_many: "一款多单",
+    many_to_one: "一单多款",
+  }[type] || "组合匹配";
+}
+
+function exceptionWorkflowLabel(state) {
+  return {
+    awaiting_verification: "待核实",
+    awaiting_evidence: "待补件",
+    ready_for_review: "待人工确认",
+    recalculated_ready_for_review: "重算完成，待人工确认",
+    returned_to_matching: "已返回匹配",
+    treatment_adopted: "已采用处理",
+    deferred: "暂不处理",
+  }[state] || state;
 }
 
 const BILL_KIND_META = {
@@ -110,6 +154,153 @@ const MEMBER_REPORT_EFFECTS = {
 function emptyBillForm(period) {
   const date = `${period}-01`;
   return { kind: BILL_KINDS.RECEIVABLE, counterparty: "", summary: "", amount: "", date, dueDate: date, no: "" };
+}
+
+const LEDGER_VIEW_LABELS = Object.freeze({
+  journal: "序时账",
+  general: "总账",
+  detail: "明细账",
+});
+
+function balanceText(direction, balance) {
+  return direction === "平" ? "平" : `${direction} ¥${money(balance)}`;
+}
+
+function LedgerTrace({ voucherId, voucherIds = [], sourceIds = [] }) {
+  const vouchers = voucherId ? [voucherId] : voucherIds;
+  return (
+    <details className="ledger-trace">
+      <summary>查看追溯</summary>
+      <span><b>凭证</b>{vouchers.join("、") || "期初余额"}</span>
+      <span><b>sourceIds</b>{sourceIds.join("、") || "无原始来源"}</span>
+    </details>
+  );
+}
+
+function AccountingLedgerPanel({ workspace, onToast }) {
+  const [view, setView] = useState("journal");
+  const [filters, setFilters] = useState(() => ({
+    periodFrom: workspace.currentPeriod || "",
+    periodTo: workspace.currentPeriod || "",
+    account: "",
+    auxiliaryType: "",
+    auxiliaryId: "",
+    storeId: "",
+    department: "",
+    project: "",
+  }));
+  const options = useMemo(() => buildLedgerFilterOptions(workspace), [workspace]);
+  const ledgers = useMemo(() => buildAccountingLedgers(workspace, filters), [workspace, filters]);
+  const ledger = ledgers[view];
+  const auxiliaryOptions = options.auxiliaries.filter((item) => (
+    !filters.auxiliaryType || item.type === filters.auxiliaryType
+  ));
+
+  function setFilter(name, value) {
+    setFilters((current) => ({ ...current, [name]: value }));
+  }
+
+  function changeAuxiliaryType(value) {
+    setFilters((current) => ({ ...current, auxiliaryType: value, auxiliaryId: "" }));
+  }
+
+  function resetFilters() {
+    setFilters({
+      periodFrom: workspace.currentPeriod || "",
+      periodTo: workspace.currentPeriod || "",
+      account: "",
+      auxiliaryType: "",
+      auxiliaryId: "",
+      storeId: "",
+      department: "",
+      project: "",
+    });
+  }
+
+  function exportCsv() {
+    const csv = ledgerToCsv(view, ledger);
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    const periodName = [filters.periodFrom, filters.periodTo].filter(Boolean).join("_") || "全部期间";
+    link.href = url;
+    link.download = `${LEDGER_VIEW_LABELS[view]}-${periodName}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    onToast?.(`${LEDGER_VIEW_LABELS[view]}已导出为本地 CSV`);
+  }
+
+  return (
+    <div className="accounting-ledger-panel">
+      <div className="ledger-heading">
+        <div><small>S9 · 当前有效已入账凭证</small><strong>序时账、总账与明细账</strong><p>草稿、已替代及已作废版本不会进入账簿；每条分录保留凭证与原始 sourceIds。</p></div>
+        <button className="secondary-button" type="button" onClick={exportCsv} disabled={!ledger.rows.length}><FileText size={16} />导出 CSV</button>
+      </div>
+
+      <div className="ledger-tabs" role="tablist" aria-label="账簿类型">
+        {Object.entries(LEDGER_VIEW_LABELS).map(([id, label]) => (
+          <button className={view === id ? "active" : ""} type="button" role="tab" aria-selected={view === id} onClick={() => setView(id)} key={id}>{label}</button>
+        ))}
+      </div>
+
+      <div className="ledger-filters">
+        <label><span>期间起</span><input type="month" value={filters.periodFrom} onChange={(event) => setFilter("periodFrom", event.target.value)} /></label>
+        <label><span>期间止</span><input type="month" value={filters.periodTo} onChange={(event) => setFilter("periodTo", event.target.value)} /></label>
+        <label><span>科目</span><select value={filters.account} onChange={(event) => setFilter("account", event.target.value)}><option value="">全部科目</option>{options.accounts.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+        <label><span>往来类型</span><select value={filters.auxiliaryType} onChange={(event) => changeAuxiliaryType(event.target.value)}><option value="">客户 / 供应商 / 员工</option>{options.auxiliaryTypes.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+        <label><span>往来对象</span><select value={filters.auxiliaryId} onChange={(event) => setFilter("auxiliaryId", event.target.value)}><option value="">全部对象</option>{auxiliaryOptions.map((item) => <option value={item.id} key={`${item.type}-${item.id}`}>{item.typeLabel} · {item.label}</option>)}</select></label>
+        <label><span>门店</span><select value={filters.storeId} onChange={(event) => setFilter("storeId", event.target.value)}><option value="">全部门店</option>{options.stores.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+        <label><span>部门</span><select value={filters.department} onChange={(event) => setFilter("department", event.target.value)}><option value="">全部部门</option>{options.departments.map((item) => <option value={item} key={item}>{item}</option>)}</select></label>
+        <label><span>项目</span><select value={filters.project} onChange={(event) => setFilter("project", event.target.value)}><option value="">全部项目</option>{options.projects.map((item) => <option value={item} key={item}>{item}</option>)}</select></label>
+        <button className="ledger-reset" type="button" onClick={resetFilters}>重置筛选</button>
+      </div>
+
+      <div className="ledger-result-summary">
+        <span>{LEDGER_VIEW_LABELS[view]}</span>
+        <strong>{ledger.rows.length} 行</strong>
+        <small>{ledger.sourceVoucherIds.length} 张当前有效凭证</small>
+      </div>
+
+      <div className="ledger-table-wrap">
+        {view === "journal" && <table className="ledger-table">
+          <thead><tr><th>日期 / 凭证</th><th>摘要 / 科目</th><th>辅助维度</th><th className="number">借方</th><th className="number">贷方</th></tr></thead>
+          <tbody>{ledger.rows.map((row) => <tr key={row.id}>
+            <td><strong>{row.date}</strong><small>{row.voucherNo} · V{row.voucherVersion}</small><LedgerTrace voucherId={row.voucherId} sourceIds={row.originalSourceIds} /></td>
+            <td><strong>{row.voucherSummary}</strong><small>{row.accountLabel} · {row.account}</small></td>
+            <td><span>{row.auxiliaryLabels.join("、") || "—"}</span><small>{[row.storeNames.join("、"), row.departments.join("、"), row.projects.join("、")].filter(Boolean).join(" · ") || "无门店 / 部门 / 项目"}</small></td>
+            <td className="number">{row.debit ? money(row.debit) : "—"}</td>
+            <td className="number">{row.credit ? money(row.credit) : "—"}</td>
+          </tr>)}</tbody>
+          <tfoot><tr><td colSpan="3">本期合计</td><td className="number">{money(ledger.totals.debit)}</td><td className="number">{money(ledger.totals.credit)}</td></tr></tfoot>
+        </table>}
+
+        {view === "general" && <table className="ledger-table">
+          <thead><tr><th>科目</th><th className="number">期初</th><th className="number">借方发生</th><th className="number">贷方发生</th><th className="number">期末</th></tr></thead>
+          <tbody>{ledger.rows.map((row) => <tr key={row.account}>
+            <td><strong>{row.accountLabel}</strong><small>{row.account}</small><LedgerTrace voucherIds={row.voucherIds} sourceIds={row.originalSourceIds} /></td>
+            <td className="number">{balanceText(row.openingDirection, row.openingBalance)}</td>
+            <td className="number">{money(row.debit)}</td>
+            <td className="number">{money(row.credit)}</td>
+            <td className="number"><strong>{balanceText(row.closingDirection, row.closingBalance)}</strong></td>
+          </tr>)}</tbody>
+        </table>}
+
+        {view === "detail" && <table className="ledger-table">
+          <thead><tr><th>日期 / 凭证</th><th>科目 / 摘要</th><th className="number">借方</th><th className="number">贷方</th><th className="number">运行余额</th></tr></thead>
+          <tbody>{ledger.rows.map((row) => <tr key={row.id}>
+            <td><strong>{row.date}</strong><small>{row.voucherNo} · V{row.voucherVersion}</small><LedgerTrace voucherId={row.voucherId} sourceIds={row.originalSourceIds} /></td>
+            <td><strong>{row.accountLabel}</strong><small>{row.voucherSummary}</small></td>
+            <td className="number">{row.debit ? money(row.debit) : "—"}</td>
+            <td className="number">{row.credit ? money(row.credit) : "—"}</td>
+            <td className="number"><strong>{balanceText(row.runningDirection, row.runningBalance)}</strong></td>
+          </tr>)}</tbody>
+        </table>}
+
+        {!ledger.rows.length && <p className="ledger-empty">当前筛选下没有有效的已入账凭证分录。</p>}
+      </div>
+    </div>
+  );
 }
 
 function MemberBusinessAccountingQueue({ onToast }) {
@@ -218,11 +409,14 @@ export function ReceivablesPayablesPanel({ onToast }) {
   const { activeWorkspace, actions, state, store } = useFinanceDesk();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(() => emptyBillForm(activeWorkspace?.currentPeriod || new Date().toISOString().slice(0, 7)));
+  const [advanceUsage, setAdvanceUsage] = useState({});
+  const [advanceVoucherNotes, setAdvanceVoucherNotes] = useState({});
   const [error, setError] = useState("");
   const actor = activeWorkspace?.users?.find((user) => user.id === state.activeUserId)?.name || "本地用户";
   const billRows = useMemo(() => {
     if (!activeWorkspace) return [];
     const transactionById = new Map((activeWorkspace.transactions || []).map((transaction) => [transaction.id, transaction]));
+    const billById = new Map((activeWorkspace.bills || []).map((bill) => [bill.id, bill]));
     return [...(activeWorkspace.bills || [])]
       .map((bill) => ({
         bill,
@@ -231,13 +425,23 @@ export function ReceivablesPayablesPanel({ onToast }) {
           ...allocation,
           transaction: transactionById.get(allocation.transactionId),
         })),
+        advanceApplications: confirmedAdvanceApplications(activeWorkspace, { targetBillId: bill.id }).map((application) => ({
+          ...application,
+          advanceBill: billById.get(application.advanceBillId),
+        })),
       }))
       .sort((left, right) => String(right.bill.date || "").localeCompare(String(left.bill.date || "")) || String(right.bill.no || "").localeCompare(String(left.bill.no || "")));
   }, [activeWorkspace]);
+  const advanceSummary = useMemo(
+    () => activeWorkspace ? buildAdvanceBalances(activeWorkspace) : { depositsReceived: 0, prepaymentsPaid: 0, rows: [] },
+    [activeWorkspace],
+  );
 
   useEffect(() => {
     setForm(emptyBillForm(activeWorkspace?.currentPeriod || new Date().toISOString().slice(0, 7)));
     setShowForm(false);
+    setAdvanceUsage({});
+    setAdvanceVoucherNotes({});
     setError("");
   }, [activeWorkspace?.id, activeWorkspace?.currentPeriod]);
 
@@ -249,9 +453,14 @@ export function ReceivablesPayablesPanel({ onToast }) {
   const metrics = [
     { label: "应收未核销", value: totalFor(BILL_KINDS.RECEIVABLE, "remaining") },
     { label: "应付未核销", value: totalFor(BILL_KINDS.PAYABLE, "remaining") },
-    { label: "客户预收", value: totalFor(BILL_KINDS.DEPOSIT_RECEIVED, "allocated") },
-    { label: "供应商预付", value: totalFor(BILL_KINDS.PREPAYMENT_PAID, "allocated") },
+    { label: "客户预收可用", value: advanceSummary.depositsReceived },
+    { label: "供应商预付可用", value: advanceSummary.prepaymentsPaid },
   ];
+  const ordinaryBillRows = billRows.filter(({ bill }) => ![BILL_KINDS.DEPOSIT_RECEIVED, BILL_KINDS.PREPAYMENT_PAID].includes(bill.kind));
+  const advanceRowByBillId = new Map(advanceSummary.rows.map((row) => [row.billId, row]));
+  const advanceBillRows = billRows
+    .filter(({ bill }) => [BILL_KINDS.DEPOSIT_RECEIVED, BILL_KINDS.PREPAYMENT_PAID].includes(bill.kind))
+    .map((row) => ({ ...row, advance: advanceRowByBillId.get(row.bill.id) }));
 
   function submitBill(event) {
     event.preventDefault();
@@ -265,6 +474,67 @@ export function ReceivablesPayablesPanel({ onToast }) {
       onToast?.("往来账单已保存，可在流水详情中做拆分或分次核销");
     } catch (caught) {
       setError(caught.message || "账单保存失败");
+    }
+  }
+
+  function confirmAdvanceUse(advanceBillId) {
+    const usage = advanceUsage[advanceBillId] || {};
+    const amount = Number(usage.amount);
+    if (!usage.targetBillId || !Number.isFinite(amount) || amount <= 0) {
+      setError("请选择对应账单并填写本次使用金额");
+      return;
+    }
+    setError("");
+    try {
+      const current = store.getActiveWorkspace();
+      const next = applyAdvanceToBill(current, {
+        advanceBillId,
+        targetBillId: usage.targetBillId,
+        amount,
+        note: "财务人员在预收/预付余额页人工确认",
+      }, { actor, mode: "manual" });
+      actions.replaceWorkspace(current.id, next);
+      setAdvanceUsage((currentUsage) => ({ ...currentUsage, [advanceBillId]: { targetBillId: "", amount: "" } }));
+      onToast?.("余额使用已确认；对应账单与凭证来源关系已更新");
+    } catch (caught) {
+      setError(caught.message || "预收/预付余额使用失败");
+    }
+  }
+
+  function createAdvanceVoucherDraft(applicationId) {
+    setError("");
+    try {
+      const current = store.getActiveWorkspace();
+      const next = createAdvanceApplicationVoucherDraft(current, {
+        applicationId,
+        note: "由已确认预收/预付冲销关系生成",
+      }, { actor });
+      actions.replaceWorkspace(current.id, next);
+      onToast?.("已生成平衡凭证草稿，等待人工复核入账");
+    } catch (caught) {
+      setError(caught.message || "冲销凭证草稿生成失败");
+    }
+  }
+
+  function postAdvanceVoucher(applicationId, voucherId) {
+    const reviewNote = advanceVoucherNotes[applicationId] || "";
+    if (!reviewNote.trim()) {
+      setError("人工入账前必须填写复核意见");
+      return;
+    }
+    setError("");
+    try {
+      const current = store.getActiveWorkspace();
+      const next = postVoucher(current, {
+        voucherId,
+        mode: "manual",
+        reviewNote,
+      }, { actor });
+      actions.replaceWorkspace(current.id, next);
+      setAdvanceVoucherNotes((notes) => ({ ...notes, [applicationId]: "" }));
+      onToast?.("冲销凭证已人工复核入账，来源关系状态已回写");
+    } catch (caught) {
+      setError(caught.message || "冲销凭证入账失败");
     }
   }
 
@@ -296,21 +566,64 @@ export function ReceivablesPayablesPanel({ onToast }) {
       )}
 
       <div className="settlement-bill-list">
-        {billRows.length ? billRows.map(({ bill, settlement, allocations }) => {
+        <div className="engine-subheading"><strong>月结应收 / 应付</strong><small>银行收付款与预收预付使用共同更新未核销余额</small></div>
+        {ordinaryBillRows.length ? ordinaryBillRows.map(({ bill, settlement, allocations, advanceApplications }) => {
           const meta = BILL_KIND_META[bill.kind] || { label: bill.kind, balance: "未核销" };
-          const isAdvance = [BILL_KINDS.DEPOSIT_RECEIVED, BILL_KINDS.PREPAYMENT_PAID].includes(bill.kind);
-          const settledLabel = isAdvance ? (bill.kind === BILL_KINDS.DEPOSIT_RECEIVED ? "已形成预收" : "已形成预付") : "已核销";
+          const sourceCount = allocations.length + advanceApplications.length;
           return (
             <article className="settlement-bill-row" key={bill.id}>
               <div className="settlement-bill-main"><span className="settlement-kind">{meta.label}</span><strong>{bill.no || bill.id} · {bill.counterparty}</strong><small>{bill.summary} · {bill.date} 到期 {bill.dueDate || bill.date}</small></div>
-              <div className="settlement-bill-amounts"><span><small>账单金额</small><strong>¥{money(bill.amount)}</strong></span><span><small>{settledLabel}</small><strong>¥{money(settlement.allocated)}</strong></span><span><small>{meta.balance}</small><strong>¥{money(settlement.remaining)}</strong></span></div>
+              <div className="settlement-bill-amounts"><span><small>账单金额</small><strong>¥{money(bill.amount)}</strong></span><span><small>累计核销</small><strong>¥{money(settlement.allocated)}</strong></span><span><small>{meta.balance}</small><strong>¥{money(settlement.remaining)}</strong></span></div>
               <details>
-                <summary>{allocations.length ? `${allocations.length} 次收付款 · 查看流水来源` : "尚无收付款核销"}</summary>
-                {allocations.length > 0 && <div className="settlement-source-list">{allocations.map((allocation) => <div key={allocation.id || `${bill.id}-${allocation.transactionId}`}><span><strong>{allocation.transaction?.date || "—"} · {allocation.transaction?.counterparty || "银行流水"}</strong><small>{allocation.transaction?.serial || allocation.transactionId} · 核销记录 {allocation.id || "历史记录"}</small></span><b>¥{money(allocation.amount)}</b></div>)}</div>}
+                <summary>{sourceCount ? `${sourceCount} 条核销来源 · 查看明细` : "尚无核销来源"}</summary>
+                {sourceCount > 0 && <div className="settlement-source-list">
+                  {allocations.map((allocation) => <div key={allocation.id || `${bill.id}-${allocation.transactionId}`}><span><strong>{allocation.transaction?.date || "—"} · {allocation.transaction?.counterparty || "银行流水"}</strong><small>{allocation.transaction?.serial || allocation.transactionId} · 银行核销 {allocation.id || "历史记录"}</small></span><b>¥{money(allocation.amount)}</b></div>)}
+                  {advanceApplications.map((application) => <div key={application.id}><span><strong>{application.advanceBill?.no || application.advanceBillId} · {application.advanceBill?.counterparty || "预收/预付余额"}</strong><small>{application.date} · 凭证来源 {application.id}</small></span><b>¥{money(application.amount)}</b></div>)}
+                </div>}
               </details>
             </article>
           );
-        }) : <p className="settlement-empty">还没有往来账单。新增第一张客户应收或供应商应付后即可开始核销。</p>}
+        }) : <p className="settlement-empty">还没有月结应收或应付账单。</p>}
+      </div>
+
+      <div className="settlement-bill-list">
+        <div className="engine-subheading"><strong>客户预收 / 供应商预付</strong><small>与月结账单独立显示，只能人工选择对应账单使用</small></div>
+        {advanceBillRows.length ? advanceBillRows.map(({ bill, allocations, advance }) => {
+          const meta = BILL_KIND_META[bill.kind] || { label: bill.kind };
+          const usage = advanceUsage[bill.id] || { targetBillId: "", amount: "" };
+          const targets = advanceApplicationTargets(activeWorkspace, bill.id);
+          const selectedTarget = targets.find((target) => target.billId === usage.targetBillId);
+          const maximumUse = Math.min(advance?.availableBalance || 0, selectedTarget?.remaining || Number.POSITIVE_INFINITY);
+          return (
+            <article className="settlement-bill-row" key={bill.id}>
+              <div className="settlement-bill-main"><span className="settlement-kind">{meta.label}</span><strong>{bill.no || bill.id} · {bill.counterparty}</strong><small>{bill.summary} · 计划 ¥{money(advance?.originalAmount)} · 待到账 ¥{money(advance?.pendingFunding)}</small></div>
+              <div className="settlement-bill-amounts"><span><small>原余额</small><strong>¥{money(advance?.originalBalance)}</strong></span><span><small>累计使用</small><strong>¥{money(advance?.usedAmount)}</strong></span><span><small>剩余余额</small><strong>¥{money(advance?.availableBalance)}</strong></span></div>
+              <details open={Boolean(advance?.availableBalance)}>
+                <summary>{advance?.applications.length ? `${advance.applications.length} 次使用 · 继续分次冲销` : "选择对应账单使用余额"}</summary>
+                {advance?.applications.length > 0 && <div className="settlement-source-list">{advance.applications.map((application) => {
+                  const relatedVouchers = (activeWorkspace.vouchers || []).filter((voucher) => voucher.advanceApplicationId === application.id && voucher.status !== "superseded");
+                  const voucher = relatedVouchers.find((item) => item.id === application.voucherId || item.id === application.draftVoucherId) || relatedVouchers.at(-1);
+                  return <div key={application.id}>
+                    <span>
+                      <strong>{application.targetBillNo || application.targetBillId} · {application.targetSummary || "对应账单"} · ¥{money(application.amount)}</strong>
+                      <small>{application.date} · 来源 {application.id} · {voucher ? `${voucher.no || "草稿"} / ${voucher.status}` : "待生成凭证"}</small>
+                      {voucher && ["draft", "changes_requested"].includes(voucher.status) && <input value={advanceVoucherNotes[application.id] || ""} onChange={(event) => setAdvanceVoucherNotes((notes) => ({ ...notes, [application.id]: event.target.value }))} placeholder="填写人工复核意见后入账" />}
+                    </span>
+                    {!voucher && <button className="secondary-button" type="button" onClick={() => createAdvanceVoucherDraft(application.id)}><Plus size={15} />生成凭证草稿</button>}
+                    {voucher && ["draft", "changes_requested"].includes(voucher.status) && <button className="primary-button" type="button" disabled={!advanceVoucherNotes[application.id]?.trim()} onClick={() => postAdvanceVoucher(application.id, voucher.id)}><CheckCircle size={15} />人工复核入账</button>}
+                    {voucher?.status === "posted" && <b>{voucher.no} · 已入账</b>}
+                  </div>;
+                })}</div>}
+                {allocations.length > 0 && <div className="settlement-source-list">{allocations.map((allocation) => <div key={allocation.id}><span><strong>{allocation.transaction?.date || "—"} · 原资金流水</strong><small>{allocation.transaction?.serial || allocation.transactionId} · {allocation.id}</small></span><b>¥{money(allocation.amount)}</b></div>)}</div>}
+                {advance?.availableBalance > 0 && targets.length > 0 ? <div className="engine-form">
+                  <label><span>对应账单 *</span><select value={usage.targetBillId} onChange={(event) => setAdvanceUsage((current) => ({ ...current, [bill.id]: { ...usage, targetBillId: event.target.value } }))}><option value="">选择同一交易对手的后续{bill.kind === BILL_KINDS.DEPOSIT_RECEIVED ? "应收" : "应付"}</option>{targets.map((target) => <option key={target.billId} value={target.billId}>{target.billNo || target.billId} · 未核销 ¥{money(target.remaining)}</option>)}</select></label>
+                  <label><span>本次使用 *</span><input type="number" min="0.01" max={Number.isFinite(maximumUse) ? maximumUse : undefined} step="0.01" value={usage.amount} onChange={(event) => setAdvanceUsage((current) => ({ ...current, [bill.id]: { ...usage, amount: event.target.value } }))} placeholder="0.00" /></label>
+                  <button className="primary-button wide" type="button" disabled={!usage.targetBillId || !(Number(usage.amount) > 0)} onClick={() => confirmAdvanceUse(bill.id)}><SealCheck size={16} />人工确认本次使用</button>
+                </div> : <div className="engine-inline"><span><strong>{advance?.availableBalance > 0 ? "暂无可对应的后续账单" : "余额已全部使用"}</strong><small>预收与应收、预付与应付不会自动混用</small></span></div>}
+              </details>
+            </article>
+          );
+        }) : <p className="settlement-empty">还没有已形成资金余额的客户预收或供应商预付。</p>}
       </div>
       </section>
     </>
@@ -321,26 +634,61 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   const { activeWorkspace, actions, store } = useFinanceDesk();
   const transaction = activeWorkspace.transactions.find((item) => item.id === transactionId);
   const [allocationAmounts, setAllocationAmounts] = useState({});
-  const [judgement, setJudgement] = useState({ eventType: EVENT_TYPES.UNKNOWN, account: "expenseOther", reason: "" });
+  const [judgement, setJudgement] = useState({
+    businessType: "",
+    account: "expenseOther",
+    counterparty: "",
+    relatedBillId: "",
+    referenceNo: "",
+    relatedTransactionId: "",
+    businessPeriod: "",
+    taxTreatment: "",
+    invoiceStatus: "",
+    evidenceIds: [],
+    confidence: 100,
+    reason: "",
+  });
   const [reviewReason, setReviewReason] = useState("");
   const [reversalReason, setReversalReason] = useState("");
   const [voucherNote, setVoucherNote] = useState("");
   const [voucherSummaries, setVoucherSummaries] = useState({});
+  const [exceptionNotes, setExceptionNotes] = useState({});
+  const [exceptionTreatments, setExceptionTreatments] = useState({});
   const [refundSourceId, setRefundSourceId] = useState("");
   const [transferSourceId, setTransferSourceId] = useState("");
   const [error, setError] = useState("");
 
   const classification = useMemo(
-    () => transaction ? classifyBankTransaction(activeWorkspace, transaction) : null,
+    () => transaction ? (transaction.classification || classifyBankTransaction(activeWorkspace, transaction)) : null,
     [activeWorkspace, transaction],
   );
   const assessment = useMemo(
-    () => transaction ? assessTransactionEvidence(activeWorkspace, transaction, classification) : null,
+    () => transaction ? (transaction.evidenceAssessment || assessTransactionEvidence(activeWorkspace, transaction, classification)) : null,
     [activeWorkspace, transaction, classification],
   );
+  const businessEvent = transaction
+    ? (activeWorkspace.businessEvents || []).find((event) => (
+      event.id === transaction.bankBusinessEventId
+      || (event.sourceType === "bankTransaction" && event.transactionId === transaction.id)
+    ))
+    : null;
+  const selectedBusinessDefinition = manualBusinessEventDefinition(judgement.businessType);
+  const requiresBusinessEventConfirmation = Boolean(transaction && !businessEvent && (
+    classification?.eventType === EVENT_TYPES.UNKNOWN
+    || classification?.requiresManualReview
+    || [
+      EVENT_TYPES.LOAN,
+      EVENT_TYPES.EMPLOYEE_ADVANCE,
+      EVENT_TYPES.RELATED_PARTY,
+      EVENT_TYPES.REFUND,
+      EVENT_TYPES.INTERNAL_TRANSFER,
+    ].includes(classification?.eventType)
+    || (transaction.businessPeriod && transaction.businessPeriod !== String(transaction.date || "").slice(0, 7))
+  ));
   const settlement = transaction ? transactionSettlement(transaction) : null;
   const suggestions = transaction ? suggestReconciliations(activeWorkspace, transaction.id) : [];
   const exceptions = transaction ? unresolvedExceptionTasks(activeWorkspace, transaction.id) : [];
+  const exceptionCases = transaction ? buildReconciliationExceptionCases(activeWorkspace, transaction.id) : [];
   const allocations = transaction ? activeAllocations(transaction) : [];
   const vouchers = transaction ? vouchersForSource(activeWorkspace, transaction.id) : [];
   const voucheredSourceIds = new Set(vouchers
@@ -349,7 +697,20 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   const unvoucheredAllocations = allocations.filter((allocation) => (
     !voucheredSourceIds.has(allocation.id) && (allocation.id || !voucheredSourceIds.has(allocation.billId))
   ));
-  const canCreateDraft = allocations.length ? unvoucheredAllocations.length > 0 : vouchers.length === 0;
+  const businessEventReadyForDraft = !businessEvent || (
+    businessEvent.status === "confirmed"
+    && Number(businessEvent.evidenceCompleteness) === 100
+    && businessEvent.taxAttributes?.status === "confirmed"
+    && businessEvent.taxAttributes?.treatment !== "tax_pending"
+    && !businessEvent.review?.required
+    && (!(businessEvent.crossPeriod || REVIEW_REQUIRED_BANK_BUSINESS_TYPES.has(businessEvent.businessType)) || businessEvent.review?.status === "approved")
+    && !["voucher_draft", "posted"].includes(businessEvent.accountingStatus)
+  );
+  const canCreateDraft = !requiresBusinessEventConfirmation
+    && classification?.eventType !== EVENT_TYPES.UNKNOWN
+    && exceptions.length === 0
+    && businessEventReadyForDraft
+    && (allocations.length ? unvoucheredAllocations.length > 0 : vouchers.length === 0);
   const eligibleBills = transaction
     ? activeWorkspace.bills.filter((bill) => allocationDirectionMatchesBill(transaction, bill) && billSettlement(activeWorkspace, bill).remaining > 0.01)
     : [];
@@ -363,6 +724,20 @@ export function AccountingWorkbench({ transactionId, onToast }) {
       && Math.abs(Math.abs(Number(item.amount)) - Math.abs(Number(transaction.amount))) <= 0.01
     ))
     : [];
+  const businessEventBills = selectedBusinessDefinition && transaction
+    ? activeWorkspace.bills.filter((bill) => (
+      selectedBusinessDefinition.billKinds.includes(bill.kind)
+      && allocationDirectionMatchesBill(transaction, bill)
+    ))
+    : [];
+  const businessEventRelatedTransactions = selectedBusinessDefinition?.relatedTransactionRole && transaction
+    ? activeWorkspace.transactions.filter((item) => {
+      if (item.id === transaction.id || Math.sign(Number(item.amount)) === Math.sign(Number(transaction.amount))) return false;
+      if (selectedBusinessDefinition.relatedTransactionRole !== "counterpart_transaction") return true;
+      return item.accountId !== transaction.accountId
+        && Math.abs(Math.abs(Number(item.amount)) - Math.abs(Number(transaction.amount))) <= 0.01;
+    })
+    : [];
 
   useEffect(() => {
     setAllocationAmounts({});
@@ -370,13 +745,30 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     setReversalReason("");
     setVoucherNote("");
     setVoucherSummaries({});
+    setExceptionNotes({});
+    setExceptionTreatments({});
     setRefundSourceId("");
     setTransferSourceId("");
     setError("");
     if (classification) {
+      const direction = Number(transaction?.amount || 0) >= 0 ? "in" : "out";
+      const suggestedDefinition = classification.eventType === EVENT_TYPES.UNKNOWN
+        ? null
+        : MANUAL_BUSINESS_EVENT_TYPES.find((definition) => (
+          definition.eventType === classification.eventType && definition.allowedDirections.includes(direction)
+        ));
       setJudgement({
-        eventType: classification.eventType,
-        account: classification.account,
+        businessType: suggestedDefinition?.id || "",
+        account: suggestedDefinition?.account || classification.account || "expenseOther",
+        counterparty: transaction?.counterparty || "",
+        relatedBillId: "",
+        referenceNo: "",
+        relatedTransactionId: transaction?.counterpartTransactionId || "",
+        businessPeriod: transaction?.businessPeriod || String(transaction?.date || "").slice(0, 7),
+        taxTreatment: suggestedDefinition?.fixedTaxTreatment || "",
+        invoiceStatus: suggestedDefinition?.invoiceRequired ? "" : "not_applicable",
+        evidenceIds: [...(transaction?.evidenceIds || [])],
+        confidence: 100,
         reason: "",
       });
     }
@@ -412,24 +804,56 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   function manualClassify(event) {
     event.preventDefault();
     run(
-      (workspace) => applyManualClassification(workspace, {
+      (workspace) => confirmBankTransactionBusinessEvent(workspace, {
         transactionId,
-        eventType: judgement.eventType,
+        businessType: judgement.businessType,
         account: judgement.account,
+        counterparty: judgement.counterparty,
+        relatedBillId: judgement.relatedBillId,
+        referenceNo: judgement.referenceNo,
+        relatedTransactionId: judgement.relatedTransactionId,
+        businessPeriod: judgement.businessPeriod,
+        taxTreatment: judgement.taxTreatment,
+        invoiceStatus: judgement.invoiceStatus,
+        evidenceIds: judgement.evidenceIds,
+        confidence: judgement.confidence,
         reason: judgement.reason,
-      }, { actor: "周会计" }),
-      "人工会计判断已记录，并保留了修改前后依据",
+      }, { actor: "周会计", mode: "manual" }),
+      "业务事件已人工确认；仅完成分类与留痕，未生成或入账凭证",
     );
   }
 
-  function confirmEvidence(decision) {
+  function selectBusinessType(businessType) {
+    const definition = manualBusinessEventDefinition(businessType);
+    setJudgement((current) => ({
+      ...current,
+      businessType,
+      account: definition?.account || current.account,
+      relatedBillId: "",
+      referenceNo: "",
+      relatedTransactionId: "",
+      taxTreatment: definition?.fixedTaxTreatment || "",
+      invoiceStatus: definition?.invoiceRequired ? "" : "not_applicable",
+    }));
+  }
+
+  function handleException(exceptionCase, action) {
+    const note = exceptionNotes[exceptionCase.id] || "";
+    const treatmentId = exceptionTreatments[exceptionCase.id] || exceptionCase.accountingTreatments[0]?.id || "";
+    const messages = {
+      recalculate: "已按当前补件重新计算证据与匹配状态",
+      rematch: "已返回匹配队列；无法形成强候选的事项仍保持待核实",
+      adopt_treatment: "所选会计处理已人工确认并写回，未自动入账",
+      defer: "已记录暂不处理，事项继续阻塞凭证入账",
+    };
     run(
-      (workspace) => recordManualConfirmation(workspace, {
-        transactionId,
-        decision,
-        reason: reviewReason,
-      }, { actor: "周会计" }),
-      decision === "approve" ? "人工复核已通过，流水回到待核销队列" : "已保留为异常事项",
+      (workspace) => handleReconciliationException(workspace, {
+        exceptionId: exceptionCase.id,
+        action,
+        note,
+        treatmentId: action === "adopt_treatment" ? treatmentId : undefined,
+      }, { actor: "周会计", mode: "manual" }),
+      messages[action],
     );
   }
 
@@ -449,6 +873,17 @@ export function AccountingWorkbench({ transactionId, onToast }) {
       }, { actor: "周会计", mode: "manual" }),
       "核销已保存；流水余额与账单余额已同步更新",
     )) setAllocationAmounts({});
+  }
+
+  function confirmSuggestion(suggestion) {
+    run(
+      (workspace) => confirmReconciliationSuggestion(workspace, {
+        transactionId,
+        suggestionId: suggestion.id,
+        note: reviewReason || "财务人员在匹配候选中明确确认",
+      }, { actor: "周会计", mode: "manual" }),
+      `已确认${reconciliationSuggestionLabel(suggestion.type)}候选；只写入核销分配，未生成或入账凭证`,
+    );
   }
 
   function reverse(allocationId) {
@@ -487,11 +922,16 @@ export function AccountingWorkbench({ transactionId, onToast }) {
 
   function createDraft() {
     run(
-      (workspace) => createVoucherDraft(workspace, {
-        transactionId,
-        note: voucherNote,
-      }, { actor: "周会计" }),
-      "已生成借贷平衡的凭证草稿与来源链",
+      (workspace) => businessEvent
+        ? createBankBusinessEventVoucherDraft(workspace, {
+          eventId: businessEvent.id,
+          note: voucherNote,
+        }, { actor: "周会计", mode: "manual" })
+        : createVoucherDraft(workspace, {
+          transactionId,
+          note: voucherNote,
+        }, { actor: "周会计" }),
+      businessEvent ? "已由人工业务事件生成平衡凭证草稿；仍需填写复核意见后入账" : "已生成借贷平衡的凭证草稿与来源链",
     );
   }
 
@@ -556,26 +996,104 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         <span><small>未核销</small><strong>¥{money(settlement.remaining)}</strong></span>
       </div>
       <ul className="engine-reasons">{classification.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
-      <button className="secondary-button wide" type="button" onClick={inspect}><MagicWand size={16} />运行本地分类、证据检查与匹配建议</button>
+      {!businessEvent && <button className="secondary-button wide" type="button" onClick={inspect}><MagicWand size={16} />运行本地分类、证据检查与匹配建议</button>}
 
-      {(classification.requiresManualReview || exceptions.length > 0) && (
+      {requiresBusinessEventConfirmation && (
         <form className="engine-form" onSubmit={manualClassify}>
-          <label><span>人工业务类型</span><select value={judgement.eventType} onChange={(event) => setJudgement((current) => ({ ...current, eventType: event.target.value }))}>{Object.values(EVENT_TYPES).map((value) => <option value={value} key={value}>{EVENT_LABELS[value]}</option>)}</select></label>
-          <label><span>会计科目</span><select value={judgement.account} onChange={(event) => setJudgement((current) => ({ ...current, account: event.target.value }))}>{Object.entries(ACCOUNT_CATALOG).map(([id, account]) => <option value={id} key={id}>{account.label}</option>)}</select></label>
-          <label className="full"><span>人工判断依据 *</span><textarea value={judgement.reason} onChange={(event) => setJudgement((current) => ({ ...current, reason: event.target.value }))} placeholder="例如：已核对合同、银行回单和审批单" /></label>
-          <button className="secondary-button wide" type="submit">保存人工分类</button>
+          <div className="engine-subheading full"><strong>人工确认业务事件</strong><small>只形成业务事件和复核任务，不自动生成或入账凭证</small></div>
+          <label className="full"><span>业务类型 *</span><select required value={judgement.businessType} onChange={(event) => selectBusinessType(event.target.value)}><option value="">请选择业务类型</option>{MANUAL_BUSINESS_EVENT_TYPES.map((definition) => <option value={definition.id} key={definition.id} disabled={!definition.allowedDirections.includes(Number(transaction.amount) >= 0 ? "in" : "out")}>{definition.label}</option>)}</select></label>
+          {selectedBusinessDefinition && (
+            <>
+              {selectedBusinessDefinition.counterpartyRequired && <label><span>交易对手 *</span><input required value={judgement.counterparty} onChange={(event) => setJudgement((current) => ({ ...current, counterparty: event.target.value }))} placeholder="客户、供应商、员工或资金方" /></label>}
+              <label><span>会计属性 / 主科目 *</span><select required value={judgement.account} onChange={(event) => setJudgement((current) => ({ ...current, account: event.target.value }))}>{Object.entries(ACCOUNT_CATALOG).map(([id, account]) => <option value={id} key={id}>{account.label}</option>)}</select></label>
+              <label><span>业务期间 *</span><input required type="month" value={judgement.businessPeriod} onChange={(event) => setJudgement((current) => ({ ...current, businessPeriod: event.target.value }))} /></label>
+              <label><span>资金期间</span><input readOnly value={String(transaction.date || "").slice(0, 7)} /></label>
+              {selectedBusinessDefinition.billKinds.length > 0 && <label><span>关联账单{selectedBusinessDefinition.referenceMode === "bill_or_reference" ? "（与编号至少一项）" : ""}</span><select value={judgement.relatedBillId} onChange={(event) => setJudgement((current) => ({ ...current, relatedBillId: event.target.value }))}><option value="">暂不选择账单</option>{businessEventBills.map((bill) => <option value={bill.id} key={bill.id}>{bill.no || bill.id} · {bill.counterparty} · ¥{money(bill.amount)}</option>)}</select></label>}
+              {selectedBusinessDefinition.referenceMode !== "none" && <label><span>{selectedBusinessDefinition.referenceLabel}{selectedBusinessDefinition.referenceMode === "reference" ? " *" : ""}</span><input value={judgement.referenceNo} onChange={(event) => setJudgement((current) => ({ ...current, referenceNo: event.target.value }))} placeholder="填写可追溯的订单、合同或审批编号" /></label>}
+              {selectedBusinessDefinition.relatedTransactionRole && <label className="full"><span>{selectedBusinessDefinition.relatedTransactionRole === "original_transaction" ? "原业务流水 *" : "内部转账另一端流水 *"}</span><select required value={judgement.relatedTransactionId} onChange={(event) => setJudgement((current) => ({ ...current, relatedTransactionId: event.target.value }))}><option value="">请选择关联流水</option>{businessEventRelatedTransactions.map((item) => <option value={item.id} key={item.id}>{item.date} · {item.serial || item.id} · {item.counterparty} · {Number(item.amount) > 0 ? "+" : "−"}¥{money(item.amount)}</option>)}</select></label>}
+              {selectedBusinessDefinition.fixedTaxTreatment
+                ? <label><span>税务属性</span><input readOnly value={BUSINESS_EVENT_TAX_TREATMENTS.find((item) => item.id === selectedBusinessDefinition.fixedTaxTreatment)?.label || selectedBusinessDefinition.fixedTaxTreatment} /></label>
+                : <label><span>税务属性 *</span><select required value={judgement.taxTreatment} onChange={(event) => setJudgement((current) => ({ ...current, taxTreatment: event.target.value }))}><option value="">请选择税务属性</option>{BUSINESS_EVENT_TAX_TREATMENTS.filter((item) => selectedBusinessDefinition.taxTreatments.includes(item.id)).map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>}
+              {selectedBusinessDefinition.invoiceRequired && <label><span>发票状态 *</span><select required value={judgement.invoiceStatus} onChange={(event) => setJudgement((current) => ({ ...current, invoiceStatus: event.target.value }))}><option value="">请选择发票状态</option>{BUSINESS_EVENT_INVOICE_STATUSES.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>}
+              <label className="full"><span>关联证据（可多选）· 期望：{selectedBusinessDefinition.evidenceHint}</span><select multiple size={Math.min(5, Math.max(2, activeWorkspace.documents.length))} value={judgement.evidenceIds} onChange={(event) => setJudgement((current) => ({ ...current, evidenceIds: Array.from(event.target.selectedOptions, (option) => option.value) }))}>{activeWorkspace.documents.map((document) => <option value={document.id} key={document.id}>{document.name || document.title || document.id} · {document.type || "资料"}</option>)}</select></label>
+              <label><span>置信度（0–100）*</span><input required type="number" min="0" max="100" step="1" value={judgement.confidence} onChange={(event) => setJudgement((current) => ({ ...current, confidence: event.target.value }))} /></label>
+              <label><span>处理说明</span><input readOnly value={selectedBusinessDefinition.accountingTreatment} /></label>
+              <label className="full"><span>人工判断依据 *</span><textarea required value={judgement.reason} onChange={(event) => setJudgement((current) => ({ ...current, reason: event.target.value }))} placeholder="写明核对了哪些对手、账单或订单、期间、税务和证据" /></label>
+              <button className="secondary-button wide" type="submit">确认业务事件（不入账）</button>
+            </>
+          )}
         </form>
       )}
 
-      {exceptions.length > 0 && (
-        <div className="engine-exceptions">
-          {exceptions.map((item) => <div key={item.id}><WarningCircle size={15} /><span><strong>{item.message || item.code}</strong><small>{item.status === "ready_for_review" ? "资料已补齐，等待复核" : "仍阻塞入账"}</small></span></div>)}
-          <label><span>复核依据 *</span><textarea value={reviewReason} onChange={(event) => setReviewReason(event.target.value)} placeholder="说明核对了哪些资料以及结论" /></label>
-          <div className="engine-inline"><button className="secondary-button" type="button" onClick={() => confirmEvidence("reject")}>保留异常</button><button className="primary-button" type="button" onClick={() => confirmEvidence("approve")}>人工确认通过</button></div>
+      {businessEvent && (
+        <div className="engine-special">
+          <div className="engine-subheading"><strong>{businessEvent.businessEventNo} · {businessEvent.businessTypeLabel}</strong><small>已形成人工业务事件；入账策略：仅允许后续人工复核</small></div>
+          <div className="engine-summary">
+            <span><small>业务期 / 资金期</small><strong>{businessEvent.businessPeriod} / {businessEvent.fundingPeriod}</strong></span>
+            <span><small>会计属性</small><strong>{accountDefinition(businessEvent.accountingAttributes.primaryAccount, activeWorkspace).label}</strong></span>
+            <span><small>税务属性</small><strong>{BUSINESS_EVENT_TAX_TREATMENTS.find((item) => item.id === businessEvent.taxAttributes.treatment)?.label || businessEvent.taxAttributes.treatment}</strong></span>
+            <span><small>证据 / 置信度</small><strong>{businessEvent.evidenceCompleteness}% / {businessEvent.confidence}%</strong></span>
+            <span><small>凭证状态</small><strong>{businessEvent.accountingStatus || "unprocessed"}</strong></span>
+          </div>
+          <ul className="engine-reasons">{businessEvent.reasons.map((reason) => <li key={`${businessEvent.id}-${reason}`}>{reason}</li>)}</ul>
+          {businessEvent.review?.required && <div className="engine-missing"><span>仍需人工复核：{businessEvent.review.reasons.join("；")}</span></div>}
+          {businessEvent.accountingStatus === "unprocessed" && !businessEventReadyForDraft && <div className="engine-missing"><span>凭证草稿暂不可生成：请先补齐证据、确认税务属性并完成全部 S7 复核。</span></div>}
         </div>
       )}
 
-      {suggestions.length > 0 && <div className="engine-suggestions">{suggestions.map((item) => <button key={item.id} type="button" onClick={() => setAllocationAmounts((current) => ({ ...current, [item.billId]: item.suggestedAmount }))}><GitBranch size={15} /><span><strong>{item.billNo || item.billId}</strong><small>{item.reasons.join(" · ")}</small></span><b>¥{money(item.suggestedAmount)}</b></button>)}</div>}
+      {exceptionCases.length > 0 && (
+        <div className="engine-exceptions">
+          <div className="engine-subheading"><strong>S7 · 异常事项处理</strong><small>未人工确认的事项始终阻塞凭证</small></div>
+          {exceptionCases.map((item) => {
+            const note = exceptionNotes[item.id] || "";
+            const selectedTreatment = exceptionTreatments[item.id] || item.accountingTreatments[0]?.id || "";
+            return <article className="engine-voucher-card" key={item.id}>
+              <div className="engine-voucher-row"><WarningCircle size={16} /><span><strong>{item.triggerReason}</strong><small>{item.code} · {exceptionWorkflowLabel(item.workflowState)} · 历史 {item.history.length} 条</small></span><em className="engine-badge warning">阻塞入账</em></div>
+              <div className="engine-summary">
+                <span><small>相关流水</small><strong>{item.relatedTransactions.map((source) => source.serial || source.id).join("、") || "无"}</strong></span>
+                <span><small>相关账单</small><strong>{item.relatedBills.map((bill) => bill.no || bill.id).join("、") || "无"}</strong></span>
+                <span><small>相关资料</small><strong>{item.relatedDocuments.map((document) => document.name).join("、") || "无"}</strong></span>
+                <span><small>缺少内容</small><strong>{item.missingContents.map((missing) => missing.label).join("、") || "未识别出明确缺件"}</strong></span>
+              </div>
+              <details open>
+                <summary>查看匹配依据和账单余额</summary>
+                <ul className="engine-reasons">{item.matchBasis.length ? item.matchBasis.map((reason) => <li key={`${item.id}-${reason}`}>{reason}</li>) : <li>当前没有足够依据形成匹配结论</li>}</ul>
+                {item.relatedBills.length > 0 && <div className="settlement-source-list">{item.relatedBills.map((bill) => <div key={bill.id}><span><strong>{bill.no || bill.id} · {bill.counterparty}</strong><small>{BILL_KIND_META[bill.kind]?.label || bill.kind}</small></span><b>未核销 ¥{money(bill.remaining)}</b></div>)}</div>}
+              </details>
+              <label><span>可选会计处理</span><select value={selectedTreatment} onChange={(event) => setExceptionTreatments((current) => ({ ...current, [item.id]: event.target.value }))}>{item.accountingTreatments.length ? item.accountingTreatments.map((treatment) => <option value={treatment.id} key={treatment.id}>{treatment.label}</option>) : <option value="">当前无法判断</option>}</select></label>
+              <label><span>复核说明 *</span><textarea value={note} onChange={(event) => setExceptionNotes((current) => ({ ...current, [item.id]: event.target.value }))} placeholder="写明补了什么、重新核对了什么，以及为何采用或暂不处理" /></label>
+              <div className="engine-inline">
+                <button className="secondary-button" type="button" disabled={!note.trim()} onClick={() => handleException(item, "recalculate")}>补件后重算</button>
+                <button className="secondary-button" type="button" disabled={!note.trim()} onClick={() => handleException(item, "rematch")}>返回重新匹配</button>
+                <button className="primary-button" type="button" disabled={!note.trim() || !selectedTreatment} onClick={() => handleException(item, "adopt_treatment")}>采用所选处理</button>
+                <button className="secondary-button" type="button" disabled={!note.trim()} onClick={() => handleException(item, "defer")}>暂不处理</button>
+              </div>
+            </article>;
+          })}
+        </div>
+      )}
+
+      {suggestions.length > 0 && (
+        <div className="engine-suggestions">
+          <div className="engine-subheading"><strong>自动匹配候选</strong><small>确认前不会写入核销或凭证</small></div>
+          {suggestions.map((item) => (
+            <article className="engine-voucher-card" key={item.id}>
+              <div className="engine-voucher-row">
+                <GitBranch size={16} />
+                <span>
+                  <strong>{reconciliationSuggestionLabel(item.type)} · {item.transactionIds.length} 笔流水 / {item.billIds.length} 张账单</strong>
+                  <small>{item.billNos.join(" + ")} · 建议核销 ¥{money(item.matchedAmount)}</small>
+                </span>
+                <em className={item.requiresManualReview ? "engine-badge warning" : "engine-badge"}>{item.confidence}%</em>
+              </div>
+              <ul className="engine-reasons">{item.reasons.map((reason) => <li key={`${item.id}-${reason}`}>{reason}</li>)}</ul>
+              {item.requiresManualReview
+                ? <div className="engine-inline"><span className="engine-badge warning"><WarningCircle size={14} />保留异常，需人工核对差额或置信度</span></div>
+                : <button className="primary-button wide" type="button" onClick={() => confirmSuggestion(item)}><SealCheck size={16} />确认匹配并写入核销</button>}
+            </article>
+          ))}
+        </div>
+      )}
 
       {eligibleBills.length > 0 && ![EVENT_TYPES.REFUND, EVENT_TYPES.INTERNAL_TRANSFER, EVENT_TYPES.UNKNOWN].includes(classification.eventType) && (
         <div className="engine-allocation">
@@ -616,7 +1134,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
       <div className="engine-vouchers">
         <div className="engine-subheading"><strong>凭证与附件包</strong><small>{vouchers.length} 张关联凭证</small></div>
         <label><span>复核意见 *</span><textarea value={voucherNote} onChange={(event) => setVoucherNote(event.target.value)} placeholder="说明业务性质、科目与金额的复核结论" /></label>
-        {canCreateDraft && <button className="secondary-button wide" type="button" onClick={createDraft}><Plus size={16} />{vouchers.length ? `为新增核销生成凭证草稿（${unvoucheredAllocations.length} 条）` : "生成凭证草稿"}</button>}
+        {canCreateDraft && <button className="secondary-button wide" type="button" onClick={createDraft}><Plus size={16} />{businessEvent ? `由 ${businessEvent.businessEventNo} 生成凭证草稿` : (vouchers.length ? `为新增核销生成凭证草稿（${unvoucheredAllocations.length} 条）` : "生成凭证草稿")}</button>}
         {vouchers.map((voucher) => {
           const attachments = buildAttachmentPackage(activeWorkspace, voucher.id);
           const trace = traceVoucherSources(activeWorkspace, voucher.id);
@@ -627,12 +1145,12 @@ export function AccountingWorkbench({ transactionId, onToast }) {
               <div className="engine-inline">
                 {voucher.status === "draft" && <button className="secondary-button" type="button" onClick={() => requestVoucherChanges(voucher.id)}>退回修改</button>}
                 {voucher.status !== "posted" && voucher.status !== "superseded" && <button className="secondary-button" type="button" onClick={() => reviseVoucher(voucher)}>保存修订</button>}
-                {voucher.status !== "posted" && voucher.status !== "superseded" && <button className="primary-button" type="button" onClick={() => postDraft(voucher.id)}><CheckCircle size={16} />复核入账</button>}
+                {voucher.status !== "posted" && voucher.status !== "superseded" && <button className="primary-button" disabled={!voucherNote.trim()} type="button" onClick={() => postDraft(voucher.id)}><CheckCircle size={16} />填写意见后复核入账</button>}
                 {voucher.status === "posted" && <button className="secondary-button" type="button" onClick={() => createRevision(voucher.id)}><Plus size={16} />创建更正草稿</button>}
               </div>
               <details>
                 <summary>查看来源与附件清单</summary>
-                <p>流水 {trace.transactions.length} · 账单 {trace.bills.length} · 资料 {trace.documents.length} · 历史版本 {trace.versions.length} · 审计 {trace.audit.length}</p>
+                <p>流水 {trace.transactions.length} · 关联流水 {trace.relatedTransactions?.length || 0} · 业务事件 {trace.businessEvents.length} · 账单 {trace.bills.length} · 订单/合同 {trace.businessReferences?.filter((reference) => reference.kind === "order_contract").length || 0} · 资料 {trace.documents.length} · 历史版本 {trace.versions.length} · 审计 {trace.audit.length}</p>
                 <ul className="engine-trace-list">
                   {attachments.manifest.map((item) => <li key={item.id}><strong>{item.kind}</strong><span>{item.name}</span></li>)}
                   {trace.versions.map((version, index) => <li key={`${version.version || "history"}-${index}`}><strong>历史版本 V{version.version || index + 1}</strong><span>{version.summary || version.reason || "凭证修订记录"}</span></li>)}
@@ -643,6 +1161,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
           );
         })}
       </div>
+      <AccountingLedgerPanel key={activeWorkspace.id} workspace={activeWorkspace} onToast={onToast} />
     </section>
   );
 }

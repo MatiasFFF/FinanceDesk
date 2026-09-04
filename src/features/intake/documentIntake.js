@@ -1,6 +1,7 @@
 import { createId } from "../../domain/foundation.js";
 import { buildFinancialStatements, buildManagementMetrics, buildTaxWorkpaper } from "../../domain/accounting/reporting.js";
 import { attachEvidenceDocument, reviewTransactionEvidence } from "../evidence/evidenceEngine.js";
+import { normalizeMoney, parseDelimitedText } from "./bankStatementImport.js";
 
 const LINKABLE_COLLECTIONS = [
   "bankAccounts",
@@ -39,6 +40,7 @@ const MIME_TYPES_BY_EXTENSION = {
 };
 
 const INVOICE_STATUSES = {
+  taxDirection: ["unclassified", "output", "input"],
   verificationStatus: ["unverified", "verified", "failed"],
   redLetterStatus: ["normal", "red_applied", "red_issued"],
   voidStatus: ["valid", "voided"],
@@ -46,6 +48,65 @@ const INVOICE_STATUSES = {
 };
 
 const APPROVAL_STATUSES = ["draft", "pending", "approved", "rejected", "withdrawn"];
+
+export const APPROVAL_TYPES = Object.freeze({
+  unclassified: "未选择",
+  reimbursement: "报销",
+  payment_request: "付款申请",
+  loan_repayment: "借款／还款",
+  procurement: "采购",
+  refund: "退款",
+});
+
+const APPROVAL_TYPE_ALIASES = Object.freeze({
+  报销: "reimbursement",
+  费用报销: "reimbursement",
+  付款: "payment_request",
+  付款申请: "payment_request",
+  借款: "loan_repayment",
+  还款: "loan_repayment",
+  "借款/还款": "loan_repayment",
+  "借款／还款": "loan_repayment",
+  采购: "procurement",
+  采购付款: "procurement",
+  退款: "refund",
+});
+
+export const CONTRACT_TYPES = Object.freeze({
+  unclassified: "未选择",
+  sales: "销售合同",
+  purchase: "采购合同",
+  lease: "租赁合同",
+  membership: "会员合同",
+  platform: "平台合同",
+});
+
+export const CONTRACT_SETTLEMENT_MODES = Object.freeze({
+  unconfigured: "未设置",
+  one_time: "一次性结算",
+  monthly: "按月结算",
+});
+
+export const CONTRACT_DUE_DATE_RULES = Object.freeze({
+  on_bill_date: "账单日当天到期",
+  days_after: "账单日后 N 天到期",
+  month_end: "账单当月月末到期",
+});
+
+export const PAYROLL_SOCIAL_IMPORT_KINDS = Object.freeze({
+  payroll: "工资表",
+  socialSecurity: "社保表",
+});
+
+export const PAYROLL_SOCIAL_FIELD_DEFINITIONS = Object.freeze({
+  employee: { label: "员工", required: true, aliases: ["员工", "员工姓名", "姓名", "人员姓名", "职工姓名", "employee", "employee name", "name"] },
+  period: { label: "所属期", aliases: ["所属期", "工资所属期", "薪资月份", "社保所属期", "月份", "期间", "period", "month"] },
+  grossSalary: { label: "应发工资", aliases: ["应发工资", "应发合计", "应发薪资", "税前工资", "工资基数", "gross salary", "gross pay"] },
+  personalSocial: { label: "个人社保", aliases: ["个人社保", "个人承担社保", "社保个人", "个人缴纳", "个人社保合计", "personal social", "employee social"] },
+  employerSocial: { label: "企业社保", aliases: ["企业社保", "单位社保", "公司社保", "单位承担社保", "企业社保合计", "employer social", "company social"] },
+  individualIncomeTax: { label: "个税", aliases: ["个税", "个人所得税", "代扣个税", "应纳个税", "income tax", "individual income tax"] },
+  netSalary: { label: "实发工资", aliases: ["实发工资", "实发金额", "到手工资", "net salary", "net pay"] },
+});
 
 const DOCUMENT_REQUIREMENTS_BY_EVENT = {
   customerReceipt: [{ id: "contract-or-invoice", label: "合同或发票", anyOf: ["contract", "invoice"] }],
@@ -186,6 +247,7 @@ function matchScore(document, target, requirements) {
   const kind = matchDocumentKind(document);
   if (!kind) return null;
   const details = document.structuredData || {};
+  if (kind === "approval" && (details.approvalStatus !== "approved" || !APPROVAL_TYPE_RULES[details.approvalType])) return null;
   const reasons = [];
   let score = 0;
   const acceptedRequirement = requirements.find((requirement) => requirement.anyOf.includes(kind));
@@ -194,15 +256,20 @@ function matchScore(document, target, requirements) {
     reasons.push(`业务待补${acceptedRequirement.label}`);
   }
   const targetParty = normalizedText(target.counterparty || target.counterpartyName || target.party || "");
-  const documentParties = [document.name, details.partyA, details.partyB, details.applicant]
+  const documentParties = (kind === "approval"
+    ? [details.applicant, details.supplier]
+    : [document.name, details.partyA, details.partyB, details.applicant])
     .map(normalizedText)
     .filter(Boolean);
-  if (targetParty.length >= 2 && documentParties.some((value) => value.includes(targetParty) || targetParty.includes(value))) {
+  const partyMatches = targetParty.length >= 2 && documentParties.some((value) => value.includes(targetParty) || targetParty.includes(value));
+  if (partyMatches) {
     score += 35;
     reasons.push(`对方“${target.counterparty || target.counterpartyName || target.party}”相符`);
   }
+  if (kind === "approval" && !partyMatches) return null;
   const targetAmount = Math.abs(Number(target.amount || 0));
   const documentAmount = Number(details.amount);
+  if (kind === "approval" && (!(targetAmount > 0) || !(documentAmount > 0))) return null;
   if (targetAmount > 0 && Number.isFinite(documentAmount) && documentAmount >= 0) {
     const difference = Math.abs(targetAmount - documentAmount);
     if (difference <= 0.01) {
@@ -212,6 +279,7 @@ function matchScore(document, target, requirements) {
       score += 20;
       reasons.push(`金额接近，差额 ${difference.toFixed(2)}`);
     }
+    if (kind === "approval" && difference > 0.01) return null;
   }
   const date = String(target.date || "").slice(0, 10);
   const period = targetPeriod(target);
@@ -222,6 +290,11 @@ function matchScore(document, target, requirements) {
   } else if (kind === "invoice" && date && details.invoiceDate === date) {
     score += 20;
     reasons.push("发票日期与业务日期一致");
+  } else if (kind === "approval") {
+    const dateDistance = details.approvalDate && date ? invoiceDateDistance(details.approvalDate, date) : null;
+    if (dateDistance == null || dateDistance > 31) return null;
+    score += dateDistance === 0 ? 20 : (dateDistance <= 7 ? 15 : 10);
+    reasons.push(dateDistance === 0 ? "审批日期与业务日期一致" : `审批日期与业务日期相差 ${dateDistance} 天`);
   } else if (period && (document.period === period || String(details.invoiceDate || "").slice(0, 7) === period)) {
     score += 15;
     reasons.push(`业务期间同为 ${period}`);
@@ -236,6 +309,11 @@ export function buildDocumentMatchSuggestions(workspace) {
     const requirements = documentRequirementsForTarget(target);
     const candidates = (workspace.documents || []).flatMap((document) => {
       if (linkedIds.has(document.id) || document.archiveStatus === "archived" || document.lifecycleStatus === "已归档") return [];
+      if (matchDocumentKind(document) === "approval") {
+        if (sourceType !== "bankTransaction") return [];
+        const rule = APPROVAL_TYPE_RULES[document.structuredData?.approvalType];
+        if (!rule || !approvalTargetMatchesRule(rule, "transaction", target)) return [];
+      }
       const match = matchScore(document, target, requirements);
       if (!match) return [];
       return [{
@@ -379,6 +457,12 @@ export function documentStructuredKind(category) {
   return null;
 }
 
+function normalizedApprovalType(value) {
+  const raw = String(value || "").trim();
+  const resolved = APPROVAL_TYPE_ALIASES[raw] || raw || "unclassified";
+  return enumValue(resolved, Object.keys(APPROVAL_TYPES), "unclassified", "审批类型");
+}
+
 export function normalizeDocumentStructuredData(category, input = {}) {
   const kind = documentStructuredKind(category);
   if (!kind) return null;
@@ -386,6 +470,17 @@ export function normalizeDocumentStructuredData(category, input = {}) {
     const serviceStartDate = optionalDate(input.serviceStartDate, "服务开始日期");
     const serviceEndDate = optionalDate(input.serviceEndDate, "服务结束日期");
     if (serviceStartDate && serviceEndDate && serviceEndDate < serviceStartDate) throw new Error("服务结束日期不能早于开始日期");
+    const inferredSettlementMode = input.settlementMode
+      || (/按月|月结/.test(String(input.settlementCycle || "")) ? "monthly" : (/一次/.test(String(input.settlementCycle || "")) ? "one_time" : "unconfigured"));
+    const settlementMode = enumValue(inferredSettlementMode, Object.keys(CONTRACT_SETTLEMENT_MODES), "unconfigured", "合同结算方式");
+    const contractType = enumValue(input.contractType, Object.keys(CONTRACT_TYPES), "unclassified", "合同类型");
+    const firstBillDate = optionalDate(input.firstBillDate, "首次账单日");
+    const billingEndDate = optionalDate(input.billingEndDate || serviceEndDate, "账单结束日期");
+    if (firstBillDate && billingEndDate && billingEndDate < firstBillDate) throw new Error("账单结束日期不能早于首次账单日");
+    if (serviceEndDate && billingEndDate && billingEndDate > serviceEndDate) throw new Error("账单结束日期不能晚于合同服务结束日期");
+    const dueDateRule = enumValue(input.dueDateRule, Object.keys(CONTRACT_DUE_DATE_RULES), "on_bill_date", "到期日规则");
+    const dueDays = optionalNumber(input.dueDays, "账单后到期天数", 3650);
+    if (dueDays != null && !Number.isInteger(dueDays)) throw new Error("账单后到期天数必须是整数");
     return {
       kind,
       partyA: String(input.partyA || "").trim(),
@@ -393,31 +488,52 @@ export function normalizeDocumentStructuredData(category, input = {}) {
       amount: optionalNumber(input.amount, "合同金额"),
       serviceStartDate,
       serviceEndDate,
-      settlementCycle: String(input.settlementCycle || "").trim(),
+      contractType,
+      settlementMode,
+      settlementCycle: String(input.settlementCycle || CONTRACT_SETTLEMENT_MODES[settlementMode] || "").trim(),
+      periodAmount: optionalNumber(input.periodAmount, "每期金额"),
+      firstBillDate,
+      dueDateRule,
+      dueDays: dueDays ?? 0,
+      billingEndDate,
       refundTerms: String(input.refundTerms || "").trim(),
       commissionTerms: String(input.commissionTerms || "").trim(),
     };
   }
   if (kind === "invoice") {
+    const amount = optionalNumber(input.amount, "发票价税合计");
+    const taxAmount = optionalNumber(input.taxAmount, "发票税额");
+    if (amount != null && taxAmount != null && taxAmount > amount) throw new Error("发票税额不能大于价税合计");
     return {
       kind,
       invoiceNumber: String(input.invoiceNumber || "").trim(),
       invoiceDate: optionalDate(input.invoiceDate, "发票日期"),
-      amount: optionalNumber(input.amount, "发票金额"),
-      taxAmount: optionalNumber(input.taxAmount, "发票税额"),
+      taxDirection: enumValue(input.taxDirection, INVOICE_STATUSES.taxDirection, "unclassified", "发票销进项类型"),
+      counterparty: String(input.counterparty || "").trim(),
+      amount,
+      taxAmount,
       taxRate: optionalNumber(input.taxRate, "发票税率", 100),
       verificationStatus: enumValue(input.verificationStatus, INVOICE_STATUSES.verificationStatus, "unverified", "查验状态"),
       redLetterStatus: enumValue(input.redLetterStatus, INVOICE_STATUSES.redLetterStatus, "normal", "红字状态"),
       voidStatus: enumValue(input.voidStatus, INVOICE_STATUSES.voidStatus, "valid", "作废状态"),
       certificationStatus: enumValue(input.certificationStatus, INVOICE_STATUSES.certificationStatus, "not_required", "认证状态"),
+      linkedBillId: String(input.linkedBillId || "").trim(),
+      originalInvoiceDocumentId: String(input.originalInvoiceDocumentId || "").trim(),
+      originalBillId: String(input.originalBillId || "").trim(),
     };
   }
   return {
     kind,
-    approvalType: String(input.approvalType || "").trim(),
+    approvalType: normalizedApprovalType(input.approvalType),
     applicant: String(input.applicant || "").trim(),
+    supplier: String(input.supplier || "").trim(),
+    approvalDate: optionalDate(input.approvalDate, "审批日期"),
     amount: optionalNumber(input.amount, "审批金额"),
     approvalStatus: enumValue(input.approvalStatus, APPROVAL_STATUSES, "draft", "审批状态"),
+    linkedTargetType: enumValue(input.linkedTargetType, ["", "bill", "transaction"], "", "审批关联对象类型"),
+    linkedTargetId: String(input.linkedTargetId || "").trim(),
+    businessEventId: String(input.businessEventId || "").trim(),
+    linkStatus: enumValue(input.linkStatus, ["unlinked", "linked", "invalidated"], "unlinked", "审批业务关联状态"),
   };
 }
 
@@ -433,6 +549,1119 @@ export function assertUniqueInvoiceNumber(workspace, document, excludedDocumentI
     && documentStructuredKind(candidate.category) === "invoice"
     && invoiceNumberKey(candidate.structuredData?.invoiceNumber) === key);
   if (duplicate) throw new Error(`发票号码 ${document.structuredData.invoiceNumber} 已存在于资料「${duplicate.name}」，不能重复保存`);
+}
+
+function contractBillKind(contractType) {
+  if (["sales", "membership", "platform"].includes(contractType)) return "receivable";
+  if (["purchase", "lease"].includes(contractType)) return "payable";
+  return null;
+}
+
+function dateFromParts(year, monthIndex, day) {
+  const lastDay = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(year, monthIndex, Math.min(day, lastDay)));
+}
+
+function isoDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function addMonthsToDate(value, months) {
+  const [year, month, day] = value.split("-").map(Number);
+  return isoDate(dateFromParts(year, month - 1 + months, day));
+}
+
+function addDaysToDate(value, days) {
+  const [year, month, day] = value.split("-").map(Number);
+  return isoDate(new Date(Date.UTC(year, month - 1, day + days)));
+}
+
+function monthEndDate(value) {
+  const [year, month] = value.split("-").map(Number);
+  return isoDate(new Date(Date.UTC(year, month, 0)));
+}
+
+function contractDueDate(billDate, rule, dueDays) {
+  if (rule === "days_after") return addDaysToDate(billDate, dueDays);
+  if (rule === "month_end") return monthEndDate(billDate);
+  return billDate;
+}
+
+function contractBillNumber(documentId, billKind, period) {
+  const prefix = billKind === "receivable" ? "YS" : "YF";
+  const suffix = String(documentId || "HT").replace(/[^a-z0-9]/gi, "").slice(-8).toUpperCase() || "HT";
+  return `${prefix}-${period.replace("-", "")}-${suffix}`;
+}
+
+export function buildContractBillingPlan(workspace, options = {}) {
+  const documentId = options.documentId;
+  const document = (workspace.documents || []).find((item) => item.id === documentId);
+  const errors = [];
+  if (!document || documentStructuredKind(document.category) !== "contract") {
+    return { documentId, document: null, items: [], existingBills: [], duplicatePeriods: [], errors: ["找不到结构化合同资料"], canConfirm: false };
+  }
+  let details;
+  try {
+    details = normalizeDocumentStructuredData("合同", document.structuredData || {});
+  } catch (error) {
+    return { documentId, document, items: [], existingBills: [], duplicatePeriods: [], errors: [error.message], canConfirm: false };
+  }
+  const billKind = contractBillKind(details.contractType);
+  const contractAmount = Math.round(Number(details.amount || 0) * 100) / 100;
+  const periodAmount = Math.round(Number(details.periodAmount || 0) * 100) / 100;
+  const firstBillDate = details.firstBillDate;
+  const endDate = details.billingEndDate;
+  const asOf = String(options.asOf || new Date().toISOString().slice(0, 10));
+  const counterparty = String(details.partyB || details.partyA || "").trim();
+  if (!billKind) errors.push("必须先选择销售、采购、租赁、会员或平台合同类型");
+  if (!counterparty) errors.push("必须填写合同对方");
+  if (!(contractAmount > 0)) errors.push("合同金额不足：请填写大于 0 的合同金额");
+  if (!(periodAmount > 0)) errors.push("每期金额必须大于 0");
+  if (contractAmount > 0 && periodAmount > contractAmount) errors.push(`合同金额不足：每期金额 ${periodAmount.toFixed(2)} 超过合同金额 ${contractAmount.toFixed(2)}`);
+  if (!firstBillDate) errors.push("必须填写首次账单日");
+  if (!endDate) errors.push("必须填写账单结束日期");
+  if (details.settlementMode === "unconfigured") errors.push("必须选择一次性或按月结算");
+  if (details.dueDateRule === "days_after" && (!Number.isInteger(details.dueDays) || details.dueDays < 0)) errors.push("账单后到期天数必须是大于或等于 0 的整数");
+  if (endDate && endDate < asOf) errors.push(`合同账单计划已于 ${endDate} 过期，不能生成新账单`);
+
+  const scheduleDates = [];
+  if (firstBillDate && endDate && firstBillDate <= endDate && details.settlementMode === "one_time") scheduleDates.push(firstBillDate);
+  if (firstBillDate && endDate && firstBillDate <= endDate && details.settlementMode === "monthly") {
+    for (let index = 0; index < 600; index += 1) {
+      const date = addMonthsToDate(firstBillDate, index);
+      if (date > endDate) break;
+      scheduleDates.push(date);
+    }
+    if (scheduleDates.length === 600 && addMonthsToDate(firstBillDate, 600) <= endDate) errors.push("按月账单计划超过 600 期，请缩短结束日期");
+  }
+  const plannedTotalAmount = Math.round(scheduleDates.length * periodAmount * 100) / 100;
+  if (contractAmount > 0 && plannedTotalAmount > contractAmount + 0.01) {
+    errors.push(`生成总额 ${plannedTotalAmount.toFixed(2)} 超出合同金额 ${contractAmount.toFixed(2)}`);
+  }
+
+  const existingBills = (workspace.bills || []).filter((bill) => bill.contractDocumentId === documentId && bill.status !== "void");
+  const existingByPeriod = new Map(existingBills.map((bill) => [bill.billingPeriod || String(bill.date || "").slice(0, 7), bill]));
+  const duplicatePeriods = [];
+  const items = scheduleDates.flatMap((billDate) => {
+    const billingPeriod = billDate.slice(0, 7);
+    if (existingByPeriod.has(billingPeriod)) {
+      duplicatePeriods.push({ period: billingPeriod, bill: existingByPeriod.get(billingPeriod) });
+      return [];
+    }
+    return [{
+      billingPeriod,
+      billKind,
+      counterparty,
+      amount: periodAmount,
+      date: billDate,
+      dueDate: contractDueDate(billDate, details.dueDateRule, details.dueDays),
+      no: contractBillNumber(documentId, billKind, billingPeriod),
+      summary: `${CONTRACT_TYPES[details.contractType]} · ${billingPeriod} 结算`,
+    }];
+  });
+  const generatedTotalAmount = Math.round(existingBills.reduce((sum, bill) => sum + Number(bill.amount || 0), 0) * 100) / 100;
+  const pendingTotalAmount = Math.round(items.reduce((sum, item) => sum + item.amount, 0) * 100) / 100;
+  const combinedTotalAmount = Math.round((generatedTotalAmount + pendingTotalAmount) * 100) / 100;
+  if (contractAmount > 0 && combinedTotalAmount > contractAmount + 0.01) {
+    errors.push(`已生成与待生成账单合计 ${combinedTotalAmount.toFixed(2)} 超出合同金额 ${contractAmount.toFixed(2)}`);
+  }
+  if (!items.length && duplicatePeriods.length && !errors.length) errors.push(`同一合同同一期不得重复生成：${duplicatePeriods.map((item) => item.period).join("、")}`);
+  return {
+    documentId,
+    document,
+    details,
+    contractType: details.contractType,
+    billKind,
+    contractAmount,
+    periodAmount,
+    firstBillDate,
+    endDate,
+    asOf,
+    counterparty,
+    scheduleDates,
+    plannedTotalAmount,
+    existingBills,
+    generatedTotalAmount,
+    duplicatePeriods,
+    items,
+    pendingTotalAmount,
+    combinedTotalAmount,
+    errors: [...new Set(errors)],
+    canConfirm: errors.length === 0 && items.length > 0,
+  };
+}
+
+export function applyContractBillingPlan(workspace, input = {}, context = {}) {
+  const plan = buildContractBillingPlan(workspace, { documentId: input.documentId, asOf: input.asOf });
+  if (!plan.canConfirm) throw new Error(`合同账单计划不能生成：${plan.errors.join("；") || "没有待生成账单"}`);
+  const at = context.at || new Date().toISOString();
+  const actor = context.actor || "周会计";
+  const existingNumbers = new Set((workspace.bills || []).map((bill) => bill.no));
+  const bills = plan.items.map((item, index) => {
+    let no = item.no;
+    let suffix = 2;
+    while (existingNumbers.has(no)) {
+      no = `${item.no}-${suffix}`;
+      suffix += 1;
+    }
+    existingNumbers.add(no);
+    return {
+      id: createId("bill"),
+      no,
+      kind: item.billKind,
+      counterparty: item.counterparty,
+      summary: item.summary,
+      amount: item.amount,
+      date: item.date,
+      dueDate: item.dueDate,
+      businessPeriod: item.billingPeriod,
+      billingPeriod: item.billingPeriod,
+      contractType: plan.contractType,
+      contractDocumentId: plan.documentId,
+      evidenceIds: [plan.documentId],
+      documentIds: [plan.documentId],
+      sourceIds: [plan.documentId],
+      source: "合同账单计划",
+      status: "active",
+      scheduleIndex: index + 1,
+      createdAt: at,
+      createdBy: actor,
+    };
+  });
+  const billIds = bills.map((bill) => bill.id);
+  const filing = workspace.delivery?.filing || {};
+  const next = {
+    ...workspace,
+    bills: [...(workspace.bills || []), ...bills],
+    documents: (workspace.documents || []).map((document) => document.id === plan.documentId ? {
+      ...document,
+      relatedObjectIds: [...new Set([...(document.relatedObjectIds || []), ...billIds])],
+      updatedAt: at,
+    } : document),
+    evidenceLinks: [...(workspace.evidenceLinks || []), {
+      id: createId("evidence-link"),
+      documentIds: [plan.documentId],
+      objectIds: billIds,
+      relation: "contract-billing-plan",
+      note: `${plan.firstBillDate} 至 ${plan.endDate} · ${CONTRACT_SETTLEMENT_MODES[plan.details.settlementMode]}`,
+      status: "active",
+      createdAt: at,
+      updatedAt: at,
+    }],
+    tax: {
+      ...(workspace.tax || {}),
+      frozenAt: null,
+      financeConfirmedAt: null,
+      payrollConfirmedAt: null,
+      socialSecurityConfirmedAt: null,
+      ownerConfirmedAt: null,
+      confirmedBy: "",
+      financeConfirmedVersionId: null,
+      payrollConfirmedVersionId: null,
+      socialSecurityConfirmedVersionId: null,
+      payrollConfirmedFingerprint: null,
+      socialSecurityConfirmedFingerprint: null,
+      ownerConfirmedVersionId: null,
+    },
+    delivery: {
+      ...(workspace.delivery || {}),
+      filing: {
+        ...filing,
+        period: workspace.currentPeriod,
+        draftCreatedAt: null,
+        draftVersionId: null,
+        initialConfirmationId: null,
+        finalConfirmedVersionId: null,
+        exportedAt: null,
+        exportedPackage: null,
+        receipt: null,
+        archivedAt: null,
+      },
+    },
+    auditLog: [{
+      id: createId("log"),
+      at,
+      actor,
+      action: "确认合同账单计划",
+      detail: `${plan.document.name} · 生成 ${bills.length} 张${plan.billKind === "receivable" ? "应收" : "应付"}账单 · 合计 ${plan.pendingTotalAmount.toFixed(2)}`,
+      sourceIds: [plan.documentId, ...billIds],
+    }, ...(workspace.auditLog || [])],
+  };
+  return { workspace: next, bills, plan };
+}
+
+function invoiceBillKind(details) {
+  if (details?.taxDirection === "output") return "receivable";
+  if (details?.taxDirection === "input") return "payable";
+  return null;
+}
+
+function invoiceDocumentOrThrow(workspace, documentId) {
+  const document = (workspace?.documents || []).find((item) => item.id === documentId);
+  if (!document || documentStructuredKind(document.category) !== "invoice") throw new Error("找不到结构化发票资料");
+  if (document.archiveStatus === "archived" || ["archived", "已归档"].includes(document.lifecycleStatus)) throw new Error("已归档发票不能修改账单关系");
+  return { document, details: normalizeDocumentStructuredData("发票", document.structuredData || {}) };
+}
+
+function invoiceLinkedBillIds(workspace, document) {
+  const billIds = new Set((workspace?.bills || []).map((bill) => bill.id));
+  const ids = new Set(getDocumentRelatedObjectIds(workspace, document.id));
+  if (document.structuredData?.linkedBillId) ids.add(document.structuredData.linkedBillId);
+  (workspace?.bills || []).forEach((bill) => {
+    if ([...(bill.documentIds || []), ...(bill.evidenceIds || []), ...(bill.invoiceDocumentIds || [])].includes(document.id)) ids.add(bill.id);
+  });
+  return [...ids].filter((id) => billIds.has(id));
+}
+
+function invoiceDateDistance(left, right) {
+  const leftTime = Date.parse(`${left}T00:00:00Z`);
+  const rightTime = Date.parse(`${right}T00:00:00Z`);
+  if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime)) return null;
+  return Math.abs(Math.round((leftTime - rightTime) / 86400000));
+}
+
+function invoiceManualConfirmation(input, context, action) {
+  if (context.mode === "automatic") throw new Error(`${action}不得自动确认`);
+  if (input.confirmed !== true) throw new Error(`${action}需要用户明确人工确认`);
+}
+
+function assertInvoiceBillEligibility(details, action) {
+  if (details.voidStatus === "voided") throw new Error(`作废发票不得${action}`);
+  if (details.redLetterStatus !== "normal") throw new Error(`红字发票不能${action}普通正向账单，请使用原发票和原账单的负向调整`);
+  const billKind = invoiceBillKind(details);
+  if (!billKind) throw new Error("必须先人工选择销项或进项发票");
+  return billKind;
+}
+
+function invalidateInvoiceBillConfirmations(workspace, at) {
+  const filing = workspace.delivery?.filing || {};
+  return {
+    ...workspace,
+    tax: {
+      ...(workspace.tax || {}),
+      frozenAt: null,
+      financeConfirmedAt: null,
+      payrollConfirmedAt: null,
+      socialSecurityConfirmedAt: null,
+      ownerConfirmedAt: null,
+      confirmedBy: "",
+      financeConfirmedVersionId: null,
+      payrollConfirmedVersionId: null,
+      socialSecurityConfirmedVersionId: null,
+      payrollConfirmedFingerprint: null,
+      socialSecurityConfirmedFingerprint: null,
+      ownerConfirmedVersionId: null,
+    },
+    delivery: {
+      ...(workspace.delivery || {}),
+      filing: {
+        ...filing,
+        period: workspace.currentPeriod,
+        draftCreatedAt: null,
+        draftVersionId: null,
+        initialConfirmationId: null,
+        finalConfirmedVersionId: null,
+        exportedAt: null,
+        exportedPackage: null,
+        receipt: null,
+        archivedAt: null,
+        invalidatedAt: at,
+      },
+    },
+  };
+}
+
+function finalizeInvoiceBillWorkspace(workspace, at) {
+  const recalculated = recalculateStructuredInvoiceVat(workspace, { period: workspace.currentPeriod, at });
+  return invalidateInvoiceBillConfirmations(recalculated, at);
+}
+
+export function buildInvoiceBillSuggestions(workspace, input = {}) {
+  let resolved;
+  try {
+    resolved = invoiceDocumentOrThrow(workspace, input.documentId);
+  } catch {
+    return [];
+  }
+  const { document, details } = resolved;
+  if (details.voidStatus === "voided" || details.redLetterStatus !== "normal") return [];
+  const billKind = invoiceBillKind(details);
+  const counterpartyKey = normalizedText(details.counterparty);
+  const invoiceAmount = roundVatMoney(details.amount);
+  if (!billKind || !counterpartyKey || !(invoiceAmount > 0) || !details.invoiceDate || invoiceLinkedBillIds(workspace, document).length) return [];
+
+  return (workspace.bills || []).flatMap((bill) => {
+    if (bill.kind !== billKind || ["void", "inactive"].includes(bill.status)) return [];
+    const billCounterpartyKey = normalizedText(bill.counterparty);
+    const reasons = [];
+    let score = 0;
+    if (billCounterpartyKey === counterpartyKey) {
+      score += 50;
+      reasons.push(`${billKind === "receivable" ? "客户" : "供应商"}完全一致`);
+    } else if (billCounterpartyKey && (billCounterpartyKey.includes(counterpartyKey) || counterpartyKey.includes(billCounterpartyKey))) {
+      score += 35;
+      reasons.push(`${billKind === "receivable" ? "客户" : "供应商"}名称相近`);
+    } else {
+      return [];
+    }
+
+    const billAmount = roundVatMoney(bill.amount);
+    const amountDifference = Math.abs(invoiceAmount - billAmount);
+    const amountRatio = amountDifference / Math.max(invoiceAmount, billAmount, 0.01);
+    if (amountDifference <= 0.01) {
+      score += 35;
+      reasons.push("价税合计与账单金额一致");
+    } else if (amountRatio <= 0.01) {
+      score += 25;
+      reasons.push(`金额相差 ${amountDifference.toFixed(2)}`);
+    } else if (amountRatio <= 0.05) {
+      score += 10;
+      reasons.push(`金额接近，相差 ${amountDifference.toFixed(2)}`);
+    } else {
+      return [];
+    }
+
+    const dateCandidates = [bill.date, bill.dueDate].filter(Boolean)
+      .map((date) => invoiceDateDistance(details.invoiceDate, date))
+      .filter((days) => days != null);
+    const dateDistanceDays = dateCandidates.length ? Math.min(...dateCandidates) : null;
+    if (dateDistanceDays == null || dateDistanceDays > 31) return [];
+    if (dateDistanceDays === 0) score += 15;
+    else if (dateDistanceDays <= 7) score += 10;
+    else score += 5;
+    reasons.push(dateDistanceDays === 0 ? "日期一致" : `日期相差 ${dateDistanceDays} 天`);
+    if (score < 60) return [];
+    return [{
+      id: `invoice-bill-suggestion:${document.id}:${bill.id}`,
+      documentId: document.id,
+      billId: bill.id,
+      billKind,
+      score,
+      reasons,
+      invoiceAmount,
+      dateDistanceDays,
+      bill,
+    }];
+  }).sort((left, right) => right.score - left.score || left.dateDistanceDays - right.dateDistanceDays);
+}
+
+export function confirmInvoiceBillMatch(workspace, input = {}, context = {}) {
+  invoiceManualConfirmation(input, context, "发票账单关联");
+  const { document, details } = invoiceDocumentOrThrow(workspace, input.documentId);
+  const billKind = assertInvoiceBillEligibility(details, "关联");
+  const linkedBillIds = invoiceLinkedBillIds(workspace, document);
+  if (linkedBillIds.length) throw new Error(`发票已关联账单 ${linkedBillIds.join("、")}，不能重复确认`);
+  const bill = (workspace.bills || []).find((item) => item.id === input.billId);
+  if (!bill || ["void", "inactive"].includes(bill.status)) throw new Error("找不到可关联的有效账单");
+  if (bill.kind !== billKind) throw new Error(`销项发票只能关联应收账单，进项发票只能关联应付账单`);
+  const at = context.at || new Date().toISOString();
+  const actor = context.actor || "周会计";
+  const evidenceLink = {
+    id: createId("evidence-link"),
+    documentIds: [document.id],
+    objectIds: [bill.id],
+    relation: "confirmed-invoice-bill-match",
+    note: `人工确认 · ${details.invoiceNumber || document.name} → ${bill.no || bill.id}`,
+    status: "active",
+    createdAt: at,
+    updatedAt: at,
+  };
+  const linkedDocument = {
+    ...document,
+    structuredData: { ...details, linkedBillId: bill.id },
+    relatedObjectIds: [...new Set([...(document.relatedObjectIds || []), bill.id])],
+    updatedAt: at,
+  };
+  const linkedBill = {
+    ...bill,
+    documentIds: [...new Set([...(bill.documentIds || []), document.id])],
+    evidenceIds: [...new Set([...(bill.evidenceIds || []), document.id])],
+    sourceIds: [...new Set([...(bill.sourceIds || []), document.id])],
+    invoiceDocumentIds: [...new Set([...(bill.invoiceDocumentIds || []), document.id])],
+    updatedAt: at,
+  };
+  let next = {
+    ...workspace,
+    documents: (workspace.documents || []).map((item) => item.id === document.id ? linkedDocument : item),
+    bills: (workspace.bills || []).map((item) => item.id === bill.id ? linkedBill : item),
+    evidenceLinks: [...(workspace.evidenceLinks || []), evidenceLink],
+    auditLog: [{
+      id: createId("log"),
+      at,
+      actor,
+      action: "人工确认发票账单关联",
+      detail: `${details.invoiceNumber || document.name} · ${bill.no || bill.id}`,
+      sourceIds: [document.id, bill.id],
+    }, ...(workspace.auditLog || [])],
+  };
+  next = finalizeInvoiceBillWorkspace(next, at);
+  return { workspace: next, document: linkedDocument, bill: linkedBill, evidenceLink };
+}
+
+function invoiceBillNumber(workspace, document, billKind, period) {
+  const prefix = billKind === "receivable" ? "YS" : "YF";
+  const reference = String(document.structuredData?.invoiceNumber || document.id || "FP").replace(/[^a-z0-9]/gi, "").slice(-12).toUpperCase() || "FP";
+  const base = `${prefix}-${String(period || "").replace("-", "") || "FP"}-${reference}`;
+  const existingNumbers = new Set((workspace.bills || []).map((bill) => bill.no));
+  let number = base;
+  let suffix = 2;
+  while (existingNumbers.has(number)) {
+    number = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  return number;
+}
+
+export function createBillFromInvoice(workspace, input = {}, context = {}) {
+  invoiceManualConfirmation(input, context, "从发票新建账单");
+  if (input.confirmedNoSuitableBill !== true) throw new Error("必须确认没有合适的已有账单，才能从发票新建账单");
+  const { document, details } = invoiceDocumentOrThrow(workspace, input.documentId);
+  const billKind = assertInvoiceBillEligibility(details, "新建");
+  if (invoiceLinkedBillIds(workspace, document).length) throw new Error("发票已关联账单，不能重复新建");
+  const amount = roundVatMoney(details.amount);
+  if (!details.counterparty) throw new Error(`必须填写${billKind === "receivable" ? "客户" : "供应商"}`);
+  if (!(amount > 0)) throw new Error("发票价税合计必须大于 0");
+  if (!details.invoiceDate) throw new Error("必须填写发票日期");
+  const at = context.at || new Date().toISOString();
+  const actor = context.actor || "周会计";
+  const businessPeriod = details.invoiceDate.slice(0, 7) || document.period || workspace.currentPeriod;
+  const bill = {
+    id: createId("bill"),
+    no: invoiceBillNumber(workspace, document, billKind, businessPeriod),
+    kind: billKind,
+    counterparty: details.counterparty,
+    summary: `${billKind === "receivable" ? "销项" : "进项"}发票 ${details.invoiceNumber || document.name}`,
+    amount,
+    date: details.invoiceDate,
+    dueDate: details.invoiceDate,
+    businessPeriod,
+    invoiceDocumentId: document.id,
+    invoiceDocumentIds: [document.id],
+    evidenceIds: [document.id],
+    documentIds: [document.id],
+    sourceIds: [document.id],
+    source: "结构化发票",
+    status: "active",
+    createdAt: at,
+    createdBy: actor,
+  };
+  const linkedDocument = {
+    ...document,
+    structuredData: { ...details, linkedBillId: bill.id },
+    relatedObjectIds: [...new Set([...(document.relatedObjectIds || []), bill.id])],
+    updatedAt: at,
+  };
+  const evidenceLink = {
+    id: createId("evidence-link"),
+    documentIds: [document.id],
+    objectIds: [bill.id],
+    relation: "invoice-generated-bill",
+    note: "用户确认无合适账单后，由结构化发票生成",
+    status: "active",
+    createdAt: at,
+    updatedAt: at,
+  };
+  let next = {
+    ...workspace,
+    documents: (workspace.documents || []).map((item) => item.id === document.id ? linkedDocument : item),
+    bills: [...(workspace.bills || []), bill],
+    evidenceLinks: [...(workspace.evidenceLinks || []), evidenceLink],
+    auditLog: [{
+      id: createId("log"),
+      at,
+      actor,
+      action: "确认从发票生成账单",
+      detail: `${details.invoiceNumber || document.name} · 新建${billKind === "receivable" ? "应收" : "应付"} ${amount.toFixed(2)}`,
+      sourceIds: [document.id, bill.id],
+    }, ...(workspace.auditLog || [])],
+  };
+  next = finalizeInvoiceBillWorkspace(next, at);
+  return { workspace: next, document: linkedDocument, bill, evidenceLink };
+}
+
+export function applyRedInvoiceBillAdjustment(workspace, input = {}, context = {}) {
+  invoiceManualConfirmation(input, context, "红字发票负向调整");
+  const { document, details } = invoiceDocumentOrThrow(workspace, input.documentId);
+  if (details.voidStatus === "voided") throw new Error("作废发票不得形成账单调整");
+  if (details.redLetterStatus !== "red_issued") throw new Error("只有已开具红字发票才能形成负向调整");
+  const billKind = invoiceBillKind(details);
+  if (!billKind) throw new Error("必须先人工选择红字发票的销项或进项方向");
+  if (!details.originalInvoiceDocumentId || !details.originalBillId) throw new Error("红字发票必须同时关联原发票和原账单");
+  if (details.originalInvoiceDocumentId === document.id) throw new Error("红字发票不能把自身设为原发票");
+  if (invoiceLinkedBillIds(workspace, document).length) throw new Error("红字发票已经形成账单调整，不能重复确认");
+
+  const original = invoiceDocumentOrThrow(workspace, details.originalInvoiceDocumentId);
+  if (original.details.redLetterStatus !== "normal" || original.details.voidStatus === "voided") throw new Error("原发票必须是有效的正常蓝字发票");
+  if (original.details.taxDirection !== details.taxDirection) throw new Error("红字发票与原发票的销进项方向必须一致");
+  const bill = (workspace.bills || []).find((item) => item.id === details.originalBillId);
+  if (!bill || ["void", "inactive"].includes(bill.status)) throw new Error("找不到红字发票指定的有效原账单");
+  if (bill.kind !== billKind) throw new Error("红字发票与原账单方向不一致");
+  if (!invoiceLinkedBillIds(workspace, original.document).includes(bill.id)) throw new Error("指定原账单尚未关联原发票");
+  if ((bill.adjustments || []).some((adjustment) => adjustment.documentId === document.id)) throw new Error("该红字发票已经调整过原账单");
+
+  const redAmount = roundVatMoney(details.amount);
+  const originalInvoiceAmount = roundVatMoney(original.details.amount);
+  if (!(redAmount > 0)) throw new Error("红字发票价税合计必须大于 0");
+  if (originalInvoiceAmount > 0 && redAmount > originalInvoiceAmount + 0.01) throw new Error("红字金额不能超过原发票价税合计");
+  const adjustmentAmount = -Math.abs(redAmount);
+  const adjustedBillAmount = roundVatMoney(Number(bill.amount || 0) + adjustmentAmount);
+  if (adjustedBillAmount < 0) throw new Error("红字金额不能超过原账单当前金额");
+
+  const at = context.at || new Date().toISOString();
+  const actor = context.actor || "周会计";
+  const adjustment = {
+    id: createId("bill-adjustment"),
+    type: "red-invoice",
+    amount: adjustmentAmount,
+    documentId: document.id,
+    originalInvoiceDocumentId: original.document.id,
+    at,
+    actor,
+  };
+  const linkedBill = {
+    ...bill,
+    originalAmount: bill.originalAmount ?? Number(bill.amount || 0),
+    amount: adjustedBillAmount,
+    adjustments: [...(bill.adjustments || []), adjustment],
+    documentIds: [...new Set([...(bill.documentIds || []), original.document.id, document.id])],
+    evidenceIds: [...new Set([...(bill.evidenceIds || []), original.document.id, document.id])],
+    sourceIds: [...new Set([...(bill.sourceIds || []), original.document.id, document.id])],
+    invoiceDocumentIds: [...new Set([...(bill.invoiceDocumentIds || []), original.document.id, document.id])],
+    updatedAt: at,
+  };
+  const originalDocument = {
+    ...original.document,
+    structuredData: { ...original.details, linkedBillId: bill.id },
+    relatedObjectIds: [...new Set([...(original.document.relatedObjectIds || []), bill.id])],
+    updatedAt: at,
+  };
+  const redDocument = {
+    ...document,
+    structuredData: {
+      ...details,
+      linkedBillId: bill.id,
+      originalInvoiceDocumentId: original.document.id,
+      originalBillId: bill.id,
+    },
+    relatedObjectIds: [...new Set([...(document.relatedObjectIds || []), bill.id])],
+    updatedAt: at,
+  };
+  const evidenceLink = {
+    id: createId("evidence-link"),
+    documentIds: [original.document.id, document.id],
+    objectIds: [bill.id],
+    relation: "red-invoice-bill-adjustment",
+    note: `红字发票 ${details.invoiceNumber || document.name} 对原账单负向调整 ${redAmount.toFixed(2)}`,
+    status: "active",
+    createdAt: at,
+    updatedAt: at,
+  };
+  let next = {
+    ...workspace,
+    documents: (workspace.documents || []).map((item) => {
+      if (item.id === document.id) return redDocument;
+      if (item.id === original.document.id) return originalDocument;
+      return item;
+    }),
+    bills: (workspace.bills || []).map((item) => item.id === bill.id ? linkedBill : item),
+    evidenceLinks: [...(workspace.evidenceLinks || []), evidenceLink],
+    auditLog: [{
+      id: createId("log"),
+      at,
+      actor,
+      action: "确认红字发票负向调整",
+      detail: `${details.invoiceNumber || document.name} · ${bill.no || bill.id} · ${adjustmentAmount.toFixed(2)}`,
+      sourceIds: [original.document.id, document.id, bill.id],
+    }, ...(workspace.auditLog || [])],
+  };
+  next = finalizeInvoiceBillWorkspace(next, at);
+  return { workspace: next, document: redDocument, originalDocument, bill: linkedBill, adjustment, evidenceLink };
+}
+
+const APPROVAL_TYPE_RULES = Object.freeze({
+  reimbursement: {
+    billKinds: ["payable"],
+    transactionDirections: ["out"],
+    eventType: "purchaseExpense",
+    compatibleEventTypes: ["purchaseExpense", "employeeAdvance"],
+  },
+  payment_request: {
+    billKinds: ["payable"],
+    transactionDirections: ["out"],
+    eventType: "supplierSettlement",
+    compatibleEventTypes: ["supplierSettlement", "purchaseExpense"],
+  },
+  loan_repayment: {
+    billKinds: ["receivable", "payable"],
+    transactionDirections: ["in", "out"],
+    eventType: "loan",
+    compatibleEventTypes: ["loan", "relatedParty"],
+  },
+  procurement: {
+    billKinds: ["payable"],
+    transactionDirections: ["out"],
+    eventType: "purchaseExpense",
+    compatibleEventTypes: ["purchaseExpense", "supplierSettlement"],
+  },
+  refund: {
+    billKinds: ["receivable", "payable"],
+    transactionDirections: ["in", "out"],
+    eventType: "refund",
+    compatibleEventTypes: ["refund"],
+  },
+});
+
+function approvalDocumentOrThrow(workspace, documentId) {
+  const document = (workspace?.documents || []).find((item) => item.id === documentId);
+  if (!document || documentStructuredKind(document.category) !== "approval") throw new Error("找不到结构化审批单资料");
+  if (document.archiveStatus === "archived" || ["archived", "已归档"].includes(document.lifecycleStatus)) throw new Error("已归档审批单不能修改业务关系");
+  return { document, details: normalizeDocumentStructuredData("审批单", document.structuredData || {}) };
+}
+
+function approvalRule(details) {
+  return APPROVAL_TYPE_RULES[details?.approvalType] || null;
+}
+
+function approvalParty(details) {
+  if (["reimbursement", "loan_repayment"].includes(details.approvalType)) return String(details.applicant || details.supplier || "").trim();
+  return String(details.supplier || details.applicant || "").trim();
+}
+
+function approvalTransactionDirection(transaction) {
+  if (["in", "out"].includes(transaction?.direction)) return transaction.direction;
+  return Number(transaction?.amount || 0) < 0 ? "out" : "in";
+}
+
+function approvalTargetEventType(target) {
+  return target?.classification?.eventType || target?.eventType || target?.type || "unknown";
+}
+
+function approvalTargetMatchesRule(rule, targetType, target) {
+  if (targetType === "bill") return rule.billKinds.includes(target.kind);
+  if (targetType !== "transaction" || !rule.transactionDirections.includes(approvalTransactionDirection(target))) return false;
+  const eventType = approvalTargetEventType(target);
+  return !eventType || eventType === "unknown" || rule.compatibleEventTypes.includes(eventType);
+}
+
+function approvalConfirmedTargetIds(workspace, document) {
+  const targetIds = new Set();
+  if (document.structuredData?.linkStatus === "linked" && document.structuredData?.linkedTargetId) {
+    targetIds.add(document.structuredData.linkedTargetId);
+  }
+  [...(workspace?.bills || []), ...(workspace?.transactions || [])].forEach((target) => {
+    if ((target.approvalDocumentIds || []).includes(document.id)) targetIds.add(target.id);
+  });
+  (workspace?.evidenceLinks || [])
+    .filter((link) => link.status !== "inactive" && link.relation === "confirmed-approval-business-link" && link.documentIds?.includes(document.id))
+    .forEach((link) => (link.objectIds || []).forEach((id) => targetIds.add(id)));
+  const validTargetIds = new Set([...(workspace?.bills || []), ...(workspace?.transactions || [])].map((target) => target.id));
+  return [...targetIds].filter((id) => validTargetIds.has(id));
+}
+
+function approvalCandidate(workspace, document, details, targetType, target) {
+  const rule = approvalRule(details);
+  if (!rule || !approvalTargetMatchesRule(rule, targetType, target)) return null;
+  if (["void", "inactive"].includes(target.status)) return null;
+  const party = approvalParty(details);
+  const partyKey = normalizedText(party);
+  const targetPartyKey = normalizedText(target.counterparty || target.counterpartyName || target.party || "");
+  if (!partyKey || !targetPartyKey) return null;
+  const reasons = [`类型符合${APPROVAL_TYPES[details.approvalType]}`];
+  let score = 15;
+  if (partyKey === targetPartyKey) {
+    score += 30;
+    reasons.push(`${details.supplier ? "供应商" : "申请人"}完全一致`);
+  } else if (partyKey.includes(targetPartyKey) || targetPartyKey.includes(partyKey)) {
+    score += 20;
+    reasons.push(`${details.supplier ? "供应商" : "申请人"}名称相近`);
+  } else {
+    return null;
+  }
+  const approvalAmount = Math.round(Number(details.amount || 0) * 100) / 100;
+  const targetAmount = Math.round(Math.abs(Number(target.amount || 0)) * 100) / 100;
+  if (!(approvalAmount > 0) || Math.abs(approvalAmount - targetAmount) > 0.01) return null;
+  score += 40;
+  reasons.push(`金额一致 ${approvalAmount.toFixed(2)}`);
+  if (!details.approvalDate) return null;
+  const targetDates = (targetType === "bill" ? [target.date, target.dueDate] : [target.date])
+    .filter(Boolean)
+    .map((date) => invoiceDateDistance(details.approvalDate, String(date).slice(0, 10)))
+    .filter((days) => days != null);
+  const dateDistanceDays = targetDates.length ? Math.min(...targetDates) : null;
+  if (dateDistanceDays == null || dateDistanceDays > 31) return null;
+  score += dateDistanceDays === 0 ? 15 : (dateDistanceDays <= 7 ? 10 : 5);
+  reasons.push(dateDistanceDays === 0 ? "日期一致" : `日期相差 ${dateDistanceDays} 天`);
+  return {
+    id: `approval-link-suggestion:${document.id}:${targetType}:${target.id}`,
+    documentId: document.id,
+    targetType,
+    targetId: target.id,
+    target,
+    approvalType: details.approvalType,
+    eventType: rule.eventType,
+    score,
+    reasons,
+    dateDistanceDays,
+  };
+}
+
+export function buildApprovalLinkSuggestions(workspace, input = {}) {
+  let resolved;
+  try {
+    resolved = approvalDocumentOrThrow(workspace, input.documentId);
+  } catch {
+    return [];
+  }
+  const { document, details } = resolved;
+  if (details.approvalStatus !== "approved" || !approvalRule(details) || approvalConfirmedTargetIds(workspace, document).length) return [];
+  const candidates = [
+    ...(workspace.bills || []).map((target) => ({ targetType: "bill", target })),
+    ...(workspace.transactions || []).map((target) => ({ targetType: "transaction", target })),
+  ];
+  return candidates
+    .map(({ targetType, target }) => approvalCandidate(workspace, document, details, targetType, target))
+    .filter(Boolean)
+    .sort((left, right) => right.score - left.score || left.dateDistanceDays - right.dateDistanceDays || left.targetId.localeCompare(right.targetId));
+}
+
+function approvalPendingMessage(workspace, document, details) {
+  if (details.approvalStatus !== "approved") {
+    const label = { draft: "草稿", pending: "审批中", rejected: "已驳回", withdrawn: "已撤回" }[details.approvalStatus] || details.approvalStatus;
+    return `审批状态为${label}，不能进入后续业务`;
+  }
+  if (details.linkStatus === "linked" && approvalConfirmedTargetIds(workspace, document).length) return "";
+  const missing = [];
+  if (!approvalRule(details)) missing.push("审批类型");
+  if (!approvalParty(details)) missing.push(details.approvalType === "reimbursement" ? "申请人" : "申请人／供应商");
+  if (!(Number(details.amount) > 0)) missing.push("审批金额");
+  if (!details.approvalDate) missing.push("审批日期");
+  if (missing.length) return `审批单待处理：请补齐${missing.join("、")}`;
+  const suggestions = buildApprovalLinkSuggestions(workspace, { documentId: document.id });
+  return suggestions.length
+    ? `审批单待人工确认：已找到 ${suggestions.length} 个金额、日期、类型与往来单位一致的对象`
+    : "审批单待处理：尚未找到金额、日期、类型与往来单位一致的账单或银行流水";
+}
+
+function syncApprovalLinkPendingTask(workspace, documentId, context = {}) {
+  const document = (workspace.documents || []).find((item) => item.id === documentId);
+  if (!document || documentStructuredKind(document.category) !== "approval") return workspace;
+  const details = normalizeDocumentStructuredData("审批单", document.structuredData || {});
+  const at = context.at || new Date().toISOString();
+  const actor = context.actor || "本地用户";
+  const identity = `approval-link:${document.id}`;
+  const message = approvalPendingMessage(workspace, document, details);
+  const tasks = (workspace.exceptionTasks || []).map((task) => ({ ...task, history: [...(task.history || [])] }));
+  const existing = tasks.find((task) => task.identity === identity);
+  if (!message) {
+    if (existing && existing.status !== "resolved") {
+      existing.status = "resolved";
+      existing.resolution = "approval_business_link_confirmed";
+      existing.resolvedAt = at;
+      existing.resolvedBy = actor;
+      existing.updatedAt = at;
+      existing.history.push({ at, actor, action: "resolved", note: "审批单已人工确认关联业务对象" });
+    }
+    return { ...workspace, exceptionTasks: tasks };
+  }
+  if (!existing) {
+    tasks.push({
+      id: createId("approval-task"),
+      identity,
+      code: "approval_link_pending",
+      sourceType: "approvalDocument",
+      sourceId: document.id,
+      message,
+      status: "open",
+      createdAt: at,
+      updatedAt: at,
+      sourceIds: [document.id],
+      history: [{ at, actor, action: "created", note: message }],
+    });
+  } else if (existing.status === "resolved" || existing.message !== message) {
+    const action = existing.status === "resolved" ? "reopened" : "updated";
+    existing.status = "open";
+    existing.message = message;
+    existing.resolution = null;
+    existing.resolvedAt = null;
+    existing.resolvedBy = null;
+    existing.updatedAt = at;
+    existing.history.push({ at, actor, action, note: message });
+  }
+  return { ...workspace, exceptionTasks: tasks };
+}
+
+function approvalBusinessEventNumber(workspace, approvalDate) {
+  const period = String(approvalDate || workspace.currentPeriod || "").slice(0, 7).replace("-", "") || "UNDATED";
+  const prefix = `BE-${period}-AP`;
+  const pattern = new RegExp(`^${prefix}-(\\d+)$`);
+  const maximum = (workspace.businessEvents || []).reduce((current, event) => {
+    const match = pattern.exec(String(event.businessEventNo || event.no || ""));
+    return match ? Math.max(current, Number(match[1])) : current;
+  }, 0);
+  return `${prefix}-${String(maximum + 1).padStart(3, "0")}`;
+}
+
+function approvalBusinessEventForTarget(workspace, targetType, target, rule, approvalType) {
+  return (workspace.businessEvents || []).find((event) => {
+    const sameTarget = targetType === "transaction"
+      ? (event.transactionId === target.id || event.id === target.approvalBusinessEventId)
+      : (event.relatedBillId === target.id || event.billId === target.id || event.id === target.approvalBusinessEventId);
+    return sameTarget && (event.eventType === rule.eventType || event.businessType === approvalType);
+  }) || null;
+}
+
+function resolveApprovalInvalidatedTasks(tasks, documentId, targetId, at, actor) {
+  return (tasks || []).map((task) => {
+    if (task.code !== "approval_invalidated" || ![...(task.sourceIds || []), task.sourceId].includes(documentId)
+      || (targetId && ![...(task.sourceIds || []), task.sourceId].includes(targetId))) return task;
+    if (task.status === "resolved") return task;
+    return {
+      ...task,
+      status: "resolved",
+      resolution: "approval_reconfirmed",
+      resolvedAt: at,
+      resolvedBy: actor,
+      updatedAt: at,
+      history: [...(task.history || []), { at, actor, action: "resolved", note: "审批单重新批准并人工确认关联" }],
+    };
+  });
+}
+
+export function confirmApprovalBusinessLink(workspace, input = {}, context = {}) {
+  if (context.mode === "automatic") throw new Error("审批业务关联不得自动确认");
+  if (input.confirmed !== true) throw new Error("审批业务关联需要用户明确人工确认");
+  const { document, details } = approvalDocumentOrThrow(workspace, input.documentId);
+  if (details.approvalStatus !== "approved") throw new Error("只有状态为已批准的审批单才能进入后续业务");
+  if (approvalConfirmedTargetIds(workspace, document).length) throw new Error("审批单已经确认关联业务对象，不能重复关联");
+  const suggestion = buildApprovalLinkSuggestions(workspace, { documentId: document.id })
+    .find((item) => item.targetType === input.targetType && item.targetId === input.targetId);
+  if (!suggestion) throw new Error("关联对象与审批单的类型、申请人／供应商、金额或日期不一致，继续保持待处理");
+  const targetCollection = suggestion.targetType === "bill" ? "bills" : "transactions";
+  const target = (workspace[targetCollection] || []).find((item) => item.id === suggestion.targetId);
+  if (!target) throw new Error("找不到要关联的账单或银行流水，审批单继续保持待处理");
+  const at = context.at || new Date().toISOString();
+  const actor = context.actor || "周会计";
+  const rule = approvalRule(details);
+  const existingEvent = approvalBusinessEventForTarget(workspace, suggestion.targetType, target, rule, details.approvalType);
+  const eventId = existingEvent?.id || createId("business-event");
+  const eventNo = existingEvent?.businessEventNo || existingEvent?.no || approvalBusinessEventNumber(workspace, details.approvalDate);
+  const approvalSource = {
+    documentId: document.id,
+    approvalType: details.approvalType,
+    applicant: details.applicant,
+    supplier: details.supplier,
+    approvalDate: details.approvalDate,
+    amount: Number(details.amount),
+    status: "approved",
+    confirmedAt: at,
+    confirmedBy: actor,
+  };
+  const approvalSources = [...(existingEvent?.approvalSources || []).filter((source) => source.documentId !== document.id), approvalSource];
+  const businessEvent = {
+    ...(existingEvent || {}),
+    id: eventId,
+    no: eventNo,
+    businessEventNo: eventNo,
+    type: existingEvent?.type || rule.eventType,
+    sourceType: existingEvent?.sourceType || (suggestion.targetType === "transaction" ? "bankTransaction" : "bill"),
+    source: existingEvent?.source || "approved-document-manual-confirmation",
+    transactionId: suggestion.targetType === "transaction" ? target.id : (existingEvent?.transactionId || null),
+    relatedBillId: suggestion.targetType === "bill" ? target.id : (existingEvent?.relatedBillId || null),
+    billId: suggestion.targetType === "bill" ? target.id : (existingEvent?.billId || null),
+    businessType: existingEvent?.businessType || details.approvalType,
+    businessTypeLabel: existingEvent?.businessTypeLabel || APPROVAL_TYPES[details.approvalType],
+    eventType: existingEvent?.eventType || rule.eventType,
+    date: existingEvent?.date || target.date || details.approvalDate,
+    amount: existingEvent?.amount ?? Math.abs(Number(target.amount || details.amount)),
+    direction: existingEvent?.direction || (suggestion.targetType === "transaction" ? approvalTransactionDirection(target) : (target.kind === "receivable" ? "in" : "out")),
+    counterparty: existingEvent?.counterparty || target.counterparty || approvalParty(details),
+    businessPeriod: existingEvent?.businessPeriod || String(target.businessPeriod || details.approvalDate).slice(0, 7),
+    approvalDocumentIds: [...new Set([...(existingEvent?.approvalDocumentIds || []), document.id])],
+    invalidatedApprovalDocumentIds: (existingEvent?.invalidatedApprovalDocumentIds || []).filter((id) => id !== document.id),
+    approvalSources,
+    approvalStatus: "approved",
+    approvalReviewRequired: false,
+    evidenceIds: [...new Set([...(existingEvent?.evidenceIds || []), ...(target.evidenceIds || []), ...(target.documentIds || []), document.id])],
+    documentIds: [...new Set([...(existingEvent?.documentIds || []), ...(target.documentIds || []), ...(target.evidenceIds || []), document.id])],
+    sourceIds: [...new Set([...(existingEvent?.sourceIds || []), ...(target.sourceIds || []), target.id, ...(target.documentIds || []), ...(target.evidenceIds || []), document.id])],
+    automaticPostingAllowed: false,
+    postingPolicy: "manual_only",
+    accountingStatus: existingEvent?.accountingStatus || "unprocessed",
+    status: existingEvent?.approvalStatus === "invalidated" ? "confirmed" : (existingEvent?.status || "confirmed"),
+    history: [...(existingEvent?.history || []), { at, actor, action: existingEvent ? "approval_source_confirmed" : "created_from_approval", note: `${APPROVAL_TYPES[details.approvalType]}审批来源已人工确认` }],
+    createdAt: existingEvent?.createdAt || at,
+    createdBy: existingEvent?.createdBy || actor,
+    updatedAt: at,
+    updatedBy: actor,
+  };
+  const linkedTarget = {
+    ...target,
+    approvalDocumentIds: [...new Set([...(target.approvalDocumentIds || []), document.id])],
+    invalidatedApprovalDocumentIds: (target.invalidatedApprovalDocumentIds || []).filter((id) => id !== document.id),
+    documentIds: [...new Set([...(target.documentIds || []), document.id])],
+    evidenceIds: [...new Set([...(target.evidenceIds || []), document.id])],
+    sourceIds: [...new Set([...(target.sourceIds || []), document.id])],
+    approvalBusinessEventId: businessEvent.id,
+    approvalStatus: "approved",
+    approvalReviewRequired: false,
+    updatedAt: at,
+  };
+  const linkedDocument = {
+    ...document,
+    structuredData: {
+      ...details,
+      linkedTargetType: suggestion.targetType,
+      linkedTargetId: target.id,
+      businessEventId: businessEvent.id,
+      linkStatus: "linked",
+    },
+    relatedObjectIds: [...new Set([...(document.relatedObjectIds || []), target.id, businessEvent.id])],
+    updatedAt: at,
+  };
+  const evidenceLink = {
+    id: createId("evidence-link"),
+    documentIds: [document.id],
+    objectIds: [target.id, businessEvent.id],
+    relation: "confirmed-approval-business-link",
+    note: `用户人工确认：${suggestion.reasons.join("；")}`,
+    status: "active",
+    matchScore: suggestion.score,
+    matchReasons: suggestion.reasons,
+    confirmedAt: at,
+    confirmedBy: actor,
+    createdAt: at,
+    updatedAt: at,
+  };
+  let next = {
+    ...workspace,
+    documents: (workspace.documents || []).map((item) => item.id === document.id ? linkedDocument : item),
+    [targetCollection]: (workspace[targetCollection] || []).map((item) => item.id === target.id ? linkedTarget : item),
+    businessEvents: existingEvent
+      ? (workspace.businessEvents || []).map((event) => event.id === existingEvent.id ? businessEvent : event)
+      : [...(workspace.businessEvents || []), businessEvent],
+    evidenceLinks: [...(workspace.evidenceLinks || []), evidenceLink],
+    exceptionTasks: resolveApprovalInvalidatedTasks(workspace.exceptionTasks || [], document.id, target.id, at, actor),
+    auditLog: [{
+      id: createId("log"),
+      at,
+      actor,
+      action: "人工确认审批业务关联",
+      detail: `${APPROVAL_TYPES[details.approvalType]} · ${document.name} → ${target.no || target.summary || target.id}；未自动付款或入账`,
+      sourceIds: [document.id, target.id, businessEvent.id],
+    }, ...(workspace.auditLog || [])],
+  };
+  if (suggestion.targetType === "transaction") {
+    next = reviewTransactionEvidence(next, target.id, { actor, mode: "manual", at });
+  }
+  next = syncApprovalLinkPendingTask(next, document.id, { actor, at });
+  next = invalidateInvoiceBillConfirmations(next, at);
+  return { workspace: next, document: linkedDocument, target: linkedTarget, businessEvent, evidenceLink, suggestion };
+}
+
+function invalidateApprovalBusinessLinks(workspace, documentId, context = {}) {
+  const document = (workspace.documents || []).find((item) => item.id === documentId);
+  if (!document || documentStructuredKind(document.category) !== "approval") return workspace;
+  const details = normalizeDocumentStructuredData("审批单", document.structuredData || {});
+  const targetId = details.linkedTargetId;
+  const targetType = details.linkedTargetType;
+  const businessEventId = details.businessEventId;
+  if (details.linkStatus !== "linked" || !targetId || !targetType) return workspace;
+  const at = context.at || new Date().toISOString();
+  const actor = context.actor || "本地用户";
+  const reason = `审批单已${details.approvalStatus === "withdrawn" ? "撤回" : "驳回"}，原业务关系失效并需重新复核`;
+  const targetCollection = targetType === "bill" ? "bills" : "transactions";
+  const invalidatedDocument = {
+    ...document,
+    structuredData: { ...details, linkStatus: "invalidated" },
+    relatedObjectIds: (document.relatedObjectIds || []).filter((id) => ![targetId, businessEventId].includes(id)),
+    updatedAt: at,
+  };
+  const targets = (workspace[targetCollection] || []).map((target) => target.id === targetId ? {
+    ...target,
+    approvalDocumentIds: (target.approvalDocumentIds || []).filter((id) => id !== document.id),
+    invalidatedApprovalDocumentIds: [...new Set([...(target.invalidatedApprovalDocumentIds || []), document.id])],
+    documentIds: (target.documentIds || []).filter((id) => id !== document.id),
+    evidenceIds: (target.evidenceIds || []).filter((id) => id !== document.id),
+    sourceIds: (target.sourceIds || []).filter((id) => id !== document.id),
+    approvalStatus: "invalidated",
+    approvalReviewRequired: true,
+    ...(targetType === "transaction" ? { status: "exception" } : {}),
+    updatedAt: at,
+  } : target);
+  const businessEvents = (workspace.businessEvents || []).map((event) => event.id === businessEventId ? {
+    ...event,
+    approvalDocumentIds: (event.approvalDocumentIds || []).filter((id) => id !== document.id),
+    invalidatedApprovalDocumentIds: [...new Set([...(event.invalidatedApprovalDocumentIds || []), document.id])],
+    approvalSources: (event.approvalSources || []).map((source) => source.documentId === document.id ? { ...source, status: "invalidated", invalidatedAt: at, invalidatedBy: actor } : source),
+    approvalStatus: "invalidated",
+    approvalReviewRequired: true,
+    evidenceIds: (event.evidenceIds || []).filter((id) => id !== document.id),
+    documentIds: (event.documentIds || []).filter((id) => id !== document.id),
+    sourceIds: (event.sourceIds || []).filter((id) => id !== document.id),
+    manualReviewRequired: true,
+    status: "needs_review",
+    review: {
+      ...(event.review || {}),
+      required: true,
+      status: "pending",
+      reasons: [...new Set([...(event.review?.reasons || []), reason])],
+    },
+    history: [...(event.history || []), { at, actor, action: "approval_invalidated", note: reason }],
+    updatedAt: at,
+    updatedBy: actor,
+  } : event);
+  const identity = `approval-invalidated:${document.id}:${targetId}`;
+  const exceptionTasks = (workspace.exceptionTasks || []).map((task) => ({ ...task, history: [...(task.history || [])] }));
+  const existingTask = exceptionTasks.find((task) => task.identity === identity);
+  if (existingTask) {
+    existingTask.status = "open";
+    existingTask.message = reason;
+    existingTask.resolution = null;
+    existingTask.resolvedAt = null;
+    existingTask.resolvedBy = null;
+    existingTask.updatedAt = at;
+    existingTask.history.push({ at, actor, action: "reopened", note: reason });
+  } else {
+    exceptionTasks.push({
+      id: createId("approval-exception"),
+      identity,
+      code: "approval_invalidated",
+      sourceType: targetType,
+      sourceId: targetId,
+      message: reason,
+      status: "open",
+      createdAt: at,
+      updatedAt: at,
+      sourceIds: [document.id, targetId, ...(businessEventId ? [businessEventId] : [])],
+      history: [{ at, actor, action: "created", note: reason }],
+    });
+  }
+  let next = {
+    ...workspace,
+    documents: (workspace.documents || []).map((item) => item.id === document.id ? invalidatedDocument : item),
+    [targetCollection]: targets,
+    businessEvents,
+    evidenceLinks: (workspace.evidenceLinks || []).map((link) => (
+      link.relation === "confirmed-approval-business-link" && link.documentIds?.includes(document.id)
+        ? { ...link, status: "inactive", invalidatedAt: at, invalidatedBy: actor, updatedAt: at }
+        : link
+    )),
+    exceptionTasks,
+    stages: {
+      ...(workspace.stages || {}),
+      s3: { ...(workspace.stages?.s3 || {}), status: "needs_review", updatedAt: at },
+    },
+    auditLog: [{
+      id: createId("log"),
+      at,
+      actor,
+      action: "审批状态回退并使业务关系失效",
+      detail: `${document.name} · ${reason}`,
+      sourceIds: [document.id, targetId, ...(businessEventId ? [businessEventId] : [])],
+    }, ...(workspace.auditLog || [])],
+  };
+  next = invalidateInvoiceBillConfirmations(next, at);
+  return next;
 }
 
 function fallbackHash(buffer) {
@@ -505,6 +1734,541 @@ export function getDocumentRelatedObjectIds(workspace, documentId) {
     });
   });
   return [...relatedIds].filter((objectId) => allowedIds.has(objectId));
+}
+
+function roundVatMoney(value) {
+  return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+}
+
+function structuredInvoicePeriod(document) {
+  return String(document?.structuredData?.invoiceDate || "").slice(0, 7) || document?.period || null;
+}
+
+function structuredInvoiceTaxAmount(details) {
+  if (details.taxAmount != null) return roundVatMoney(details.taxAmount);
+  if (details.amount == null || details.taxRate == null) return null;
+  const rate = Number(details.taxRate || 0) / 100;
+  return roundVatMoney(rate ? Number(details.amount) * rate / (1 + rate) : 0);
+}
+
+function structuredInvoiceLinkedIds(workspace, document) {
+  const ids = new Set(getDocumentRelatedObjectIds(workspace, document.id));
+  (workspace.vouchers || []).forEach((voucher) => {
+    if ([...(voucher.evidenceIds || []), ...(voucher.documentIds || [])].includes(document.id)) ids.add(voucher.id);
+  });
+  return [...ids];
+}
+
+export function buildStructuredInvoiceVatSummary(workspace, options = {}) {
+  const period = options.period || workspace?.currentPeriod;
+  const rows = (workspace?.documents || [])
+    .filter((document) => documentStructuredKind(document.category) === "invoice" && structuredInvoicePeriod(document) === period)
+    .map((document) => {
+      const details = document.structuredData || {};
+      const linkedObjectIds = structuredInvoiceLinkedIds(workspace, document);
+      const grossAmount = details.amount == null ? null : roundVatMoney(details.amount);
+      const unsignedTaxAmount = structuredInvoiceTaxAmount(details);
+      const sign = details.redLetterStatus === "red_issued" ? -1 : 1;
+      const taxAmount = unsignedTaxAmount == null ? null : roundVatMoney(unsignedTaxAmount * sign);
+      const signedGrossAmount = grossAmount == null ? null : roundVatMoney(grossAmount * sign);
+      const netAmount = signedGrossAmount == null || taxAmount == null ? null : roundVatMoney(signedGrossAmount - taxAmount);
+      let bucket = "excluded";
+      let reason = "";
+      if (details.voidStatus === "voided") reason = "发票已作废，不计入增值税汇总";
+      else if (!linkedObjectIds.length) reason = "尚未关联业务或凭证，不计入增值税汇总";
+      else if (!INVOICE_STATUSES.taxDirection.includes(details.taxDirection) || details.taxDirection === "unclassified") reason = "尚未人工选择销项或进项";
+      else if (grossAmount == null) reason = "缺少价税合计";
+      else if (taxAmount == null) reason = "缺少税额，且无法由价税合计和税率计算";
+      else if (details.taxDirection === "output") {
+        bucket = "outputVat";
+        reason = details.redLetterStatus === "red_applied" ? "红字申请中，当前仍按原发票正数汇总" : "计入销项税额";
+      } else if (details.certificationStatus === "certified") {
+        bucket = "deductibleInputVat";
+        reason = "已认证，计入可抵扣进项税额";
+      } else {
+        bucket = "nonDeductibleInputVat";
+        reason = "未认证，单独列示且不抵扣销项税额";
+      }
+      return {
+        documentId: document.id,
+        name: document.name || document.id,
+        invoiceNumber: details.invoiceNumber || "",
+        invoiceDate: details.invoiceDate || null,
+        period,
+        taxDirection: details.taxDirection || "unclassified",
+        grossAmount: signedGrossAmount,
+        netAmount,
+        taxAmount,
+        taxRate: details.taxRate,
+        taxAmountSource: details.taxAmount != null ? "manual_tax_amount" : (taxAmount == null ? "missing" : "derived_from_gross_and_rate"),
+        verificationStatus: details.verificationStatus || "unverified",
+        certificationStatus: details.certificationStatus || "not_required",
+        redLetterStatus: details.redLetterStatus || "normal",
+        voidStatus: details.voidStatus || "valid",
+        linkedObjectIds,
+        sourceIds: [document.id, ...linkedObjectIds],
+        bucket,
+        included: bucket !== "excluded",
+        deductible: bucket === "deductibleInputVat",
+        reason,
+        recognitionMode: "manual_structured_invoice",
+        onlineVerification: false,
+      };
+    });
+  const sum = (bucket, field) => roundVatMoney(rows
+    .filter((row) => row.bucket === bucket)
+    .reduce((total, row) => total + Number(row[field] || 0), 0));
+  const outputVat = sum("outputVat", "taxAmount");
+  const deductibleInputVat = sum("deductibleInputVat", "taxAmount");
+  const nonDeductibleInputVat = sum("nonDeductibleInputVat", "taxAmount");
+  const usesStructuredInvoices = rows.some((row) => row.included);
+  return {
+    period,
+    sourceMode: usesStructuredInvoices ? "structured_invoices" : "legacy_estimate",
+    usesStructuredInvoices,
+    outputGrossAmount: sum("outputVat", "grossAmount"),
+    outputNetAmount: sum("outputVat", "netAmount"),
+    outputVat,
+    inputGrossAmount: roundVatMoney(sum("deductibleInputVat", "grossAmount") + sum("nonDeductibleInputVat", "grossAmount")),
+    inputNetAmount: roundVatMoney(sum("deductibleInputVat", "netAmount") + sum("nonDeductibleInputVat", "netAmount")),
+    inputVat: roundVatMoney(deductibleInputVat + nonDeductibleInputVat),
+    deductibleInputVat,
+    nonDeductibleInputVat,
+    vatPayable: Math.max(0, roundVatMoney(outputVat - deductibleInputVat)),
+    inputVatCreditCarryForward: Math.max(0, roundVatMoney(deductibleInputVat - outputVat)),
+    sourceIds: rows.filter((row) => row.included).map((row) => row.documentId),
+    rows,
+    counts: {
+      total: rows.length,
+      output: rows.filter((row) => row.bucket === "outputVat").length,
+      deductibleInput: rows.filter((row) => row.bucket === "deductibleInputVat").length,
+      nonDeductibleInput: rows.filter((row) => row.bucket === "nonDeductibleInputVat").length,
+      excluded: rows.filter((row) => row.bucket === "excluded").length,
+    },
+    disclaimer: "仅按本地人工录入的发票字段计算；查验状态不代表已连接税务平台。",
+  };
+}
+
+function comparableInvoiceVatSummary(summary) {
+  if (!summary) return null;
+  const { recalculatedAt: _recalculatedAt, ...stable } = summary;
+  return stable;
+}
+
+export function recalculateStructuredInvoiceVat(workspace, options = {}) {
+  const period = options.period || workspace.currentPeriod;
+  const summary = buildStructuredInvoiceVatSummary(workspace, { period });
+  const previous = workspace.tax?.invoiceVatSummary;
+  if (JSON.stringify(comparableInvoiceVatSummary(previous)) === JSON.stringify(summary)) return workspace;
+  const timestamp = options.at || new Date().toISOString();
+  const filing = workspace.delivery?.filing || {};
+  return {
+    ...workspace,
+    tax: {
+      ...(workspace.tax || {}),
+      invoiceVatSummary: { ...summary, recalculatedAt: timestamp },
+      frozenAt: null,
+      financeConfirmedAt: null,
+      payrollConfirmedAt: null,
+      socialSecurityConfirmedAt: null,
+      ownerConfirmedAt: null,
+      confirmedBy: "",
+      financeConfirmedVersionId: null,
+      payrollConfirmedVersionId: null,
+      socialSecurityConfirmedVersionId: null,
+      payrollConfirmedFingerprint: null,
+      socialSecurityConfirmedFingerprint: null,
+      ownerConfirmedVersionId: null,
+    },
+    delivery: {
+      ...(workspace.delivery || {}),
+      filing: {
+        ...filing,
+        period,
+        draftCreatedAt: null,
+        draftVersionId: null,
+        initialConfirmationId: null,
+        finalConfirmedVersionId: null,
+        exportedAt: null,
+        exportedPackage: null,
+        receipt: null,
+        archivedAt: null,
+      },
+    },
+  };
+}
+
+function normalizedPayrollHeader(value) {
+  return normalizedText(value).replace(/[\s_\-—:：()（）/／\\]+/g, "");
+}
+
+function payrollMappingIndex(value) {
+  if (value === "" || value == null) return null;
+  const index = Number(value);
+  return Number.isInteger(index) && index >= 0 ? index : null;
+}
+
+export function detectPayrollSocialFieldMapping(headers = []) {
+  const normalizedHeaders = headers.map(normalizedPayrollHeader);
+  const used = new Set();
+  return Object.fromEntries(Object.entries(PAYROLL_SOCIAL_FIELD_DEFINITIONS).map(([field, definition]) => {
+    const aliases = definition.aliases.map(normalizedPayrollHeader);
+    const index = normalizedHeaders.findIndex((header, candidateIndex) => !used.has(candidateIndex) && aliases.includes(header));
+    if (index >= 0) used.add(index);
+    return [field, index >= 0 ? index : null];
+  }));
+}
+
+export function inspectPayrollSocialTable(table = []) {
+  if (!Array.isArray(table) || !table.length) {
+    return { headerRowIndex: 0, headers: [], mapping: detectPayrollSocialFieldMapping([]), score: 0 };
+  }
+  const candidates = table.slice(0, 20).map((row, headerRowIndex) => {
+    const headers = Array.isArray(row) ? row.map((cell) => String(cell ?? "").trim()) : [];
+    const mapping = detectPayrollSocialFieldMapping(headers);
+    const score = Object.values(mapping).filter((index) => index != null).length + (mapping.employee != null ? 5 : 0);
+    return { headerRowIndex, headers, mapping, score };
+  });
+  return candidates.sort((left, right) => right.score - left.score || left.headerRowIndex - right.headerRowIndex)[0];
+}
+
+export async function readPayrollSocialFile(file, options = {}) {
+  if (!file) throw new Error("请选择工资或社保文件");
+  const fileName = options.fileName || file.name || "工资社保表";
+  const extension = fileName.split(".").pop()?.toLowerCase();
+  if (extension === "csv" || extension === "txt") {
+    const text = typeof file.text === "function"
+      ? await file.text()
+      : new TextDecoder(options.encoding || "utf-8").decode(await file.arrayBuffer());
+    const parsed = parseDelimitedText(text, options);
+    return { fileName, sheetName: null, table: parsed.table, delimiter: parsed.delimiter, inspection: inspectPayrollSocialTable(parsed.table) };
+  }
+  if (!["xlsx", "xls"].includes(extension)) throw new Error("工资与社保导入仅支持 CSV、XLSX 和 XLS 文件");
+  const XLSX = await import("xlsx");
+  const data = await file.arrayBuffer();
+  const workbook = XLSX.read(data, { type: "array", cellDates: true });
+  const sheetName = options.sheetName || workbook.SheetNames[0];
+  if (!sheetName || !workbook.Sheets[sheetName]) throw new Error("Excel 文件中没有可读取的工作表");
+  const table = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "", raw: true });
+  return { fileName, sheetName, sheetNames: workbook.SheetNames, table, inspection: inspectPayrollSocialTable(table) };
+}
+
+function normalizePayrollPeriod(value, fallback = "") {
+  if (value instanceof Date && !Number.isNaN(value.valueOf())) return value.toISOString().slice(0, 7);
+  if (typeof value === "number") {
+    const compact = String(Math.trunc(value)).match(/^(\d{4})(\d{2})$/);
+    if (compact) value = `${compact[1]}-${compact[2]}`;
+    else if (value > 20_000 && value < 80_000) {
+      const date = new Date(Date.UTC(1899, 11, 30) + Math.floor(value) * 86_400_000);
+      if (!Number.isNaN(date.valueOf())) return date.toISOString().slice(0, 7);
+    }
+  }
+  const text = String(value ?? "").trim();
+  if (!text) {
+    const fallbackText = String(fallback ?? "").trim();
+    return fallbackText ? normalizePayrollPeriod(fallbackText) : null;
+  }
+  const match = text.match(/^(\d{4})[\-/.年](\d{1,2})(?:月|(?:[\-/.]\d{1,2}).*)?$/);
+  if (!match) return null;
+  const month = Number(match[2]);
+  return month >= 1 && month <= 12 ? `${match[1]}-${String(month).padStart(2, "0")}` : null;
+}
+
+function payrollRecordIdentity(record) {
+  return record.personnelId ? `person:${record.personnelId}` : `name:${normalizedText(record.employeeName).replace(/\s+/g, "")}`;
+}
+
+export function payrollSocialDedupeKey(record) {
+  return `${record.sourceKind}:${record.period}:${payrollRecordIdentity(record)}`;
+}
+
+function payrollCell(row, mapping, field) {
+  const index = payrollMappingIndex(mapping?.[field]);
+  return index == null ? undefined : row[index];
+}
+
+function payrollMoney(row, mapping, field) {
+  const value = payrollCell(row, mapping, field);
+  if (value === "" || value == null) return null;
+  return normalizeMoney(value);
+}
+
+export function preparePayrollSocialImport(workspace, input = {}) {
+  const sourceKind = input.sourceKind;
+  if (!PAYROLL_SOCIAL_IMPORT_KINDS[sourceKind]) throw new Error("请选择工资表或社保表");
+  const table = Array.isArray(input.table) ? input.table : [];
+  const inspection = input.inspection || inspectPayrollSocialTable(table);
+  const headerRowIndex = Number.isInteger(input.headerRowIndex) ? input.headerRowIndex : inspection.headerRowIndex;
+  const headers = table[headerRowIndex]?.map((cell) => String(cell ?? "").trim()) || inspection.headers || [];
+  const mapping = Object.fromEntries(Object.keys(PAYROLL_SOCIAL_FIELD_DEFINITIONS).map((field) => [field, payrollMappingIndex(input.mapping?.[field] ?? inspection.mapping?.[field])]));
+  const mappingErrors = [];
+  if (mapping.employee == null) mappingErrors.push("必须映射员工列");
+  if (mapping.period == null && !normalizePayrollPeriod(input.defaultPeriod)) mappingErrors.push("必须映射所属期列或填写默认所属期");
+  const relevantFields = sourceKind === "payroll" ? ["grossSalary", "netSalary"] : ["personalSocial", "employerSocial"];
+  if (relevantFields.every((field) => mapping[field] == null)) {
+    mappingErrors.push(sourceKind === "payroll" ? "工资表至少映射应发工资或实发工资" : "社保表至少映射个人社保或企业社保");
+  }
+
+  const personnel = workspace.personnelRecords || [];
+  const rowsByKey = new Map();
+  const errors = [];
+  let duplicateRowCount = 0;
+  table.slice(headerRowIndex + 1).forEach((sourceRow, offset) => {
+    const sourceRowNumber = headerRowIndex + offset + 2;
+    if (!Array.isArray(sourceRow) || sourceRow.every((value) => String(value ?? "").trim() === "")) return;
+    const employeeName = String(payrollCell(sourceRow, mapping, "employee") ?? "").trim();
+    const period = normalizePayrollPeriod(payrollCell(sourceRow, mapping, "period"), input.defaultPeriod);
+    const amounts = Object.fromEntries(["grossSalary", "personalSocial", "employerSocial", "individualIncomeTax", "netSalary"].map((field) => [field, payrollMoney(sourceRow, mapping, field)]));
+    const invalidMoneyField = Object.entries(amounts).find(([field, value]) => {
+      const raw = payrollCell(sourceRow, mapping, field);
+      return raw !== "" && raw != null && value == null;
+    });
+    if (!employeeName) {
+      errors.push({ rowNumber: sourceRowNumber, message: "员工为空" });
+      return;
+    }
+    if (!period) {
+      errors.push({ rowNumber: sourceRowNumber, employeeName, message: "所属期无法识别" });
+      return;
+    }
+    if (invalidMoneyField) {
+      errors.push({ rowNumber: sourceRowNumber, employeeName, message: `${PAYROLL_SOCIAL_FIELD_DEFINITIONS[invalidMoneyField[0]].label}不是有效金额` });
+      return;
+    }
+    if (relevantFields.every((field) => amounts[field] == null)) {
+      errors.push({ rowNumber: sourceRowNumber, employeeName, message: sourceKind === "payroll" ? "缺少应发或实发工资" : "缺少个人或企业社保" });
+      return;
+    }
+    const normalizedEmployee = normalizedText(employeeName).replace(/\s+/g, "");
+    const matchedPersonnel = personnel.find((item) => normalizedText(item.id).replace(/\s+/g, "") === normalizedEmployee
+      || normalizedText(item.name).replace(/\s+/g, "") === normalizedEmployee) || null;
+    const record = {
+      sourceKind,
+      period,
+      employeeName: matchedPersonnel?.name || employeeName,
+      personnelId: matchedPersonnel?.id || null,
+      personnelStatusAtImport: matchedPersonnel?.status || null,
+      ...amounts,
+      sourceRowNumber,
+    };
+    const key = payrollSocialDedupeKey(record);
+    if (rowsByKey.has(key)) duplicateRowCount += 1;
+    rowsByKey.set(key, { ...record, dedupeKey: key });
+  });
+
+  const existingKeys = new Set((workspace.payrollRecords || []).map(payrollSocialDedupeKey));
+  const rows = [...rowsByKey.values()];
+  const replacementCount = rows.filter((row) => existingKeys.has(row.dedupeKey)).length;
+  const periods = [...new Set(rows.map((row) => row.period))];
+  return {
+    id: input.id || createId("payroll-import"),
+    fileName: input.fileName || `${PAYROLL_SOCIAL_IMPORT_KINDS[sourceKind]}.csv`,
+    sourceKind,
+    importedAt: input.importedAt || new Date().toISOString(),
+    headerRowIndex,
+    headers,
+    mapping,
+    rows,
+    errors,
+    mappingErrors,
+    duplicateRowCount,
+    replacementCount,
+    periods,
+    canApply: mappingErrors.length === 0 && errors.length === 0 && rows.length > 0,
+    localOnly: true,
+  };
+}
+
+function payrollDatasetFingerprint(records, personnelRecords) {
+  const personnelById = new Map((personnelRecords || []).map((person) => [person.id, person]));
+  return JSON.stringify(records
+    .map((record) => {
+      const person = personnelById.get(record.personnelId);
+      return {
+        id: record.id,
+        sourceKind: record.sourceKind,
+        period: record.period,
+        employeeName: record.employeeName,
+        personnelId: record.personnelId,
+        personnelStatus: person?.status || null,
+        grossSalary: record.grossSalary,
+        personalSocial: record.personalSocial,
+        employerSocial: record.employerSocial,
+        individualIncomeTax: record.individualIncomeTax,
+        netSalary: record.netSalary,
+        sourceImportId: record.sourceImportId,
+      };
+    })
+    .sort((left, right) => payrollSocialDedupeKey(left).localeCompare(payrollSocialDedupeKey(right))));
+}
+
+export function buildPayrollSocialSummary(workspace, options = {}) {
+  const period = options.period || workspace.currentPeriod;
+  const periodRecords = (workspace.payrollRecords || []).filter((record) => record.period === period);
+  const payrollRecords = periodRecords.filter((record) => record.sourceKind === "payroll");
+  const socialSecurityRecords = periodRecords.filter((record) => record.sourceKind === "socialSecurity");
+  const personnelRecords = workspace.personnelRecords || [];
+  const personnelById = new Map(personnelRecords.map((person) => [person.id, person]));
+  const personnelByName = new Map(personnelRecords.map((person) => [normalizedText(person.name).replace(/\s+/g, ""), person]));
+  const resolvePerson = (record) => personnelById.get(record?.personnelId) || personnelByName.get(normalizedText(record?.employeeName).replace(/\s+/g, "")) || null;
+  const comparisonByKey = new Map();
+  const addRecord = (record) => {
+    const person = resolvePerson(record);
+    const key = person ? `person:${person.id}` : `name:${normalizedText(record.employeeName).replace(/\s+/g, "")}`;
+    const current = comparisonByKey.get(key) || { key, person, employeeName: person?.name || record.employeeName, payrollRecord: null, socialSecurityRecord: null };
+    current.person = current.person || person;
+    current.employeeName = current.person?.name || current.employeeName;
+    if (record.sourceKind === "payroll") current.payrollRecord = record;
+    else current.socialSecurityRecord = record;
+    comparisonByKey.set(key, current);
+  };
+  periodRecords.forEach(addRecord);
+  personnelRecords.filter((person) => !person.status || person.status === "active").forEach((person) => {
+    const key = `person:${person.id}`;
+    if (!comparisonByKey.has(key)) comparisonByKey.set(key, { key, person, employeeName: person.name, payrollRecord: null, socialSecurityRecord: null });
+  });
+
+  const difference = (payrollRecord, socialRecord, field) => {
+    if (payrollRecord?.[field] == null || socialRecord?.[field] == null) return null;
+    return Math.round((Number(payrollRecord[field]) - Number(socialRecord[field])) * 100) / 100;
+  };
+  const rows = [...comparisonByKey.values()].map((row) => {
+    const issues = [];
+    const status = row.person?.status || null;
+    if (!row.person) issues.push({ code: "missing_personnel", label: "人员档案缺失" });
+    else if (status && status !== "active") issues.push({ code: "departed_personnel", label: `非在职人员（${status}）` });
+    if (!row.payrollRecord) issues.push({ code: "missing_payroll", label: "工资表缺失" });
+    if (!row.socialSecurityRecord) issues.push({ code: "missing_social_security", label: "社保表缺失" });
+    const differences = {
+      grossSalary: difference(row.payrollRecord, row.socialSecurityRecord, "grossSalary"),
+      personalSocial: difference(row.payrollRecord, row.socialSecurityRecord, "personalSocial"),
+      employerSocial: difference(row.payrollRecord, row.socialSecurityRecord, "employerSocial"),
+    };
+    Object.entries(differences).forEach(([field, value]) => {
+      if (value != null && Math.abs(value) > 0.01) issues.push({ code: `${field}_difference`, label: `${PAYROLL_SOCIAL_FIELD_DEFINITIONS[field].label}差额 ${value.toFixed(2)}` });
+    });
+    return { ...row, personnelStatus: status, differences, issues, matched: issues.length === 0 };
+  }).sort((left, right) => left.employeeName.localeCompare(right.employeeName, "zh-CN"));
+
+  const totalsFor = (records) => Object.fromEntries(["grossSalary", "personalSocial", "employerSocial", "individualIncomeTax", "netSalary"].map((field) => [field, Math.round(records.reduce((sum, record) => sum + Number(record[field] || 0), 0) * 100) / 100]));
+  const payrollTotals = totalsFor(payrollRecords);
+  const socialTotals = totalsFor(socialSecurityRecords);
+  return {
+    period,
+    payrollRecords,
+    socialSecurityRecords,
+    rows,
+    totals: {
+      payroll: payrollTotals,
+      socialSecurity: socialTotals,
+      socialSecurityPayable: Math.round((socialTotals.personalSocial + socialTotals.employerSocial) * 100) / 100,
+    },
+    fingerprints: {
+      payroll: payrollDatasetFingerprint(payrollRecords, personnelRecords),
+      socialSecurity: payrollDatasetFingerprint(socialSecurityRecords, personnelRecords),
+    },
+    counts: {
+      payroll: payrollRecords.length,
+      socialSecurity: socialSecurityRecords.length,
+      compared: rows.length,
+      issues: rows.filter((row) => row.issues.length).length,
+      missingPersonnel: rows.filter((row) => row.issues.some((issue) => issue.code === "missing_personnel")).length,
+      departedPersonnel: rows.filter((row) => row.issues.some((issue) => issue.code === "departed_personnel")).length,
+    },
+    hasDifferences: rows.some((row) => row.issues.length),
+    disclaimer: "工资与社保数据来自当前浏览器本地导入；未连接社保、个税或税务平台。",
+  };
+}
+
+export function applyPayrollSocialImport(workspace, plan, context = {}) {
+  if (!plan?.canApply) {
+    const reasons = [...(plan?.mappingErrors || []), ...(plan?.errors || []).map((error) => `第 ${error.rowNumber} 行：${error.message}`)];
+    throw new Error(reasons.length ? `工资社保导入前需修正：${reasons.join("；")}` : "工资社保导入没有可写入的有效记录");
+  }
+  const importedAt = context.at || plan.importedAt || new Date().toISOString();
+  const actor = context.actor || "周会计";
+  const existing = workspace.payrollRecords || [];
+  const existingByKey = new Map(existing.map((record) => [payrollSocialDedupeKey(record), record]));
+  const importedRows = plan.rows.map((row) => {
+    const previous = existingByKey.get(row.dedupeKey);
+    return {
+      ...row,
+      id: previous?.id || createId("payroll-record"),
+      sourceImportId: plan.id,
+      sourceFileName: plan.fileName,
+      importedAt,
+      importedBy: actor,
+      localOnly: true,
+    };
+  });
+  const incomingKeys = new Set(importedRows.map(payrollSocialDedupeKey));
+  const payrollRecords = [...existing.filter((record) => !incomingKeys.has(payrollSocialDedupeKey(record))), ...importedRows];
+  const importRecord = {
+    id: plan.id,
+    sourceKind: plan.sourceKind,
+    fileName: plan.fileName,
+    importedAt,
+    importedBy: actor,
+    periods: plan.periods,
+    mapping: plan.mapping,
+    rowCount: importedRows.length,
+    duplicateRowCount: plan.duplicateRowCount,
+    replacementCount: plan.replacementCount,
+    recordIds: importedRows.map((row) => row.id),
+    localOnly: true,
+    externalUpload: false,
+  };
+  const base = {
+    ...workspace,
+    payrollRecords,
+    payrollImports: [...(workspace.payrollImports || []), importRecord],
+  };
+  const currentSummary = buildPayrollSocialSummary(base, { period: workspace.currentPeriod });
+  const filing = workspace.delivery?.filing || {};
+  return {
+    ...base,
+    tax: {
+      ...(workspace.tax || {}),
+      payroll: currentSummary.payrollRecords.length ? currentSummary.totals.payroll.grossSalary : Number(workspace.tax?.payroll || 0),
+      socialSecurity: currentSummary.socialSecurityRecords.length ? currentSummary.totals.socialSecurityPayable : Number(workspace.tax?.socialSecurity || 0),
+      payrollSourceIds: currentSummary.payrollRecords.map((record) => record.id),
+      socialSecuritySourceIds: currentSummary.socialSecurityRecords.map((record) => record.id),
+      frozenAt: null,
+      financeConfirmedAt: null,
+      payrollConfirmedAt: null,
+      socialSecurityConfirmedAt: null,
+      ownerConfirmedAt: null,
+      confirmedBy: "",
+      financeConfirmedVersionId: null,
+      payrollConfirmedVersionId: null,
+      socialSecurityConfirmedVersionId: null,
+      payrollConfirmedFingerprint: null,
+      socialSecurityConfirmedFingerprint: null,
+      ownerConfirmedVersionId: null,
+    },
+    delivery: {
+      ...(workspace.delivery || {}),
+      filing: {
+        ...filing,
+        period: workspace.currentPeriod,
+        draftCreatedAt: null,
+        draftVersionId: null,
+        initialConfirmationId: null,
+        finalConfirmedVersionId: null,
+        exportedAt: null,
+        exportedPackage: null,
+        receipt: null,
+        archivedAt: null,
+      },
+    },
+    auditLog: [{
+      id: createId("log"),
+      at: importedAt,
+      actor,
+      action: `导入${PAYROLL_SOCIAL_IMPORT_KINDS[plan.sourceKind]}`,
+      detail: `${plan.fileName} · 写入 ${importedRows.length} 人次 · 文件内去重 ${plan.duplicateRowCount} 行 · 覆盖旧记录 ${plan.replacementCount} 行 · 仅保存在当前浏览器`,
+    }, ...(workspace.auditLog || [])],
+  };
 }
 
 export function getLocalDocumentUsage(workspace, documentId) {
@@ -631,6 +2395,12 @@ export async function saveLocalDocument(input) {
         ), next);
       }
     }
+    if (documentStructuredKind(metadata.category) === "invoice" && structuredInvoicePeriod(metadata) === current.currentPeriod) {
+      next = recalculateStructuredInvoiceVat(next, { period: current.currentPeriod, at: metadata.updatedAt });
+    }
+    if (documentStructuredKind(metadata.category) === "approval") {
+      next = syncApprovalLinkPendingTask(next, metadata.id, { actor, at: metadata.updatedAt });
+    }
     store.actions.replaceWorkspace(workspaceId, next, {
       requiredPermission: "documents.add",
       audit: {
@@ -730,6 +2500,20 @@ export function updateLocalDocumentMetadata(input) {
   new Set([...previousTransactionIds, ...nextTransactionIds]).forEach((transactionId) => {
     next = reviewTransactionEvidence(next, transactionId, { actor, mode: "manual" });
   });
+  if ([document, updatedDocument].some((item) => (
+    documentStructuredKind(item.category) === "invoice" && structuredInvoicePeriod(item) === workspace.currentPeriod
+  ))) {
+    next = recalculateStructuredInvoiceVat(next, { period: workspace.currentPeriod, at: timestamp });
+  }
+  const approvalWasInvalidated = documentStructuredKind(document.category) === "approval"
+    && document.structuredData?.approvalStatus === "approved"
+    && ["rejected", "withdrawn"].includes(updatedDocument.structuredData?.approvalStatus);
+  if (approvalWasInvalidated) {
+    next = invalidateApprovalBusinessLinks(next, documentId, { actor, at: timestamp });
+  }
+  if (documentStructuredKind(updatedDocument.category) === "approval") {
+    next = syncApprovalLinkPendingTask(next, documentId, { actor, at: timestamp });
+  }
   store.actions.replaceWorkspace(workspaceId, next, {
     requiredPermission: "documents.add",
     audit: {
@@ -778,6 +2562,30 @@ export function confirmDocumentMatch({ store, workspaceId, suggestionId, actor, 
   const resolvedActor = actor
     || workspace.users?.find((user) => user.id === store.getState().activeUserId && user.status === "active")?.name
     || "本地用户";
+  if (suggestion.documentKind === "approval") {
+    const confirmation = confirmApprovalBusinessLink(workspace, {
+      documentId: document.id,
+      targetType: "transaction",
+      targetId: target.id,
+      confirmed: true,
+    }, { actor: resolvedActor, at: timestamp, mode: "manual" });
+    const afterTaskSync = syncDocumentMissingTasks(confirmation.workspace, { actor: resolvedActor, at: timestamp });
+    store.actions.replaceWorkspace(workspaceId, afterTaskSync.workspace, {
+      requiredPermission: "documents.add",
+      audit: {
+        actor: resolvedActor,
+        action: "确认审批单业务匹配",
+        detail: `${document.name} → ${suggestion.sourceLabel}；已补充业务事件审批来源，未自动付款或入账`,
+      },
+    });
+    return {
+      suggestion,
+      link: confirmation.evidenceLink,
+      businessEvent: confirmation.businessEvent,
+      closedTaskCount: afterTaskSync.resolved,
+      openTaskCount: afterTaskSync.open,
+    };
+  }
   const beforeTaskSync = syncDocumentMissingTasks(workspace, { actor: resolvedActor, at: timestamp });
   const base = beforeTaskSync.workspace;
   const link = {
@@ -814,6 +2622,9 @@ export function confirmDocumentMatch({ store, workspaceId, suggestionId, actor, 
   }
   const afterTaskSync = syncDocumentMissingTasks(next, { actor: resolvedActor, at: timestamp });
   next = afterTaskSync.workspace;
+  if (documentStructuredKind(document.category) === "invoice" && structuredInvoicePeriod(document) === workspace.currentPeriod) {
+    next = recalculateStructuredInvoiceVat(next, { period: workspace.currentPeriod, at: timestamp });
+  }
   store.actions.replaceWorkspace(workspaceId, next, {
     requiredPermission: "documents.add",
     audit: {
@@ -1553,15 +3364,19 @@ export function buildMonthlyFinancialArchivePlan(workspace, period = workspace?.
     id: filing?.initialConfirmationId || confirmationState.initialConfirmationId || null,
     financeConfirmedAt: confirmationState.financeConfirmedAt || null,
     payrollConfirmedAt: confirmationState.payrollConfirmedAt || null,
+    socialSecurityConfirmedAt: confirmationState.socialSecurityConfirmedAt || null,
     financeConfirmedVersionId: confirmationState.financeConfirmedVersionId || null,
     payrollConfirmedVersionId: confirmationState.payrollConfirmedVersionId || null,
+    socialSecurityConfirmedVersionId: confirmationState.socialSecurityConfirmedVersionId || null,
   };
   initialConfirmation.complete = Boolean(
     initialConfirmation.id
     && initialConfirmation.financeConfirmedAt
     && initialConfirmation.payrollConfirmedAt
+    && initialConfirmation.socialSecurityConfirmedAt
     && initialConfirmation.financeConfirmedVersionId
     && initialConfirmation.payrollConfirmedVersionId
+    && initialConfirmation.socialSecurityConfirmedVersionId
   );
   const finalConfirmation = {
     ownerConfirmedAt: confirmationState.ownerConfirmedAt || null,
@@ -1577,10 +3392,14 @@ export function buildMonthlyFinancialArchivePlan(workspace, period = workspace?.
   );
   const confirmationPackages = archiveRecord?.confirmationPackages
     || (workspace.confirmations || []).filter((confirmation) => confirmation.period === period);
+  const payrollSocialSummary = taxWorkpaper?.payrollSocialSummary || buildPayrollSocialSummary(workspace, { period });
   const payroll = {
     period,
     payroll: taxWorkpaperValue(taxWorkpaper, "payroll"),
     socialSecurity: taxWorkpaperValue(taxWorkpaper, "socialSecurity"),
+    summary: payrollSocialSummary,
+    payrollRecords: payrollSocialSummary.payrollRecords,
+    socialSecurityRecords: payrollSocialSummary.socialSecurityRecords,
     payrollSourceIds: period === workspace.currentPeriod ? workspace.tax?.payrollSourceIds || [] : [],
     socialSecuritySourceIds: period === workspace.currentPeriod ? workspace.tax?.socialSecuritySourceIds || [] : [],
     documents: [...(workspace.documents || []), ...archiveDocuments].filter((document, index, all) => (
@@ -1626,7 +3445,7 @@ export function buildMonthlyFinancialArchivePlan(workspace, period = workspace?.
     { key: "taxWorkpaper", label: "税务申报底稿已形成", ok: Boolean(taxWorkpaper && filing?.draftCreatedAt && filing?.draftVersionId), reason: filing?.draftCreatedAt ? "税务底稿可用" : "尚未生成本地税务申报底稿" },
     { key: "filingPackage", label: "本地申报包信息完整", ok: Boolean(filingPackage?.id && filingPackage?.hash && filingPackage?.reportVersionId), reason: filingPackage ? "本地申报包元数据可用" : "尚未导出本地申报包" },
     { key: "payroll", label: "工资社保数据已记录", ok: payroll.payroll !== undefined && payroll.socialSecurity !== undefined, reason: payroll.payroll !== undefined && payroll.socialSecurity !== undefined ? "工资与社保数值已进入底稿" : "缺少工资或社保数据快照" },
-    { key: "initialConfirmation", label: "第一次客户确认记录完整", ok: initialConfirmation.complete, reason: initialConfirmation.complete ? "首次财务与工资社保确认已记录" : "缺少首次财务/工资社保确认时间、记录或版本关联" },
+    { key: "initialConfirmation", label: "第一次客户确认记录完整", ok: initialConfirmation.complete, reason: initialConfirmation.complete ? "首次财务、工资表与社保表确认已分别记录" : "缺少首次财务/工资表/社保表确认时间、记录或版本关联" },
     { key: "finalConfirmation", label: "第二次最终责任确认记录完整", ok: finalConfirmation.complete, reason: finalConfirmation.complete ? "最终责任确认已记录" : "缺少最终确认人、时间或版本关联" },
     { key: "receipt", label: "真实回执与本地申报包关系有效", ok: Boolean(receiptLinksToPackage && receiptDocument?.hash && receiptDocument?.storage?.availableLocally), reason: !receipt ? "尚未导入真实办理回执" : (!receiptDocument?.storage?.availableLocally ? "回执索引存在，但当前浏览器没有原文件" : (receiptLinksToPackage ? "回执原文件及申报包关联可用" : "回执与本地申报包版本或哈希关系不一致")) },
     { key: "exceptions", label: "异常与跨期待办均已处理", ok: unresolvedExceptions.length === 0 && unresolvedNotices.length === 0, reason: unresolvedExceptions.length || unresolvedNotices.length ? `${unresolvedExceptions.length} 项异常、${unresolvedNotices.length} 项跨期待办未解决` : "当前没有未解决事项" },

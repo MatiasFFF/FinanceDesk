@@ -5,6 +5,7 @@ import {
   buildManagementMetrics,
   buildTaxWorkpaper,
 } from "./domain/accounting/index.js";
+import { buildPayrollSocialSummary, buildStructuredInvoiceVatSummary } from "./features/intake/documentIntake.js";
 import {
   ACCOUNT_LABELS,
   APP_STORAGE_KEY,
@@ -74,6 +75,8 @@ export function ensureWorkspace(workspace) {
     transactions: safeArray(workspace.transactions),
     documents: safeArray(workspace.documents),
     vouchers: safeArray(workspace.vouchers),
+    payrollImports: safeArray(workspace.payrollImports),
+    payrollRecords: safeArray(workspace.payrollRecords),
     auditLog: safeArray(workspace.auditLog),
     tax: {
       period,
@@ -81,13 +84,19 @@ export function ensureWorkspace(workspace) {
       payroll: 0,
       socialSecurity: 0,
       note: "",
+      invoiceVatSummary: null,
+      vatReconciliations: [],
       frozenAt: null,
       financeConfirmedAt: null,
       payrollConfirmedAt: null,
+      socialSecurityConfirmedAt: null,
       ownerConfirmedAt: null,
       confirmedBy: "",
       financeConfirmedVersionId: null,
       payrollConfirmedVersionId: null,
+      socialSecurityConfirmedVersionId: null,
+      payrollConfirmedFingerprint: null,
+      socialSecurityConfirmedFingerprint: null,
       ownerConfirmedVersionId: null,
       ...(workspace.tax || {}),
     },
@@ -273,12 +282,230 @@ function formulaDetail(id, title, amount, description) {
   return { id, title, reference: "计算口径", description, amount: roundMoney(amount) };
 }
 
+function structuredInvoiceDetails(summary, bucket, field, multiplier = 1) {
+  return (summary.rows || []).filter((row) => row.bucket === bucket).map((row) => ({
+    id: row.documentId,
+    documentId: row.documentId,
+    date: row.invoiceDate,
+    title: row.name,
+    reference: row.invoiceNumber || row.documentId,
+    description: `${row.taxDirection === "output" ? "销项" : "进项"} · 税率 ${row.taxRate ?? "未填"}% · ${row.reason} · 查验状态为人工记录，未联网查验`,
+    amount: roundMoney(Number(row[field] || 0) * multiplier),
+    sourceIds: row.sourceIds || [row.documentId],
+  }));
+}
+
+function payrollSocialDetails(records, field, sourceLabel) {
+  return records.filter((record) => record[field] != null).map((record) => ({
+    id: `${record.id}:${field}`,
+    date: `${record.period}-01`,
+    title: record.employeeName,
+    reference: record.sourceFileName || record.sourceImportId || sourceLabel,
+    description: `${sourceLabel} · 第 ${record.sourceRowNumber || "?"} 行 · 当前浏览器本地导入`,
+    amount: roundMoney(record[field]),
+    sourceIds: [record.id, record.sourceImportId].filter(Boolean),
+  }));
+}
+
+function vatReconciliationFingerprint({ period, kind, bookAmount, invoiceAmount, bookSources, invoiceSources }) {
+  const sourceProjection = (sources) => sources.map((source) => ({
+    id: source.id,
+    date: source.date || "",
+    reference: source.reference || "",
+    amount: roundMoney(source.amount),
+    voucherId: source.voucherId || "",
+    documentId: source.documentId || "",
+    sourceIds: source.sourceIds || [],
+  }));
+  return JSON.stringify({
+    period,
+    kind,
+    bookAmount: roundMoney(bookAmount),
+    invoiceAmount: roundMoney(invoiceAmount),
+    bookSources: sourceProjection(bookSources),
+    invoiceSources: sourceProjection(invoiceSources),
+  });
+}
+
+export function buildVatReconciliationSummary(workspace, options = {}) {
+  const period = options.period || workspace.currentPeriod;
+  const scopedWorkspace = period === workspace.currentPeriod ? workspace : { ...workspace, currentPeriod: period };
+  const statements = options.statements || calculatePeriodLedger(scopedWorkspace);
+  const engineTax = options.engineTax || buildTaxWorkpaper(scopedWorkspace, { period });
+  const invoiceVatSummary = options.invoiceVatSummary || buildStructuredInvoiceVatSummary(scopedWorkspace, { period });
+  const records = safeArray(workspace.tax?.vatReconciliations);
+  const definitions = [
+    {
+      kind: "outputRevenue",
+      label: "销项发票不含税收入与账面营业收入",
+      bookLabel: "已入账营业收入",
+      invoiceLabel: "销项发票不含税收入",
+      bookAmount: statements.revenue,
+      invoiceAmount: invoiceVatSummary.outputNetAmount,
+      bookSources: ledgerDetails(scopedWorkspace, statements.engine, (item) => ["revenue", "contraRevenue"].includes(item.account.category), (amount) => -amount),
+      invoiceSources: structuredInvoiceDetails(invoiceVatSummary, "outputVat", "netAmount"),
+    },
+    {
+      kind: "deductibleInputVat",
+      label: "已认证进项税与会计进项税",
+      bookLabel: "会计进项税／可抵扣口径",
+      invoiceLabel: "已认证发票进项税",
+      bookAmount: engineTax.inputVat.value,
+      invoiceAmount: invoiceVatSummary.deductibleInputVat,
+      bookSources: ledgerDetails(scopedWorkspace, statements.engine, (item) => String(item.accountId).startsWith("taxInput"), (amount) => amount),
+      invoiceSources: structuredInvoiceDetails(invoiceVatSummary, "deductibleInputVat", "taxAmount"),
+    },
+  ];
+
+  const items = definitions.map((definition) => {
+    const bookAmount = roundMoney(definition.bookAmount);
+    const invoiceAmount = roundMoney(definition.invoiceAmount);
+    const differenceBeforeAdjustment = roundMoney(invoiceAmount - bookAmount);
+    const sourceFingerprint = vatReconciliationFingerprint({
+      period,
+      kind: definition.kind,
+      bookAmount,
+      invoiceAmount,
+      bookSources: definition.bookSources,
+      invoiceSources: definition.invoiceSources,
+    });
+    const storedRecord = records.find((record) => record.period === period && record.kind === definition.kind) || null;
+    const activeRecord = storedRecord?.sourceFingerprint === sourceFingerprint ? storedRecord : null;
+    const adjustmentAmount = roundMoney(activeRecord?.adjustmentAmount || 0);
+    const adjustedInvoiceAmount = roundMoney(invoiceAmount + adjustmentAmount);
+    const differenceAfterAdjustment = roundMoney(adjustedInvoiceAmount - bookAmount);
+    const requiresExplanation = Math.abs(differenceBeforeAdjustment) > 0.01;
+    const explained = requiresExplanation && Boolean(activeRecord?.reason?.trim());
+    return {
+      ...definition,
+      bookAmount,
+      invoiceAmount,
+      differenceBeforeAdjustment,
+      adjustmentAmount,
+      adjustedInvoiceAmount,
+      differenceAfterAdjustment,
+      before: { bookAmount, invoiceAmount, difference: differenceBeforeAdjustment },
+      after: { bookAmount, invoiceAmount: adjustedInvoiceAmount, adjustmentAmount, difference: differenceAfterAdjustment },
+      reason: activeRecord?.reason || "",
+      sourceFingerprint,
+      storedRecord,
+      activeRecord,
+      requiresExplanation,
+      resolved: !requiresExplanation || explained,
+      status: !requiresExplanation ? "no_difference" : (explained ? "explained" : (storedRecord ? "source_changed" : "unexplained")),
+    };
+  });
+
+  const unresolvedItems = items.filter((item) => !item.resolved);
+  return {
+    period,
+    items,
+    unresolvedItems,
+    hasUnexplainedDifferences: unresolvedItems.length > 0,
+    differenceConvention: "发票数 + 本地调整金额 − 账面数",
+  };
+}
+
+export function recordVatReconciliation(workspace, input, context = {}) {
+  const current = ensureWorkspace(workspace);
+  const kind = String(input?.kind || "");
+  const summary = buildVatReconciliationSummary(current);
+  const item = summary.items.find((candidate) => candidate.kind === kind);
+  if (!item) throw new Error("请选择销项收入或进项税差异项目");
+  const numericAdjustment = input?.adjustmentAmount === "" || input?.adjustmentAmount == null
+    ? 0
+    : Number(input.adjustmentAmount);
+  if (!Number.isFinite(numericAdjustment)) throw new Error("本地调整金额必须是有效数字");
+  const adjustmentAmount = roundMoney(numericAdjustment);
+  const reason = String(input?.reason || "").trim();
+  if (item.requiresExplanation && !reason) throw new Error("存在差额时必须填写真实原因");
+
+  const at = context.at || new Date().toISOString();
+  const actor = context.actor || "周会计";
+  const previous = item.storedRecord;
+  const before = { ...item.before };
+  const after = {
+    bookAmount: item.bookAmount,
+    invoiceAmount: roundMoney(item.invoiceAmount + adjustmentAmount),
+    adjustmentAmount,
+    difference: roundMoney(item.invoiceAmount + adjustmentAmount - item.bookAmount),
+  };
+  const historyEntry = {
+    at,
+    actor,
+    reason,
+    adjustmentAmount,
+    sourceFingerprint: item.sourceFingerprint,
+    before,
+    after,
+  };
+  const record = {
+    id: previous?.id || `vat-reconciliation:${summary.period}:${kind}`,
+    period: summary.period,
+    kind,
+    label: item.label,
+    reason,
+    adjustmentAmount,
+    sourceFingerprint: item.sourceFingerprint,
+    before,
+    after,
+    bookSources: item.bookSources,
+    invoiceSources: item.invoiceSources,
+    recordedAt: at,
+    recordedBy: actor,
+    history: [...safeArray(previous?.history), historyEntry],
+  };
+  const records = safeArray(current.tax.vatReconciliations);
+  const nextRecords = records.some((candidate) => candidate.period === summary.period && candidate.kind === kind)
+    ? records.map((candidate) => candidate.period === summary.period && candidate.kind === kind ? record : candidate)
+    : [record, ...records];
+  const next = {
+    ...current,
+    tax: {
+      ...current.tax,
+      vatReconciliations: nextRecords,
+      frozenAt: null,
+      financeConfirmedAt: null,
+      payrollConfirmedAt: null,
+      socialSecurityConfirmedAt: null,
+      ownerConfirmedAt: null,
+      confirmedBy: "",
+      financeConfirmedVersionId: null,
+      payrollConfirmedVersionId: null,
+      socialSecurityConfirmedVersionId: null,
+      payrollConfirmedFingerprint: null,
+      socialSecurityConfirmedFingerprint: null,
+      ownerConfirmedVersionId: null,
+    },
+    delivery: {
+      ...current.delivery,
+      filing: emptyFiling(summary.period),
+    },
+  };
+  return audit(next, "记录增值税差异说明", `${summary.period} · ${item.label} · 调整前差额 ${item.differenceBeforeAdjustment.toFixed(2)} · 本地调整 ${adjustmentAmount.toFixed(2)} · 调整后差额 ${after.difference.toFixed(2)}`, actor);
+}
+
 export function buildReportSnapshot(workspace) {
   const statements = calculatePeriodLedger(workspace);
   const engine = statements.engine;
   const management = buildManagementMetrics(workspace, { period: workspace.currentPeriod });
   const managementById = Object.fromEntries(management.metrics.map((metric) => [metric.id, metric]));
   const engineTax = buildTaxWorkpaper(workspace, { period: workspace.currentPeriod });
+  const invoiceVatSummary = buildStructuredInvoiceVatSummary(workspace, { period: workspace.currentPeriod });
+  const vatReconciliation = buildVatReconciliationSummary(workspace, {
+    period: workspace.currentPeriod,
+    statements,
+    engineTax,
+    invoiceVatSummary,
+  });
+  const payrollSocialSummary = buildPayrollSocialSummary(workspace, { period: workspace.currentPeriod });
+  const payrollAmount = payrollSocialSummary.payrollRecords.length
+    ? payrollSocialSummary.totals.payroll.grossSalary
+    : Number(workspace.tax.payroll || 0);
+  const socialSecurityAmount = payrollSocialSummary.socialSecurityRecords.length
+    ? payrollSocialSummary.totals.socialSecurityPayable
+    : Number(workspace.tax.socialSecurity || 0);
+  const usesStructuredInvoiceVat = invoiceVatSummary.usesStructuredInvoices;
   const periodTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
   const cashMovements = statements.cashFlow.movements || [];
   const cashIn = roundMoney(cashMovements.filter((item) => item.amount > 0).reduce((sum, item) => sum + item.amount, 0));
@@ -290,8 +517,10 @@ export function buildReportSnapshot(workspace) {
   const currentBusinessEvents = workspace.businessEvents.filter((item) => item.status !== "void" && String(item.date || "").startsWith(workspace.currentPeriod));
   const refunds = currentBusinessEvents.filter((item) => item.kind === "refund" || item.type === "refund");
   const commissions = currentBusinessEvents.filter((item) => item.kind === "commission" || item.type === "commission" || item.accountingSubtype === "coachCommission");
-  const estimatedOutputVat = engineTax.outputVat.value;
-  const estimatedVat = engineTax.vatPayable.value;
+  const estimatedOutputVat = usesStructuredInvoiceVat ? invoiceVatSummary.outputVat : engineTax.outputVat.value;
+  const deductibleInputVat = usesStructuredInvoiceVat ? invoiceVatSummary.deductibleInputVat : engineTax.inputVat.value;
+  const nonDeductibleInputVat = usesStructuredInvoiceVat ? invoiceVatSummary.nonDeductibleInputVat : 0;
+  const estimatedVat = usesStructuredInvoiceVat ? invoiceVatSummary.vatPayable : engineTax.vatPayable.value;
   const estimatedSurtax = roundMoney(estimatedVat * 0.12);
   const estimatedIncomeTax = roundMoney(Math.max(0, statements.profit) * 0.05);
   const estimatedTax = roundMoney(estimatedVat + estimatedSurtax + estimatedIncomeTax);
@@ -309,8 +538,33 @@ export function buildReportSnapshot(workspace) {
   const equipmentDetails = ledgerDetails(workspace, engine, (item) => item.accountId === "equipment", (amount) => amount);
   const payableDetails = ledgerDetails(workspace, engine, (item) => item.accountId === "payable", (amount) => -amount);
   const contractLiabilityDetails = ledgerDetails(workspace, engine, (item) => item.accountId === "contractLiability", (amount) => -amount);
+  const outputInvoiceGrossDetails = structuredInvoiceDetails(invoiceVatSummary, "outputVat", "grossAmount");
+  const outputInvoiceNetDetails = structuredInvoiceDetails(invoiceVatSummary, "outputVat", "netAmount");
+  const outputInvoiceVatDetails = structuredInvoiceDetails(invoiceVatSummary, "outputVat", "taxAmount");
+  const deductibleInputVatDetails = structuredInvoiceDetails(invoiceVatSummary, "deductibleInputVat", "taxAmount");
+  const nonDeductibleInputVatDetails = structuredInvoiceDetails(invoiceVatSummary, "nonDeductibleInputVat", "taxAmount");
+  const grossSalaryDetails = payrollSocialDetails(payrollSocialSummary.payrollRecords, "grossSalary", "工资表");
+  const netSalaryDetails = payrollSocialDetails(payrollSocialSummary.payrollRecords, "netSalary", "工资表");
+  const individualIncomeTaxDetails = payrollSocialDetails(payrollSocialSummary.payrollRecords, "individualIncomeTax", "工资表");
+  const personalSocialDetails = payrollSocialDetails(payrollSocialSummary.socialSecurityRecords, "personalSocial", "社保表");
+  const employerSocialDetails = payrollSocialDetails(payrollSocialSummary.socialSecurityRecords, "employerSocial", "社保表");
+  const socialSecurityDetails = [...personalSocialDetails, ...employerSocialDetails];
+  const inputInvoiceGrossDetails = [
+    ...structuredInvoiceDetails(invoiceVatSummary, "deductibleInputVat", "grossAmount"),
+    ...structuredInvoiceDetails(invoiceVatSummary, "nonDeductibleInputVat", "grossAmount"),
+  ];
+  const invoiceVatPayableBeforeFloor = roundMoney(estimatedOutputVat - deductibleInputVat);
+  const structuredVatPayableDetails = [
+    ...outputInvoiceVatDetails,
+    ...structuredInvoiceDetails(invoiceVatSummary, "deductibleInputVat", "taxAmount", -1),
+    ...(invoiceVatPayableBeforeFloor < 0
+      ? [formulaDetail("input-credit-floor", "进项留抵转下期", Math.abs(invoiceVatPayableBeforeFloor), "本期应交增值税最低按 0 列示，多出的可抵扣进项单独留抵")]
+      : []),
+  ];
   const taxEstimateDetails = [
-    formulaDetail("estimated-vat", "增值税估算", estimatedVat, `销项估算减进项税额，税率 ${(Number(workspace.tax.vatRate ?? 0.03) * 100).toFixed(2)}%`),
+    ...(usesStructuredInvoiceVat
+      ? structuredVatPayableDetails
+      : [formulaDetail("estimated-vat", "增值税估算", estimatedVat, `销项估算减进项税额，税率 ${(Number(workspace.tax.vatRate ?? 0.03) * 100).toFixed(2)}%`)]),
     formulaDetail("estimated-surtax", "附加税费估算", estimatedSurtax, "按增值税估算额的 12% 演示计算"),
     formulaDetail("estimated-income-tax", "所得税估算", estimatedIncomeTax, "按正数会计利润的 5% 演示计算"),
   ];
@@ -342,6 +596,10 @@ export function buildReportSnapshot(workspace) {
       prepayment,
       contractLiability,
       estimatedTax,
+      vatSourceMode: usesStructuredInvoiceVat ? "structured_invoices" : "legacy_estimate",
+      outputVat: estimatedOutputVat,
+      deductibleInputVat,
+      nonDeductibleInputVat,
       engineChecks: statements.engineChecks,
     },
     sections: {
@@ -404,18 +662,74 @@ export function buildReportSnapshot(workspace) {
       },
     },
     taxWorkpaper: {
-      disclaimer: "本地演示估算口径，不是正式申报结果；税务局连接将在后续阶段提供。",
+      sourceMode: usesStructuredInvoiceVat ? "structured_invoices" : "legacy_estimate",
+      invoiceVatSummary,
+      vatReconciliation,
+      payrollSocialSummary,
+      disclaimer: usesStructuredInvoiceVat
+        ? "增值税数据来自本地人工录入并关联的结构化发票；查验状态不代表已联网查验，附加税费与所得税仍为本地估算。"
+        : "本期没有已人工分类且关联业务的结构化发票，增值税仍采用本地演示估算；未连接税务平台。",
       rows: [
         makeTraceableRow("taxRevenue", "账面营业收入", statements.revenue, revenueDetails, "收入类发生额 − 销售退回与折让"),
         makeTraceableRow("taxAdjustments", "增值税计税基础调整", engineTax.adjustments.value, [], "客户或财务人员在本地底稿中录入"),
-        makeTraceableRow("taxBase", "增值税估算计税基础", engineTax.taxableBase.value, revenueDetails, "max(0，账面营业收入 + 增值税计税基础调整)"),
-        makeTraceableRow("vat", "销项税额估算", estimatedOutputVat, [formulaDetail("output-vat", "销项税额估算", estimatedOutputVat, "计税基础 × 本地配置税率")], "计税基础 × 本地配置税率"),
-        makeTraceableRow("inputVat", "进项税额", engineTax.inputVat.value, ledgerDetails(workspace, engine, (item) => String(item.accountId).startsWith("taxInput"), (amount) => amount), "进项税额科目借方净发生额"),
-        makeTraceableRow("vatPayable", "应交增值税", engineTax.vatPayable.value, taxEstimateDetails.slice(0, 1), "max(0，销项税额估算 − 进项税额)"),
+        ...(usesStructuredInvoiceVat ? [
+          makeTraceableRow("outputInvoiceGross", "销项发票价税合计", invoiceVatSummary.outputGrossAmount, outputInvoiceGrossDetails, "有效销项发票价税合计；已开红字按负数，作废不计入"),
+          makeTraceableRow("inputInvoiceGross", "进项发票价税合计", invoiceVatSummary.inputGrossAmount, inputInvoiceGrossDetails, "有效进项发票价税合计；包含可抵扣与未认证不可抵扣部分"),
+        ] : []),
+        makeTraceableRow(
+          "taxBase",
+          usesStructuredInvoiceVat ? "销项发票不含税金额" : "增值税估算计税基础",
+          usesStructuredInvoiceVat ? invoiceVatSummary.outputNetAmount : engineTax.taxableBase.value,
+          usesStructuredInvoiceVat ? outputInvoiceNetDetails : revenueDetails,
+          usesStructuredInvoiceVat ? "有效销项发票价税合计 − 销项税额；已开红字按负数" : "max(0，账面营业收入 + 增值税计税基础调整)",
+        ),
+        makeTraceableRow(
+          "vat",
+          usesStructuredInvoiceVat ? "销项税额" : "销项税额估算",
+          estimatedOutputVat,
+          usesStructuredInvoiceVat ? outputInvoiceVatDetails : [formulaDetail("output-vat", "销项税额估算", estimatedOutputVat, "计税基础 × 本地配置税率")],
+          usesStructuredInvoiceVat ? "有效销项发票税额汇总；已开红字按负数，作废不计入" : "计税基础 × 本地配置税率",
+        ),
+        makeTraceableRow(
+          "inputVat",
+          usesStructuredInvoiceVat ? "可抵扣进项税额" : "进项税额",
+          deductibleInputVat,
+          usesStructuredInvoiceVat ? deductibleInputVatDetails : ledgerDetails(workspace, engine, (item) => String(item.accountId).startsWith("taxInput"), (amount) => amount),
+          usesStructuredInvoiceVat ? "仅汇总已认证的有效进项发票；已开红字按负数" : "进项税额科目借方净发生额",
+        ),
+        ...(usesStructuredInvoiceVat ? [makeTraceableRow(
+          "nonDeductibleInputVat",
+          "未认证不可抵扣进项税额",
+          nonDeductibleInputVat,
+          nonDeductibleInputVatDetails,
+          "未认证、认证中或认证异常的进项税额单独列示，不抵扣本期销项税额",
+        )] : []),
+        ...vatReconciliation.items.map((item) => makeTraceableRow(
+          `vatReconciliation-${item.kind}`,
+          `${item.label}差额（调整后）`,
+          item.differenceAfterAdjustment,
+          [
+            ...item.bookSources.map((source) => ({ ...source, title: `账面：${source.title}` })),
+            ...item.invoiceSources.map((source) => ({ ...source, title: `发票：${source.title}` })),
+            ...(item.adjustmentAmount !== 0 ? [formulaDetail(`vat-adjustment-${item.kind}`, "本地底稿调整", item.adjustmentAmount, item.reason || "未填写原因")] : []),
+          ],
+          `${item.invoiceLabel} + 本地调整金额 − ${item.bookLabel}`,
+        )),
+        makeTraceableRow(
+          "vatPayable",
+          "应交增值税",
+          estimatedVat,
+          usesStructuredInvoiceVat ? structuredVatPayableDetails : taxEstimateDetails.slice(0, 1),
+          usesStructuredInvoiceVat ? "max(0，销项税额 − 可抵扣进项税额)" : "max(0，销项税额估算 − 进项税额)",
+        ),
         makeTraceableRow("surtax", "附加税费估算", estimatedSurtax, taxEstimateDetails.slice(1, 2), "增值税估算额 × 12%"),
         makeTraceableRow("incomeTax", "所得税估算", estimatedIncomeTax, taxEstimateDetails.slice(2, 3), "max(0，本月利润) × 5%"),
-        makeTraceableRow("payroll", "工资薪金", Number(workspace.tax.payroll || 0), [], "财务人员在本地底稿中单独录入并由客户确认"),
-        makeTraceableRow("socialSecurity", "社保数据", Number(workspace.tax.socialSecurity || 0), [], "财务人员在本地底稿中单独录入并由客户确认"),
+        makeTraceableRow("payroll", "应发工资", payrollAmount, grossSalaryDetails, payrollSocialSummary.payrollRecords.length ? "当前期间工资表逐人应发工资合计，需客户单独确认" : "财务人员在本地底稿中单独录入并由客户确认"),
+        makeTraceableRow("personalSocialSecurity", "个人社保", payrollSocialSummary.totals.socialSecurity.personalSocial, personalSocialDetails, "当前期间社保表逐人个人承担社保合计"),
+        makeTraceableRow("employerSocialSecurity", "企业社保", payrollSocialSummary.totals.socialSecurity.employerSocial, employerSocialDetails, "当前期间社保表逐人企业承担社保合计"),
+        makeTraceableRow("socialSecurity", "社保合计", socialSecurityAmount, socialSecurityDetails, payrollSocialSummary.socialSecurityRecords.length ? "个人社保 + 企业社保，需客户单独确认" : "财务人员在本地底稿中单独录入并由客户确认"),
+        makeTraceableRow("individualIncomeTax", "代扣个税", payrollSocialSummary.totals.payroll.individualIncomeTax, individualIncomeTaxDetails, "当前期间工资表逐人个税合计"),
+        makeTraceableRow("netSalary", "实发工资", payrollSocialSummary.totals.payroll.netSalary, netSalaryDetails, "当前期间工资表逐人实发工资合计"),
         makeTraceableRow("taxTotal", "预计税费合计", estimatedTax, taxEstimateDetails, "增值税估算 + 附加税费估算 + 所得税估算"),
       ],
     },
@@ -442,10 +756,14 @@ export function freezeReportVersion(workspace, actor = "周会计") {
       frozenAt: version.createdAt,
       financeConfirmedAt: null,
       payrollConfirmedAt: null,
+      socialSecurityConfirmedAt: null,
       ownerConfirmedAt: null,
       confirmedBy: "",
       financeConfirmedVersionId: null,
       payrollConfirmedVersionId: null,
+      socialSecurityConfirmedVersionId: null,
+      payrollConfirmedFingerprint: null,
+      socialSecurityConfirmedFingerprint: null,
       ownerConfirmedVersionId: null,
     },
     delivery: {
@@ -488,6 +806,7 @@ const WORKFLOW_SOURCE_KEYS = [
   "businessEvents",
   "bills",
   "documents",
+  "payrollRecords",
   "evidenceLinks",
   "vouchers",
   "exceptionTasks",
@@ -512,8 +831,12 @@ function workflowSourceValue(workspace, key) {
         period: document.period,
         version: document.version,
         hash: document.hash,
+        structuredData: document.structuredData || null,
         relatedObjectIds: document.relatedObjectIds || [],
       }));
+  }
+  if (key === "payrollRecords") {
+    return (workspace.payrollRecords || []).filter((record) => record.period === workspace.currentPeriod);
   }
   return workspace[key] || (key === "company" || key === "openingLedger" || key === "rules" ? {} : []);
 }
@@ -532,8 +855,96 @@ export function workflowSourceFingerprint(workspace) {
       sourceIds: tax.sourceIds || [],
       payrollSourceIds: tax.payrollSourceIds || [],
       socialSecuritySourceIds: tax.socialSecuritySourceIds || [],
+      vatReconciliations: tax.vatReconciliations || [],
     },
   });
+}
+
+export function getPayrollSocialConfirmationState(workspace) {
+  const current = ensureWorkspace(workspace);
+  const summary = buildPayrollSocialSummary(current, { period: current.currentPeriod });
+  const latestVersion = getLatestReportVersion(current);
+  const sourceIsCurrent = latestVersion?.sourceFingerprint
+    ? latestVersion.sourceFingerprint === workflowSourceFingerprint(current)
+    : Boolean(latestVersion)
+      && current.tax?.frozenAt === latestVersion.createdAt
+      && comparableSnapshot(latestVersion.snapshot) === comparableSnapshot(buildReportSnapshot(current));
+  const version = sourceIsCurrent ? latestVersion : null;
+  const payrollConfirmed = Boolean(
+    version
+    && summary.payrollRecords.length
+    && current.tax.payrollConfirmedAt
+    && current.tax.payrollConfirmedVersionId === version.id
+    && current.tax.payrollConfirmedFingerprint === summary.fingerprints.payroll
+  );
+  const socialSecurityConfirmed = Boolean(
+    version
+    && summary.socialSecurityRecords.length
+    && current.tax.socialSecurityConfirmedAt
+    && current.tax.socialSecurityConfirmedVersionId === version.id
+    && current.tax.socialSecurityConfirmedFingerprint === summary.fingerprints.socialSecurity
+  );
+  return {
+    version,
+    latestVersion,
+    sourceIsCurrent,
+    summary,
+    payroll: {
+      available: summary.payrollRecords.length > 0,
+      confirmed: payrollConfirmed,
+      confirmedAt: payrollConfirmed ? current.tax.payrollConfirmedAt : null,
+    },
+    socialSecurity: {
+      available: summary.socialSecurityRecords.length > 0,
+      confirmed: socialSecurityConfirmed,
+      confirmedAt: socialSecurityConfirmed ? current.tax.socialSecurityConfirmedAt : null,
+    },
+  };
+}
+
+export function confirmPayrollSocialData(workspace, input = {}, context = {}) {
+  const current = ensureWorkspace(workspace);
+  const section = input.section;
+  if (!["payroll", "socialSecurity"].includes(section)) throw new Error("请选择工资表或社保表确认项");
+  const confirmed = input.confirmed !== false;
+  const state = getPayrollSocialConfirmationState(current);
+  const sectionState = state[section];
+  if (confirmed && !state.version) throw new Error("请先按当前工资社保数据重新冻结报表版本");
+  if (confirmed && !sectionState.available) throw new Error(section === "payroll" ? "当前期间还没有工资表记录" : "当前期间还没有社保表记录");
+  const at = context.at || new Date().toISOString();
+  const actor = context.actor || "客户负责人";
+  const isPayroll = section === "payroll";
+  const nextTax = {
+    ...current.tax,
+    ...(isPayroll ? {
+      payrollConfirmedAt: confirmed ? at : null,
+      payrollConfirmedVersionId: confirmed ? state.version.id : null,
+      payrollConfirmedFingerprint: confirmed ? state.summary.fingerprints.payroll : null,
+    } : {
+      socialSecurityConfirmedAt: confirmed ? at : null,
+      socialSecurityConfirmedVersionId: confirmed ? state.version.id : null,
+      socialSecurityConfirmedFingerprint: confirmed ? state.summary.fingerprints.socialSecurity : null,
+    }),
+    ownerConfirmedAt: null,
+    ownerConfirmedVersionId: null,
+    confirmedBy: confirmed ? actor : current.tax.confirmedBy,
+  };
+  const next = {
+    ...current,
+    tax: nextTax,
+    delivery: {
+      ...current.delivery,
+      filing: {
+        ...current.delivery.filing,
+        finalConfirmedVersionId: null,
+        exportedAt: null,
+        exportedPackage: null,
+        receipt: null,
+        archivedAt: null,
+      },
+    },
+  };
+  return audit(next, confirmed ? `客户确认${isPayroll ? "工资表" : "社保表"}` : `撤销${isPayroll ? "工资表" : "社保表"}确认`, `${current.currentPeriod} · ${state.version?.label || "当前未冻结版本"} · 当前浏览器本地记录`, actor);
 }
 
 function comparableSnapshot(snapshot) {
@@ -566,6 +977,7 @@ export function workflowChecks(workspace) {
       && comparableSnapshot(latestVersion.snapshot) === comparableSnapshot(snapshot);
   const version = sourceIsCurrent ? latestVersion : null;
   const filing = workspace.delivery.filing;
+  const payrollSocialConfirmation = getPayrollSocialConfirmationState(workspace);
   const checks = [
     { id: "balanced", label: "试算、资产负债与现金变动勾稽通过", ok: statementsBalanced, page: "reports", detail: statementsBalanced ? "三项校验通过" : "至少一项校验存在差异" },
     { id: "bank", label: "本期银行流水余额勾稽通过", ok: bankReconciliationIssues.length === 0, page: "setup", detail: bankReconciliationIssues.length ? `${bankReconciliationIssues.length} 份银行流水有差异或错误行` : "已完成" },
@@ -573,8 +985,10 @@ export function workflowChecks(workspace) {
     { id: "vouchers", label: "本期凭证已全部复核入账", ok: pendingVouchers.length === 0, page: "reconcile", detail: pendingVouchers.length ? `${pendingVouchers.length} 张草稿或更正待处理` : "已完成" },
     { id: "frozen", label: "本期当前数据已有冻结版本", ok: Boolean(version), page: "reports", detail: latestVersion && !version ? "上游数据已变化，请重新冻结" : undefined },
     { id: "finance", label: "客户已完成首次财务确认", ok: Boolean(version && workspace.tax.financeConfirmedAt && workspace.tax.financeConfirmedVersionId === version.id), page: "tax" },
-    { id: "payroll", label: "工资与社保数据已确认", ok: Boolean(version && workspace.tax.payrollConfirmedAt && workspace.tax.payrollConfirmedVersionId === version.id), page: "tax" },
+    { id: "payroll", label: "客户已单独确认工资表", ok: Boolean(version && payrollSocialConfirmation.payroll.confirmed), page: "tax", detail: payrollSocialConfirmation.payroll.available ? (payrollSocialConfirmation.payroll.confirmed ? "工资表已绑定当前冻结版本" : "工资表待客户勾选确认") : "当前期间尚未导入工资表" },
+    { id: "socialSecurity", label: "客户已单独确认社保表", ok: Boolean(version && payrollSocialConfirmation.socialSecurity.confirmed), page: "tax", detail: payrollSocialConfirmation.socialSecurity.available ? (payrollSocialConfirmation.socialSecurity.confirmed ? "社保表已绑定当前冻结版本" : "社保表待客户勾选确认") : "当前期间尚未导入社保表" },
     { id: "owner", label: "客户已完成最终责任确认", ok: Boolean(version && workspace.tax.ownerConfirmedAt && workspace.tax.ownerConfirmedVersionId === version.id && filing.finalConfirmedVersionId === version.id), page: "tax" },
+    { id: "vatReconciliation", label: "增值税差异均已解释", ok: !snapshot.taxWorkpaper.vatReconciliation.hasUnexplainedDifferences, page: "tax", detail: snapshot.taxWorkpaper.vatReconciliation.hasUnexplainedDifferences ? snapshot.taxWorkpaper.vatReconciliation.unresolvedItems.map((item) => `${item.label}（差额 ${item.differenceBeforeAdjustment.toFixed(2)}）`).join("、") : "两项差异均已核对" },
     { id: "exported", label: "本地申报包已导出", ok: Boolean(version && filing.exportedAt && filing.exportedPackage?.reportVersionId === version.id), page: "tax" },
     { id: "receipt", label: "外部办理回执已本地导入", ok: Boolean(version
       && filing.receipt?.reportVersionId === version.id
@@ -583,8 +997,8 @@ export function workflowChecks(workspace) {
   ];
   return {
     checks,
-    prepare: checks.slice(0, 7),
-    export: checks.slice(0, 8),
+    prepare: checks.slice(0, 8),
+    export: checks.slice(0, 10),
     archive: checks,
     snapshot,
     unresolved,
@@ -642,7 +1056,8 @@ function downloadBlob(blob, fileName) {
 export async function exportLocalFilingPackage(workspace) {
   const flow = workflowChecks(workspace);
   if (!flow.export.every((item) => item.ok) || !flow.version) {
-    throw new Error("提交前校验尚未全部通过");
+    const missing = flow.export.filter((item) => !item.ok).map((item) => item.label);
+    throw new Error(`生成最终本地申报包前仍需完成：${missing.join("、")}`);
   }
 
   const { default: JSZip } = await import("jszip");
@@ -668,8 +1083,22 @@ export async function exportLocalFilingPackage(workspace) {
   folder.file("客户确认记录.json", JSON.stringify({
     financeConfirmedAt: workspace.tax.financeConfirmedAt,
     payrollConfirmedAt: workspace.tax.payrollConfirmedAt,
+    socialSecurityConfirmedAt: workspace.tax.socialSecurityConfirmedAt,
     ownerConfirmedAt: workspace.tax.ownerConfirmedAt,
     confirmedBy: workspace.tax.confirmedBy,
+    payrollConfirmedVersionId: workspace.tax.payrollConfirmedVersionId,
+    socialSecurityConfirmedVersionId: workspace.tax.socialSecurityConfirmedVersionId,
+    payrollConfirmedFingerprint: workspace.tax.payrollConfirmedFingerprint,
+    socialSecurityConfirmedFingerprint: workspace.tax.socialSecurityConfirmedFingerprint,
+  }, null, 2));
+  folder.file("工资与社保明细.json", JSON.stringify({
+    ...buildPayrollSocialSummary(workspace, { period: workspace.currentPeriod }),
+    confirmations: {
+      payrollConfirmedAt: workspace.tax.payrollConfirmedAt,
+      socialSecurityConfirmedAt: workspace.tax.socialSecurityConfirmedAt,
+      confirmedBy: workspace.tax.confirmedBy,
+    },
+    disclaimer: "当前浏览器本地导入与确认记录；不代表已连接社保、个税或税务平台。",
   }, null, 2));
   const periodVouchers = (workspace.vouchers || []).filter((voucher) => voucher.period === workspace.currentPeriod && ["posted", "superseded"].includes(voucher.status));
   folder.file("凭证与附件索引.json", JSON.stringify(periodVouchers.map((voucher) => ({
@@ -773,10 +1202,14 @@ export function archivePeriod(workspace, actor = "周会计") {
     confirmations: {
       financeConfirmedAt: workspace.tax.financeConfirmedAt,
       payrollConfirmedAt: workspace.tax.payrollConfirmedAt,
+      socialSecurityConfirmedAt: workspace.tax.socialSecurityConfirmedAt,
       ownerConfirmedAt: workspace.tax.ownerConfirmedAt,
       confirmedBy: workspace.tax.confirmedBy,
       financeConfirmedVersionId: workspace.tax.financeConfirmedVersionId,
       payrollConfirmedVersionId: workspace.tax.payrollConfirmedVersionId,
+      socialSecurityConfirmedVersionId: workspace.tax.socialSecurityConfirmedVersionId,
+      payrollConfirmedFingerprint: workspace.tax.payrollConfirmedFingerprint,
+      socialSecurityConfirmedFingerprint: workspace.tax.socialSecurityConfirmedFingerprint,
       ownerConfirmedVersionId: workspace.tax.ownerConfirmedVersionId,
       finalConfirmedVersionId: workspace.delivery.filing.finalConfirmedVersionId,
       initialConfirmationId: workspace.delivery.filing.initialConfirmationId,
@@ -828,14 +1261,20 @@ export function resetTaxForPeriod(tax = {}, period) {
     sourceIds: [],
     payrollSourceIds: [],
     socialSecuritySourceIds: [],
+    invoiceVatSummary: null,
+    vatReconciliations: [],
     note: "",
     frozenAt: null,
     financeConfirmedAt: null,
     payrollConfirmedAt: null,
+    socialSecurityConfirmedAt: null,
     ownerConfirmedAt: null,
     confirmedBy: "",
     financeConfirmedVersionId: null,
     payrollConfirmedVersionId: null,
+    socialSecurityConfirmedVersionId: null,
+    payrollConfirmedFingerprint: null,
+    socialSecurityConfirmedFingerprint: null,
     ownerConfirmedVersionId: null,
   };
 }

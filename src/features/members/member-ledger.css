@@ -56,6 +56,7 @@
 
 .member-entry-form.compact { grid-template-columns: 1fr; }
 .member-entry-form label { display: grid; min-width: 0; gap: 6px; color: var(--muted); font-size: 10px; font-weight: 650; }
+.member-entry-form label > small { color: var(--quiet); font-size: 9px; font-weight: 500; line-height: 1.45; }
 .member-entry-form label.full { grid-column: 1 / -1; }
 .member-entry-form input, .member-entry-form select, .member-entry-form textarea, .member-card-foot select { width: 100%; min-height: 40px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; outline: 0; background: var(--paper-strong); color: var(--espresso); font-size: 11px; }
 .member-entry-form textarea { min-height: 68px; resize: vertical; }
@@ -75,6 +76,30 @@
 .member-accounting-hint > span { display: grid; gap: 2px; }
 .member-accounting-hint strong { font-size: 10px; }
 .member-accounting-hint small { color: var(--muted); font-size: 9px; }
+
+.membership-packages-panel { overflow: hidden; }
+.membership-packages-panel > .panel-heading { align-items: start; }
+.membership-packages-panel > .panel-heading p:last-child { margin: 5px 0 0; color: var(--quiet); font-size: 10px; }
+.membership-packages-panel > .panel-heading > span, .member-package-balances-panel > .panel-heading > span { color: var(--quiet); font-size: 11px; }
+.membership-package-form { padding: 13px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--sand); }
+.membership-package-preview { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.membership-package-preview > span { display: grid; gap: 3px; padding: 9px 10px; border-radius: 8px; background: var(--paper-strong); }
+.membership-package-preview small { color: var(--quiet); font-size: 8px; }
+.membership-package-preview strong { font-family: ui-serif, "Songti SC", serif; font-size: 14px; }
+.membership-package-rule-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-top: 11px; }
+.membership-package-rule-list > article { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line-soft); border-radius: 9px; background: var(--paper-strong); }
+.membership-package-rule-list > article.disabled { opacity: 0.6; }
+.membership-package-rule-list > article > div:first-child { display: grid; gap: 3px; }
+.membership-package-rule-list > article > div:first-child > span { width: max-content; padding: 3px 7px; border-radius: 999px; background: var(--sage-soft); color: var(--sage); font-size: 8px; font-weight: 750; }
+.membership-package-rule-list > article > div:first-child strong { font-size: 11px; }
+.membership-package-rule-list > article > div:first-child small { color: var(--quiet); font-size: 8px; }
+.membership-package-rule-list > article > div:nth-child(2) { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.membership-package-rule-list > article > div:nth-child(2) > span { display: grid; min-width: 0; gap: 2px; padding: 7px; border-radius: 7px; background: var(--sand); }
+.membership-package-rule-list > article > div:nth-child(2) small { color: var(--quiet); font-size: 7px; }
+.membership-package-rule-list > article > div:nth-child(2) strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.membership-package-rule-list footer { display: flex; gap: 6px; }
+.membership-package-rule-list footer button { flex: 1; min-height: 29px; padding: 0 8px; font-size: 9px; }
+.membership-package-empty { grid-column: 1 / -1; margin: 0; padding: 18px; border: 1px dashed var(--line); border-radius: 9px; color: var(--quiet); font-size: 9px; text-align: center; }
 
 .commission-rules-panel { overflow: hidden; }
 .commission-rules-panel > .panel-heading { align-items: start; }
@@ -182,12 +207,22 @@
 .member-reconciliation-sources section small, .member-reconciliation-sources section > p { color: var(--quiet); font-size: 8px; }
 .member-reconciliation-sources section > p { margin: 0; padding: 14px 10px; text-align: center; }
 
+.member-package-balances-panel { overflow: hidden; }
+.member-package-balance-table { overflow-x: auto; border: 1px solid var(--line-soft); border-radius: 9px; }
+.member-package-balance-row { display: grid; min-width: 760px; grid-template-columns: minmax(210px, 1.6fr) repeat(5, minmax(90px, 1fr)); align-items: center; gap: 8px; padding: 10px 11px; border-bottom: 1px solid var(--line-soft); font-size: 9px; }
+.member-package-balance-row:last-child { border-bottom: 0; }
+.member-package-balance-row.heading { background: var(--sand); color: var(--quiet); font-size: 8px; font-weight: 750; }
+.member-package-balance-row > span { display: grid; min-width: 0; gap: 2px; }
+.member-package-balance-row strong { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.member-package-balance-row small { color: var(--quiet); font-size: 8px; }
+
 .member-empty { display: grid; min-height: 130px; place-items: center; align-content: center; gap: 6px; color: var(--quiet); text-align: center; }
 .member-empty strong { color: var(--muted); font-size: 12px; }
 .member-empty span { font-size: 10px; }
 
 @media (max-width: 1280px) {
   .member-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .membership-package-rule-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .member-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .member-event-list > article { grid-template-columns: minmax(220px, 1.4fr) 70px 100px minmax(170px, 1fr); }
   .member-event-status { grid-column: 1 / -1; grid-template-columns: 1fr auto; align-items: center; justify-items: start; }
@@ -206,6 +241,7 @@
   .commission-rule-form > label:first-child, .commission-rule-explanation, .commission-rule-form-actions { grid-column: auto; }
   .commission-rule-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .member-reconciliation-metrics, .member-reconciliation-sources > div { grid-template-columns: 1fr; }
+  .membership-package-preview, .membership-package-rule-list { grid-template-columns: 1fr; }
   .member-card-grid { grid-template-columns: 1fr; }
   .member-event-list > article { grid-template-columns: 1fr 1fr; }
   .member-event-main, .member-event-accounting, .member-event-status { grid-column: 1 / -1; }

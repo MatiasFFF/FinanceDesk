@@ -2,12 +2,28 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
+import {
+  applyRedInvoiceBillAdjustment,
+  applyContractBillingPlan,
+  applyPayrollSocialImport,
+  buildApprovalLinkSuggestions,
+  buildContractBillingPlan,
+  buildInvoiceBillSuggestions,
+  buildPayrollSocialSummary,
+  confirmApprovalBusinessLink,
+  confirmInvoiceBillMatch,
+  createBillFromInvoice,
+  preparePayrollSocialImport,
+  readPayrollSocialFile,
+} from "../src/features/intake/documentIntake.js";
+import { suggestReconciliations } from "../src/features/reconciliation/reconciliationEngine.js";
 
 import {
   applyBankImport,
   applyPlatformSettlementImport,
   buildDocumentMatchSuggestions,
   buildMonthlyFinancialArchivePlan,
+  buildStructuredInvoiceVatSummary,
   buildVoucherAttachmentPackagePlan,
   confirmDocumentMatch,
   buildBankMonthlyReconciliation,
@@ -1097,7 +1113,14 @@ test("合同与审批结构化字段写回当前工作台资料记录且明确�
     amount: 36000.5,
     serviceStartDate: "2026-09-01",
     serviceEndDate: "2027-08-31",
+    contractType: "unclassified",
+    settlementMode: "monthly",
     settlementCycle: "按月结算",
+    periodAmount: null,
+    firstBillDate: null,
+    dueDateRule: "on_bill_date",
+    dueDays: 0,
+    billingEndDate: "2027-08-31",
     refundTerms: "提前 30 日书面通知，按未履行月份退款",
     commissionTerms: "不适用",
   });
@@ -1118,6 +1141,8 @@ test("合同与审批结构化字段写回当前工作台资料记录且明确�
       structuredData: {
         approvalType: "采购付款",
         applicant: "陈教练",
+        supplier: "力行器械",
+        approvalDate: "2026-09-04",
         amount: "3680",
         approvalStatus: "approved",
       },
@@ -1126,12 +1151,427 @@ test("合同与审批结构化字段写回当前工作台资料记录且明确�
   persisted = store.getActiveWorkspace().documents.find((item) => item.id === approval.id);
   assert.deepEqual(persisted.structuredData, {
     kind: "approval",
-    approvalType: "采购付款",
+    approvalType: "procurement",
     applicant: "陈教练",
+    supplier: "力行器械",
+    approvalDate: "2026-09-04",
     amount: 3680,
     approvalStatus: "approved",
+    linkedTargetType: "",
+    linkedTargetId: "",
+    businessEventId: "",
+    linkStatus: "unlinked",
   });
   assert.deepEqual(persisted.contentRecognition, { mode: "manual", ocrStatus: "not_connected" });
+});
+
+test("五类已批准审批单按类型、申请人或供应商、金额和日期建议对象，未批准与金额不一致保持待处理", async () => {
+  const initial = createInitialState({ now: fixedNow }).workspaces[0];
+  const approval = (id, approvalType, fields = {}) => ({
+    id,
+    name: `${id}.pdf`,
+    category: "审批资料",
+    period: "2026-09",
+    relatedObjectIds: [],
+    structuredData: {
+      kind: "approval",
+      approvalType,
+      applicant: fields.applicant || "",
+      supplier: fields.supplier || "",
+      approvalDate: "2026-09-04",
+      amount: fields.amount,
+      approvalStatus: fields.approvalStatus || "approved",
+      linkStatus: "unlinked",
+    },
+  });
+  const documents = [
+    approval("approval-reimbursement", "reimbursement", { applicant: "陈教练", amount: 100 }),
+    approval("approval-payment", "payment_request", { supplier: "青禾服务", amount: 200 }),
+    approval("approval-loan", "loan_repayment", { applicant: "王经理", amount: 300 }),
+    approval("approval-procurement", "procurement", { supplier: "力行器械", amount: 400 }),
+    approval("approval-refund", "refund", { supplier: "客户甲", amount: 500 }),
+    approval("approval-pending", "procurement", { supplier: "力行器械", amount: 400, approvalStatus: "pending" }),
+    approval("approval-amount-mismatch", "procurement", { supplier: "力行器械", amount: 999 }),
+  ];
+  const bills = [
+    { id: "bill-payment", no: "YF-PAYMENT", kind: "payable", counterparty: "青禾服务", amount: 200, date: "2026-09-05", status: "active" },
+    { id: "bill-procurement", no: "YF-PROCUREMENT", kind: "payable", counterparty: "力行器械", amount: 400, date: "2026-09-04", status: "active" },
+  ];
+  const transactions = [
+    { id: "txn-reimbursement", counterparty: "陈教练", amount: -100, date: "2026-09-04", status: "pending", classification: { eventType: "purchaseExpense" } },
+    { id: "txn-loan", counterparty: "王经理", amount: 300, date: "2026-09-06", status: "pending", classification: { eventType: "loan" } },
+    { id: "txn-refund", counterparty: "客户甲", amount: -500, date: "2026-09-03", status: "pending", classification: { eventType: "refund" } },
+  ];
+  const workspace = { ...initial, currentPeriod: "2026-09", documents, bills, transactions, businessEvents: [], evidenceLinks: [], exceptionTasks: [] };
+  const expectedTargets = new Map([
+    ["approval-reimbursement", "txn-reimbursement"],
+    ["approval-payment", "bill-payment"],
+    ["approval-loan", "txn-loan"],
+    ["approval-procurement", "bill-procurement"],
+    ["approval-refund", "txn-refund"],
+  ]);
+  expectedTargets.forEach((targetId, documentId) => {
+    const suggestions = buildApprovalLinkSuggestions(workspace, { documentId });
+    assert.equal(suggestions.some((suggestion) => suggestion.targetId === targetId), true, `${documentId} 应建议 ${targetId}`);
+  });
+  assert.equal(buildApprovalLinkSuggestions(workspace, { documentId: "approval-pending" }).length, 0);
+  assert.equal(buildApprovalLinkSuggestions(workspace, { documentId: "approval-amount-mismatch" }).length, 0);
+  assert.equal(workspace.businessEvents.length, 0, "生成建议不得自动创建业务事件");
+  assert.equal(workspace.evidenceLinks.length, 0, "生成建议不得自动建立关系");
+
+  const storage = createMemoryStorage();
+  const repository = createLocalFoundationRepository({ storage, now: fixedNow });
+  const store = createFinanceDeskStore({ repository });
+  const workspaceId = store.getState().activeWorkspaceId;
+  const current = store.getActiveWorkspace();
+  store.actions.replaceWorkspace(workspaceId, { ...current, bills: [bills[1]], transactions: [], documents: [], evidenceLinks: [], exceptionTasks: [] });
+  const fileVault = createMemoryFileVault();
+  const pendingDocument = await saveLocalDocument({
+    store,
+    fileVault,
+    workspaceId,
+    file: Object.assign(new Blob(["pending approval"]), { name: "待审批采购单.pdf" }),
+    metadata: {
+      category: "审批资料",
+      structuredData: { approvalType: "procurement", supplier: "力行器械", approvalDate: "2026-09-04", amount: 999, approvalStatus: "pending" },
+    },
+  });
+  let pendingTask = store.getActiveWorkspace().exceptionTasks.find((task) => task.identity === `approval-link:${pendingDocument.id}`);
+  assert.equal(pendingTask.status, "open");
+  assert.match(pendingTask.message, /审批中.*不能进入后续业务/);
+  updateLocalDocumentMetadata({
+    store,
+    workspaceId,
+    documentId: pendingDocument.id,
+    patch: { structuredData: { approvalStatus: "approved" } },
+    updatedAt: fixedTimestamp,
+  });
+  pendingTask = store.getActiveWorkspace().exceptionTasks.find((task) => task.identity === `approval-link:${pendingDocument.id}`);
+  assert.equal(pendingTask.status, "open");
+  assert.match(pendingTask.message, /尚未找到金额、日期、类型与往来单位一致/);
+});
+
+test("人工确认审批关联会写入 document、账单或流水、evidenceLinks，并生成或补充业务事件审批来源", () => {
+  const initial = createInitialState({ now: fixedNow }).workspaces[0];
+  const paymentApproval = {
+    id: "approval-payment-confirm",
+    name: "青禾付款申请.pdf",
+    category: "审批资料",
+    period: "2026-09",
+    relatedObjectIds: [],
+    structuredData: {
+      kind: "approval",
+      approvalType: "payment_request",
+      applicant: "陈教练",
+      supplier: "青禾服务",
+      approvalDate: "2026-09-04",
+      amount: 200,
+      approvalStatus: "approved",
+      linkStatus: "unlinked",
+    },
+  };
+  const refundApproval = {
+    id: "approval-refund-confirm",
+    name: "客户退款审批.pdf",
+    category: "审批资料",
+    period: "2026-09",
+    relatedObjectIds: [],
+    structuredData: {
+      kind: "approval",
+      approvalType: "refund",
+      applicant: "王店长",
+      supplier: "客户甲",
+      approvalDate: "2026-09-05",
+      amount: 500,
+      approvalStatus: "approved",
+      linkStatus: "unlinked",
+    },
+  };
+  const bill = { id: "bill-approval-confirm", no: "YF-APPROVAL", kind: "payable", counterparty: "青禾服务", amount: 200, date: "2026-09-04", status: "active", documentIds: [], evidenceIds: [], sourceIds: [] };
+  const transaction = {
+    id: "txn-approval-refund",
+    counterparty: "客户甲",
+    amount: -500,
+    date: "2026-09-05",
+    businessPeriod: "2026-09",
+    status: "pending",
+    classification: { eventType: "refund", confidence: 95, riskFlags: [] },
+    allocations: [],
+    documentIds: [],
+    evidenceIds: [],
+    sourceIds: [],
+  };
+  const existingRefundEvent = {
+    id: "event-existing-refund",
+    businessEventNo: "BE-202609-008",
+    transactionId: transaction.id,
+    eventType: "refund",
+    businessType: "refund",
+    source: "bank-transaction-manual-confirmation",
+    status: "confirmed",
+    evidenceIds: [],
+    documentIds: [],
+    sourceIds: [transaction.id],
+  };
+  const workspace = {
+    ...initial,
+    currentPeriod: "2026-09",
+    documents: [paymentApproval, refundApproval],
+    bills: [bill],
+    transactions: [transaction],
+    businessEvents: [existingRefundEvent],
+    evidenceLinks: [],
+    exceptionTasks: [],
+    vouchers: [],
+  };
+  assert.throws(() => confirmApprovalBusinessLink(workspace, {
+    documentId: paymentApproval.id,
+    targetType: "bill",
+    targetId: bill.id,
+  }), /需要用户明确人工确认/);
+  assert.throws(() => confirmApprovalBusinessLink(workspace, {
+    documentId: paymentApproval.id,
+    targetType: "bill",
+    targetId: bill.id,
+    confirmed: true,
+  }, { mode: "automatic" }), /不得自动确认/);
+
+  const billResult = confirmApprovalBusinessLink(workspace, {
+    documentId: paymentApproval.id,
+    targetType: "bill",
+    targetId: bill.id,
+    confirmed: true,
+  }, { actor: "测试会计", mode: "manual", at: fixedTimestamp });
+  const linkedPaymentDocument = billResult.workspace.documents.find((document) => document.id === paymentApproval.id);
+  const linkedBill = billResult.workspace.bills.find((item) => item.id === bill.id);
+  assert.equal(linkedPaymentDocument.structuredData.linkStatus, "linked");
+  assert.equal(linkedPaymentDocument.structuredData.linkedTargetId, bill.id);
+  assert.equal(linkedPaymentDocument.relatedObjectIds.includes(bill.id), true);
+  assert.equal(linkedPaymentDocument.relatedObjectIds.includes(billResult.businessEvent.id), true);
+  assert.equal(linkedBill.approvalDocumentIds.includes(paymentApproval.id), true);
+  assert.equal(linkedBill.evidenceIds.includes(paymentApproval.id), true);
+  assert.equal(billResult.businessEvent.approvalDocumentIds.includes(paymentApproval.id), true);
+  assert.equal(billResult.businessEvent.approvalSources[0].status, "approved");
+  assert.equal(billResult.businessEvent.automaticPostingAllowed, false);
+  assert.equal(billResult.businessEvent.postingPolicy, "manual_only");
+  assert.equal(billResult.businessEvent.accountingStatus, "unprocessed");
+  assert.equal(linkedBill.status, "active", "审批确认不得自动付款或改变账单状态");
+  assert.equal(billResult.workspace.vouchers.length, 0, "审批确认不得自动生成凭证");
+  assert.equal(billResult.workspace.evidenceLinks.some((link) => link.relation === "confirmed-approval-business-link"
+    && link.documentIds.includes(paymentApproval.id)
+    && link.objectIds.includes(bill.id)
+    && link.objectIds.includes(billResult.businessEvent.id)), true);
+  assert.throws(() => confirmApprovalBusinessLink(billResult.workspace, {
+    documentId: paymentApproval.id,
+    targetType: "bill",
+    targetId: bill.id,
+    confirmed: true,
+  }, { mode: "manual" }), /不能重复关联/);
+
+  const transactionResult = confirmApprovalBusinessLink(billResult.workspace, {
+    documentId: refundApproval.id,
+    targetType: "transaction",
+    targetId: transaction.id,
+    confirmed: true,
+  }, { actor: "测试会计", mode: "manual", at: fixedTimestamp });
+  const linkedTransaction = transactionResult.workspace.transactions.find((item) => item.id === transaction.id);
+  assert.equal(transactionResult.businessEvent.id, existingRefundEvent.id, "应补充已有对应业务事件，而非重复生成");
+  assert.equal(transactionResult.workspace.businessEvents.length, 2, "账单生成一条事件，流水复用原事件");
+  assert.equal(linkedTransaction.approvalDocumentIds.includes(refundApproval.id), true);
+  assert.equal(linkedTransaction.evidenceIds.includes(refundApproval.id), true);
+  assert.deepEqual(linkedTransaction.allocations, []);
+  assert.notEqual(linkedTransaction.status, "posted");
+  assert.equal(transactionResult.businessEvent.approvalSources.some((source) => source.documentId === refundApproval.id), true);
+});
+
+test("已关联审批被改回驳回或撤回时，业务关系失效、相关业务重进异常且旧冻结确认失效", () => {
+  for (const approvalStatus of ["rejected", "withdrawn"]) {
+    const storage = createMemoryStorage();
+    const repository = createLocalFoundationRepository({ storage, now: fixedNow });
+    const store = createFinanceDeskStore({ repository });
+    const workspaceId = store.getState().activeWorkspaceId;
+    const initial = store.getActiveWorkspace();
+    const document = {
+      id: `approval-invalidate-${approvalStatus}`,
+      name: `${approvalStatus}-付款审批.pdf`,
+      category: "审批资料",
+      period: "2026-09",
+      relatedObjectIds: [],
+      structuredData: {
+        kind: "approval",
+        approvalType: "payment_request",
+        applicant: "陈教练",
+        supplier: "青禾服务",
+        approvalDate: "2026-09-04",
+        amount: 200,
+        approvalStatus: "approved",
+        linkStatus: "unlinked",
+      },
+    };
+    const bill = { id: `bill-invalidate-${approvalStatus}`, no: `YF-${approvalStatus}`, kind: "payable", counterparty: "青禾服务", amount: 200, date: "2026-09-04", status: "active", documentIds: [], evidenceIds: [], sourceIds: [] };
+    const workspace = { ...initial, currentPeriod: "2026-09", documents: [document], bills: [bill], transactions: [], businessEvents: [], evidenceLinks: [], exceptionTasks: [] };
+    const confirmed = confirmApprovalBusinessLink(workspace, {
+      documentId: document.id,
+      targetType: "bill",
+      targetId: bill.id,
+      confirmed: true,
+    }, { actor: "测试会计", mode: "manual", at: fixedTimestamp }).workspace;
+    const frozen = {
+      ...confirmed,
+      tax: {
+        ...confirmed.tax,
+        frozenAt: fixedTimestamp,
+        financeConfirmedAt: fixedTimestamp,
+        ownerConfirmedAt: fixedTimestamp,
+        confirmedBy: "测试负责人",
+      },
+      delivery: {
+        ...confirmed.delivery,
+        filing: {
+          ...(confirmed.delivery?.filing || {}),
+          draftCreatedAt: fixedTimestamp,
+          finalConfirmedVersionId: "old-version",
+          exportedPackage: { id: "old-package" },
+          receipt: { id: "old-receipt" },
+        },
+      },
+    };
+    store.actions.replaceWorkspace(workspaceId, frozen, { requiredPermission: "data.write" });
+    updateLocalDocumentMetadata({
+      store,
+      workspaceId,
+      documentId: document.id,
+      patch: { structuredData: { approvalStatus } },
+      actor: "测试负责人",
+      updatedAt: "2026-09-04T09:00:00.000Z",
+    });
+    const result = store.getActiveWorkspace();
+    const invalidatedDocument = result.documents.find((item) => item.id === document.id);
+    const invalidatedBill = result.bills.find((item) => item.id === bill.id);
+    const invalidatedEvent = result.businessEvents.find((event) => event.id === invalidatedDocument.structuredData.businessEventId);
+    assert.equal(invalidatedDocument.structuredData.approvalStatus, approvalStatus);
+    assert.equal(invalidatedDocument.structuredData.linkStatus, "invalidated");
+    assert.equal(invalidatedDocument.relatedObjectIds.includes(bill.id), false);
+    assert.equal(invalidatedBill.approvalDocumentIds.includes(document.id), false);
+    assert.equal(invalidatedBill.evidenceIds.includes(document.id), false);
+    assert.equal(invalidatedBill.approvalReviewRequired, true);
+    assert.equal(invalidatedEvent.status, "needs_review");
+    assert.equal(invalidatedEvent.approvalStatus, "invalidated");
+    assert.equal(invalidatedEvent.evidenceIds.includes(document.id), false);
+    assert.equal(result.evidenceLinks.some((link) => link.relation === "confirmed-approval-business-link" && link.documentIds.includes(document.id) && link.status === "inactive"), true);
+    assert.equal(result.exceptionTasks.some((task) => task.code === "approval_invalidated" && task.sourceId === bill.id && task.status === "open"), true);
+    assert.equal(result.tax.frozenAt, null);
+    assert.equal(result.tax.financeConfirmedAt, null);
+    assert.equal(result.tax.ownerConfirmedAt, null);
+    assert.equal(result.delivery.filing.finalConfirmedVersionId, null);
+    assert.equal(result.delivery.filing.exportedPackage, null);
+    assert.equal(result.delivery.filing.receipt, null);
+    assert.equal(result.stages.s3.status, "needs_review");
+  }
+});
+
+test("结构化合同先预览再确认生成标准应收应付账单，并可直接进入现有核销建议", () => {
+  const initial = createInitialState({ now: fixedNow }).workspaces[0];
+  const contractDocument = {
+    id: "doc-contract-billing-rent",
+    name: "场地租赁合同.pdf",
+    category: "合同",
+    period: "2026-09",
+    relatedObjectIds: [],
+    structuredData: {
+      kind: "contract",
+      partyA: "山岚健身工作室",
+      partyB: "青禾场地管理有限公司",
+      amount: 3600,
+      contractType: "lease",
+      settlementMode: "monthly",
+      periodAmount: 1200,
+      firstBillDate: "2026-09-05",
+      dueDateRule: "month_end",
+      dueDays: 0,
+      billingEndDate: "2026-11-30",
+      serviceStartDate: "2026-09-01",
+      serviceEndDate: "2026-11-30",
+    },
+  };
+  const workspace = { ...initial, currentPeriod: "2026-09", bills: [], transactions: [], documents: [contractDocument], evidenceLinks: [] };
+  const preview = buildContractBillingPlan(workspace, { documentId: contractDocument.id, asOf: "2026-09-01" });
+  assert.equal(workspace.bills.length, 0);
+  assert.equal(preview.canConfirm, true);
+  assert.equal(preview.billKind, "payable");
+  assert.deepEqual(preview.items.map((item) => item.billingPeriod), ["2026-09", "2026-10", "2026-11"]);
+  assert.deepEqual(preview.items.map((item) => item.dueDate), ["2026-09-30", "2026-10-31", "2026-11-30"]);
+  assert.equal(preview.pendingTotalAmount, 3600);
+
+  const result = applyContractBillingPlan(workspace, { documentId: contractDocument.id, asOf: "2026-09-01" }, { actor: "测试会计", at: fixedTimestamp });
+  assert.equal(result.bills.length, 3);
+  assert.equal(result.workspace.bills.every((bill) => bill.kind === "payable" && bill.contractDocumentId === contractDocument.id && bill.evidenceIds.includes(contractDocument.id)), true);
+  assert.deepEqual(new Set(result.workspace.documents[0].relatedObjectIds), new Set(result.bills.map((bill) => bill.id)));
+  assert.throws(() => applyContractBillingPlan(result.workspace, { documentId: contractDocument.id, asOf: "2026-09-01" }), /同一合同同一期不得重复生成/);
+
+  const firstBill = result.bills[0];
+  const withPayment = {
+    ...result.workspace,
+    transactions: [{
+      id: "txn-contract-bill-payment",
+      accountId: result.workspace.bankAccounts[0].id,
+      date: "2026-09-30",
+      businessPeriod: "2026-09",
+      counterparty: firstBill.counterparty,
+      summary: "9月场地租金",
+      amount: -1200,
+      status: "pending",
+      classification: { eventType: "supplierSettlement", confidence: 99, riskFlags: [] },
+      evidenceIds: [],
+      allocations: [],
+    }],
+  };
+  const suggestions = suggestReconciliations(withPayment, "txn-contract-bill-payment");
+  assert.equal(suggestions.some((suggestion) => suggestion.billIds.includes(firstBill.id)), true);
+});
+
+test("合同账单计划明确阻止合同金额不足、已过期和生成总额超限", () => {
+  const initial = createInitialState({ now: fixedNow }).workspaces[0];
+  const makeWorkspace = (patch) => ({
+    ...initial,
+    currentPeriod: "2026-09",
+    bills: [],
+    documents: [{
+      id: "doc-contract-plan-blocked",
+      name: "销售合同.pdf",
+      category: "合同",
+      relatedObjectIds: [],
+      structuredData: {
+        partyA: "山岚健身工作室",
+        partyB: "客户甲",
+        amount: 1000,
+        contractType: "sales",
+        settlementMode: "one_time",
+        periodAmount: 1000,
+        firstBillDate: "2026-09-10",
+        dueDateRule: "days_after",
+        dueDays: 10,
+        billingEndDate: "2026-09-10",
+        ...patch,
+      },
+    }],
+  });
+  const valid = buildContractBillingPlan(makeWorkspace({}), { documentId: "doc-contract-plan-blocked", asOf: "2026-09-01" });
+  assert.equal(valid.billKind, "receivable");
+  assert.equal(valid.items.length, 1);
+  assert.equal(valid.items[0].dueDate, "2026-09-20");
+
+  const insufficient = buildContractBillingPlan(makeWorkspace({ amount: 500, periodAmount: 600 }), { documentId: "doc-contract-plan-blocked", asOf: "2026-09-01" });
+  assert.equal(insufficient.canConfirm, false);
+  assert.match(insufficient.errors.join("；"), /合同金额不足/);
+
+  const expired = buildContractBillingPlan(makeWorkspace({ firstBillDate: "2026-08-01", billingEndDate: "2026-08-31" }), { documentId: "doc-contract-plan-blocked", asOf: "2026-09-01" });
+  assert.equal(expired.canConfirm, false);
+  assert.match(expired.errors.join("；"), /已于 2026-08-31 过期/);
+
+  const excessive = buildContractBillingPlan(makeWorkspace({ amount: 2500, settlementMode: "monthly", periodAmount: 1000, firstBillDate: "2026-09-05", billingEndDate: "2026-11-30" }), { documentId: "doc-contract-plan-blocked", asOf: "2026-09-01" });
+  assert.equal(excessive.canConfirm, false);
+  assert.match(excessive.errors.join("；"), /生成总额 3000.00 超出合同金额 2500.00/);
 });
 
 test("发票结构化状态可保存，发票号码在新增和编辑入口都拒绝重复", async () => {
@@ -1165,6 +1605,8 @@ test("发票结构化状态可保存，发票号码在新增和编辑入口都�
     kind: "invoice",
     invoiceNumber: "FP-2026-0001",
     invoiceDate: "2026-09-04",
+    taxDirection: "unclassified",
+    counterparty: "",
     amount: 1130,
     taxAmount: 130,
     taxRate: 13,
@@ -1172,6 +1614,9 @@ test("发票结构化状态可保存，发票号码在新增和编辑入口都�
     redLetterStatus: "normal",
     voidStatus: "valid",
     certificationStatus: "certified",
+    linkedBillId: "",
+    originalInvoiceDocumentId: "",
+    originalBillId: "",
   });
   assert.equal(filterLocalDocuments(store.getActiveWorkspace(), { query: "FP-2026-0001" }).some((item) => item.id === first.id), true);
 
@@ -1198,6 +1643,276 @@ test("发票结构化状态可保存，发票号码在新增和编辑入口都�
     patch: { structuredData: { invoiceNumber: "FP-2026-0001" } },
   }), /发票号码.*已存在/);
   assert.equal(store.getActiveWorkspace().documents.find((item) => item.id === second.id).structuredData.invoiceNumber, "FP-2026-0002");
+});
+
+test("结构化销项发票按客户、金额和日期建议应收账单，但只有人工确认才写入三方关系", () => {
+  const initial = createInitialState({ now: fixedNow }).workspaces[0];
+  const invoice = {
+    id: "doc-output-invoice-match",
+    name: "客户甲销项发票.pdf",
+    category: "发票",
+    period: "2026-09",
+    relatedObjectIds: [],
+    structuredData: {
+      kind: "invoice",
+      invoiceNumber: "OUT-MATCH-001",
+      invoiceDate: "2026-09-04",
+      taxDirection: "output",
+      counterparty: "客户甲",
+      amount: 1130,
+      taxAmount: 130,
+      taxRate: 13,
+      redLetterStatus: "normal",
+      voidStatus: "valid",
+    },
+  };
+  const bill = {
+    id: "bill-receivable-match",
+    no: "YS-202609-001",
+    kind: "receivable",
+    counterparty: "客户甲",
+    amount: 1130,
+    date: "2026-09-05",
+    dueDate: "2026-09-30",
+    businessPeriod: "2026-09",
+    status: "active",
+    documentIds: [],
+    evidenceIds: [],
+    sourceIds: [],
+  };
+  const workspace = { ...initial, currentPeriod: "2026-09", documents: [invoice], bills: [bill], transactions: [], evidenceLinks: [] };
+
+  const suggestions = buildInvoiceBillSuggestions(workspace, { documentId: invoice.id });
+  assert.equal(suggestions.length, 1);
+  assert.equal(suggestions[0].billId, bill.id);
+  assert.equal(suggestions[0].billKind, "receivable");
+  assert.match(suggestions[0].reasons.join("；"), /客户完全一致.*价税合计与账单金额一致.*日期相差 1 天/);
+  assert.deepEqual(workspace.documents[0].relatedObjectIds, [], "生成建议不得自动写入关系");
+  assert.deepEqual(workspace.bills[0].documentIds, [], "生成建议不得自动改写账单");
+  assert.throws(() => confirmInvoiceBillMatch(workspace, { documentId: invoice.id, billId: bill.id }), /需要用户明确人工确认/);
+  assert.throws(() => confirmInvoiceBillMatch(workspace, { documentId: invoice.id, billId: bill.id, confirmed: true }, { mode: "automatic" }), /不得自动确认/);
+
+  const result = confirmInvoiceBillMatch(workspace, {
+    documentId: invoice.id,
+    billId: bill.id,
+    confirmed: true,
+  }, { actor: "测试会计", mode: "manual", at: fixedTimestamp });
+  const linkedDocument = result.workspace.documents.find((item) => item.id === invoice.id);
+  const linkedBill = result.workspace.bills.find((item) => item.id === bill.id);
+  assert.equal(linkedDocument.structuredData.linkedBillId, bill.id);
+  assert.equal(linkedDocument.relatedObjectIds.includes(bill.id), true);
+  assert.equal(linkedBill.documentIds.includes(invoice.id), true);
+  assert.equal(linkedBill.evidenceIds.includes(invoice.id), true);
+  assert.equal(linkedBill.sourceIds.includes(invoice.id), true);
+  assert.equal(result.workspace.evidenceLinks.some((link) => link.relation === "confirmed-invoice-bill-match" && link.documentIds.includes(invoice.id) && link.objectIds.includes(bill.id)), true);
+  assert.deepEqual(workspace.documents[0].relatedObjectIds, [], "人工确认函数应返回新工作区而不改写输入");
+});
+
+test("确认无合适账单后，结构化进项发票生成标准应付账单并可直接进入现有核销建议", () => {
+  const initial = createInitialState({ now: fixedNow }).workspaces[0];
+  const invoice = {
+    id: "doc-input-invoice-create",
+    name: "供应商乙进项发票.pdf",
+    category: "发票",
+    period: "2026-09",
+    relatedObjectIds: [],
+    structuredData: {
+      kind: "invoice",
+      invoiceNumber: "IN-CREATE-001",
+      invoiceDate: "2026-09-06",
+      taxDirection: "input",
+      counterparty: "供应商乙",
+      amount: 565,
+      taxAmount: 65,
+      taxRate: 13,
+      redLetterStatus: "normal",
+      voidStatus: "valid",
+      certificationStatus: "certified",
+    },
+  };
+  const workspace = { ...initial, currentPeriod: "2026-09", documents: [invoice], bills: [], transactions: [], evidenceLinks: [] };
+  assert.throws(() => createBillFromInvoice(workspace, { documentId: invoice.id, confirmed: true }, { mode: "manual" }), /确认没有合适的已有账单/);
+
+  const result = createBillFromInvoice(workspace, {
+    documentId: invoice.id,
+    confirmed: true,
+    confirmedNoSuitableBill: true,
+  }, { actor: "测试会计", mode: "manual", at: fixedTimestamp });
+  assert.equal(result.workspace.bills.length, 1);
+  assert.equal(result.bill.kind, "payable");
+  assert.equal(result.bill.counterparty, "供应商乙");
+  assert.equal(result.bill.amount, 565);
+  assert.equal(result.bill.date, "2026-09-06");
+  assert.equal(result.bill.evidenceIds.includes(invoice.id), true);
+  assert.equal(result.workspace.documents[0].structuredData.linkedBillId, result.bill.id);
+  assert.equal(result.workspace.documents[0].relatedObjectIds.includes(result.bill.id), true);
+  assert.equal(result.workspace.evidenceLinks.some((link) => link.relation === "invoice-generated-bill" && link.documentIds.includes(invoice.id) && link.objectIds.includes(result.bill.id)), true);
+
+  const withPayment = {
+    ...result.workspace,
+    transactions: [{
+      id: "txn-input-invoice-payment",
+      accountId: result.workspace.bankAccounts[0].id,
+      date: "2026-09-06",
+      businessPeriod: "2026-09",
+      counterparty: "供应商乙",
+      summary: "供应商乙采购付款",
+      amount: -565,
+      status: "pending",
+      classification: { eventType: "supplierSettlement", confidence: 99, riskFlags: [] },
+      evidenceIds: [],
+      allocations: [],
+    }],
+  };
+  const suggestions = suggestReconciliations(withPayment, "txn-input-invoice-payment");
+  assert.equal(suggestions.some((suggestion) => suggestion.billIds.includes(result.bill.id)), true);
+});
+
+test("作废和红字申请中的发票被阻止；已开红字只对已关联原账单形成负向调整", () => {
+  const initial = createInitialState({ now: fixedNow }).workspaces[0];
+  const originalInvoice = {
+    id: "doc-original-output-invoice",
+    name: "原销项发票.pdf",
+    category: "发票",
+    period: "2026-09",
+    relatedObjectIds: ["bill-original-receivable"],
+    structuredData: {
+      kind: "invoice",
+      invoiceNumber: "OUT-ORIGINAL-001",
+      invoiceDate: "2026-09-01",
+      taxDirection: "output",
+      counterparty: "客户甲",
+      amount: 1130,
+      taxAmount: 130,
+      taxRate: 13,
+      redLetterStatus: "normal",
+      voidStatus: "valid",
+      linkedBillId: "bill-original-receivable",
+    },
+  };
+  const redInvoice = {
+    id: "doc-red-output-invoice",
+    name: "红字销项发票.pdf",
+    category: "发票",
+    period: "2026-09",
+    relatedObjectIds: [],
+    structuredData: {
+      kind: "invoice",
+      invoiceNumber: "RED-OUT-001",
+      invoiceDate: "2026-09-08",
+      taxDirection: "output",
+      counterparty: "客户甲",
+      amount: 565,
+      taxAmount: 65,
+      taxRate: 13,
+      redLetterStatus: "red_issued",
+      voidStatus: "valid",
+      originalInvoiceDocumentId: originalInvoice.id,
+      originalBillId: "bill-original-receivable",
+    },
+  };
+  const voidInvoice = {
+    ...redInvoice,
+    id: "doc-void-invoice",
+    name: "作废发票.pdf",
+    relatedObjectIds: [],
+    structuredData: {
+      ...redInvoice.structuredData,
+      invoiceNumber: "VOID-001",
+      redLetterStatus: "normal",
+      voidStatus: "voided",
+      originalInvoiceDocumentId: "",
+      originalBillId: "",
+    },
+  };
+  const redAppliedInvoice = {
+    ...redInvoice,
+    id: "doc-red-applied-invoice",
+    name: "红字申请中发票.pdf",
+    structuredData: { ...redInvoice.structuredData, invoiceNumber: "RED-APPLIED-001", redLetterStatus: "red_applied" },
+  };
+  const originalBill = {
+    id: "bill-original-receivable",
+    no: "YS-ORIGINAL-001",
+    kind: "receivable",
+    counterparty: "客户甲",
+    amount: 1130,
+    date: "2026-09-01",
+    dueDate: "2026-09-30",
+    businessPeriod: "2026-09",
+    status: "active",
+    documentIds: [originalInvoice.id],
+    evidenceIds: [originalInvoice.id],
+    sourceIds: [originalInvoice.id],
+  };
+  const workspace = {
+    ...initial,
+    currentPeriod: "2026-09",
+    documents: [originalInvoice, redInvoice, voidInvoice, redAppliedInvoice],
+    bills: [originalBill],
+    transactions: [],
+    evidenceLinks: [{
+      id: "link-original-invoice-bill",
+      documentIds: [originalInvoice.id],
+      objectIds: [originalBill.id],
+      relation: "confirmed-invoice-bill-match",
+      status: "active",
+    }],
+  };
+
+  assert.throws(() => createBillFromInvoice(workspace, {
+    documentId: voidInvoice.id,
+    confirmed: true,
+    confirmedNoSuitableBill: true,
+  }, { mode: "manual" }), /作废发票不得新建/);
+  assert.throws(() => createBillFromInvoice(workspace, {
+    documentId: redInvoice.id,
+    confirmed: true,
+    confirmedNoSuitableBill: true,
+  }, { mode: "manual" }), /红字发票不能新建普通正向账单/);
+  assert.throws(() => applyRedInvoiceBillAdjustment(workspace, {
+    documentId: redAppliedInvoice.id,
+    confirmed: true,
+  }, { mode: "manual" }), /只有已开具红字发票/);
+
+  const result = applyRedInvoiceBillAdjustment(workspace, {
+    documentId: redInvoice.id,
+    confirmed: true,
+  }, { actor: "测试会计", mode: "manual", at: fixedTimestamp });
+  assert.equal(result.workspace.bills.length, 1, "红字调整不得新建普通账单");
+  assert.equal(result.bill.originalAmount, 1130);
+  assert.equal(result.bill.amount, 565);
+  assert.equal(result.adjustment.amount, -565);
+  assert.equal(result.bill.adjustments[0].documentId, redInvoice.id);
+  assert.equal(result.bill.documentIds.includes(originalInvoice.id), true);
+  assert.equal(result.bill.documentIds.includes(redInvoice.id), true);
+  const linkedRed = result.workspace.documents.find((item) => item.id === redInvoice.id);
+  assert.equal(linkedRed.structuredData.linkedBillId, originalBill.id);
+  assert.equal(linkedRed.structuredData.originalInvoiceDocumentId, originalInvoice.id);
+  assert.equal(linkedRed.relatedObjectIds.includes(originalBill.id), true);
+  assert.equal(result.workspace.evidenceLinks.some((link) => link.relation === "red-invoice-bill-adjustment"
+    && link.documentIds.includes(originalInvoice.id)
+    && link.documentIds.includes(redInvoice.id)
+    && link.objectIds.includes(originalBill.id)), true);
+  assert.throws(() => applyRedInvoiceBillAdjustment(result.workspace, {
+    documentId: redInvoice.id,
+    confirmed: true,
+  }, { mode: "manual" }), /已经形成账单调整/);
+
+  const unlinkedWorkspace = {
+    ...workspace,
+    documents: workspace.documents.map((document) => document.id === originalInvoice.id ? {
+      ...document,
+      relatedObjectIds: [],
+      structuredData: { ...document.structuredData, linkedBillId: "" },
+    } : document),
+    bills: [{ ...originalBill, documentIds: [], evidenceIds: [], sourceIds: [] }],
+    evidenceLinks: [],
+  };
+  assert.throws(() => applyRedInvoiceBillAdjustment(unlinkedWorkspace, {
+    documentId: redInvoice.id,
+    confirmed: true,
+  }, { mode: "manual" }), /原账单尚未关联原发票/);
 });
 
 test("结构化金额、税率和合同服务期限拒绝明显无效输入", async () => {
@@ -1267,7 +1982,7 @@ test("资料匹配建议解释对方、金额和日期依据，但生成建议�
     metadata: {
       category: "审批资料",
       period: "2026-09",
-      structuredData: { approvalType: "采购付款", applicant: "王店长", amount: 3680, approvalStatus: "approved" },
+      structuredData: { approvalType: "采购付款", applicant: "王店长", supplier: "力行器械", approvalDate: "2026-09-04", amount: 3680, approvalStatus: "approved" },
     },
   });
 
@@ -1321,7 +2036,7 @@ test("人工确认后建立三方关联，并按资料类型逐项自动关闭�
     fileVault,
     workspaceId,
     file: Object.assign(new Blob(["approval"]), { name: "力量器械采购审批单.pdf" }),
-    metadata: { category: "审批资料", period: "2026-09", structuredData: { approvalType: "采购付款", amount: 3680, approvalStatus: "approved" } },
+    metadata: { category: "审批资料", period: "2026-09", structuredData: { approvalType: "采购付款", supplier: "力行器械", approvalDate: "2026-09-04", amount: 3680, approvalStatus: "approved" } },
   });
   const refreshed = refreshDocumentMissingTasks({ store, workspaceId, actor: "测试会计", at: fixedTimestamp });
   assert.equal(refreshed.created, 2);
@@ -1689,10 +2404,12 @@ test("完整月度财务档案包含全部快照、真实回执原文件与统�
       socialSecurity: 1000,
       financeConfirmedAt: fixedTimestamp,
       payrollConfirmedAt: fixedTimestamp,
+      socialSecurityConfirmedAt: fixedTimestamp,
       ownerConfirmedAt: fixedTimestamp,
       confirmedBy: "客户负责人",
       financeConfirmedVersionId: "report-monthly-archive",
       payrollConfirmedVersionId: "report-monthly-archive",
+      socialSecurityConfirmedVersionId: "report-monthly-archive",
       ownerConfirmedVersionId: "report-monthly-archive",
     },
     auditLog: [{
@@ -1864,4 +2581,197 @@ test("月度档案缺少必需项目时只能导出名称和清单明确的不�
   assert.equal(after.delivery.archives.length, officialArchiveCount);
   assert.equal(after.delivery.financialArchiveExports[0].status, "incomplete_draft");
   assert.equal(after.auditLog.at(-1).action, "导出不完整月度财务草稿包");
+});
+
+test("结构化发票新增、编辑和关联变化会自动重算当前期间增值税并撤销旧冻结状态", async () => {
+  const storage = createMemoryStorage();
+  const repository = createLocalFoundationRepository({ storage, now: fixedNow });
+  const store = createFinanceDeskStore({ repository });
+  const fileVault = createMemoryFileVault();
+  const workspaceId = store.getState().activeWorkspaceId;
+  const initial = store.getActiveWorkspace();
+  store.actions.replaceWorkspace(workspaceId, {
+    ...initial,
+    currentPeriod: "2026-09",
+    transactions: [{
+      id: "txn-invoice-vat-recalc",
+      accountId: initial.bankAccounts[0].id,
+      date: "2026-09-04",
+      businessPeriod: "2026-09",
+      amount: 106,
+      counterparty: "客户甲",
+      summary: "课程收入",
+      status: "pending",
+      classification: { eventType: "customerReceipt", confidence: 96, riskFlags: [] },
+      evidenceIds: [],
+      documentIds: [],
+      allocations: [],
+    }],
+    businessEvents: [],
+    documents: [],
+    evidenceLinks: [],
+    exceptionTasks: [],
+    vouchers: [],
+    tax: {
+      ...initial.tax,
+      period: "2026-09",
+      frozenAt: fixedTimestamp,
+      financeConfirmedAt: fixedTimestamp,
+      payrollConfirmedAt: fixedTimestamp,
+      socialSecurityConfirmedAt: fixedTimestamp,
+      ownerConfirmedAt: fixedTimestamp,
+      confirmedBy: "旧确认人",
+      financeConfirmedVersionId: "old-report",
+      payrollConfirmedVersionId: "old-report",
+      socialSecurityConfirmedVersionId: "old-report",
+      ownerConfirmedVersionId: "old-report",
+    },
+    delivery: {
+      ...initial.delivery,
+      filing: {
+        ...initial.delivery.filing,
+        period: "2026-09",
+        draftCreatedAt: fixedTimestamp,
+        draftVersionId: "old-report",
+        initialConfirmationId: "old-confirmation",
+        finalConfirmedVersionId: "old-report",
+        exportedAt: fixedTimestamp,
+        exportedPackage: { id: "old-package" },
+        receipt: { id: "old-receipt" },
+        archivedAt: null,
+      },
+    },
+  });
+
+  const document = await saveLocalDocument({
+    store,
+    fileVault,
+    workspaceId,
+    file: Object.assign(new Blob(["output invoice"]), { name: "课程销项发票.pdf" }),
+    metadata: {
+      category: "发票",
+      period: "2026-09",
+      relatedObjectIds: ["txn-invoice-vat-recalc"],
+      createdAt: fixedTimestamp,
+      structuredData: {
+        invoiceNumber: "VAT-RECALC-001",
+        invoiceDate: "2026-09-04",
+        taxDirection: "output",
+        amount: 106,
+        taxRate: 6,
+        verificationStatus: "unverified",
+        redLetterStatus: "normal",
+        voidStatus: "valid",
+        certificationStatus: "not_required",
+      },
+    },
+  });
+  let workspace = store.getActiveWorkspace();
+  assert.equal(workspace.documents.find((item) => item.id === document.id).structuredData.taxDirection, "output");
+  assert.equal(workspace.tax.invoiceVatSummary.outputVat, 6);
+  assert.equal(workspace.tax.invoiceVatSummary.rows[0].taxAmountSource, "derived_from_gross_and_rate");
+  assert.equal(workspace.tax.invoiceVatSummary.rows[0].documentId, document.id);
+  assert.equal(workspace.tax.frozenAt, null);
+  assert.equal(workspace.tax.financeConfirmedAt, null);
+  assert.equal(workspace.tax.socialSecurityConfirmedAt, null);
+  assert.equal(workspace.delivery.filing.exportedPackage, null);
+  assert.equal(workspace.delivery.filing.receipt, null);
+
+  updateLocalDocumentMetadata({
+    store,
+    workspaceId,
+    documentId: document.id,
+    updatedAt: fixedTimestamp,
+    patch: {
+      structuredData: {
+        taxDirection: "input",
+        taxAmount: 6,
+        certificationStatus: "pending",
+      },
+    },
+  });
+  workspace = store.getActiveWorkspace();
+  assert.equal(workspace.tax.invoiceVatSummary.outputVat, 0);
+  assert.equal(workspace.tax.invoiceVatSummary.deductibleInputVat, 0);
+  assert.equal(workspace.tax.invoiceVatSummary.nonDeductibleInputVat, 6);
+  assert.equal(workspace.tax.invoiceVatSummary.rows[0].bucket, "nonDeductibleInputVat");
+
+  updateLocalDocumentMetadata({
+    store,
+    workspaceId,
+    documentId: document.id,
+    updatedAt: fixedTimestamp,
+    patch: { relatedObjectIds: [] },
+  });
+  workspace = store.getActiveWorkspace();
+  const summary = buildStructuredInvoiceVatSummary(workspace, { period: "2026-09" });
+  assert.equal(workspace.tax.invoiceVatSummary.usesStructuredInvoices, false);
+  assert.equal(summary.rows[0].bucket, "excluded");
+  assert.match(summary.rows[0].reason, /尚未关联/);
+});
+
+test("工资社保 CSV、XLSX 与 XLS 使用同一字段映射，并按员工所属期去重写入本地工作台", async () => {
+  const headers = ["员工姓名", "所属期", "应发工资", "个人社保", "企业社保", "个人所得税", "实发工资"];
+  const csv = [
+    headers.join(","),
+    "陈教练,2026-09,10000,800,1600,250,8950",
+    "陈教练,2026-09,10100,800,1600,260,9040",
+  ].join("\n");
+  const csvFile = Object.assign(new Blob([csv], { type: "text/csv" }), { name: "9月工资表.csv" });
+  const csvRead = await readPayrollSocialFile(csvFile);
+  assert.equal(csvRead.inspection.mapping.employee, 0);
+  assert.equal(csvRead.inspection.mapping.netSalary, 6);
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+    headers,
+    ["陈教练", "2026-09", 10100, 800, 1600, "", ""],
+    ["宋教练", "2026-09", 8000, 600, 1200, "", ""],
+  ]), "社保明细");
+  const xlsxFile = Object.assign(new Blob([XLSX.write(workbook, { type: "array", bookType: "xlsx" })]), { name: "9月社保表.xlsx" });
+  const xlsFile = Object.assign(new Blob([XLSX.write(workbook, { type: "array", bookType: "xls" })]), { name: "9月社保表.xls" });
+  const [xlsxRead, xlsRead] = await Promise.all([readPayrollSocialFile(xlsxFile), readPayrollSocialFile(xlsFile)]);
+  assert.equal(xlsxRead.sheetName, "社保明细");
+  assert.equal(xlsRead.inspection.mapping.employerSocial, 4);
+
+  let workspace = createInitialState({ now: fixedNow }).workspaces[0];
+  workspace = { ...workspace, currentPeriod: "2026-09", periods: ["2026-09"] };
+  const payrollPlan = preparePayrollSocialImport(workspace, {
+    id: "payroll-import-csv",
+    fileName: csvRead.fileName,
+    sourceKind: "payroll",
+    table: csvRead.table,
+    inspection: csvRead.inspection,
+    mapping: csvRead.inspection.mapping,
+    defaultPeriod: "2026-09",
+    importedAt: fixedTimestamp,
+  });
+  assert.equal(payrollPlan.canApply, true);
+  assert.equal(payrollPlan.duplicateRowCount, 1);
+  assert.equal(payrollPlan.rows.length, 1);
+  assert.equal(payrollPlan.rows[0].grossSalary, 10100);
+  workspace = applyPayrollSocialImport(workspace, payrollPlan, { actor: "测试会计", at: fixedTimestamp });
+
+  const socialPlan = preparePayrollSocialImport(workspace, {
+    id: "social-import-xlsx",
+    fileName: xlsxRead.fileName,
+    sourceKind: "socialSecurity",
+    table: xlsxRead.table,
+    inspection: xlsxRead.inspection,
+    mapping: xlsxRead.inspection.mapping,
+    defaultPeriod: "2026-09",
+    importedAt: fixedTimestamp,
+  });
+  workspace = applyPayrollSocialImport(workspace, socialPlan, { actor: "测试会计", at: fixedTimestamp });
+  assert.equal(workspace.payrollRecords.filter((record) => record.sourceKind === "payroll").length, 1);
+  assert.equal(workspace.payrollRecords.filter((record) => record.sourceKind === "socialSecurity").length, 2);
+  assert.equal(workspace.tax.payroll, 10100);
+  assert.equal(workspace.tax.socialSecurity, 4200);
+  assert.equal(workspace.tax.payrollSourceIds.length, 1);
+  assert.equal(workspace.tax.socialSecuritySourceIds.length, 2);
+
+  const summary = buildPayrollSocialSummary(workspace, { period: "2026-09" });
+  assert.equal(summary.rows.find((row) => row.employeeName === "陈教练").matched, true);
+  assert.equal(summary.rows.find((row) => row.employeeName === "宋教练").issues.some((issue) => issue.code === "missing_payroll"), true);
+  assert.equal(workspace.payrollImports.every((record) => record.localOnly && record.externalUpload === false), true);
 });

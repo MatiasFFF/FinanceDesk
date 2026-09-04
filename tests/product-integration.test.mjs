@@ -20,16 +20,27 @@ import {
 } from "../src/storage/localFoundationRepository.js";
 import { createFinanceDeskStore } from "../src/store/financeDeskStore.js";
 import {
+  applyPayrollSocialImport,
+  buildPayrollSocialSummary,
+  buildStructuredInvoiceVatSummary,
+  preparePayrollSocialImport,
+} from "../src/features/intake/documentIntake.js";
+import {
   PRIMARY_NAV,
   PRODUCT_NAME,
   archivePeriod,
   attachReceipt,
+  buildVatReconciliationSummary,
   buildReportSnapshot,
+  confirmPayrollSocialData,
   enterNextPeriod,
   ensureWorkspace,
+  exportLocalFilingPackage,
   freezeReportVersion,
+  getPayrollSocialConfirmationState,
   markPackageExported,
   prepareFilingDraft,
+  recordVatReconciliation,
   workflowChecks,
   workflowSourceFingerprint,
 } from "../src/productWorkflow.js";
@@ -59,6 +70,37 @@ function closeableWorkspace() {
   workspace.exceptionTasks = [];
   workspace.bankImports = [];
   return workspace;
+}
+
+function withPayrollSocialData(workspace) {
+  const period = workspace.currentPeriod;
+  const employee = { id: "person-payroll-test", name: "陈教练", status: "active", department: "教练部" };
+  let next = {
+    ...workspace,
+    personnelRecords: [employee, ...(workspace.personnelRecords || []).filter((person) => person.id !== employee.id && person.name !== employee.name)],
+  };
+  const headers = ["员工", "所属期", "应发工资", "个人社保", "企业社保", "个税", "实发工资"];
+  const mapping = { employee: 0, period: 1, grossSalary: 2, personalSocial: 3, employerSocial: 4, individualIncomeTax: 5, netSalary: 6 };
+  const payrollPlan = preparePayrollSocialImport(next, {
+    id: "payroll-import-test",
+    fileName: "工资表.csv",
+    sourceKind: "payroll",
+    table: [headers, ["陈教练", period, 10000, 800, 1600, 250, 8950]],
+    mapping,
+    defaultPeriod: period,
+    importedAt: "2026-09-04T08:00:10.000Z",
+  });
+  next = applyPayrollSocialImport(next, payrollPlan, { actor: "测试会计", at: "2026-09-04T08:00:10.000Z" });
+  const socialPlan = preparePayrollSocialImport(next, {
+    id: "social-import-test",
+    fileName: "社保表.xlsx",
+    sourceKind: "socialSecurity",
+    table: [headers, ["陈教练", period, 10000, 800, 1600, "", ""]],
+    mapping,
+    defaultPeriod: period,
+    importedAt: "2026-09-04T08:00:20.000Z",
+  });
+  return applyPayrollSocialImport(next, socialPlan, { actor: "测试会计", at: "2026-09-04T08:00:20.000Z" });
 }
 
 test("product identity and the complete local foundation remain reachable from primary navigation", () => {
@@ -129,6 +171,268 @@ test("the visible report snapshot uses the accounting engine for statements and 
   );
   assert.equal(Object.values(snapshot.summary.engineChecks).every((check) => typeof check.passed === "boolean"), true);
   assert.equal(snapshot.sections.cashflow.rows.find((row) => row.id === "netCash").value, statements.cashFlow.netChange.value);
+});
+
+test("structured invoices drive traceable output VAT, deductible input VAT, and non-deductible input VAT", () => {
+  const workspace = ensureWorkspace(createAccountingFixture());
+  const period = workspace.currentPeriod;
+  const transactionId = workspace.transactions[0].id;
+  const invoice = (id, values, relatedObjectIds = [transactionId]) => ({
+    id,
+    name: `${id}.pdf`,
+    category: "发票",
+    period,
+    relatedObjectIds,
+    structuredData: {
+      kind: "invoice",
+      invoiceNumber: id.toUpperCase(),
+      invoiceDate: `${period}-04`,
+      taxDirection: "output",
+      amount: 113,
+      taxAmount: 13,
+      taxRate: 13,
+      verificationStatus: "unverified",
+      redLetterStatus: "normal",
+      voidStatus: "valid",
+      certificationStatus: "not_required",
+      ...values,
+    },
+  });
+  workspace.documents = [
+    ...workspace.documents,
+    invoice("invoice-output", {}),
+    invoice("invoice-output-red", { amount: 56.5, taxAmount: 6.5, redLetterStatus: "red_issued" }),
+    invoice("invoice-output-derived", { amount: 106, taxAmount: null, taxRate: 6 }),
+    invoice("invoice-output-void", { amount: 1130, taxAmount: 130, voidStatus: "voided" }),
+    invoice("invoice-input-certified", { taxDirection: "input", amount: 106, taxAmount: 6, taxRate: 6, certificationStatus: "certified" }),
+    invoice("invoice-input-pending", { taxDirection: "input", amount: 53, taxAmount: 3, taxRate: 6, certificationStatus: "pending" }),
+    invoice("invoice-unlinked", {}, []),
+  ];
+
+  const summary = buildStructuredInvoiceVatSummary(workspace, { period });
+  assert.equal(summary.sourceMode, "structured_invoices");
+  assert.equal(summary.outputGrossAmount, 162.5);
+  assert.equal(summary.outputNetAmount, 150);
+  assert.equal(summary.outputVat, 12.5);
+  assert.equal(summary.inputVat, 9);
+  assert.equal(summary.deductibleInputVat, 6);
+  assert.equal(summary.nonDeductibleInputVat, 3);
+  assert.equal(summary.vatPayable, 6.5);
+  assert.equal(summary.rows.find((row) => row.documentId === "invoice-output-red").taxAmount, -6.5);
+  assert.equal(summary.rows.find((row) => row.documentId === "invoice-output-derived").taxAmountSource, "derived_from_gross_and_rate");
+  assert.equal(summary.rows.find((row) => row.documentId === "invoice-output-void").bucket, "excluded");
+  assert.equal(summary.rows.find((row) => row.documentId === "invoice-unlinked").bucket, "excluded");
+
+  const snapshot = buildReportSnapshot(workspace);
+  const row = (id) => snapshot.taxWorkpaper.rows.find((item) => item.id === id);
+  assert.equal(snapshot.taxWorkpaper.sourceMode, "structured_invoices");
+  assert.equal(row("outputInvoiceGross").value, 162.5);
+  assert.equal(row("vat").value, 12.5);
+  assert.equal(row("inputVat").value, 6);
+  assert.equal(row("nonDeductibleInputVat").value, 3);
+  assert.equal(row("vatPayable").value, 6.5);
+  assert.deepEqual(new Set(row("vat").details.map((item) => item.documentId)), new Set(["invoice-output", "invoice-output-red", "invoice-output-derived"]));
+  assert.deepEqual(row("nonDeductibleInputVat").details.map((item) => item.documentId), ["invoice-input-pending"]);
+  assert.match(snapshot.taxWorkpaper.disclaimer, /不代表已联网查验/);
+
+  const changed = structuredClone(workspace);
+  changed.documents.find((document) => document.id === "invoice-output").structuredData.taxAmount = 14;
+  assert.notEqual(workflowSourceFingerprint(changed), workflowSourceFingerprint(workspace));
+});
+
+test("VAT reconciliation preserves book and invoice sources, adjustments, history, and source-change invalidation", () => {
+  let workspace = ensureWorkspace(createAccountingFixture());
+  const period = workspace.currentPeriod;
+  const sourceId = workspace.transactions[0].id;
+  const statements = buildFinancialStatements(workspace, { period });
+  const tax = buildTaxWorkpaper(workspace, { period });
+  const bookRevenue = statements.incomeStatement.netRevenue.value;
+  const bookInputVat = tax.inputVat.value;
+  workspace.documents = [
+    ...workspace.documents,
+    {
+      id: "vat-reconciliation-output",
+      name: "销项差异发票.pdf",
+      category: "发票",
+      period,
+      relatedObjectIds: [sourceId],
+      structuredData: {
+        kind: "invoice",
+        invoiceNumber: "OUTPUT-DIFF",
+        invoiceDate: `${period}-08`,
+        taxDirection: "output",
+        amount: bookRevenue + 38,
+        taxAmount: 13,
+        taxRate: 13,
+        verificationStatus: "unverified",
+        redLetterStatus: "normal",
+        voidStatus: "valid",
+        certificationStatus: "not_required",
+      },
+    },
+    {
+      id: "vat-reconciliation-input",
+      name: "进项差异发票.pdf",
+      category: "发票",
+      period,
+      relatedObjectIds: [sourceId],
+      structuredData: {
+        kind: "invoice",
+        invoiceNumber: "INPUT-DIFF",
+        invoiceDate: `${period}-09`,
+        taxDirection: "input",
+        amount: bookInputVat + 107,
+        taxAmount: bookInputVat + 7,
+        taxRate: 6,
+        verificationStatus: "unverified",
+        redLetterStatus: "normal",
+        voidStatus: "valid",
+        certificationStatus: "certified",
+      },
+    },
+  ];
+
+  const before = buildVatReconciliationSummary(workspace);
+  const output = before.items.find((item) => item.kind === "outputRevenue");
+  const input = before.items.find((item) => item.kind === "deductibleInputVat");
+  assert.equal(output.bookAmount, bookRevenue);
+  assert.equal(output.invoiceAmount, bookRevenue + 25);
+  assert.equal(output.differenceBeforeAdjustment, 25);
+  assert.equal(output.bookSources.length > 0, true);
+  assert.deepEqual(output.invoiceSources.map((source) => source.documentId), ["vat-reconciliation-output"]);
+  assert.equal(input.bookAmount, bookInputVat);
+  assert.equal(input.differenceBeforeAdjustment, 7);
+  assert.deepEqual(input.invoiceSources.map((source) => source.documentId), ["vat-reconciliation-input"]);
+  assert.equal(before.hasUnexplainedDifferences, true);
+
+  workspace = recordVatReconciliation(workspace, {
+    kind: "outputRevenue",
+    reason: "存在已开票但尚未入账收入，本地调整回账面口径",
+    adjustmentAmount: -25,
+  }, { actor: "测试会计", at: "2026-09-04T08:20:00.000Z" });
+  workspace = recordVatReconciliation(workspace, {
+    kind: "deductibleInputVat",
+    reason: "认证时点早于会计入账，本地调整回账面口径",
+    adjustmentAmount: -7,
+  }, { actor: "测试会计", at: "2026-09-04T08:21:00.000Z" });
+
+  const reconciled = buildVatReconciliationSummary(workspace);
+  assert.equal(reconciled.hasUnexplainedDifferences, false);
+  assert.deepEqual(reconciled.items.map((item) => item.differenceAfterAdjustment), [0, 0]);
+  assert.equal(reconciled.items[0].storedRecord.before.difference, 25);
+  assert.equal(reconciled.items[0].storedRecord.after.difference, 0);
+  assert.equal(reconciled.items[0].storedRecord.history.length, 1);
+  assert.equal(workflowChecks(workspace).checks.find((check) => check.id === "vatReconciliation").ok, true);
+
+  const changed = structuredClone(workspace);
+  changed.documents.find((document) => document.id === "vat-reconciliation-output").structuredData.amount += 1;
+  const stale = buildVatReconciliationSummary(changed).items.find((item) => item.kind === "outputRevenue");
+  assert.equal(stale.status, "source_changed");
+  assert.equal(stale.resolved, false);
+  assert.equal(stale.storedRecord.history.length, 1);
+});
+
+test("an unexplained VAT difference blocks the final local filing package", async () => {
+  const workspace = closeableWorkspace();
+  const period = workspace.currentPeriod;
+  const bookRevenue = buildFinancialStatements(workspace, { period }).incomeStatement.netRevenue.value;
+  workspace.documents.push({
+    id: "vat-unexplained-output",
+    name: "待解释销项发票.pdf",
+    category: "发票",
+    period,
+    relatedObjectIds: [workspace.transactions[0].id],
+    structuredData: {
+      kind: "invoice",
+      invoiceNumber: "VAT-UNEXPLAINED",
+      invoiceDate: `${period}-10`,
+      taxDirection: "output",
+      amount: bookRevenue + 23,
+      taxAmount: 13,
+      taxRate: 13,
+      verificationStatus: "unverified",
+      redLetterStatus: "normal",
+      voidStatus: "valid",
+      certificationStatus: "not_required",
+    },
+  });
+
+  const check = workflowChecks(workspace).checks.find((item) => item.id === "vatReconciliation");
+  assert.equal(check.ok, false);
+  assert.match(check.detail, /差额 10.00/);
+  await assert.rejects(() => exportLocalFilingPackage(workspace), /增值税差异均已解释/);
+});
+
+test("payroll and social records enter the tax workpaper, compare by employee, and require separate current confirmations", () => {
+  let workspace = withPayrollSocialData(closeableWorkspace());
+  const summary = buildPayrollSocialSummary(workspace);
+  assert.equal(summary.counts.payroll, 1);
+  assert.equal(summary.counts.socialSecurity, 1);
+  assert.equal(summary.rows[0].matched, true);
+  assert.equal(summary.totals.payroll.grossSalary, 10000);
+  assert.equal(summary.totals.socialSecurityPayable, 2400);
+
+  const snapshot = buildReportSnapshot(workspace);
+  const row = (id) => snapshot.taxWorkpaper.rows.find((item) => item.id === id);
+  assert.equal(row("payroll").value, 10000);
+  assert.equal(row("personalSocialSecurity").value, 800);
+  assert.equal(row("employerSocialSecurity").value, 1600);
+  assert.equal(row("socialSecurity").value, 2400);
+  assert.equal(row("individualIncomeTax").value, 250);
+  assert.equal(row("netSalary").value, 8950);
+  assert.equal(row("payroll").details[0].title, "陈教练");
+
+  workspace = freezeReportVersion(workspace, "测试会计");
+  workspace = confirmPayrollSocialData(workspace, { section: "payroll", confirmed: true }, { actor: "客户负责人", at: "2026-09-04T08:30:00.000Z" });
+  let confirmations = getPayrollSocialConfirmationState(workspace);
+  assert.equal(confirmations.payroll.confirmed, true);
+  assert.equal(confirmations.socialSecurity.confirmed, false);
+  assert.equal(workflowChecks(workspace).checks.find((check) => check.id === "socialSecurity").ok, false);
+
+  workspace = confirmPayrollSocialData(workspace, { section: "socialSecurity", confirmed: true }, { actor: "客户负责人", at: "2026-09-04T08:31:00.000Z" });
+  confirmations = getPayrollSocialConfirmationState(workspace);
+  assert.equal(confirmations.payroll.confirmed, true);
+  assert.equal(confirmations.socialSecurity.confirmed, true);
+  assert.equal(workflowChecks(workspace).checks.find((check) => check.id === "payroll").ok, true);
+  assert.equal(workflowChecks(workspace).checks.find((check) => check.id === "socialSecurity").ok, true);
+
+  const changedPayrollPlan = preparePayrollSocialImport(workspace, {
+    id: "payroll-import-changed",
+    fileName: "工资表-更正.csv",
+    sourceKind: "payroll",
+    table: [["员工", "所属期", "应发工资", "个人社保", "企业社保", "个税", "实发工资"], ["陈教练", workspace.currentPeriod, 10100, 800, 1600, 250, 9050]],
+    mapping: { employee: 0, period: 1, grossSalary: 2, personalSocial: 3, employerSocial: 4, individualIncomeTax: 5, netSalary: 6 },
+    defaultPeriod: workspace.currentPeriod,
+  });
+  workspace = applyPayrollSocialImport(workspace, changedPayrollPlan, { actor: "测试会计", at: "2026-09-04T08:32:00.000Z" });
+  assert.equal(workspace.payrollRecords.filter((record) => record.sourceKind === "payroll").length, 1);
+  assert.equal(workspace.tax.payrollConfirmedAt, null);
+  assert.equal(workspace.tax.socialSecurityConfirmedAt, null);
+  assert.equal(getPayrollSocialConfirmationState(workspace).version, null);
+});
+
+test("payroll comparison explicitly lists departed, missing-personnel, and missing-side records", () => {
+  const workspace = withPayrollSocialData(closeableWorkspace());
+  workspace.personnelRecords.find((person) => person.id === "person-payroll-test").status = "departed";
+  workspace.payrollRecords.push({
+    id: "payroll-record-missing-person",
+    sourceKind: "payroll",
+    period: workspace.currentPeriod,
+    employeeName: "无档案员工",
+    personnelId: null,
+    grossSalary: 6000,
+    personalSocial: 400,
+    employerSocial: 800,
+    individualIncomeTax: 50,
+    netSalary: 5550,
+    sourceImportId: "payroll-import-missing-person",
+  });
+  const summary = buildPayrollSocialSummary(workspace);
+  const departed = summary.rows.find((row) => row.employeeName === "陈教练");
+  const missing = summary.rows.find((row) => row.employeeName === "无档案员工");
+  assert.equal(departed.issues.some((issue) => issue.code === "departed_personnel"), true);
+  assert.equal(missing.issues.some((issue) => issue.code === "missing_personnel"), true);
+  assert.equal(missing.issues.some((issue) => issue.code === "missing_social_security"), true);
 });
 
 test("report totals retain formulas and voucher-level detail whose amounts reconcile to the visible number", () => {
@@ -264,9 +568,11 @@ test("freezing V2 clears every confirmation and delivery artifact bound to V1", 
     ...v1.tax,
     financeConfirmedAt: fixedNow().toISOString(),
     payrollConfirmedAt: fixedNow().toISOString(),
+    socialSecurityConfirmedAt: fixedNow().toISOString(),
     ownerConfirmedAt: fixedNow().toISOString(),
     financeConfirmedVersionId: v1Id,
     payrollConfirmedVersionId: v1Id,
+    socialSecurityConfirmedVersionId: v1Id,
     ownerConfirmedVersionId: v1Id,
   };
   v1.delivery.filing = {
@@ -282,6 +588,7 @@ test("freezing V2 clears every confirmation and delivery artifact bound to V1", 
   const v2 = freezeReportVersion(v1, "测试会计");
   assert.equal(v2.delivery.reportVersions[0].label, "V2");
   assert.equal(v2.tax.financeConfirmedAt, null);
+  assert.equal(v2.tax.socialSecurityConfirmedAt, null);
   assert.equal(v2.tax.ownerConfirmedVersionId, null);
   assert.equal(v2.delivery.filing.draftVersionId, null);
   assert.equal(v2.delivery.filing.exportedPackage, null);
@@ -289,7 +596,14 @@ test("freezing V2 clears every confirmation and delivery artifact bound to V1", 
 });
 
 test("the full frozen-version confirmation, package, receipt, archive and next-period chain remains bound", () => {
-  let workspace = closeableWorkspace();
+  let workspace = withPayrollSocialData(closeableWorkspace());
+  for (const item of buildVatReconciliationSummary(workspace).unresolvedItems) {
+    workspace = recordVatReconciliation(workspace, {
+      kind: item.kind,
+      reason: "完整流程测试已人工核对该差额",
+      adjustmentAmount: -item.differenceBeforeAdjustment,
+    }, { actor: "测试会计", at: "2026-09-04T08:00:30.000Z" });
+  }
   workspace = freezeAccountingReportVersion(
     workspace,
     { period: workspace.currentPeriod, label: "月度财务报表" },
@@ -316,15 +630,15 @@ test("the full frozen-version confirmation, package, receipt, archive and next-p
     tax: {
       ...workspace.tax,
       financeConfirmedAt: "2026-09-04T08:12:00.000Z",
-      payrollConfirmedAt: "2026-09-04T08:12:00.000Z",
       financeConfirmedVersionId: versionId,
-      payrollConfirmedVersionId: versionId,
     },
     delivery: {
       ...workspace.delivery,
       filing: { ...workspace.delivery.filing, initialConfirmationId: confirmationId },
     },
   };
+  workspace = confirmPayrollSocialData(workspace, { section: "payroll", confirmed: true }, { actor: "客户负责人", at: "2026-09-04T08:12:10.000Z" });
+  workspace = confirmPayrollSocialData(workspace, { section: "socialSecurity", confirmed: true }, { actor: "客户负责人", at: "2026-09-04T08:12:20.000Z" });
   workspace = prepareFilingDraft(workspace, "测试会计");
   workspace = {
     ...workspace,

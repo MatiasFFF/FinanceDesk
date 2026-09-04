@@ -520,3 +520,238 @@
     grid-column: auto;
   }
 }
+
+.accounting-ledger-panel {
+  display: grid;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.ledger-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ledger-heading > div {
+  display: grid;
+  gap: 3px;
+}
+
+.ledger-heading small,
+.ledger-heading p,
+.ledger-result-summary small,
+.ledger-table small {
+  color: var(--quiet);
+  font-size: 10px;
+}
+
+.ledger-heading p {
+  max-width: 680px;
+  margin: 0;
+  line-height: 1.55;
+}
+
+.ledger-heading .secondary-button {
+  flex: 0 0 auto;
+}
+
+.ledger-tabs {
+  display: flex;
+  gap: 5px;
+  padding: 4px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--paper-strong);
+}
+
+.ledger-tabs button {
+  flex: 1;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.ledger-tabs button.active {
+  background: var(--clay-soft);
+  color: var(--clay-dark);
+  box-shadow: inset 0 0 0 1px rgba(178, 79, 54, 0.12);
+}
+
+.ledger-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--paper-strong);
+}
+
+.ledger-filters label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ledger-filters label > span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.ledger-filters input,
+.ledger-filters select {
+  min-width: 0;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: none;
+  background: var(--paper);
+  color: var(--espresso);
+  font: inherit;
+  font-size: 10px;
+}
+
+.ledger-reset {
+  align-self: end;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--clay-dark);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.ledger-result-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.ledger-result-summary span {
+  color: var(--clay-dark);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.ledger-result-summary strong {
+  font-size: 13px;
+}
+
+.ledger-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--paper-strong);
+}
+
+.ledger-table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  font-size: 10px;
+}
+
+.ledger-table th,
+.ledger-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+  vertical-align: top;
+}
+
+.ledger-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--paper);
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.ledger-table td > strong,
+.ledger-table td > small,
+.ledger-table td > span {
+  display: block;
+}
+
+.ledger-table td > small {
+  margin-top: 2px;
+}
+
+.ledger-table .number {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.ledger-table tfoot td {
+  border-bottom: 0;
+  background: var(--paper);
+  font-weight: 750;
+}
+
+.ledger-trace {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.ledger-trace summary {
+  color: var(--clay-dark);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.ledger-trace span {
+  display: grid;
+  grid-template-columns: 52px minmax(150px, 1fr);
+  gap: 5px;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.ledger-empty {
+  margin: 0;
+  padding: 20px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .ledger-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .ledger-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .ledger-heading .secondary-button {
+    justify-content: center;
+  }
+
+  .ledger-filters {
+    grid-template-columns: 1fr;
+  }
+}

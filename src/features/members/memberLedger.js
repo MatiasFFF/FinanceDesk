@@ -78,6 +78,18 @@ export const COMMISSION_RULE_BASE_DEFINITIONS = Object.freeze({
   },
 });
 
+export const MEMBERSHIP_PACKAGE_DISCOUNT_TYPES = Object.freeze({
+  NONE: "none",
+  PERCENTAGE: "percentage",
+  FIXED: "fixed",
+});
+
+export const MEMBERSHIP_PACKAGE_DISCOUNT_DEFINITIONS = Object.freeze({
+  [MEMBERSHIP_PACKAGE_DISCOUNT_TYPES.NONE]: { label: "无折扣" },
+  [MEMBERSHIP_PACKAGE_DISCOUNT_TYPES.PERCENTAGE]: { label: "按比例减免" },
+  [MEMBERSHIP_PACKAGE_DISCOUNT_TYPES.FIXED]: { label: "固定金额减免" },
+});
+
 export const MEMBER_STATUS_OPTIONS = Object.freeze([
   { value: "active", label: "在籍" },
   { value: "paused", label: "暂停" },
@@ -142,6 +154,32 @@ function positiveNumber(value, message) {
   const resolved = Number(value);
   if (!Number.isFinite(resolved) || resolved <= 0) throw new Error(message);
   return round(resolved);
+}
+
+function textDimension(values, key, fallback = "") {
+  const value = values?.[key];
+  return String(value == null ? fallback : value).trim();
+}
+
+function businessDimensions(workspace, values = {}, member = null) {
+  const defaultStore = (workspace.stores || []).find((store) => store.status !== "inactive") || workspace.stores?.[0];
+  const storeId = textDimension(values, "storeId", member?.storeId || defaultStore?.id || "");
+  const store = (workspace.stores || []).find((item) => item.id === storeId);
+  const storeName = textDimension(values, "storeName", store?.name || member?.storeName || "");
+  return {
+    storeId,
+    storeName,
+    coach: textDimension(values, "coach", member?.coach || ""),
+    department: textDimension(values, "department", member?.department || ""),
+    project: textDimension(values, "project", member?.project || ""),
+  };
+}
+
+function dimensionSnapshot(dimensions, memberId = null) {
+  return {
+    ...dimensions,
+    memberId,
+  };
 }
 
 export function memberEventKind(event = {}) {
@@ -283,6 +321,178 @@ function assertRefundWithinOriginalRecharge(workspace, event, { excludeRefundId 
   return originalRechargeId;
 }
 
+export function membershipPackagePrice(packageRule = {}) {
+  const listPrice = round(packageRule.listPrice ?? packageRule.price);
+  if (packageRule.discountType === MEMBERSHIP_PACKAGE_DISCOUNT_TYPES.PERCENTAGE) {
+    return round(listPrice * (1 - Number(packageRule.discountValue || 0) / 100));
+  }
+  if (packageRule.discountType === MEMBERSHIP_PACKAGE_DISCOUNT_TYPES.FIXED) {
+    return round(listPrice - Number(packageRule.discountValue || 0));
+  }
+  return listPrice;
+}
+
+function packageExpirationDate(startDate, validityDays) {
+  const time = Date.parse(String(startDate) + "T00:00:00Z");
+  if (!Number.isFinite(time)) throw new Error("套餐充值日期无效");
+  return new Date(time + Number(validityDays) * 86_400_000).toISOString().slice(0, 10);
+}
+
+export function saveMembershipPackage(workspace, values, context = {}) {
+  const at = timestamp(context);
+  const name = requiredText(values.name, "请填写套餐名称");
+  const listPrice = positiveNumber(values.listPrice ?? values.price, "套餐售价必须大于 0");
+  const totalSessions = positiveNumber(values.totalSessions, "套餐总课时必须大于 0");
+  const validityDays = Math.round(positiveNumber(values.validityDays, "套餐有效期必须大于 0"));
+  const discountType = values.discountType || MEMBERSHIP_PACKAGE_DISCOUNT_TYPES.NONE;
+  if (!MEMBERSHIP_PACKAGE_DISCOUNT_DEFINITIONS[discountType]) throw new Error("请选择套餐折扣规则");
+  let discountValue = 0;
+  if (discountType !== MEMBERSHIP_PACKAGE_DISCOUNT_TYPES.NONE) {
+    discountValue = positiveNumber(values.discountValue, "折扣值必须大于 0");
+  }
+  if (discountType === MEMBERSHIP_PACKAGE_DISCOUNT_TYPES.PERCENTAGE && discountValue >= 100) {
+    throw new Error("优惠比例必须小于 100%");
+  }
+  if (discountType === MEMBERSHIP_PACKAGE_DISCOUNT_TYPES.FIXED && discountValue >= listPrice) {
+    throw new Error("固定减免金额必须小于套餐售价");
+  }
+
+  const packages = workspace.membershipPackages || [];
+  const existing = values.id ? packages.find((item) => item.id === values.id) : null;
+  if (values.id && !existing) throw new Error("找不到要修改的会员套餐");
+  const duplicate = packages.find((item) => item.id !== values.id && item.name === name);
+  if (duplicate) throw new Error("已存在名为“" + name + "”的会员套餐");
+  const packageRule = {
+    id: existing?.id || context.packageId || createId("membership-package"),
+    name,
+    listPrice,
+    price: listPrice,
+    salePrice: membershipPackagePrice({ listPrice, discountType, discountValue }),
+    totalSessions,
+    validityDays,
+    discountType,
+    discountValue,
+    enabled: values.enabled == null ? existing?.enabled !== false : Boolean(values.enabled),
+    createdAt: existing?.createdAt || at,
+    updatedAt: at,
+  };
+  return {
+    ...workspace,
+    membershipPackages: existing
+      ? packages.map((item) => item.id === packageRule.id ? packageRule : item)
+      : [...packages, packageRule],
+  };
+}
+
+function allocatePackageEvent(lots, event, linkedRechargeId, fields) {
+  const targets = linkedRechargeId
+    ? lots.filter((lot) => lot.rechargeEventId === linkedRechargeId)
+    : lots;
+  let amount = Number(event.amount || 0);
+  let sessions = Number(event.quantity || 0);
+  targets.forEach((lot) => {
+    if (amount > 0) {
+      const allocated = Math.min(lot.unfulfilledBalance, amount);
+      lot.unfulfilledBalance = round(lot.unfulfilledBalance - allocated);
+      lot[fields.amount] = round(lot[fields.amount] + allocated);
+      amount = round(amount - allocated);
+    }
+    if (sessions > 0) {
+      const allocated = Math.min(lot.remainingSessions, sessions);
+      lot.remainingSessions = round(lot.remainingSessions - allocated);
+      lot[fields.sessions] = round(lot[fields.sessions] + allocated);
+      sessions = round(sessions - allocated);
+    }
+  });
+}
+
+export function buildMemberPackageBalances(workspace = {}, memberId = null, options = {}) {
+  const asOfDate = options.asOfDate || new Date().toISOString().slice(0, 10);
+  const memberEvents = (workspace.businessEvents || []).filter((event) => (
+    (!memberId || event.memberId === memberId)
+    && eventWithinPeriod(event, options.period || null)
+    && (!event.date || event.date <= asOfDate)
+  ));
+  const lots = memberEvents
+    .filter((event) => (
+      memberEventKind(event) === MEMBER_EVENT_KINDS.RECHARGE
+      && isRecognizedMemberEvent(event)
+      && event.packageId
+    ))
+    .sort(eventOrder)
+    .map((event) => {
+      const snapshot = event.packageSnapshot || {};
+      const expiresAt = event.packageExpiresAt || packageExpirationDate(event.date, snapshot.validityDays || 0);
+      return {
+        rechargeEventId: event.id,
+        memberId: event.memberId,
+        memberName: event.memberName || memberForEvent(workspace, event)?.name || "未命名会员",
+        storeId: event.storeId || event.dimensions?.storeId || "",
+        storeName: event.storeName || event.dimensions?.storeName || "",
+        coach: event.coach || event.dimensions?.coach || "",
+        department: event.department || event.dimensions?.department || "",
+        project: event.project || event.dimensions?.project || "",
+        packageId: event.packageId,
+        packageName: event.packageName || snapshot.name || "未命名套餐",
+        purchasedAt: event.date,
+        expiresAt,
+        expired: Boolean(expiresAt && asOfDate > expiresAt),
+        originalSessions: round(event.quantity),
+        consumedSessions: 0,
+        refundedSessions: 0,
+        remainingSessions: round(event.quantity),
+        originalAmount: round(event.amount),
+        recognizedRevenue: 0,
+        refundedAmount: 0,
+        unfulfilledBalance: round(event.amount),
+        packageSnapshot: snapshot,
+      };
+    });
+
+  memberEvents
+    .filter((event) => memberEventKind(event) === MEMBER_EVENT_KINDS.CONSUMPTION && isRecognizedMemberEvent(event))
+    .sort(eventOrder)
+    .forEach((event) => allocatePackageEvent(lots, event, event.packageRechargeId, {
+      amount: "recognizedRevenue",
+      sessions: "consumedSessions",
+    }));
+  memberEvents
+    .filter((event) => memberEventKind(event) === MEMBER_EVENT_KINDS.REFUND && isRecognizedMemberEvent(event))
+    .sort(eventOrder)
+    .forEach((event) => allocatePackageEvent(lots, event, event.originalRechargeId, {
+      amount: "refundedAmount",
+      sessions: "refundedSessions",
+    }));
+  return lots.map((lot) => ({
+    ...lot,
+    remainingSessions: Math.max(0, round(lot.remainingSessions)),
+    unfulfilledBalance: Math.max(0, round(lot.unfulfilledBalance)),
+  }));
+}
+
+function findValidPackagePurchase(workspace, event) {
+  const packageRechargeId = requiredText(event.packageRechargeId, "请选择本次耗课使用的有效套餐");
+  const packageBalance = buildMemberPackageBalances(workspace, event.memberId, { asOfDate: event.date })
+    .find((item) => item.rechargeEventId === packageRechargeId);
+  if (!packageBalance) throw new Error("所选套餐不存在、尚未确认或不属于当前会员");
+  if (packageBalance.expired) throw new Error("所选套餐已于 " + packageBalance.expiresAt + " 到期，不能确认耗课");
+  return packageBalance;
+}
+
+function assertValidPackagePurchase(workspace, event) {
+  const packageBalance = findValidPackagePurchase(workspace, event);
+  if (Number(event.quantity || 0) > packageBalance.remainingSessions + 0.001) {
+    throw new Error("所选套餐剩余 " + packageBalance.remainingSessions + " 节，本次耗课课时不足");
+  }
+  if (packageBalance.unfulfilledBalance <= 0) throw new Error("所选套餐未履约余额不足，不能确认耗课");
+  return packageBalance;
+}
+
+export function calculateMembershipConsumptionAmount(packageBalance, quantity) {
+  if (Number(quantity) >= packageBalance.remainingSessions - 0.001) return packageBalance.unfulfilledBalance;
+  return round(packageBalance.unfulfilledBalance / packageBalance.remainingSessions * Number(quantity));
+}
+
 function memberForEvent(workspace, event) {
   return (workspace.members || []).find((member) => member.id === event.memberId)
     || (workspace.members || []).find((member) => member.name && member.name === event.memberName)
@@ -327,12 +537,13 @@ function commissionSourceRecords(workspace, rule, period) {
       ))
       .map((event) => {
         const member = memberForEvent(workspace, event);
-        const coach = String(event.coach || member?.coach || "").trim();
+        const dimensions = businessDimensions(workspace, event, member);
+        const coach = dimensions.coach;
         return {
           sourceId: event.id,
           sourceType: "memberEvent",
           date: event.date,
-          coach,
+          ...dimensions,
           memberId: event.memberId || member?.id || null,
           memberName: event.memberName || member?.name || "未命名会员",
           label: `${event.memberName || member?.name || "会员"}${expectedKind === MEMBER_EVENT_KINDS.RECHARGE ? "充值" : "耗课"}`,
@@ -358,12 +569,19 @@ function commissionSourceRecords(workspace, rule, period) {
         const linkedEvent = (workspace.businessEvents || []).find((event) => (
           event.id === transaction.businessEventId || (event.sourceIds || []).includes(transaction.id)
         ));
-        const coach = String(transaction.coach || linkedEvent?.coach || member?.coach || "").trim();
+        const dimensions = businessDimensions(workspace, {
+          storeId: transaction.storeId ?? linkedEvent?.storeId,
+          storeName: transaction.storeName ?? linkedEvent?.storeName,
+          coach: transaction.coach ?? linkedEvent?.coach,
+          department: transaction.department ?? linkedEvent?.department,
+          project: transaction.project ?? linkedEvent?.project,
+        }, member);
+        const coach = dimensions.coach;
         return {
           sourceId: transaction.id,
           sourceType: "bankTransaction",
           date: transaction.date,
-          coach,
+          ...dimensions,
           memberId: member?.id || transaction.memberId || null,
           memberName: member?.name || transaction.memberName || transaction.counterparty || "未识别收款方",
           label: `${member?.name || transaction.memberName || transaction.counterparty || "银行"}收款`,
@@ -483,44 +701,59 @@ export function confirmCommissionAccrual(workspace, values, context = {}) {
   if (!selectedLines.length) throw new Error("本期没有尚未计提的来源");
   const at = timestamp(context);
   const definition = MEMBER_EVENT_DEFINITIONS[MEMBER_EVENT_KINDS.COMMISSION];
-  const amount = round(selectedLines.reduce((sum, line) => sum + line.commissionAmount, 0));
-  const quantity = calculation.rule.basis === COMMISSION_RULE_BASES.MEMBER_CONSUMPTION
-    ? round(selectedLines.reduce((sum, line) => sum + line.units, 0))
-    : selectedLines.length;
-  const date = context.date || [...selectedLines].sort(eventOrder).at(-1)?.date || `${calculation.period}-01`;
   const basisDefinition = COMMISSION_RULE_BASE_DEFINITIONS[calculation.rule.basis];
-  const event = {
-    id: context.eventId || createId("member-event"),
-    kind: MEMBER_EVENT_KINDS.COMMISSION,
-    type: definition.accountingEventType,
-    accountingEventType: definition.accountingEventType,
-    accountingSubtype: definition.accountingSubtype,
-    account: definition.account,
-    accountingLabel: definition.accountingLabel,
-    suggestedEntry: definition.suggestedEntry,
-    accountingStatus: "ready",
-    date,
-    memberId: null,
-    memberName: "",
-    coach: calculation.rule.coach,
-    amount,
-    quantity,
-    note: `${calculation.period} ${basisDefinition.label}提成 · ${selectedLines.length} 项来源`,
-    status: "accrued",
-    source: "commission-rule",
-    sourceIds: selectedLines.map((line) => line.sourceId),
-    commissionSourceIds: selectedLines.map((line) => line.sourceId),
-    commissionRuleId: calculation.rule.id,
-    commissionBasis: calculation.rule.basis,
-    commissionMethod: calculation.rule.method,
-    calculationPeriod: calculation.period,
-    commissionRuleSnapshot: { ...calculation.rule },
-    commissionCalculationLines: selectedLines.map((line) => ({ ...line })),
-    history: [{ at, actor: context.actor || "本地用户", from: null, to: "accrued" }],
-    createdAt: at,
-    updatedAt: at,
-  };
-  return { ...workspace, businessEvents: [...(workspace.businessEvents || []), event] };
+  const groupedLines = new Map();
+  selectedLines.forEach((line) => {
+    const key = [line.storeId || "", line.storeName || "", line.department || "", line.project || ""].join("|");
+    groupedLines.set(key, [...(groupedLines.get(key) || []), line]);
+  });
+  const groups = [...groupedLines.values()];
+  const events = groups.map((lines, index) => {
+    const dimensions = businessDimensions(workspace, lines[0]);
+    const amount = round(lines.reduce((sum, line) => sum + line.commissionAmount, 0));
+    const quantity = calculation.rule.basis === COMMISSION_RULE_BASES.MEMBER_CONSUMPTION
+      ? round(lines.reduce((sum, line) => sum + line.units, 0))
+      : lines.length;
+    const date = context.date || [...lines].sort(eventOrder).at(-1)?.date || `${calculation.period}-01`;
+    const eventId = context.eventId
+      ? (groups.length === 1 || index === 0 ? context.eventId : `${context.eventId}-${index + 1}`)
+      : createId("member-event");
+    return {
+      id: eventId,
+      kind: MEMBER_EVENT_KINDS.COMMISSION,
+      type: definition.accountingEventType,
+      accountingEventType: definition.accountingEventType,
+      accountingSubtype: definition.accountingSubtype,
+      account: definition.account,
+      accountingLabel: definition.accountingLabel,
+      suggestedEntry: definition.suggestedEntry,
+      accountingStatus: "ready",
+      date,
+      memberId: null,
+      memberName: "",
+      ...dimensions,
+      dimensions: dimensionSnapshot(dimensions),
+      dimensionSource: "commission-sources",
+      amount,
+      quantity,
+      note: `${calculation.period} ${basisDefinition.label}提成 · ${lines.length} 项来源`,
+      status: "accrued",
+      source: "commission-rule",
+      sourceIds: [...new Set([...(dimensions.storeId ? [dimensions.storeId] : []), ...lines.map((line) => line.sourceId)])],
+      dimensionSourceIds: dimensions.storeId ? [dimensions.storeId] : [],
+      commissionSourceIds: lines.map((line) => line.sourceId),
+      commissionRuleId: calculation.rule.id,
+      commissionBasis: calculation.rule.basis,
+      commissionMethod: calculation.rule.method,
+      calculationPeriod: calculation.period,
+      commissionRuleSnapshot: { ...calculation.rule },
+      commissionCalculationLines: lines.map((line) => ({ ...line })),
+      history: [{ at, actor: context.actor || "本地用户", from: null, to: "accrued" }],
+      createdAt: at,
+      updatedAt: at,
+    };
+  });
+  return { ...workspace, businessEvents: [...(workspace.businessEvents || []), ...events] };
 }
 
 function reconciliationPeriod(workspace, requestedPeriod) {
@@ -778,11 +1011,12 @@ function assertNonNegativeMemberBalances(workspace) {
 export function addMember(workspace, values, context = {}) {
   const at = timestamp(context);
   const name = requiredText(values.name, "请填写会员姓名");
+  const dimensions = businessDimensions(workspace, values);
   const member = {
     id: values.id || createId("member"),
     name,
     phone: String(values.phone || "").trim(),
-    coach: String(values.coach || "").trim(),
+    ...dimensions,
     status: normalizedMemberStatus(values.status || "active"),
     openingSessions: round(values.openingSessions || 0),
     openingBalance: round(values.openingBalance || 0),
@@ -813,9 +1047,46 @@ export function addMemberBusinessEvent(workspace, values, context = {}) {
     ? null
     : (workspace.members || []).find((item) => item.id === values.memberId);
   if (kind !== MEMBER_EVENT_KINDS.COMMISSION && !member) throw new Error("请选择会员");
-  const coach = String(values.coach || member?.coach || "").trim();
+  const dimensions = businessDimensions(workspace, values, member);
+  const coach = dimensions.coach;
   if (kind === MEMBER_EVENT_KINDS.COMMISSION && !coach) throw new Error("请填写教练姓名");
   const at = timestamp(context);
+  const date = requiredText(values.date, "请选择业务日期");
+  let amount;
+  let quantity;
+  let packageRule = null;
+  let packageBalance = null;
+  if (kind === MEMBER_EVENT_KINDS.RECHARGE) {
+    const packageId = requiredText(values.packageId, "请选择会员充值套餐");
+    packageRule = (workspace.membershipPackages || []).find((item) => item.id === packageId);
+    if (!packageRule || packageRule.enabled === false) throw new Error("所选会员套餐不存在或已停用");
+    amount = positiveNumber(packageRule.salePrice ?? membershipPackagePrice(packageRule), "套餐实收金额必须大于 0");
+    quantity = positiveNumber(packageRule.totalSessions, "套餐总课时必须大于 0");
+  } else if (kind === MEMBER_EVENT_KINDS.CONSUMPTION) {
+    quantity = positiveNumber(values.quantity, "课时必须大于 0");
+    packageBalance = findValidPackagePurchase(workspace, {
+      memberId: member.id,
+      date,
+      quantity,
+      packageRechargeId: values.packageRechargeId,
+    });
+    amount = calculateMembershipConsumptionAmount(packageBalance, quantity);
+  } else {
+    amount = positiveNumber(values.amount, "金额必须大于 0");
+    quantity = kind === MEMBER_EVENT_KINDS.COMMISSION
+      ? round(values.quantity || 0)
+      : positiveNumber(values.quantity, "课时必须大于 0");
+  }
+  const packageSnapshot = packageRule ? {
+    id: packageRule.id,
+    name: packageRule.name,
+    listPrice: packageRule.listPrice,
+    salePrice: packageRule.salePrice ?? membershipPackagePrice(packageRule),
+    totalSessions: packageRule.totalSessions,
+    validityDays: packageRule.validityDays,
+    discountType: packageRule.discountType,
+    discountValue: packageRule.discountValue,
+  } : packageBalance?.packageSnapshot || null;
   const event = {
     id: values.id || createId("member-event"),
     kind,
@@ -826,17 +1097,35 @@ export function addMemberBusinessEvent(workspace, values, context = {}) {
     accountingLabel: definition.accountingLabel,
     suggestedEntry: definition.suggestedEntry,
     accountingStatus: "draft",
-    date: requiredText(values.date, "请选择业务日期"),
+    date,
     memberId: member?.id || null,
     memberName: member?.name || "",
-    coach,
-    amount: positiveNumber(values.amount, "金额必须大于 0"),
-    quantity: kind === MEMBER_EVENT_KINDS.COMMISSION ? round(values.quantity || 0) : positiveNumber(values.quantity, "课时必须大于 0"),
+    ...dimensions,
+    dimensions: dimensionSnapshot(dimensions, member?.id || null),
+    dimensionSource: member && ["storeId", "storeName", "coach", "department", "project"]
+      .every((key) => values[key] == null || String(values[key]).trim() === String(member[key] || "").trim())
+      ? "member-default"
+      : "business-adjustment",
+    amount,
+    quantity,
     note: String(values.note || "").trim(),
     status: "pending",
     source: "member-ledger",
     originalRechargeId: kind === MEMBER_EVENT_KINDS.REFUND ? String(values.originalRechargeId || "").trim() : null,
-    sourceIds: member ? [member.id] : [],
+    packageId: packageRule?.id || packageBalance?.packageId || null,
+    packageName: packageRule?.name || packageBalance?.packageName || "",
+    packageRechargeId: kind === MEMBER_EVENT_KINDS.CONSUMPTION ? packageBalance.rechargeEventId : null,
+    packageExpiresAt: packageRule
+      ? packageExpirationDate(date, packageRule.validityDays)
+      : packageBalance?.expiresAt || null,
+    packageSnapshot,
+    sourceIds: member ? [
+      member.id,
+      ...(dimensions.storeId ? [dimensions.storeId] : []),
+      ...(packageRule ? [packageRule.id] : []),
+      ...(packageBalance ? [packageBalance.rechargeEventId] : []),
+    ] : (dimensions.storeId ? [dimensions.storeId] : []),
+    dimensionSourceIds: dimensions.storeId ? [dimensions.storeId] : [],
     history: [{ at, actor: context.actor || "本地用户", from: null, to: "pending" }],
     createdAt: at,
     updatedAt: at,
@@ -844,7 +1133,7 @@ export function addMemberBusinessEvent(workspace, values, context = {}) {
   if (kind === MEMBER_EVENT_KINDS.REFUND) {
     const originalRechargeId = assertRefundWithinOriginalRecharge(workspace, event);
     event.originalRechargeId = originalRechargeId;
-    event.sourceIds = [member.id, originalRechargeId];
+    event.sourceIds = [member.id, ...(dimensions.storeId ? [dimensions.storeId] : []), originalRechargeId];
   }
   return { ...workspace, businessEvents: [...(workspace.businessEvents || []), event] };
 }
@@ -864,6 +1153,12 @@ export function updateMemberBusinessEventStatus(workspace, eventId, nextStatus, 
   if (kind === MEMBER_EVENT_KINDS.REFUND && nextStatus === "completed") {
     assertRefundWithinOriginalRecharge(workspace, event, { excludeRefundId: event.id });
   }
+  const confirmedPackageBalance = kind === MEMBER_EVENT_KINDS.CONSUMPTION && nextStatus === "confirmed"
+    ? assertValidPackagePurchase(workspace, event)
+    : null;
+  const confirmedConsumptionAmount = confirmedPackageBalance
+    ? calculateMembershipConsumptionAmount(confirmedPackageBalance, event.quantity)
+    : null;
   const at = timestamp(context);
   const accountingStatus = event.accountingStatus === "posted" && nextStatus !== "void"
     ? "posted"
@@ -874,6 +1169,7 @@ export function updateMemberBusinessEventStatus(workspace, eventId, nextStatus, 
     ...workspace,
     businessEvents: workspace.businessEvents.map((item) => item.id === eventId ? {
       ...item,
+      amount: confirmedConsumptionAmount ?? item.amount,
       status: nextStatus,
       accountingStatus,
       updatedAt: at,
@@ -907,12 +1203,25 @@ export function updateMemberBusinessEventStatus(workspace, eventId, nextStatus, 
       memberId: null,
       memberName: "",
       coach: event.coach,
+      storeId: event.storeId || event.dimensions?.storeId || "",
+      storeName: event.storeName || event.dimensions?.storeName || "",
+      department: event.department || event.dimensions?.department || "",
+      project: event.project || event.dimensions?.project || "",
+      dimensions: dimensionSnapshot({
+        storeId: event.storeId || event.dimensions?.storeId || "",
+        storeName: event.storeName || event.dimensions?.storeName || "",
+        coach: event.coach || event.dimensions?.coach || "",
+        department: event.department || event.dimensions?.department || "",
+        project: event.project || event.dimensions?.project || "",
+      }),
+      dimensionSource: "commission-accrual",
       amount: round(event.amount),
       quantity: round(event.quantity),
       note: `支付${event.date || ""}计提的教练提成`,
       status: "confirmed",
       source: "member-ledger",
-      sourceIds: [event.id],
+      sourceIds: [event.id, ...(event.storeId ? [event.storeId] : [])],
+      dimensionSourceIds: event.storeId ? [event.storeId] : [],
       commissionEventId: event.id,
       bankAccountId: event.bankAccountId || null,
       history: [{ at, actor: context.actor || "本地用户", from: null, to: "confirmed" }],
