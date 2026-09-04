@@ -1112,24 +1112,45 @@
 .document-upload-controls,
 .document-filter-controls,
 .document-edit-controls {
-  grid-template-columns: minmax(160px, 0.7fr) minmax(150px, 0.6fr) minmax(260px, 1.25fr) auto;
+  grid-template-columns: minmax(190px, 0.75fr) minmax(180px, 0.7fr) minmax(280px, 1.35fr) minmax(150px, auto);
 }
 
 .document-structured-fields {
-  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  grid-template-columns: repeat(3, minmax(190px, 1fr));
 }
 
 .document-import-controls,
 .document-reconciliation-controls {
-  grid-template-columns: repeat(2, minmax(220px, 1fr)) auto;
+  grid-template-columns: repeat(2, minmax(240px, 1fr)) minmax(180px, auto);
 }
 
 .document-action-controls {
-  grid-template-columns: minmax(260px, 1fr) auto;
+  grid-template-columns: minmax(280px, 1fr) minmax(220px, auto);
 }
 
 .document-structured-fields > .foundation-hint {
   grid-column: 1 / -1;
+}
+
+.document-intake-panel .foundation-field > span,
+.document-intake-panel .foundation-hint,
+.document-intake-panel .foundation-notice,
+.document-intake-panel .foundation-error {
+  overflow-wrap: anywhere;
+}
+
+.document-intake-panel .foundation-field input,
+.document-intake-panel .foundation-field select,
+.document-action-controls > button {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.document-action-controls > button,
+.document-intake-panel .foundation-record > button {
+  white-space: normal;
+  line-height: 1.35;
+  text-align: center;
 }
 
 .bank-import-start > button,
@@ -1236,6 +1257,30 @@
   flex-wrap: wrap;
 }
 
+.document-intake-panel .foundation-record {
+  min-width: 0;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.document-intake-panel .foundation-record > div {
+  min-width: 0;
+  flex: 1 1 360px;
+}
+
+.document-intake-panel .foundation-record > span,
+.document-intake-panel .foundation-record > label {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.document-intake-panel .foundation-record > button {
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+}
+
 .document-record > div {
   flex: 1 1 360px;
 }
@@ -1284,12 +1329,22 @@
   .document-import-controls > button,
   .document-reconciliation-controls > button {
     grid-column: 1 / -1;
-    justify-self: start;
+    width: 100%;
+    justify-self: stretch;
   }
 
   .document-import-controls,
   .document-reconciliation-controls {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .document-action-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .document-action-controls > button {
+    width: 100%;
+    justify-self: stretch;
   }
 }
 
@@ -1332,6 +1387,23 @@
     margin-left: 0;
     padding-top: 8px;
     border-top: 1px solid var(--line-soft);
+  }
+
+  .document-intake-panel .foundation-record > div,
+  .document-intake-panel .foundation-record > span,
+  .document-intake-panel .foundation-record > label,
+  .document-intake-panel .foundation-record > button {
+    width: 100%;
+    flex-basis: 100%;
+  }
+
+  .document-intake-panel .foundation-inline-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .document-intake-panel .foundation-inline-actions > button {
+    width: 100%;
   }
 }
 

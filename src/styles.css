@@ -5860,3 +5860,63 @@ summary.forecast-week-row {
     text-align: left;
   }
 }
+
+/* Long workspace terminology must remain readable in the three close-workflow views. */
+.transaction-detail-panel .detail-heading h2,
+.transaction-detail-panel .match-reason,
+.transaction-detail-panel .allocation-list small,
+.transaction-detail-panel .evidence-file-list small,
+.transaction-detail-panel .missing-evidence small,
+.reports-page .report-check-rows strong,
+.reports-page .report-check-rows small,
+.reports-page .statement-rows button > span,
+.tax-page .workpaper-grid span,
+.tax-page .confirmation-item-heading > div,
+.tax-page .final-statement-grid strong,
+.tax-page .final-statement-grid dt {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.transaction-detail-panel .detail-actions {
+  grid-template-columns: minmax(108px, 0.8fr) minmax(0, 1.2fr);
+  align-items: center;
+}
+
+.reports-page .report-toolbar-actions > button {
+  max-width: 100%;
+  white-space: normal;
+  text-align: center;
+}
+
+.tax-page .workpaper-grid span {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.tax-page .tax-input-grid label > span,
+.tax-page .final-tax-grid span,
+.tax-page .final-tax-grid small,
+.tax-page .final-payroll-grid span {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .transaction-detail-panel .detail-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .transaction-detail-panel .detail-action-note {
+    text-align: left;
+  }
+
+  .reports-page .statement-heading,
+  .reports-page .statement-rows button {
+    grid-template-columns: minmax(0, 1fr) 104px 16px;
+  }
+
+  .tax-page .final-context-strip {
+    grid-template-columns: 1fr;
+  }
+}
