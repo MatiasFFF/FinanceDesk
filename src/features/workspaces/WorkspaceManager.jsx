@@ -411,7 +411,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
 
   return (
     <div className="modal-backdrop foundation-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeManager()}>
-      <section className="modal-card foundation-manager" role="dialog" aria-modal="true" aria-labelledby="workspace-manager-title">
+      <section className="modal-card foundation-manager workspace-manager-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-manager-title">
         <header className="modal-heading">
           <div><p className="eyebrow">浏览器本地</p><h2 id="workspace-manager-title">管理财务工作台</h2></div>
           <button className="icon-button" type="button" aria-label="关闭" onClick={closeManager}><X size={19} /></button>

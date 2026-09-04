@@ -1913,6 +1913,118 @@
   }
 }
 
+/* Workspace manager only: roomy desktop columns with a stable header, body and footer. */
+.modal-card.foundation-manager.workspace-manager-dialog {
+  width: min(1240px, calc(100vw - 48px));
+  max-width: none;
+  max-height: calc(100dvh - 48px);
+  overflow: hidden;
+}
+
+.workspace-manager-dialog > .modal-heading,
+.workspace-manager-dialog > .foundation-error,
+.workspace-manager-dialog > .foundation-manager-footer {
+  flex: 0 0 auto;
+}
+
+.workspace-manager-dialog > .foundation-manager-grid {
+  grid-template-columns: minmax(420px, 0.9fr) minmax(520px, 1.1fr);
+  gap: 20px;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  padding: 2px 8px 4px 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.workspace-manager-dialog > .foundation-manager-grid > .foundation-section {
+  min-width: 0;
+  padding: 20px;
+}
+
+.workspace-manager-dialog .foundation-field,
+.workspace-manager-dialog .foundation-field input,
+.workspace-manager-dialog .foundation-field select {
+  width: 100%;
+  max-width: 100%;
+}
+
+.workspace-manager-dialog .foundation-inline-actions > button,
+.workspace-manager-dialog .foundation-form > .primary-button {
+  min-width: max-content;
+  flex-shrink: 0;
+}
+
+.workspace-manager-dialog .foundation-inline-actions .compact-select {
+  min-width: 164px;
+}
+
+.workspace-manager-dialog .workspace-module-grid {
+  grid-template-columns: repeat(2, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.workspace-manager-dialog .workspace-module-card,
+.workspace-manager-dialog .workspace-module-card-copy,
+.workspace-manager-dialog .workspace-list-item > span,
+.workspace-manager-dialog .foundation-section-heading > div {
+  min-width: 0;
+}
+
+.workspace-manager-dialog .workspace-module-card-title,
+.workspace-manager-dialog .workspace-module-card-description,
+.workspace-manager-dialog .workspace-list-item strong,
+.workspace-manager-dialog .workspace-list-item small,
+.workspace-manager-dialog .foundation-hint,
+.workspace-manager-dialog .foundation-manager-footer > span {
+  writing-mode: horizontal-tb;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1080px) {
+  .modal-card.foundation-manager.workspace-manager-dialog {
+    width: min(820px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+  }
+
+  .workspace-manager-dialog > .foundation-manager-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 680px) {
+  .workspace-manager-dialog .workspace-module-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace-manager-dialog > .foundation-manager-grid > .foundation-section {
+    padding: 16px;
+  }
+}
+
+@media (max-width: 560px) {
+  .modal-card.foundation-manager.workspace-manager-dialog {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
+  }
+
+  .workspace-manager-dialog > .foundation-manager-grid {
+    padding-right: 4px;
+  }
+
+  .workspace-manager-dialog .foundation-inline-actions > button,
+  .workspace-manager-dialog .foundation-inline-actions .compact-select,
+  .workspace-manager-dialog .foundation-form > .primary-button {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
 .category-rule-list {
   max-height: 440px;
   gap: 10px;
