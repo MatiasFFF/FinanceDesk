@@ -1,6 +1,7 @@
 .member-ledger-page {
   display: grid;
   gap: 14px;
+  container-type: inline-size;
 }
 
 .member-ledger-hero {
@@ -80,6 +81,10 @@
 .member-accounting-hint small { color: var(--muted); font-size: 9px; }
 
 .membership-packages-panel { overflow: hidden; }
+.member-entry-panel,
+.member-create-panel,
+.membership-packages-panel,
+.commission-rules-panel { container-type: inline-size; }
 .membership-packages-panel > .panel-heading { align-items: start; }
 .membership-packages-panel > .panel-heading p:last-child { margin: 5px 0 0; color: var(--quiet); font-size: 10px; }
 .membership-packages-panel > .panel-heading > span, .member-package-balances-panel > .panel-heading > span { color: var(--quiet); font-size: 11px; }
@@ -95,10 +100,10 @@
 .membership-package-rule-list > article > div:first-child > span { width: max-content; padding: 3px 7px; border-radius: 999px; background: var(--sage-soft); color: var(--sage); font-size: 8px; font-weight: 750; }
 .membership-package-rule-list > article > div:first-child strong { font-size: 11px; }
 .membership-package-rule-list > article > div:first-child small { color: var(--quiet); font-size: 8px; }
-.membership-package-rule-list > article > div:nth-child(2) { display: grid; min-width: 0; grid-template-columns: repeat(3, minmax(72px, 1fr)); gap: 6px; }
+.membership-package-rule-list > article > div:nth-child(2) { display: grid; min-width: 0; grid-template-columns: repeat(auto-fit, minmax(105px, 1fr)); gap: 6px; }
 .membership-package-rule-list > article > div:nth-child(2) > span { display: grid; min-width: 0; gap: 2px; padding: 7px; border-radius: 7px; background: var(--sand); }
 .membership-package-rule-list > article > div:nth-child(2) small { color: var(--quiet); font-size: 7px; }
-.membership-package-rule-list > article > div:nth-child(2) strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.membership-package-rule-list > article > div:nth-child(2) strong { font-size: 9px; overflow-wrap: anywhere; }
 .membership-package-rule-list footer { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
 .membership-package-rule-list footer button { flex: 1; min-height: 29px; padding: 0 8px; font-size: 9px; }
 .membership-package-empty { grid-column: 1 / -1; margin: 0; padding: 18px; border: 1px dashed var(--line); border-radius: 9px; color: var(--quiet); font-size: 9px; text-align: center; }
@@ -125,17 +130,17 @@
 .commission-rule-head small { color: var(--quiet); font-size: 9px; }
 .commission-rule-head > div:last-child { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 6px; }
 .commission-rule-head button { min-height: 29px; padding: 0 8px; font-size: 9px; }
-.commission-rule-metrics { display: grid; min-width: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+.commission-rule-metrics { display: grid; min-width: 0; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 7px; }
 .commission-rule-metrics > span { display: grid; gap: 3px; padding: 9px; border-radius: 8px; background: var(--sand); }
 .commission-rule-metrics small { color: var(--quiet); font-size: 8px; }
-.commission-rule-metrics strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.commission-rule-metrics strong { font-size: 11px; overflow-wrap: anywhere; }
 .commission-rule-list details { border-top: 1px solid var(--line-soft); }
 .commission-rule-list summary { padding: 10px 0 0; color: var(--muted); cursor: pointer; font-size: 9px; font-weight: 700; }
 .commission-calculation-list { display: grid; margin-top: 8px; border-top: 1px solid var(--line-soft); }
 .commission-calculation-list > div { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
 .commission-calculation-list > div > span { display: grid; min-width: 0; gap: 2px; }
 .commission-calculation-list > div > span:last-child { flex: 0 0 auto; text-align: right; }
-.commission-calculation-list strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.commission-calculation-list strong { font-size: 9px; overflow-wrap: anywhere; }
 .commission-calculation-list small, .commission-calculation-list p { margin: 0; color: var(--quiet); font-size: 8px; }
 .commission-rule-feedback { margin: 11px 0 0; padding: 9px 11px; border-radius: 8px; font-size: 10px; }
 .commission-rule-feedback.success { background: var(--sage-soft); color: var(--sage); }
@@ -337,6 +342,17 @@
   border-radius: var(--radius-control, 8px);
 }
 
+.member-entry-form button,
+.membership-package-rule-list footer button,
+.commission-rule-head button {
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.member-entry-form button > svg {
+  flex: 0 0 auto;
+}
+
 .member-entry-form input,
 .member-entry-form select,
 .member-card-foot select {
@@ -360,9 +376,9 @@
 
 .membership-package-form,
 .commission-rule-form {
-  border: 1px solid var(--line-soft);
+  border: 0;
   border-radius: 10px;
-  background: var(--canvas);
+  background: var(--sand);
 }
 
 .membership-package-rule-list > article,
@@ -400,7 +416,7 @@
 }
 
 .commission-rule-form-actions button {
-  min-width: 120px;
+  min-width: min(120px, 100%);
 }
 
 .membership-package-empty {
@@ -452,5 +468,61 @@
 
   .member-event-status {
     justify-items: stretch;
+  }
+}
+
+@container (max-width: 900px) {
+  .member-entry-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@container (max-width: 820px) {
+  .commission-rule-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@container (max-width: 720px) {
+  .member-entry-panel .member-entry-form,
+  .membership-packages-panel .membership-package-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container (max-width: 460px) {
+  .member-entry-panel .member-entry-form,
+  .membership-packages-panel .membership-package-form,
+  .commission-rules-panel .commission-rule-form {
+    grid-template-columns: 1fr;
+  }
+
+  .member-entry-panel .member-entry-form > *,
+  .membership-packages-panel .membership-package-form > *,
+  .commission-rules-panel .commission-rule-form > * {
+    grid-column: auto;
+  }
+
+  .commission-rule-form-actions {
+    flex-direction: column;
+  }
+
+  .commission-rule-form-actions button {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 720px) {
+  .member-entry-panel .member-entry-form,
+  .membership-packages-panel .membership-package-form,
+  .commission-rules-panel .commission-rule-form {
+    grid-template-columns: 1fr;
+  }
+
+  .member-entry-panel .member-entry-form > *,
+  .membership-packages-panel .membership-package-form > *,
+  .commission-rules-panel .commission-rule-form > * {
+    grid-column: auto;
   }
 }

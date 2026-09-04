@@ -5992,3 +5992,194 @@ summary.forecast-week-row {
     grid-template-columns: 1fr;
   }
 }
+
+/* Sidebar operator switcher: full hit area and readable identity copy. */
+.account-switcher-trigger {
+  display: grid;
+  width: 100%;
+  min-height: 58px;
+  grid-template-columns: 34px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 11px;
+}
+
+.account-switcher-trigger > .avatar,
+.account-switcher-trigger > svg {
+  flex: 0 0 auto;
+}
+
+.account-switcher-trigger > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.account-switcher-trigger strong,
+.account-switcher-trigger small,
+.account-switcher-menu button strong,
+.account-switcher-menu button small {
+  min-width: 0;
+  overflow: visible;
+  line-height: 1.35;
+  text-overflow: clip;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+.account-switcher-menu {
+  width: min(320px, calc(100vw - 28px));
+  border-color: rgba(61, 50, 41, 0.1);
+}
+
+.account-switcher-menu button {
+  min-height: 58px;
+  padding: 10px 11px;
+}
+
+.account-switcher-menu button > svg:last-child {
+  justify-self: end;
+}
+
+/* Reconciliation list: stable desktop columns before switching to cards. */
+.transaction-list {
+  min-width: 0;
+}
+
+.transaction-grid-row {
+  min-width: 940px;
+  grid-template-columns: 42px 84px minmax(230px, 1.55fr) minmax(170px, 1fr) 116px 96px 104px;
+}
+
+.transaction-head {
+  border-bottom-color: var(--line-soft);
+}
+
+.transaction-row {
+  min-height: 76px;
+}
+
+.transaction-row .transaction-main,
+.transaction-row .suggestion-cell {
+  min-width: 0;
+}
+
+.transaction-row .transaction-main strong,
+.transaction-row .transaction-main small,
+.transaction-row .suggestion-cell strong,
+.transaction-row .suggestion-cell small {
+  display: -webkit-box;
+  overflow: hidden;
+  line-height: 1.4;
+  text-overflow: clip;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.transaction-row > [data-label="证据"],
+.transaction-row > [data-label="状态"] {
+  min-width: 0;
+}
+
+.transaction-row > [data-label="状态"] .tone-pill {
+  white-space: nowrap;
+}
+
+@media (max-width: 1160px) {
+  .transaction-list {
+    padding: 10px;
+    overflow: visible;
+  }
+
+  .transaction-head {
+    display: none;
+  }
+
+  .transaction-grid-row.transaction-row {
+    display: grid;
+    min-width: 0;
+    min-height: 132px;
+    grid-template-columns: 30px minmax(0, 1.45fr) minmax(150px, 0.9fr) auto;
+    grid-template-areas:
+      "check date date status"
+      "check main suggestion amount"
+      "check main suggestion evidence";
+    align-items: start;
+    gap: 8px 12px;
+    margin-bottom: 9px;
+    padding: 12px;
+    border: 1px solid rgba(61, 50, 41, 0.1);
+    border-radius: 10px;
+    box-shadow: 0 1px 0 rgba(61, 50, 41, 0.025);
+  }
+
+  .transaction-grid-row.transaction-row:last-of-type {
+    margin-bottom: 0;
+    border-bottom: 1px solid rgba(61, 50, 41, 0.1);
+  }
+
+  .transaction-row > span,
+  .transaction-row > label {
+    padding: 0;
+  }
+
+  .transaction-row .check-cell {
+    grid-area: check;
+    align-self: stretch;
+  }
+
+  .transaction-row .date-cell {
+    grid-area: date;
+  }
+
+  .transaction-row .transaction-main {
+    grid-area: main;
+  }
+
+  .transaction-row .suggestion-cell {
+    grid-area: suggestion;
+  }
+
+  .transaction-row .amount {
+    grid-area: amount;
+    justify-self: end;
+    text-align: right;
+  }
+
+  .transaction-row > [data-label="证据"] {
+    grid-area: evidence;
+    justify-self: end;
+  }
+
+  .transaction-row > [data-label="状态"] {
+    grid-area: status;
+    justify-self: end;
+  }
+}
+
+@media (max-width: 680px) {
+  .transaction-list {
+    padding: 8px;
+  }
+
+  .transaction-grid-row.transaction-row {
+    min-height: 128px;
+    grid-template-columns: 28px minmax(0, 1fr) minmax(76px, auto);
+    grid-template-areas:
+      "check date status"
+      "check main amount"
+      "check suggestion evidence";
+    gap: 7px 8px;
+    padding: 11px 9px;
+  }
+
+  .transaction-row > [data-label="证据"],
+  .transaction-row > [data-label="状态"],
+  .transaction-row .amount {
+    max-width: 112px;
+  }
+}

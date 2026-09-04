@@ -296,6 +296,8 @@
 .foundation-page {
   display: grid;
   gap: 16px;
+  container-name: foundation-page;
+  container-type: inline-size;
 }
 
 .foundation-page-heading {
@@ -923,6 +925,8 @@
 .foundation-grid > .foundation-section {
   width: 100%;
   min-height: 0;
+  container-name: foundation-section;
+  container-type: inline-size;
 }
 
 .foundation-grid > :only-child {
@@ -1019,6 +1023,45 @@
 .foundation-record-actions {
   flex: 0 0 auto;
   align-items: center;
+}
+
+.foundation-page .foundation-record-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.foundation-record-main {
+  min-width: 0;
+  flex: 1 1 240px;
+}
+
+.foundation-record-main > strong {
+  overflow: visible;
+  line-height: 1.4;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.foundation-record-business-meta {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  color: var(--quiet);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.foundation-record-business-meta > span,
+.foundation-record-status {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.foundation-record-status {
+  line-height: 1.35;
+  white-space: normal;
 }
 
 .foundation-record:last-child {
@@ -2198,10 +2241,10 @@
 /* Generic foundation record editors: one clean boundary per region and stable form alignment. */
 .foundation-entity-record-list {
   gap: 0;
-  padding: 0;
-  border: 1px solid var(--line-soft);
+  padding: 3px;
+  border: 0;
   border-radius: 10px;
-  background: var(--paper);
+  background: var(--canvas);
   overflow: auto;
 }
 
@@ -2261,7 +2304,7 @@
 
 .foundation-entity-record-actions {
   min-width: 0;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   justify-content: flex-end;
 }
 
@@ -2314,15 +2357,15 @@
 
 .foundation-entity-editor-panel {
   padding: 15px;
-  border: 1px solid rgba(133, 105, 82, 0.16);
+  border: 0;
   background: var(--canvas);
   box-shadow: none;
 }
 
 .foundation-entity-editor-panel > .foundation-entity-editor-heading {
   margin-bottom: 13px;
-  padding-bottom: 11px;
-  border-bottom: 1px solid var(--line-soft);
+  padding-bottom: 0;
+  border-bottom: 0;
 }
 
 .foundation-entity-editor-panel > .foundation-entity-form {
@@ -2355,7 +2398,7 @@
   min-width: 0;
   grid-column: 1 / -1;
   justify-content: flex-end;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 2px;
   padding-top: 2px;
@@ -2452,7 +2495,7 @@
   align-items: end;
   gap: 10px;
   padding: 10px;
-  border: 1px solid var(--line-soft);
+  border: 0;
   border-radius: 9px;
   background: var(--canvas);
 }
@@ -2516,6 +2559,26 @@
   margin-top: 0;
 }
 
+.company-profile .company-form {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.foundation-page .foundation-editor-toggle,
+.foundation-page .foundation-inline-actions > button {
+  min-width: 0;
+  white-space: normal;
+}
+
+.foundation-page .permission-option {
+  border-color: transparent;
+  background: var(--paper);
+}
+
+.foundation-page .permission-option.selected {
+  border-color: rgba(128, 145, 119, 0.58);
+}
+
 @media (max-width: 900px) {
   .foundation-terminology-grid,
   .management-report-display-grid {
@@ -2534,6 +2597,122 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .foundation-terminology-actions > button {
+    width: 100%;
+  }
+}
+
+/* Foundation records follow the space they actually receive, not the viewport. */
+@container foundation-page (max-width: 900px) {
+  .foundation-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container foundation-section (min-width: 521px) {
+  .entity-form,
+  .company-form,
+  .foundation-entity-editor-panel > .foundation-entity-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .entity-form > .foundation-field,
+  .company-form > .foundation-field,
+  .foundation-entity-form > .foundation-entity-field {
+    grid-template-rows: minmax(34px, auto) 40px;
+  }
+
+  .management-report-display-item {
+    grid-template-columns: minmax(140px, 0.8fr) minmax(180px, 1.2fr);
+    align-items: end;
+  }
+}
+
+@container foundation-section (max-width: 900px) {
+  .foundation-terminology-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .management-report-display-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container foundation-section (max-width: 520px) {
+  .foundation-section-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .foundation-section-heading > div,
+  .foundation-section-heading > span {
+    max-width: 100%;
+    flex-basis: auto;
+    text-align: left;
+  }
+
+  .entity-form,
+  .company-form,
+  .foundation-entity-editor-panel > .foundation-entity-form,
+  .foundation-terminology-grid,
+  .management-report-display-grid,
+  .management-report-display-item,
+  .foundation-summary-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .entity-form > .foundation-field,
+  .company-form > .foundation-field,
+  .foundation-entity-form > .foundation-entity-field,
+  .foundation-terminology-field {
+    grid-template-rows: auto 40px;
+  }
+
+  .foundation-entity-form > .foundation-entity-field,
+  .foundation-entity-form > .permission-field,
+  .foundation-entity-form > .foundation-entity-form-actions {
+    grid-column: 1;
+  }
+
+  .foundation-entity-form > .permission-field {
+    grid-template-rows: auto auto;
+  }
+
+  .permission-option-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foundation-entity-record {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .foundation-entity-record-actions,
+  .foundation-record-main + .foundation-record-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .foundation-entity-record-actions > .compact-select {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    flex-basis: 100%;
+  }
+
+  .foundation-record-status {
+    margin-right: auto;
+    text-align: left;
+  }
+
+  .foundation-inline-actions,
+  .foundation-entity-form > .foundation-entity-form-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .foundation-inline-actions > button,
   .foundation-terminology-actions > button {
     width: 100%;
   }
