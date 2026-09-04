@@ -4,8 +4,12 @@ import {
   accountingRules,
   absoluteAmount,
   allocationDirectionMatchesBill,
+  appendAuditEntry,
+  cloneAccountingState,
+  collectSourceIds,
   dateDistanceInDays,
   normalizeText,
+  operationContext,
   periodOf,
   roundMoney,
 } from "./model.js";
@@ -171,4 +175,51 @@ export function classifyWorkspaceTransactions(workspace) {
       event: recognizeBusinessEvent(workspace, { ...transaction, classification }),
     };
   });
+}
+
+export function applyManualClassification(workspace, {
+  transactionId,
+  eventType,
+  account,
+  reason,
+}, context = {}) {
+  if (!reason?.trim()) throw new Error("人工分类必须填写判断依据");
+  if (!eventType || eventType === EVENT_TYPES.UNKNOWN || !Object.values(EVENT_TYPES).includes(eventType)) {
+    throw new Error("人工分类必须选择明确的业务类型");
+  }
+  if (!account) throw new Error("人工分类必须选择会计科目");
+  const next = cloneAccountingState(workspace);
+  const resolvedContext = operationContext(context);
+  const transaction = (next.transactions || []).find((item) => item.id === transactionId);
+  if (!transaction) throw new Error(`找不到银行流水：${transactionId}`);
+  const before = transaction.classification || classifyBankTransaction(next, transaction);
+  const confirmation = {
+    at: resolvedContext.at,
+    actor: resolvedContext.actor,
+    reason: reason.trim(),
+    eventType,
+    account,
+  };
+  transaction.classification = {
+    ...before,
+    eventType,
+    account,
+    confidence: 100,
+    reasons: [reason.trim()],
+    riskFlags: [],
+    requiresManualReview: false,
+    source: "manual-confirmation",
+  };
+  transaction.manualClassification = confirmation;
+  transaction.status = "pending";
+  appendAuditEntry(next, {
+    action: "classification.manual_confirm",
+    entityType: "bankTransaction",
+    entityId: transaction.id,
+    detail: reason.trim(),
+    before,
+    after: transaction.classification,
+    sourceIds: collectSourceIds(transaction.id, transaction.evidenceIds || []),
+  }, resolvedContext);
+  return next;
 }

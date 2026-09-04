@@ -37,21 +37,23 @@ function findBill(workspace, billId) {
   return bill;
 }
 
-export function confirmedAllocationsForBill(workspace, billId) {
+export function confirmedAllocationsForBill(workspace, billId, { asOf } = {}) {
   return (workspace.transactions || []).flatMap((transaction) => (
     activeAllocations(transaction)
-      .filter((allocation) => allocation.billId === billId && allocation.status !== "suspected")
+      .filter((allocation) => (
+        allocation.billId === billId && allocation.status !== "suspected" && (!asOf || transaction.date <= asOf)
+      ))
       .map((allocation) => ({ ...allocation, transactionId: allocation.transactionId || transaction.id }))
   ));
 }
 
-export function confirmedAllocatedForBill(workspace, billId) {
-  return sumMoney(confirmedAllocationsForBill(workspace, billId).map((allocation) => allocation.amount));
+export function confirmedAllocatedForBill(workspace, billId, options) {
+  return sumMoney(confirmedAllocationsForBill(workspace, billId, options).map((allocation) => allocation.amount));
 }
 
-export function billSettlement(workspace, billOrId) {
+export function billSettlement(workspace, billOrId, options = {}) {
   const bill = typeof billOrId === "string" ? findBill(workspace, billOrId) : billOrId;
-  const allocations = confirmedAllocationsForBill(workspace, bill.id);
+  const allocations = confirmedAllocationsForBill(workspace, bill.id, options);
   const allocated = sumMoney(allocations.map((allocation) => allocation.amount));
   const remaining = roundMoney(Number(bill.amount || 0) - allocated);
   let status = "pending";
@@ -429,7 +431,7 @@ export function buildAgeingSchedule(workspace, { asOf, kind } = {}) {
   const rows = (workspace.bills || [])
     .filter((bill) => allowedKinds.includes(bill.kind))
     .map((bill) => {
-      const settlement = billSettlement(workspace, bill);
+      const settlement = billSettlement(workspace, bill, { asOf: resolvedDate });
       const days = overdueDays(resolvedDate, bill.dueDate || bill.date);
       return {
         billId: bill.id,
