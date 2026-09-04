@@ -724,6 +724,11 @@
 .foundation-grid,
 .foundation-grid > *,
 .foundation-section,
+.foundation-manager-grid,
+.workspace-module-grid,
+.foundation-summary-grid,
+.entity-form,
+.company-form,
 .foundation-record-list,
 .bank-import-workspace,
 .document-record-grid {
@@ -736,10 +741,30 @@
 
 .foundation-section {
   display: flex;
+  min-width: 0;
+  align-self: start;
   flex-direction: column;
   padding: 18px;
   border-color: var(--line);
   border-radius: var(--radius-panel, 12px);
+}
+
+.foundation-section-heading {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.foundation-section-heading > div {
+  min-width: 0;
+  flex: 1 1 190px;
+}
+
+.foundation-section-heading > span {
+  min-width: 0;
+  max-width: min(42%, 190px);
+  flex: 0 1 auto;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .foundation-section-heading h3 {
@@ -747,15 +772,26 @@
 }
 
 .foundation-grid {
-  align-items: stretch;
+  grid-template-columns: repeat(2, minmax(300px, 1fr));
+  align-items: start;
+  gap: 16px;
 }
 
 .foundation-grid > .foundation-section {
-  min-height: 100%;
+  width: 100%;
+  min-height: 0;
 }
 
 .foundation-grid > :only-child {
   grid-column: 1 / -1;
+}
+
+.entity-form,
+.company-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  column-gap: 12px;
+  row-gap: 10px;
 }
 
 .company-form {
@@ -774,16 +810,31 @@
   min-height: 0;
   font-size: 12px;
   line-height: 1.35;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .foundation-field input,
 .foundation-field select,
 .compact-select,
 .stage-status-control select {
+  min-width: 0;
+  max-width: 100%;
   width: 100%;
   height: var(--control-height, 40px);
   border-radius: var(--radius-control, 8px);
+  text-overflow: ellipsis;
+}
+
+.foundation-inline-actions {
+  min-width: 0;
+  flex-wrap: wrap;
+  row-gap: 7px;
+}
+
+.entity-form > .foundation-inline-actions {
+  justify-content: flex-end;
+  margin-top: 2px;
 }
 
 .foundation-record,
@@ -802,10 +853,29 @@
 
 .foundation-record {
   min-height: 42px;
+  align-items: flex-start;
   padding: 7px 8px;
   border-bottom: 1px solid var(--line-soft);
   border-radius: 0;
   background: transparent;
+}
+
+.foundation-record > div:first-child {
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
+.foundation-record > div:first-child > small,
+.foundation-record > div:first-child > p {
+  min-width: 0;
+  line-height: 1.45;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.foundation-record-actions {
+  flex: 0 0 auto;
+  align-items: center;
 }
 
 .foundation-record:last-child {
@@ -929,9 +999,15 @@
   padding: 0 5px 2px 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+  scroll-padding-block: 14px;
   scrollbar-color: var(--clay) var(--sand);
   scrollbar-gutter: stable;
   scrollbar-width: thin;
+}
+
+.foundation-manager-grid > .foundation-section {
+  width: 100%;
+  min-height: 0;
 }
 
 .modal-card.foundation-manager > .modal-heading {
@@ -949,10 +1025,19 @@
 
 .foundation-manager-footer {
   flex: 0 0 auto;
+  align-items: center;
+  flex-direction: row;
+  flex-wrap: wrap;
   margin-top: 12px;
   padding: 12px 4px 0;
   border-top: 1px solid var(--line-soft);
   background: var(--paper-strong);
+}
+
+.foundation-manager-footer > span {
+  min-width: 0;
+  flex: 1 1 320px;
+  line-height: 1.45;
 }
 
 .foundation-manager-footer .text-danger-button {
@@ -994,6 +1079,44 @@
   overflow-wrap: break-word;
 }
 
+.foundation-manager .workspace-module-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.foundation-manager .workspace-module-grid > label {
+  min-height: 64px;
+  align-items: flex-start;
+  padding: 10px;
+}
+
+.foundation-manager .workspace-module-card-copy {
+  min-width: 0;
+  align-content: start;
+}
+
+.foundation-manager .workspace-module-card-title,
+.foundation-manager .workspace-module-card-description {
+  min-width: 0;
+  writing-mode: horizontal-tb;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.foundation-manager .foundation-divider {
+  margin: 16px 0;
+}
+
+.foundation-manager .foundation-inline-actions .compact-select {
+  width: auto;
+  max-width: 210px;
+  flex: 1 1 150px;
+}
+
+.foundation-manager .foundation-form > .primary-button {
+  justify-self: start;
+}
+
 .foundation-editor-toggle {
   width: 100%;
 }
@@ -1033,10 +1156,16 @@
 .foundation-summary-grid > .foundation-summary-card {
   display: grid;
   min-width: 0;
+  min-height: 82px;
+  align-content: start;
   gap: 3px;
   padding: 11px 12px;
   border-radius: 8px;
   background: var(--canvas);
+}
+
+.foundation-summary-grid > .foundation-summary-card:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
 }
 
 .foundation-summary-card h4,
@@ -1056,14 +1185,16 @@
   color: var(--espresso);
   font-size: 12px;
   line-height: 1.45;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .foundation-summary-grid p {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.5;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .modal-card.foundation-manager[aria-labelledby="bank-import-title"] > .bank-import-panel,
@@ -1081,13 +1212,37 @@
   scrollbar-width: thin;
 }
 
+.modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-import-panel > .bank-import-start,
+.modal-card.bank-import-dialog .bank-import-panel > .bank-import-start {
+  min-width: 0;
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--canvas);
+}
+
 .modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-import-workspace,
 .modal-card.bank-import-dialog .bank-import-workspace {
+  min-width: 0;
+  align-content: start;
+  gap: 12px;
   margin-top: 14px;
   padding: 14px;
   border-top: 0;
   border-radius: 10px;
   background: var(--canvas);
+}
+
+.modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-import-start > *,
+.modal-card.foundation-manager[aria-labelledby="bank-import-title"] .mapping-grid > *,
+.modal-card.bank-import-dialog .bank-import-start > *,
+.modal-card.bank-import-dialog .mapping-grid > * {
+  min-width: 0;
+}
+
+.modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-file-summary,
+.modal-card.bank-import-dialog .bank-file-summary {
+  align-items: flex-start;
+  flex-wrap: wrap;
 }
 
 .modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-import-panel > .bank-import-start,
@@ -1137,10 +1292,7 @@
     justify-self: start;
   }
 
-  .foundation-manager .workspace-module-grid {
-    grid-template-columns: 1fr;
-  }
-
+  .foundation-grid,
   .foundation-manager-grid {
     grid-template-columns: 1fr;
   }
@@ -1165,6 +1317,30 @@
   .modal-card.bank-import-dialog {
     width: calc(100vw - 24px);
     max-height: calc(100dvh - 24px);
+  }
+
+  .entity-form,
+  .company-form {
+    grid-template-columns: 1fr;
+  }
+
+  .entity-form > .foundation-field,
+  .company-form > .foundation-field {
+    grid-template-rows: auto 40px;
+  }
+
+  .company-form > .primary-button {
+    grid-column: auto;
+  }
+
+  .foundation-manager-footer {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .foundation-manager-footer > span {
+    flex: 0 1 auto;
   }
 
   .foundation-manager-footer .text-danger-button {
@@ -1209,16 +1385,20 @@
     flex-direction: column;
   }
 
-  .workspace-module-grid,
+  .foundation-manager .workspace-module-grid,
   .foundation-summary-grid {
     grid-template-columns: 1fr;
   }
 
   .foundation-section-heading {
     align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
   }
 
+  .foundation-section-heading > div,
   .foundation-section-heading > span {
+    flex-basis: auto;
     max-width: 100%;
     text-align: left;
   }
@@ -1236,5 +1416,16 @@
   .foundation-inline-actions > button,
   .document-action-confirmation-actions > button {
     width: 100%;
+  }
+
+  .foundation-manager .foundation-inline-actions .compact-select {
+    width: 100%;
+    max-width: none;
+    flex-basis: auto;
+  }
+
+  .foundation-manager .foundation-form > .primary-button {
+    width: 100%;
+    justify-self: stretch;
   }
 }

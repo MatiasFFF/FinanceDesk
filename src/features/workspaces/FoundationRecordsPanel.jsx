@@ -831,6 +831,19 @@ function AuthorizationEditor({ onToast, onBeginEditing }) {
     setEditorOpen(true);
   }
 
+  function edit(authorization) {
+    onBeginEditing();
+    setDraft({
+      ...emptyAuthorizationDraft(),
+      ...authorization,
+      status: authorization.status === "revoked" ? "revoked" : "recorded",
+      expiresAt: authorization.expiresAt ? String(authorization.expiresAt).slice(0, 10) : "",
+      proofDocumentId: authorization.proofDocumentId || "",
+    });
+    setError("");
+    setEditorOpen(true);
+  }
+
   function cancel() {
     setDraft(emptyAuthorizationDraft());
     setError("");
@@ -841,12 +854,27 @@ function AuthorizationEditor({ onToast, onBeginEditing }) {
     event.preventDefault();
     setError("");
     try {
+      const editing = Boolean(draft.id);
       actions.recordAuthorization(activeWorkspace.id, draft, { label: "本地授权记录" });
       setDraft(emptyAuthorizationDraft());
       setEditorOpen(false);
-      onToast?.("授权范围、期限和凭证索引已保存；未建立任何外部连接");
+      onToast?.(editing ? "授权记录已更新；未建立任何外部连接" : "授权范围、期限和凭证索引已保存；未建立任何外部连接");
     } catch (caught) {
       setError(caught.message || "授权记录保存失败");
+    }
+  }
+
+  function revoke(authorization) {
+    setError("");
+    try {
+      actions.recordAuthorization(activeWorkspace.id, { ...authorization, status: "revoked" }, {
+        label: "本地授权记录",
+        detail: `${authorization.label || authorization.system || "数据源"}：授权已撤回`,
+      });
+      if (draft.id === authorization.id) cancel();
+      onToast?.(`「${authorization.label || authorization.system}」授权记录已撤回`);
+    } catch (caught) {
+      setError(caught.message || "撤回授权失败");
     }
   }
   const effectiveStatus = (authorization) => authorization.status === "revoked"
@@ -861,12 +889,12 @@ function AuthorizationEditor({ onToast, onBeginEditing }) {
       <div className="foundation-section-heading"><div><small>不连接外部系统</small><h3><ShieldCheck size={18} />本地授权记录</h3></div><span>{activeWorkspace.authorizations.length} 条</span></div>
       <div className="foundation-notice"><WarningCircle size={17} />此处只记录客户允许处理的范围，不会保存银行或税务密码，也不会连接银行、税务、AI 或 OCR。</div>
       <div className="foundation-record-list authorization-list">
-        {activeWorkspace.authorizations.map((authorization) => <article className="foundation-record" key={authorization.id}><div><strong>{authorization.label || authorization.system}</strong><small>{effectiveStatus(authorization)} · {authorization.scope || "未填写范围"}{authorization.expiresAt ? ` · 至 ${String(authorization.expiresAt).slice(0, 10)}` : ""}</small></div></article>)}
+        {activeWorkspace.authorizations.map((authorization) => <article className="foundation-record" key={authorization.id}><div><strong>{authorization.label || authorization.system}</strong><small>{effectiveStatus(authorization)} · {authorization.scope || "未填写范围"}{authorization.expiresAt ? ` · 至 ${String(authorization.expiresAt).slice(0, 10)}` : ""}</small></div><span className="foundation-record-actions"><button type="button" aria-label={`编辑${authorization.label || authorization.system}授权`} onClick={() => edit(authorization)}><PencilSimple size={15} /></button>{authorization.status !== "revoked" && <button type="button" aria-label={`撤回${authorization.label || authorization.system}授权`} title="撤回授权" onClick={() => revoke(authorization)}><Power size={15} /></button>}</span></article>)}
         {!activeWorkspace.authorizations.length && <p className="foundation-empty">还没有本地授权记录。</p>}
       </div>
       <button className="foundation-editor-toggle secondary-button" type="button" aria-expanded={editorOpen} aria-controls="authorization-editor" onClick={create}><Plus size={16} />新增授权记录</button>
       {editorOpen && <div className="foundation-editor-panel" id="authorization-editor">
-        <div className="foundation-section-heading"><div><small>新增本地授权</small><h4>记录可处理的数据范围</h4></div></div>
+        <div className="foundation-section-heading"><div><small>{draft.id ? "编辑本地授权" : "新增本地授权"}</small><h4>{draft.id ? `编辑「${draft.label || draft.system}」` : "记录可处理的数据范围"}</h4></div></div>
         <form className="entity-form" onSubmit={save}>
           <label className="foundation-field"><span>数据源</span><select value={draft.system} onChange={(event) => setDraft((current) => ({ ...current, system: event.target.value, label: event.target.selectedOptions[0].text }))}><option value="bank">银行数据</option><option value="tax">税务资料</option><option value="business">经营系统文件</option><option value="finance">现有财务软件文件</option></select></label>
           <label className="foundation-field"><span>允许范围</span><input value={draft.scope} onChange={(event) => setDraft((current) => ({ ...current, scope: event.target.value }))} /></label>
@@ -875,7 +903,7 @@ function AuthorizationEditor({ onToast, onBeginEditing }) {
           <label className="foundation-field"><span>授权凭证（可选）</span><select value={draft.proofDocumentId} onChange={(event) => setDraft((current) => ({ ...current, proofDocumentId: event.target.value }))}><option value="">暂不关联</option>{activeWorkspace.documents.map((document) => <option value={document.id} key={document.id}>{document.name}</option>)}</select></label>
           <label className="foundation-field"><span>授权状态</span><select value={draft.status} onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value }))}><option value="recorded">有效记录</option><option value="revoked">已撤回</option></select></label>
           <label className="foundation-field"><span>授权说明</span><input value={draft.note} onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))} placeholder="谁在何时允许处理哪些本地文件" /></label>
-          <div className="foundation-inline-actions"><button className="primary-button" type="submit">记录本地授权</button><button className="secondary-button" type="button" onClick={cancel}>取消</button></div>
+          <div className="foundation-inline-actions"><button className="primary-button" type="submit">{draft.id ? "保存授权修改" : "记录本地授权"}</button><button className="secondary-button" type="button" onClick={cancel}>取消</button></div>
           {error && <p className="entity-error">{error}</p>}
         </form>
       </div>}

@@ -265,7 +265,9 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     user.id === state.activeUserId
     && user.status === "active"
     && String(user.name || "").trim()
-  ))?.name || "本地用户";
+  ))?.name?.trim() || activeWorkspace.users?.find((user) => (
+    user.status === "active" && String(user.name || "").trim()
+  ))?.name?.trim() || "本地用户";
   const inputRef = useRef(null);
   const payrollFileInputRef = useRef(null);
   const documentActionCancelRef = useRef(null);
@@ -384,6 +386,9 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     setCategory(defaultCategory);
     setPeriod(activeWorkspace.currentPeriod || "");
     setRelatedObjectId("");
+    setQuery("");
+    setCategoryFilter("all");
+    setStatusFilter("all");
     setEditing(null);
     setPreview(null);
     setPendingDocumentAction(null);
@@ -448,6 +453,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
             category,
             period,
             relatedObjectIds: relatedObjectId.trim() ? [relatedObjectId.trim()] : [],
+            actor,
           },
         });
       }

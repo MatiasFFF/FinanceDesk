@@ -1329,18 +1329,23 @@ button:disabled {
   z-index: 80;
   display: grid;
   place-items: center;
-  padding: 20px;
-  background: rgba(45, 41, 38, 0.36);
-  backdrop-filter: blur(3px);
+  padding: clamp(16px, 3vw, 32px);
+  overflow: hidden;
+  background: rgba(45, 41, 38, 0.42);
+  backdrop-filter: blur(5px);
 }
 
 .modal-card {
-  width: min(480px, 100%);
-  padding: 23px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
+  width: min(640px, 100%);
+  max-width: 100%;
+  max-height: min(860px, calc(100dvh - 40px));
+  padding: clamp(20px, 2.2vw, 28px);
+  overflow-y: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 16px;
   background: var(--paper-strong);
-  box-shadow: var(--shadow);
+  box-shadow: 0 28px 80px rgba(61, 50, 41, 0.18), 0 2px 8px rgba(61, 50, 41, 0.08);
+  scrollbar-gutter: stable;
 }
 
 .modal-intro {
@@ -1370,9 +1375,17 @@ button:disabled {
 
 .modal-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 9px;
-  margin-top: 17px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.modal-actions > button {
+  min-width: 112px;
 }
 
 .toast {
@@ -4705,9 +4718,15 @@ summary.forecast-week-row {
   --layout-content-max: 1440px;
   --layout-sidebar-width: 236px;
   --layout-gutter: clamp(24px, 3vw, 46px);
-  --radius-panel: 12px;
+  --radius-panel: 14px;
   --radius-control: 8px;
   --control-height: 40px;
+}
+
+.app-main,
+.topbar > :first-child,
+.topbar-actions {
+  min-width: 0;
 }
 
 .page-content,
@@ -4741,6 +4760,14 @@ summary.forecast-week-row {
 
 .overview-grid {
   grid-template-columns: minmax(0, 1.08fr) minmax(320px, 0.92fr);
+}
+
+.hero-grid,
+.overview-grid,
+.reports-layout,
+.tax-layout,
+.owner-liquidity-layout {
+  align-items: start;
 }
 
 .metric-grid.four {
@@ -4802,10 +4829,15 @@ summary.forecast-week-row {
 .panel,
 .upload-hero,
 .archive-hero,
-.archive-content-panel {
-  border: 1px solid var(--line);
+.archive-content-panel,
+.metric-card {
+  border: 1px solid var(--line-soft);
   border-radius: var(--radius-panel);
-  box-shadow: 0 1px 0 rgba(61, 50, 41, 0.025);
+  box-shadow: 0 1px 2px rgba(61, 50, 41, 0.035), 0 10px 28px rgba(61, 50, 41, 0.035);
+}
+
+.next-action-card {
+  border-color: #e6cbbd;
 }
 
 .panel .panel,
@@ -4874,8 +4906,7 @@ summary.forecast-week-row {
 }
 
 .popover-menu,
-.workspace-menu,
-.account-switcher-menu {
+.workspace-menu {
   border-color: var(--line);
   border-radius: 11px;
   background: var(--paper-strong);
@@ -4883,8 +4914,7 @@ summary.forecast-week-row {
 }
 
 .popover-menu button,
-.workspace-menu button,
-.account-switcher-menu button {
+.workspace-menu button {
   min-height: 42px;
   border-radius: 8px;
 }
@@ -4957,12 +4987,59 @@ summary.forecast-week-row {
   }
 }
 
-/* Purpose-sized dialogs and the sidebar account menu. */
+/* Unified dialog sizing and the sidebar account menu. */
+.modal-card > .modal-heading {
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 0;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.modal-card > .modal-intro {
+  margin: 16px 0 18px;
+  font-size: 12px;
+}
+
+.modal-card.import-dialog {
+  width: min(680px, calc(100vw - 48px));
+}
+
 .modal-card.workspace-dialog {
-  width: min(740px, calc(100vw - 40px));
+  width: min(920px, calc(100vw - 64px));
   max-width: 100%;
-  max-height: min(860px, calc(100dvh - 40px));
+  max-height: min(880px, calc(100dvh - 48px));
   overflow-y: auto;
+}
+
+.modal-card.workspace-confirm-dialog {
+  width: min(560px, calc(100vw - 64px));
+}
+
+.modal-card.foundation-manager {
+  width: min(1080px, calc(100vw - 64px));
+  max-height: min(900px, calc(100dvh - 48px));
+}
+
+.modal-card.foundation-manager[aria-labelledby="bank-import-title"],
+.modal-card.bank-import-dialog {
+  width: min(1040px, calc(100vw - 64px));
+}
+
+.modal-card .form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 16px;
+  row-gap: 14px;
+}
+
+.modal-card .form-grid > *,
+.modal-card .choice-cards > *,
+.modal-card .workspace-module-grid > * {
+  min-width: 0;
+}
+
+.modal-card .form-grid > .full {
+  grid-column: 1 / -1;
 }
 
 .workspace-dialog > .modal-intro + .choice-cards,
@@ -4976,18 +5053,18 @@ summary.forecast-week-row {
   display: grid;
   min-width: 0;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
 }
 
 .workspace-module-grid > label {
   display: flex;
   min-width: 0;
-  min-height: 68px;
+  min-height: 76px;
   align-items: flex-start;
-  gap: 9px;
-  padding: 10px 11px;
+  gap: 10px;
+  padding: 12px 13px;
   border: 1px solid var(--line-soft);
-  border-radius: 9px;
+  border-radius: 11px;
   background: var(--paper);
   color: var(--muted);
   cursor: pointer;
@@ -5069,6 +5146,9 @@ summary.forecast-week-row {
 }
 
 .account-switcher-trigger {
+  border-color: var(--line-soft);
+  border-radius: 11px;
+  box-shadow: 0 1px 2px rgba(61, 50, 41, 0.04);
   transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease;
 }
 
@@ -5090,27 +5170,27 @@ summary.forecast-week-row {
   bottom: calc(100% + 8px);
   left: 0;
   z-index: 90;
-  width: min(300px, calc(100vw - 28px));
-  max-height: min(320px, 48vh);
-  padding: 6px;
+  width: min(320px, calc(100vw - 32px));
+  max-height: min(360px, 56vh);
+  padding: 8px;
   overflow-y: auto;
-  border: 1px solid var(--line);
-  border-radius: 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
   background: var(--paper-strong);
-  box-shadow: 0 16px 38px rgba(61, 50, 41, 0.18);
+  box-shadow: 0 22px 52px rgba(61, 50, 41, 0.18), 0 2px 8px rgba(61, 50, 41, 0.06);
 }
 
 .account-switcher-menu button {
   display: grid;
   width: 100%;
   min-width: 0;
-  min-height: 48px;
+  min-height: 52px;
   grid-template-columns: 32px minmax(0, 1fr) auto;
   align-items: center;
   gap: 9px;
-  padding: 7px 8px;
+  padding: 8px 10px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 10px;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
@@ -5162,26 +5242,78 @@ summary.forecast-week-row {
 }
 
 @media (max-width: 720px) {
-  .modal-card.workspace-dialog {
-    width: min(700px, calc(100vw - 24px));
+  .modal-backdrop {
+    padding: 12px;
+  }
+
+  .modal-card,
+  .modal-card.import-dialog,
+  .modal-card.workspace-dialog,
+  .modal-card.workspace-confirm-dialog,
+  .modal-card.foundation-manager,
+  .modal-card.foundation-manager[aria-labelledby="bank-import-title"],
+  .modal-card.bank-import-dialog {
+    width: calc(100vw - 24px);
     max-height: calc(100dvh - 24px);
+  }
+
+  .modal-card .form-grid,
+  .workspace-dialog > .modal-intro + .choice-cards,
+  .workspace-dialog > .form-grid + .choice-cards,
+  .workspace-dialog .workspace-mode-cards,
+  .workspace-dialog .workspace-module-grid,
+  .workspace-module-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-card .form-grid > .full {
+    grid-column: auto;
+  }
+
+  .modal-actions > button {
+    flex: 1 1 140px;
   }
 }
 
 @media (max-width: 560px) {
   .modal-backdrop {
-    padding: 10px;
+    padding: 8px;
   }
 
-  .modal-card.workspace-dialog {
-    width: calc(100vw - 20px);
-    max-height: calc(100dvh - 20px);
+  .modal-card,
+  .modal-card.import-dialog,
+  .modal-card.workspace-dialog,
+  .modal-card.workspace-confirm-dialog,
+  .modal-card.foundation-manager,
+  .modal-card.foundation-manager[aria-labelledby="bank-import-title"],
+  .modal-card.bank-import-dialog {
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+    padding: 17px;
   }
 
-  .workspace-dialog > .modal-intro + .choice-cards,
-  .workspace-dialog > .form-grid + .choice-cards,
-  .workspace-dialog .workspace-mode-cards,
-  .workspace-dialog .workspace-module-grid {
-    grid-template-columns: 1fr;
+  .modal-card > .modal-heading {
+    gap: 12px;
+    padding-bottom: 12px;
+  }
+
+  .modal-card > .modal-heading h2 {
+    font-size: 19px;
+  }
+
+  .modal-actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+    padding-top: 14px;
+  }
+
+  .modal-actions > button {
+    width: 100%;
+    min-width: 0;
+    flex: 0 0 auto;
+  }
+
+  .drop-zone {
+    min-height: 160px;
   }
 }

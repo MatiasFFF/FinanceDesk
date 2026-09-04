@@ -65,6 +65,11 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
   const [settlementBusy, setSettlementBusy] = useState(false);
   const [settlementError, setSettlementError] = useState("");
   const firstAccountId = activeWorkspace.bankAccounts[0]?.id || "";
+  const bankAccountStateSignature = JSON.stringify(activeWorkspace.bankAccounts.map((item) => [
+    item.id,
+    item.openingBalance ?? "",
+    item.statementClosing ?? "",
+  ]));
 
   const account = activeWorkspace.bankAccounts.find((item) => item.id === accountId);
   useEffect(() => {
@@ -81,7 +86,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
     setSettlementParsed(null);
     setSettlementPlan(null);
     setSettlementError("");
-  }, [activeWorkspace.id, activeWorkspace.currentPeriod, firstAccountId]);
+  }, [activeWorkspace.id, activeWorkspace.currentPeriod, firstAccountId, bankAccountStateSignature]);
 
   useEffect(() => {
     if (!account) return;
@@ -262,8 +267,12 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
     const workspaceId = activeWorkspace.id;
     try {
       if (!fileVault) throw new Error("当前浏览器无法保存银行流水原文件，请更换支持 IndexedDB 的浏览器");
-      const latestWorkspace = store.getState().workspaces.find((workspace) => workspace.id === workspaceId);
+      const latestState = store.getState();
+      const latestWorkspace = latestState.workspaces.find((workspace) => workspace.id === workspaceId);
       if (!latestWorkspace) throw new Error("当前工作台已不存在，请重新选择工作台");
+      const actor = latestWorkspace.users?.find((user) => (
+        user.id === latestState.activeUserId && user.status === "active"
+      ))?.name?.trim() || latestWorkspace.users?.find((user) => user.status === "active")?.name?.trim() || "本地用户";
       const refreshedPlan = prepareBankImport(latestWorkspace, {
         accountId,
         period,
@@ -293,7 +302,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
           category: "银行流水",
           period: refreshedPlan.period,
           relatedObjectIds: [refreshedPlan.accountId],
-          actor: "本地用户",
+          actor,
         },
         relation: "bank-statement-source",
         note: `银行导入 ${refreshedPlan.id} 的原始文件`,
@@ -306,7 +315,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
           evidenceIds: [...new Set([...(transaction.evidenceIds || []), sourceDocument.id])],
         })),
       };
-      const nextState = actions.applyBankImport(workspaceId, finalPlan);
+      const nextState = actions.applyBankImport(workspaceId, finalPlan, { actor });
       committed = true;
       const importedWorkspace = nextState.workspaces.find((workspace) => workspace.id === workspaceId);
       const record = importedWorkspace?.bankImports?.find((item) => item.id === finalPlan.id);
