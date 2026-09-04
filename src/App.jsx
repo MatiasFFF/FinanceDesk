@@ -300,13 +300,18 @@ function BottomNav({ workspace, page, onPage }) {
   );
 }
 
-function Topbar({ state, workspace, page, onImport, onSwitchWorkspace, onOpenWorkspaceDialog }) {
+function Topbar({ state, workspace, page, workspaceOverlayOpen, onImport, onSwitchWorkspace, onOpenWorkspaceDialog }) {
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const workspaceMenuRef = useRef(null);
   const workspaceTriggerRef = useRef(null);
+  const moreMenuRef = useRef(null);
+  const moreTriggerRef = useRef(null);
   const [title, subtitle] = PAGE_HEADINGS[page];
-  useEffect(() => { setWorkspaceOpen(false); }, [workspace?.id]);
+  useEffect(() => {
+    setWorkspaceOpen(false);
+    setMoreOpen(false);
+  }, [page, workspace?.id, workspaceOverlayOpen]);
   useEffect(() => {
     if (!workspaceOpen) return undefined;
     function closeOnOutsidePointer(event) {
@@ -324,6 +329,28 @@ function Topbar({ state, workspace, page, onImport, onSwitchWorkspace, onOpenWor
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [workspaceOpen]);
+  useEffect(() => {
+    if (!moreOpen) return undefined;
+    function closeOnOutsidePointer(event) {
+      if (!moreMenuRef.current?.contains(event.target)) setMoreOpen(false);
+    }
+    function closeOnEscape(event) {
+      if (event.key !== "Escape") return;
+      setMoreOpen(false);
+      moreTriggerRef.current?.focus();
+    }
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [moreOpen]);
+  function openWorkspaceDialog(mode) {
+    setWorkspaceOpen(false);
+    setMoreOpen(false);
+    onOpenWorkspaceDialog(mode);
+  }
   return (
     <header className="topbar">
       <div className="topbar-title">
@@ -334,14 +361,14 @@ function Topbar({ state, workspace, page, onImport, onSwitchWorkspace, onOpenWor
       <div className="topbar-actions">
         <div className="mobile-workspace-wrap" ref={workspaceMenuRef}>
           <button ref={workspaceTriggerRef} className="secondary-button mobile-workspace" aria-expanded={workspaceOpen} aria-haspopup="menu" onClick={() => { setMoreOpen(false); setWorkspaceOpen((value) => !value); }} type="button"><span>{workspace?.name || "选择工作台"}</span><CaretDown size={14} /></button>
-          {workspaceOpen && <WorkspaceMenu state={state} activeWorkspace={workspace} onSwitch={onSwitchWorkspace} onOpenDialog={onOpenWorkspaceDialog} onClose={() => setWorkspaceOpen(false)} />}
+          {workspaceOpen && <WorkspaceMenu state={state} activeWorkspace={workspace} onSwitch={onSwitchWorkspace} onOpenDialog={openWorkspaceDialog} onClose={() => setWorkspaceOpen(false)} />}
         </div>
         {workspace && <div className="period-select" aria-label={`当前活动账期 ${formatPeriod(workspace.currentPeriod)}`} title="历史账期请在资料归档中查看；新账期由归档流程创建"><CalendarBlank size={18} /><span><small>活动账期</small><strong>{formatPeriod(workspace.currentPeriod)}</strong></span></div>}
         {workspace && workspaceModuleEnabled(workspace, "reconcile") && (page === "overview" || page === "reconcile") && <button className="primary-button" onClick={onImport} type="button"><UploadSimple size={18} weight="bold" />本地导入</button>}
         {workspace && (
-          <div className="menu-wrap">
-            <button className="icon-button" aria-label="更多操作" onClick={() => { setWorkspaceOpen(false); setMoreOpen((value) => !value); }} type="button"><GearSix size={20} /></button>
-            {moreOpen && <div className="popover-menu"><button onClick={() => { onOpenWorkspaceDialog("manage"); setMoreOpen(false); }} type="button"><GearSix size={17} />管理、复制与备份</button><button onClick={() => { onOpenWorkspaceDialog("rename"); setMoreOpen(false); }} type="button"><PencilSimple size={17} />重命名工作台</button><button onClick={() => { onOpenWorkspaceDialog("create"); setMoreOpen(false); }} type="button"><Plus size={17} />新建工作台</button><button onClick={() => { onOpenWorkspaceDialog("delete"); setMoreOpen(false); }} type="button"><Trash size={17} />删除工作台</button></div>}
+          <div className="menu-wrap" ref={moreMenuRef}>
+            <button ref={moreTriggerRef} className="icon-button" aria-label="更多操作" aria-expanded={moreOpen} aria-haspopup="menu" onClick={() => { setWorkspaceOpen(false); setMoreOpen((value) => !value); }} type="button"><GearSix size={20} /></button>
+            {moreOpen && <div className="popover-menu" role="menu"><button role="menuitem" onClick={() => openWorkspaceDialog("manage")} type="button"><GearSix size={17} />管理、复制与备份</button><button role="menuitem" onClick={() => openWorkspaceDialog("rename")} type="button"><PencilSimple size={17} />重命名工作台</button><button role="menuitem" onClick={() => openWorkspaceDialog("create")} type="button"><Plus size={17} />新建工作台</button><button role="menuitem" onClick={() => openWorkspaceDialog("delete")} type="button"><Trash size={17} />删除工作台</button></div>}
           </div>
         )}
       </div>
@@ -1681,7 +1708,7 @@ function App() {
     <div className="app-shell">
       <Sidebar state={state} workspace={workspace} page={activePage} onPage={navigateToPage} onSwitchWorkspace={switchWorkspace} onSwitchUser={switchUser} onOpenWorkspaceDialog={openWorkspaceDialog} />
       <div className="app-main">
-        <Topbar state={state} workspace={workspace} page={activePage} onImport={() => setImportOpen(true)} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={openWorkspaceDialog} />
+        <Topbar state={state} workspace={workspace} page={activePage} workspaceOverlayOpen={Boolean(workspaceDialog || managerOpen)} onImport={() => setImportOpen(true)} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={openWorkspaceDialog} />
         {loadReport.recovered && <div className="danger-banner recovery-banner"><WarningCircle size={18} /><span><strong>{loadReport.source === "backup" ? "本地数据已从上一次有效副本恢复。" : "本地主副本与备用副本均无法读取，当前已加载初始模板。"}</strong>{loadReport.errors?.length ? ` 原因：${loadReport.errors.join("；")}` : " 请先核对数据并导出备份。"}</span></div>}
         {activePage === "overview" && <OverviewPage workspace={workspace} onPage={navigateToPage} onResolveNotice={resolveNotice} />}
         {activePage === "members" && <MemberLedgerPage workspace={workspace} onAddMember={addLedgerMember} onMemberStatus={changeLedgerMemberStatus} onAddEvent={addLedgerEvent} onEventStatus={changeLedgerEventStatus} />}

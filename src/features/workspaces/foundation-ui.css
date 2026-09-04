@@ -735,7 +735,9 @@
 }
 
 .foundation-section {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  padding: 18px;
   border-color: var(--line);
   border-radius: var(--radius-panel, 12px);
 }
@@ -745,7 +747,11 @@
 }
 
 .foundation-grid {
-  align-items: start;
+  align-items: stretch;
+}
+
+.foundation-grid > .foundation-section {
+  min-height: 100%;
 }
 
 .foundation-grid > :only-child {
@@ -760,11 +766,13 @@
 .entity-form > .foundation-field,
 .company-form > .foundation-field {
   min-width: 0;
-  grid-template-rows: minmax(30px, 1fr) 40px;
+  grid-template-rows: minmax(34px, auto) 40px;
 }
 
 .foundation-field > span {
   align-self: end;
+  min-height: 0;
+  font-size: 12px;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -820,8 +828,8 @@
   display: grid;
   flex: 1 0 100%;
   max-width: none;
-  gap: 5px;
-  padding: 8px;
+  gap: 7px;
+  padding: 10px 11px;
   border-radius: 7px;
   background: #fff7f4;
   color: #7f3b2d;
@@ -837,6 +845,7 @@
 
 .foundation-record-delete-confirm > small {
   color: var(--muted);
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -911,6 +920,7 @@
 }
 
 .foundation-manager-grid {
+  grid-template-columns: minmax(310px, 0.9fr) minmax(390px, 1.1fr);
   min-height: 0;
   flex: 1 1 auto;
   align-items: start;
@@ -990,7 +1000,7 @@
 
 .foundation-editor-panel {
   margin-top: 12px;
-  padding: 12px;
+  padding: 14px;
   border: 0;
   border-radius: 10px;
   background: var(--canvas);
@@ -1020,28 +1030,40 @@
   margin-bottom: 12px;
 }
 
-.foundation-summary-grid > span {
+.foundation-summary-grid > .foundation-summary-card {
   display: grid;
   min-width: 0;
   gap: 3px;
-  padding: 9px 10px;
+  padding: 11px 12px;
   border-radius: 8px;
   background: var(--canvas);
 }
 
+.foundation-summary-card h4,
+.foundation-summary-card p {
+  margin: 0;
+}
+
 .foundation-summary-grid small {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
   line-height: 1.35;
 }
 
-.foundation-summary-grid strong {
+.foundation-summary-grid strong,
+.foundation-summary-grid h4 {
   min-width: 0;
   color: var(--espresso);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.45;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.foundation-summary-grid p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .modal-card.foundation-manager[aria-labelledby="bank-import-title"] > .bank-import-panel,
@@ -1118,6 +1140,23 @@
   .foundation-manager .workspace-module-grid {
     grid-template-columns: 1fr;
   }
+
+  .foundation-manager-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .foundation-grid > .foundation-section {
+    min-height: 0;
+  }
+
+  .document-action-confirmation {
+    grid-template-columns: 20px minmax(0, 1fr);
+  }
+
+  .document-action-confirmation-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
 }
 
 @media (max-width: 720px) {
@@ -1126,10 +1165,6 @@
   .modal-card.bank-import-dialog {
     width: calc(100vw - 24px);
     max-height: calc(100dvh - 24px);
-  }
-
-  .foundation-manager-grid {
-    grid-template-columns: 1fr;
   }
 
   .foundation-manager-footer .text-danger-button {
@@ -1184,6 +1219,22 @@
   }
 
   .foundation-section-heading > span {
-    max-width: 46%;
+    max-width: 100%;
+    text-align: left;
+  }
+
+  .foundation-section {
+    padding: 14px;
+  }
+
+  .foundation-inline-actions,
+  .document-action-confirmation-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .foundation-inline-actions > button,
+  .document-action-confirmation-actions > button {
+    width: 100%;
   }
 }
