@@ -195,6 +195,98 @@
   grid-column: 2;
 }
 
+.engine-voucher-line.is-editable {
+  grid-template-columns: 34px minmax(170px, 1.5fr) repeat(2, minmax(100px, 0.7fr)) auto;
+  align-items: end;
+}
+
+.engine-voucher-line-index {
+  align-self: center;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.engine-voucher-line > .engine-voucher-line-field {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 5px;
+  min-width: 0;
+}
+
+.engine-voucher-line > .engine-voucher-line-field > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.engine-voucher-line > .engine-voucher-line-field > small {
+  grid-column: auto;
+}
+
+.engine-voucher-line-field input,
+.engine-voucher-line-field select {
+  min-width: 0;
+  width: 100%;
+  min-height: var(--control-height, 40px);
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+  color: var(--espresso);
+  font: inherit;
+  font-size: 11px;
+}
+
+.engine-voucher-line-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: var(--control-height, 40px);
+  padding: 7px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--paper);
+  color: #8f3e2b;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.engine-voucher-line-remove:disabled {
+  color: var(--quiet);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.engine-voucher-line-add {
+  justify-self: start;
+}
+
+.engine-voucher-balance {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--canvas);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.engine-voucher-balance strong {
+  margin-left: auto;
+  color: #8f3e2b;
+}
+
+.engine-voucher-balance.is-balanced strong {
+  color: #42634f;
+}
+
 .engine-voucher-card > input {
   width: 100%;
   padding: 8px 9px;
@@ -997,6 +1089,26 @@
   }
 }
 
+@media (max-width: 900px) {
+  .engine-voucher-line.is-editable {
+    grid-template-columns: 34px repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+
+  .engine-voucher-line.is-editable > .engine-voucher-line-index {
+    grid-row: 1 / span 2;
+  }
+
+  .engine-voucher-line-account-field,
+  .engine-voucher-line-remove {
+    grid-column: 2 / -1;
+  }
+
+  .engine-voucher-line-remove {
+    justify-self: start;
+  }
+}
+
 @media (max-width: 720px) {
   .accounting-workbench {
     padding: 12px;
@@ -1040,6 +1152,25 @@
   .engine-voucher-line {
     grid-template-columns: 1fr;
     align-items: start;
+  }
+
+  .engine-voucher-line.is-editable {
+    grid-template-columns: 1fr;
+  }
+
+  .engine-voucher-line.is-editable > .engine-voucher-line-index {
+    grid-row: auto;
+  }
+
+  .engine-voucher-line-account-field,
+  .engine-voucher-line-remove {
+    grid-column: auto;
+  }
+
+  .engine-voucher-line-remove,
+  .engine-voucher-line-add {
+    width: 100%;
+    justify-self: stretch;
   }
 
   .engine-voucher-line > label {

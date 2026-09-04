@@ -1947,3 +1947,179 @@
   }
 
 }
+
+/* Generic foundation record editors: one clean boundary per region and stable form alignment. */
+.foundation-entity-record-list {
+  gap: 0;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--paper);
+  overflow: auto;
+}
+
+.foundation-entity-record {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 9px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.foundation-entity-record:last-of-type {
+  border-bottom: 0;
+}
+
+.foundation-entity-record:hover,
+.foundation-entity-record.is-confirming-delete {
+  border-radius: 0;
+  background: var(--paper-strong);
+}
+
+.foundation-entity-record-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.foundation-entity-record-copy > strong,
+.foundation-entity-record-copy > small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.foundation-entity-record-copy > strong {
+  overflow: visible;
+  line-height: 1.4;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.foundation-entity-record-copy > small {
+  line-height: 1.5;
+}
+
+.foundation-entity-record-actions {
+  min-width: 0;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+}
+
+.foundation-entity-record-actions > .compact-select {
+  width: auto;
+  min-width: 150px;
+  max-width: 210px;
+  flex: 1 1 170px;
+}
+
+.foundation-entity-record > .foundation-record-delete-confirm {
+  width: 100%;
+  grid-column: 1 / -1;
+}
+
+.foundation-entity-editor-panel {
+  padding: 15px;
+  border: 1px solid rgba(133, 105, 82, 0.16);
+  background: var(--canvas);
+  box-shadow: none;
+}
+
+.foundation-entity-editor-panel > .foundation-entity-editor-heading {
+  margin-bottom: 13px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.foundation-entity-editor-panel > .foundation-entity-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px 14px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+}
+
+.foundation-entity-form > .foundation-entity-field {
+  min-width: 0;
+  grid-template-rows: minmax(34px, auto) 40px;
+}
+
+.foundation-entity-form > .permission-field {
+  grid-column: 1 / -1;
+  grid-template-rows: auto auto;
+}
+
+.foundation-entity-form .foundation-entity-field > input,
+.foundation-entity-form .foundation-entity-field > select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.foundation-entity-form > .foundation-entity-form-actions {
+  min-width: 0;
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 8px;
+  margin-top: 2px;
+  padding-top: 2px;
+}
+
+@media (max-width: 720px) {
+  .foundation-entity-editor-panel > .foundation-entity-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foundation-entity-form > .foundation-entity-field,
+  .foundation-entity-form > .permission-field,
+  .foundation-entity-form > .foundation-entity-form-actions {
+    grid-column: 1;
+  }
+
+  .foundation-entity-form > .foundation-entity-field {
+    grid-template-rows: auto 40px;
+  }
+
+  .foundation-entity-form > .permission-field {
+    grid-template-rows: auto auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .foundation-entity-record {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .foundation-entity-record-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .foundation-entity-record-actions > .compact-select {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    flex-basis: 100%;
+  }
+
+  .foundation-entity-editor-panel {
+    padding: 11px;
+  }
+
+  .foundation-entity-form > .foundation-entity-form-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .foundation-entity-form > .foundation-entity-form-actions > button {
+    width: 100%;
+  }
+}

@@ -580,11 +580,11 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
   ));
 
   return (
-    <section className="foundation-section entity-editor">
+    <section className="foundation-section entity-editor foundation-entity-editor">
       <div className="foundation-section-heading"><div><small>{collection === "users" ? "可新增、改名、调整角色、停用或删除" : "本地资料"}</small><h3><Icon size={18} />{config.title}</h3></div><span>{items.length} 条</span></div>
       {collection === "users" && !hasActiveUsers && <p className="foundation-hint">当前没有启用人员。首位启用人员需选择具备“管理工作台”权限的启用角色；保存后会自动成为当前本地操作身份。</p>}
       {collection === "personnelRecords" && <p className="foundation-hint">关联后两处共用同一姓名；人员资料状态与操作用户权限状态仍分别管理。</p>}
-      <div className="foundation-record-list">
+      <div className="foundation-record-list foundation-entity-record-list">
         {items.map((item, index) => {
           const name = displayName(item, collection, config.title);
           const linkedUser = collection === "personnelRecords"
@@ -594,9 +594,9 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
           const titleId = `${collection}-delete-title-${index}`;
           const descriptionId = `${collection}-delete-description-${index}`;
           return (
-            <article className={`foundation-record${confirming ? " is-confirming-delete" : ""}`} key={item.id}>
-              <div><strong>{name}</strong><small>{recordDescription(item, collection, activeWorkspace)}</small></div>
-              <span className="foundation-record-actions">
+            <article className={`foundation-record foundation-entity-record${confirming ? " is-confirming-delete" : ""}`} key={item.id}>
+              <div className="foundation-entity-record-copy"><strong>{name}</strong><small>{recordDescription(item, collection, activeWorkspace)}</small></div>
+              <span className="foundation-record-actions foundation-entity-record-actions">
                 {collection === "personnelRecords" && !linkedUser && <select className="compact-select" value="" aria-label={`将${name}设为操作用户`} disabled={!conversionRoles.length} onChange={(event) => event.target.value && convertPersonnelToUser(item, event.target.value)}><option value="">{conversionRoles.length ? "设为操作用户…" : "无可用角色"}</option>{conversionRoles.map((role) => <option value={role.id} key={role.id}>使用角色：{role.name}</option>)}</select>}
                 <button type="button" aria-label={`编辑${name}`} onClick={() => edit(item)}><PencilSimple size={15} /></button><button type="button" aria-label={`删除${name}`} aria-haspopup="dialog" aria-expanded={confirming} onClick={() => requestRemove(item)}><Trash size={15} /></button>
               </span>
@@ -612,13 +612,13 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
         {!items.length && <p className="foundation-empty">还没有记录。</p>}
       </div>
       <button className="foundation-editor-toggle secondary-button" type="button" aria-expanded={editorOpen} aria-controls={`${collection}-editor`} onClick={create}><Plus size={16} />新增{config.title}</button>
-      {editorOpen && <div className="foundation-editor-panel" id={`${collection}-editor`}>
-        <div className="foundation-section-heading"><div><small>{draft.id ? "编辑现有记录" : "新增本地记录"}</small><h4>{draft.id ? `编辑「${displayName(draft, collection, config.title)}」` : `新增${config.title}`}</h4></div></div>
-        <form className="entity-form" onSubmit={save}>
+      {editorOpen && <div className="foundation-editor-panel foundation-entity-editor-panel" id={`${collection}-editor`}>
+        <div className="foundation-section-heading foundation-entity-editor-heading"><div><small>{draft.id ? "编辑现有记录" : "新增本地记录"}</small><h4>{draft.id ? `编辑「${displayName(draft, collection, config.title)}」` : `新增${config.title}`}</h4></div></div>
+        <form className="entity-form foundation-entity-form" onSubmit={save}>
           {config.fields.map((field) => field.type === "permissions"
-            ? <div className="foundation-field permission-field" key={field.key}><span>{field.label}</span><Field field={field} value={draft[field.key]} onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))} /></div>
-            : <label className="foundation-field" key={field.key}><span>{field.label}</span><Field field={field} value={draft[field.key]} onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))} /></label>)}
-          <div className="foundation-inline-actions"><button className="primary-button" type="submit"><Plus size={16} />{draft.id ? "保存修改" : "新增记录"}</button><button className="secondary-button" type="button" onClick={cancel}>取消</button></div>
+            ? <div className="foundation-field permission-field foundation-entity-field" key={field.key}><span>{field.label}</span><Field field={field} value={draft[field.key]} onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))} /></div>
+            : <label className="foundation-field foundation-entity-field" key={field.key}><span>{field.label}</span><Field field={field} value={draft[field.key]} onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))} /></label>)}
+          <div className="foundation-inline-actions foundation-entity-form-actions"><button className="primary-button" type="submit"><Plus size={16} />{draft.id ? "保存修改" : "新增记录"}</button><button className="secondary-button" type="button" onClick={cancel}>取消</button></div>
           {error && <p className="entity-error">{error}</p>}
         </form>
       </div>}

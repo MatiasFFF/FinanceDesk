@@ -8,6 +8,7 @@ import {
   MagicWand,
   Plus,
   SealCheck,
+  Trash,
   WarningCircle,
 } from "@phosphor-icons/react";
 
@@ -222,6 +223,31 @@ function WorkspaceAccountSelect({ workspace, accounts, value, onChange, required
   );
 }
 
+function updateVoucherLineDraft(setDrafts, voucher, transform) {
+  setDrafts((current) => {
+    const lines = current[voucher.id] || voucher.lines || [];
+    return { ...current, [voucher.id]: transform(lines) };
+  });
+}
+
+function blankVoucherLine(voucher) {
+  return {
+    account: "",
+    auxiliaryId: null,
+    debit: "",
+    credit: "",
+    sourceIds: [...new Set(voucher.sourceIds || [])],
+  };
+}
+
+function voucherDraftValidation(workspace, lines) {
+  return validateVoucherBalance(
+    { lines },
+    accountingRules(workspace).amountTolerance,
+    workspace,
+  );
+}
+
 function voucherLineAccountPresentation(workspace, accounts, lines = []) {
   const seen = new Set();
   const lineAccounts = [];
@@ -281,42 +307,69 @@ function VoucherAccountJudgement({ workspace, accounts, voucher, lines, pending 
   );
 }
 
-function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChange }) {
+function VoucherLineValidation({ validation }) {
+  return (
+    <>
+      <div className={`engine-voucher-balance ${validation.balanced ? "is-balanced" : "is-invalid"}`}>
+        <span>借方 ¥{money(validation.debit)}</span>
+        <span>贷方 ¥{money(validation.credit)}</span>
+        <strong>{validation.balanced ? "借贷平衡，可以保存" : `差额 ¥${money(Math.abs(validation.difference))}`}</strong>
+      </div>
+      {!validation.balanced && <div className="engine-missing">{validation.errors.map((message) => <span key={message}>{message}</span>)}</div>}
+    </>
+  );
+}
+
+function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChange, onAdd, onRemove }) {
   return (
     <div className="engine-voucher-lines">
       {(lines || []).map((line, index) => {
         const debit = Number(line.debit || 0);
         const credit = Number(line.credit || 0);
         const unavailable = !accountIsActive(accounts, line.account);
+        if (editable) {
+          return (
+            <div className="engine-voucher-line is-editable" key={`${index}-${line.auxiliaryId || "line"}`}>
+              <span className="engine-voucher-line-index">#{index + 1}</span>
+              <label className="engine-voucher-line-field engine-voucher-line-account-field">
+                <span>会计科目</span>
+                <WorkspaceAccountSelect
+                  workspace={workspace}
+                  accounts={accounts}
+                  value={line.account}
+                  onChange={(account) => onChange(index, { account })}
+                  ariaLabel={`第 ${index + 1} 行科目`}
+                  required
+                />
+                <small>{unavailable ? "请选择当前有效科目" : line.account}</small>
+              </label>
+              <label className="engine-voucher-line-field">
+                <span>借方金额</span>
+                <input type="number" min="0" step="0.01" inputMode="decimal" value={line.debit || ""} onChange={(event) => onChange(index, { debit: event.target.value })} aria-label={`第 ${index + 1} 行借方金额`} placeholder="0.00" />
+              </label>
+              <label className="engine-voucher-line-field">
+                <span>贷方金额</span>
+                <input type="number" min="0" step="0.01" inputMode="decimal" value={line.credit || ""} onChange={(event) => onChange(index, { credit: event.target.value })} aria-label={`第 ${index + 1} 行贷方金额`} placeholder="0.00" />
+              </label>
+              <button className="engine-voucher-line-remove" type="button" disabled={lines.length <= 2} onClick={() => onRemove(index)} aria-label={`删除第 ${index + 1} 行分录`}><Trash size={15} />删除</button>
+            </div>
+          );
+        }
         return (
           <div className="engine-voucher-line" key={`${index}-${line.auxiliaryId || "line"}`}>
             <span className="engine-voucher-line-amount">
               <small>{debit ? "借方" : "贷方"}</small>
               <strong>¥{money(debit || credit)}</strong>
             </span>
-            {editable ? (
-              <label>
-                <span>科目</span>
-                <WorkspaceAccountSelect
-                  workspace={workspace}
-                  accounts={accounts}
-                  value={line.account}
-                  onChange={(account) => onChange(index, account)}
-                  ariaLabel={`第 ${index + 1} 行科目`}
-                  required
-                />
-                <small>{unavailable ? "原科目已停用，请改选有效科目后再保存或入账" : line.account}</small>
-              </label>
-            ) : (
-              <span className="engine-voucher-line-account">
-                <small>科目</small>
-                <strong>{workspaceAccountLabel(workspace, accounts, line.account)}</strong>
-                <small>{line.account}{unavailable ? " · 当前已停用" : ""}</small>
-              </span>
-            )}
+            <span className="engine-voucher-line-account">
+              <small>科目</small>
+              <strong>{workspaceAccountLabel(workspace, accounts, line.account)}</strong>
+              <small>{line.account}{unavailable ? " · 当前已停用" : ""}</small>
+            </span>
           </div>
         );
       })}
+      {editable && <button className="secondary-button engine-voucher-line-add" type="button" onClick={onAdd}><Plus size={15} />新增分录行</button>}
     </div>
   );
 }
@@ -474,7 +527,7 @@ function MemberBusinessAccountingQueue({ onToast }) {
         const voucher = related.find((item) => !["posted", "superseded"].includes(item.status))
           || [...related].reverse().find((item) => item.status === "posted")
           || null;
-        return { event, voucher, validation: voucher ? validateVoucherBalance(voucher) : null };
+        return { event, voucher };
       })
       .sort((left, right) => String(right.event.date || "").localeCompare(String(left.event.date || "")));
   }, [activeWorkspace]);
@@ -506,13 +559,52 @@ function MemberBusinessAccountingQueue({ onToast }) {
     );
   }
 
-  function changeVoucherLineAccount(voucher, lineIndex, account) {
-    setVoucherLineDrafts((current) => ({
-      ...current,
-      [voucher.id]: (current[voucher.id] || voucher.lines).map((line, index) => (
-        index === lineIndex ? { ...line, account } : line
-      )),
-    }));
+  function changeVoucherLine(voucher, lineIndex, changes) {
+    updateVoucherLineDraft(setVoucherLineDrafts, voucher, (lines) => lines.map((line, index) => (
+      index === lineIndex ? { ...line, ...changes } : line
+    )));
+  }
+
+  function addVoucherLine(voucher) {
+    updateVoucherLineDraft(setVoucherLineDrafts, voucher, (lines) => [...lines, blankVoucherLine(voucher)]);
+  }
+
+  function removeVoucherLine(voucher, lineIndex) {
+    updateVoucherLineDraft(setVoucherLineDrafts, voucher, (lines) => (
+      lines.length > 2 ? lines.filter((_, index) => index !== lineIndex) : lines
+    ));
+  }
+
+  function validateDraft(voucher) {
+    const lines = voucherLineDrafts[voucher.id] || voucher.lines;
+    const validation = voucherDraftValidation(activeWorkspace, lines);
+    if (!validation.balanced) setError(validation.errors.join("；"));
+    return { lines, validation };
+  }
+
+  function reviseDraft(event, voucher) {
+    const reviewNote = String(reviewNotes[event.id] || "").trim();
+    if (!reviewNote) {
+      setError("保存修订前，请填写这笔会员业务的复核意见");
+      return;
+    }
+    const { lines, validation } = validateDraft(voucher);
+    if (!validation.balanced) return;
+    if (run(
+      (workspace) => reviseDraftVoucher(workspace, {
+        voucherId: voucher.id,
+        summary: voucher.summary,
+        lines,
+        reason: reviewNote,
+      }, { actor }),
+      "会员业务凭证草稿已保存为新版本",
+    )) {
+      setVoucherLineDrafts((current) => {
+        const next = { ...current };
+        delete next[voucher.id];
+        return next;
+      });
+    }
   }
 
   function postDraft(event, voucher) {
@@ -521,11 +613,8 @@ function MemberBusinessAccountingQueue({ onToast }) {
       setError("复核入账前，请填写这笔会员业务的复核意见");
       return;
     }
-    const editedLines = voucherLineDrafts[voucher.id] || voucher.lines;
-    if (editedLines.some((line) => !accountIsActive(accountOptions, line.account))) {
-      setError("凭证仍包含已停用科目，请改选当前有效科目后再入账");
-      return;
-    }
+    const { lines: editedLines, validation } = validateDraft(voucher);
+    if (!validation.balanced) return;
     if (run(
       (workspace) => {
         const prepared = voucherLineDrafts[voucher.id]
@@ -566,12 +655,17 @@ function MemberBusinessAccountingQueue({ onToast }) {
       </div>
       {error && <div className="engine-error"><WarningCircle size={16} />{error}</div>}
       <div className="settlement-bill-list">
-        {rows.length ? rows.map(({ event, voucher, validation }) => {
+        {rows.length ? rows.map(({ event, voucher }) => {
           const kind = memberEventKind(event);
           const definition = MEMBER_EVENT_DEFINITIONS[kind];
           const voucherLabel = !voucher ? "待生成" : voucher.status === "posted" ? `${voucher.no || "已编号"} · 已入账` : "凭证草稿";
           const editableLines = voucher ? voucherLineDrafts[voucher.id] || voucher.lines : [];
-          const hasUnavailableAccount = editableLines.some((line) => !accountIsActive(accountOptions, line.account));
+          const editable = Boolean(voucher && voucher.status !== "posted" && voucher.status !== "superseded");
+          const validation = voucher ? validateVoucherBalance(
+            { lines: editableLines },
+            accountingRules(activeWorkspace).amountTolerance,
+            editable ? activeWorkspace : null,
+          ) : null;
           return (
             <article className="settlement-bill-row" key={event.id}>
               <div className="settlement-bill-main"><span className="settlement-kind">{definition.label}</span><strong>{event.memberName || event.coach}</strong><small>{event.date} · {memberEventStatusLabel(event)} · {event.note || definition.accountingLabel}</small></div>
@@ -591,13 +685,16 @@ function MemberBusinessAccountingQueue({ onToast }) {
                     workspace={activeWorkspace}
                     accounts={accountOptions}
                     lines={editableLines}
-                    editable={voucher.status !== "posted" && voucher.status !== "superseded"}
-                    onChange={(lineIndex, account) => changeVoucherLineAccount(voucher, lineIndex, account)}
+                    editable={editable}
+                    onChange={(lineIndex, changes) => changeVoucherLine(voucher, lineIndex, changes)}
+                    onAdd={() => addVoucherLine(voucher)}
+                    onRemove={(lineIndex) => removeVoucherLine(voucher, lineIndex)}
                   />
-                  {hasUnavailableAccount && voucher.status !== "posted" && voucher.status !== "superseded" && <div className="engine-missing"><span>草稿含已停用科目：历史内容仍可查看，但必须改选有效科目后才能入账。</span></div>}
+                  {editable && <VoucherLineValidation validation={validation} />}
                   {voucher.status === "posted" ? <div className="engine-inline"><span className="engine-badge"><CheckCircle size={14} weight="fill" />已进入 {MEMBER_REPORT_EFFECTS[kind]}</span></div> : <form className="engine-form" onSubmit={(submitEvent) => { submitEvent.preventDefault(); postDraft(event, voucher); }}>
                     <label className="full"><span>复核意见 *</span><textarea value={reviewNotes[event.id] || ""} onChange={(changeEvent) => setReviewNotes((current) => ({ ...current, [event.id]: changeEvent.target.value }))} placeholder="例如：已核对会员台账、金额和会计科目" /></label>
-                    <button className="primary-button wide" disabled={!validation?.balanced || hasUnavailableAccount} type="submit"><CheckCircle size={16} />复核入账并更新报表</button>
+                    <button className="secondary-button wide" disabled={!validation?.balanced || !voucherLineDrafts[voucher.id]} type="button" onClick={() => reviseDraft(event, voucher)}>保存修订</button>
+                    <button className="primary-button wide" disabled={!validation?.balanced} type="submit"><CheckCircle size={16} />复核入账并更新报表</button>
                   </form>}
                 </div> : <div className="engine-inline"><span><strong>{definition.accountingLabel}</strong><small>{definition.suggestedEntry}</small></span><button className="secondary-button" type="button" onClick={() => createDraft(event.id)}><Plus size={16} />生成平衡凭证</button></div>}
               </details>
@@ -1209,13 +1306,20 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     );
   }
 
-  function changeVoucherLineAccount(voucher, lineIndex, account) {
-    setVoucherLineDrafts((current) => ({
-      ...current,
-      [voucher.id]: (current[voucher.id] || voucher.lines).map((line, index) => (
-        index === lineIndex ? { ...line, account } : line
-      )),
-    }));
+  function changeVoucherLine(voucher, lineIndex, changes) {
+    updateVoucherLineDraft(setVoucherLineDrafts, voucher, (lines) => lines.map((line, index) => (
+      index === lineIndex ? { ...line, ...changes } : line
+    )));
+  }
+
+  function addVoucherLine(voucher) {
+    updateVoucherLineDraft(setVoucherLineDrafts, voucher, (lines) => [...lines, blankVoucherLine(voucher)]);
+  }
+
+  function removeVoucherLine(voucher, lineIndex) {
+    updateVoucherLineDraft(setVoucherLineDrafts, voucher, (lines) => (
+      lines.length > 2 ? lines.filter((_, index) => index !== lineIndex) : lines
+    ));
   }
 
   function clearVoucherEdits(voucherId) {
@@ -1256,8 +1360,9 @@ export function AccountingWorkbench({ transactionId, onToast }) {
       return;
     }
     const editedLines = voucherLineDrafts[voucher.id] || voucher.lines;
-    if (editedLines.some((line) => !accountIsActive(accountOptions, line.account))) {
-      setError("凭证仍包含已停用科目，请改选当前有效科目后再入账");
+    const validation = voucherDraftValidation(activeWorkspace, editedLines);
+    if (!validation.balanced) {
+      setError(validation.errors.join("；"));
       return;
     }
     const hasPendingEdits = Boolean(voucherLineDrafts[voucher.id]) || Object.hasOwn(voucherSummaries, voucher.id);
@@ -1283,8 +1388,9 @@ export function AccountingWorkbench({ transactionId, onToast }) {
 
   function reviseVoucher(voucher) {
     const editedLines = voucherLineDrafts[voucher.id] || voucher.lines;
-    if (editedLines.some((line) => !accountIsActive(accountOptions, line.account))) {
-      setError("凭证仍包含已停用科目，请改选当前有效科目后再保存");
+    const validation = voucherDraftValidation(activeWorkspace, editedLines);
+    if (!validation.balanced) {
+      setError(validation.errors.join("；"));
       return;
     }
     if (run(
@@ -1504,10 +1610,14 @@ export function AccountingWorkbench({ transactionId, onToast }) {
           const trace = traceVoucherSources(activeWorkspace, voucher.id);
           const editable = !memberBusinessEventBlocked && voucher.status !== "posted" && voucher.status !== "superseded";
           const editableLines = voucherLineDrafts[voucher.id] || voucher.lines;
-          const hasUnavailableAccount = editableLines.some((line) => !accountIsActive(accountOptions, line.account));
+          const lineValidation = validateVoucherBalance(
+            { lines: editableLines },
+            accountingRules(activeWorkspace).amountTolerance,
+            editable ? activeWorkspace : null,
+          );
           return (
             <article className="engine-voucher-card" key={voucher.id}>
-              <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借贷 ¥{money(voucher.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0))} · 附件包 {attachments.status === "complete" ? "完整" : "待补"} · V{voucher.version}</small></span><em>{voucher.status}</em></div>
+              <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借方 ¥{money(lineValidation.debit)} · 贷方 ¥{money(lineValidation.credit)} · 附件包 {attachments.status === "complete" ? "完整" : "待补"} · V{voucher.version}</small></span><em>{voucher.status}</em></div>
               {editable && <input value={voucherSummaries[voucher.id] ?? voucher.summary} onChange={(event) => setVoucherSummaries((current) => ({ ...current, [voucher.id]: event.target.value }))} aria-label="凭证摘要" />}
               <VoucherAccountJudgement
                 workspace={activeWorkspace}
@@ -1516,12 +1626,20 @@ export function AccountingWorkbench({ transactionId, onToast }) {
                 lines={editableLines}
                 pending={Boolean(voucherLineDrafts[voucher.id])}
               />
-              <VoucherLineAccountEditor workspace={activeWorkspace} accounts={accountOptions} lines={editableLines} editable={editable} onChange={(lineIndex, account) => changeVoucherLineAccount(voucher, lineIndex, account)} />
-              {editable && hasUnavailableAccount && <div className="engine-missing"><span>草稿含已停用科目：历史分录仍可查看，但必须改选有效科目后才能保存或入账。</span></div>}
+              <VoucherLineAccountEditor
+                workspace={activeWorkspace}
+                accounts={accountOptions}
+                lines={editableLines}
+                editable={editable}
+                onChange={(lineIndex, changes) => changeVoucherLine(voucher, lineIndex, changes)}
+                onAdd={() => addVoucherLine(voucher)}
+                onRemove={(lineIndex) => removeVoucherLine(voucher, lineIndex)}
+              />
+              {editable && <VoucherLineValidation validation={lineValidation} />}
               <div className="engine-inline">
                 {!memberBusinessEventBlocked && voucher.status === "draft" && <button className="secondary-button" type="button" onClick={() => requestVoucherChanges(voucher.id)}>退回修改</button>}
-                {editable && <button className="secondary-button" type="button" disabled={!voucherNote.trim() || hasUnavailableAccount} onClick={() => reviseVoucher(voucher)}>保存修订</button>}
-                {voucher.status !== "posted" && voucher.status !== "superseded" && <button className="primary-button" disabled={!voucherNote.trim() || memberBusinessEventBlocked || hasUnavailableAccount} type="button" onClick={() => postDraft(voucher)}><CheckCircle size={16} />{memberBusinessEventBlocked ? "会员模块关闭，暂不可入账" : "填写意见后复核入账"}</button>}
+                {editable && <button className="secondary-button" type="button" disabled={!voucherNote.trim() || !lineValidation.balanced} onClick={() => reviseVoucher(voucher)}>保存修订</button>}
+                {voucher.status !== "posted" && voucher.status !== "superseded" && <button className="primary-button" disabled={!voucherNote.trim() || memberBusinessEventBlocked || !lineValidation.balanced} type="button" onClick={() => postDraft(voucher)}><CheckCircle size={16} />{memberBusinessEventBlocked ? "会员模块关闭，暂不可入账" : "填写意见后复核入账"}</button>}
                 {!memberBusinessEventBlocked && voucher.status === "posted" && <button className="secondary-button" type="button" onClick={() => createRevision(voucher.id)}><Plus size={16} />创建更正草稿</button>}
               </div>
               <details>

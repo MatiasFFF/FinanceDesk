@@ -6,6 +6,7 @@ import {
   buildTaxWorkpaper,
 } from "./domain/accounting/index.js";
 import { buildPayrollSocialSummary, buildStructuredInvoiceVatSummary } from "./features/intake/documentIntake.js";
+import { buildBankAccountReconciliationSummary } from "./features/intake/bankStatementImport.js";
 import {
   FITNESS_WORKSPACE_MODULE_DEFAULTS,
   WORKSPACE_MODULE_DEFAULTS,
@@ -1193,10 +1194,37 @@ export function workflowChecks(workspace) {
   const openNotices = (workspace.delivery.notices || []).filter((notice) => (
     notice.period === workspace.currentPeriod && notice.status !== "resolved"
   ));
-  const bankReconciliationIssues = (workspace.bankImports || []).filter((bankImport) => (
-    bankImport.period === workspace.currentPeriod
-    && (bankImport.status !== "completed" || !bankImport.reconciliation?.passed)
+  const bankReconciliationSummary = buildBankAccountReconciliationSummary(workspace, {
+    period: workspace.currentPeriod,
+  });
+  const openBankReconciliationTasks = openExceptionTasks.filter((task) => (
+    task.sourceType === "bankReconciliation"
+    && (!task.period || task.period === workspace.currentPeriod)
   ));
+  const bankStageComplete = workspace.stages?.s3?.status === "complete";
+  const bankReconciliationPassed = bankReconciliationSummary.passed
+    && openBankReconciliationTasks.length === 0
+    && bankStageComplete;
+  const incompleteBankAccounts = bankReconciliationSummary.accounts.filter((account) => !account.passed);
+  let bankReconciliationDetail = `${bankReconciliationSummary.completedCount} 个账户已完成本期月度勾稽`;
+  if (incompleteBankAccounts.length) {
+    bankReconciliationDetail = incompleteBankAccounts
+      .map((account) => `${account.accountName}：${account.message}`)
+      .join("；");
+  } else if (!bankReconciliationSummary.accountCount) {
+    bankReconciliationDetail = "本期没有可完成月度勾稽的银行账户";
+  } else if (openBankReconciliationTasks.length) {
+    bankReconciliationDetail = `${openBankReconciliationTasks.length} 项本期月度勾稽异常仍待处理`;
+  } else if (!bankStageComplete) {
+    bankReconciliationDetail = "月度余额已勾稽，但银行勾稽阶段仍有事项待复核";
+  }
+  const bankReconciliationIssues = bankReconciliationPassed ? [] : [{
+    sourceType: "bankMonthlyReconciliation",
+    period: workspace.currentPeriod,
+    message: bankReconciliationDetail,
+    incompleteAccountIds: incompleteBankAccounts.map((account) => account.accountId),
+    exceptionTaskIds: openBankReconciliationTasks.map((task) => task.id),
+  }];
   const pendingVouchers = (workspace.vouchers || []).filter((voucher) => (
     voucher.period === workspace.currentPeriod && !["posted", "superseded"].includes(voucher.status)
   ));
@@ -1211,7 +1239,7 @@ export function workflowChecks(workspace) {
   const payrollSocialConfirmation = getPayrollSocialConfirmationState(workspace);
   const checks = [
     { id: "balanced", label: "试算、资产负债与现金变动勾稽通过", ok: statementsBalanced, page: "reports", detail: statementsBalanced ? "三项校验通过" : "至少一项校验存在差异" },
-    { id: "bank", label: "本期银行流水余额勾稽通过", ok: bankReconciliationIssues.length === 0, page: "setup", detail: bankReconciliationIssues.length ? `${bankReconciliationIssues.length} 份银行流水有差异或错误行` : "已完成" },
+    { id: "bank", label: "本期银行流水余额勾稽通过", ok: bankReconciliationPassed, page: "setup", detail: bankReconciliationDetail },
     { id: "exceptions", label: "流水、异常与跨期事项已完成复核", ok: unresolved.length === 0 && openExceptionTasks.length === 0 && openNotices.length === 0, page: openNotices.length ? "overview" : "reconcile", detail: unresolved.length || openExceptionTasks.length || openNotices.length ? `${unresolved.length} 笔流水、${openExceptionTasks.length} 项异常、${openNotices.length} 项跨期待办未完成` : "已完成" },
     { id: "vouchers", label: "本期凭证已全部复核入账", ok: pendingVouchers.length === 0, page: "reconcile", detail: pendingVouchers.length ? `${pendingVouchers.length} 张草稿或更正待处理` : "已完成" },
     { id: "frozen", label: "本期当前数据已有冻结版本", ok: Boolean(version), page: "reports", detail: latestVersion && !version ? "上游数据已变化，请重新冻结" : undefined },
@@ -1238,6 +1266,9 @@ export function workflowChecks(workspace) {
     unresolved,
     openExceptionTasks,
     openNotices,
+    bankReconciliationSummary,
+    openBankReconciliationTasks,
+    bankReconciliationPassed,
     bankReconciliationIssues,
     pendingVouchers,
     latestVersion,

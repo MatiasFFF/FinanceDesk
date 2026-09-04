@@ -25,6 +25,7 @@ import {
   buildStructuredInvoiceVatSummary,
   preparePayrollSocialImport,
 } from "../src/features/intake/documentIntake.js";
+import { reconcileBankAccountPeriod } from "../src/features/intake/bankStatementImport.js";
 import {
   PRIMARY_NAV,
   PRODUCT_NAME,
@@ -64,11 +65,43 @@ function integratedStore(workspace) {
 }
 
 function closeableWorkspace() {
-  const workspace = normalizeWorkspace(ensureWorkspace(createAccountingFixture()), { now: fixedNow });
+  let workspace = normalizeWorkspace(ensureWorkspace(createAccountingFixture()), { now: fixedNow });
   workspace.transactions = workspace.transactions.map((transaction) => ({ ...transaction, status: "ignored" }));
   workspace.vouchers = workspace.vouchers.map((voucher) => ({ ...voucher, status: "posted" }));
   workspace.exceptionTasks = [];
   workspace.bankImports = [];
+  for (const account of workspace.bankAccounts) {
+    const periodMovement = workspace.transactions
+      .filter((transaction) => transaction.accountId === account.id && String(transaction.date || "").startsWith(workspace.currentPeriod))
+      .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+    workspace = {
+      ...workspace,
+      bankAccounts: workspace.bankAccounts.map((item) => item.id === account.id ? {
+        ...item,
+        statementClosing: Number(item.openingBalance || 0) + periodMovement,
+      } : item),
+      bankImports: [
+        ...workspace.bankImports,
+        {
+          id: `close-import-${account.id}`,
+          accountId: account.id,
+          period: workspace.currentPeriod,
+          importedAt: "2026-09-04T07:58:00.000Z",
+          status: "completed",
+          reconciliation: {
+            openingBalance: Number(account.openingBalance || 0),
+            statementClosing: Number(account.openingBalance || 0) + periodMovement,
+          },
+        },
+      ],
+    };
+    workspace = reconcileBankAccountPeriod(workspace, {
+      accountId: account.id,
+      period: workspace.currentPeriod,
+      actor: "测试会计",
+      reconciledAt: "2026-09-04T07:59:00.000Z",
+    }).workspace;
+  }
   return workspace;
 }
 

@@ -121,7 +121,8 @@ function postedSourceIds(workspace) {
 function aggregateLines(lines) {
   const grouped = new Map();
   lines.forEach((line) => {
-    const key = `${line.account}|${line.auxiliaryId || ""}`;
+    const direction = Number(line.debit || 0) > 0 ? "debit" : Number(line.credit || 0) > 0 ? "credit" : "empty";
+    const key = `${line.account}|${line.auxiliaryId || ""}|${direction}`;
     const current = grouped.get(key) || {
       account: line.account,
       auxiliaryId: line.auxiliaryId || null,
@@ -497,7 +498,7 @@ export function createBankBusinessEventVoucherDraft(workspace, {
   }
 
   const lines = bankBusinessEventVoucherLines(next, event, transaction);
-  const validation = validateVoucherBalance({ lines }, accountingRules(next).amountTolerance);
+  const validation = validateVoucherBalance({ lines }, accountingRules(next).amountTolerance, next);
   if (!validation.balanced) throw new AccountingRuleError("VOUCHER_UNBALANCED", validation.errors.join("；"), validation);
   const relatedBill = event.relatedBillId ? findBill(next, event.relatedBillId) : null;
   const relatedTransaction = event.relatedTransactionId ? findTransaction(next, event.relatedTransactionId) : null;
@@ -592,16 +593,40 @@ export function createBankBusinessEventVoucherDraft(workspace, {
   return next;
 }
 
-export function validateVoucherBalance(voucher, tolerance = 0.01) {
-  const debit = sumMoney((voucher.lines || []).map((line) => line.debit));
-  const credit = sumMoney((voucher.lines || []).map((line) => line.credit));
+export function validateVoucherBalance(voucher, tolerance = 0.01, workspace = null) {
+  const lines = voucher.lines || [];
+  const normalizedAmounts = lines.map((line) => {
+    const debit = Number(line.debit ?? 0);
+    const credit = Number(line.credit ?? 0);
+    return {
+      debit,
+      credit,
+      validDebit: Number.isFinite(debit),
+      validCredit: Number.isFinite(credit),
+    };
+  });
+  const debit = sumMoney(normalizedAmounts.map((line) => line.validDebit ? line.debit : 0));
+  const credit = sumMoney(normalizedAmounts.map((line) => line.validCredit ? line.credit : 0));
   const difference = roundMoney(debit - credit);
   const errors = [];
-  if (!(voucher.lines || []).length) errors.push("凭证没有分录");
-  (voucher.lines || []).forEach((line, index) => {
-    if (Number(line.debit || 0) < 0 || Number(line.credit || 0) < 0) errors.push(`第 ${index + 1} 行借贷金额不能为负数`);
-    if (Number(line.debit || 0) > 0 && Number(line.credit || 0) > 0) errors.push(`第 ${index + 1} 行不能同时有借方和贷方`);
-    if (!line.account) errors.push(`第 ${index + 1} 行缺少会计科目`);
+  if (lines.length < 2) errors.push("凭证至少需要两行分录");
+  lines.forEach((line, index) => {
+    const amounts = normalizedAmounts[index];
+    const account = String(line.account || "").trim();
+    if (!amounts.validDebit || !amounts.validCredit) {
+      errors.push(`第 ${index + 1} 行借贷金额必须是有效数字`);
+    } else if (amounts.debit < 0 || amounts.credit < 0) {
+      errors.push(`第 ${index + 1} 行借贷金额不能为负数`);
+    } else if (amounts.debit > 0 && amounts.credit > 0) {
+      errors.push(`第 ${index + 1} 行不能同时填写借方和贷方`);
+    } else if (amounts.debit <= 0 && amounts.credit <= 0) {
+      errors.push(`第 ${index + 1} 行必须填写借方或贷方金额`);
+    }
+    if (!account) {
+      errors.push(`第 ${index + 1} 行缺少会计科目`);
+    } else if (workspace && !resolveWorkspaceAccountDefinition(workspace, account, { allowInactive: false })) {
+      errors.push(`第 ${index + 1} 行会计科目不存在或已停用`);
+    }
   });
   if (Math.abs(difference) > tolerance) errors.push(`借贷不平，差额 ${difference.toFixed(2)}`);
   return { balanced: errors.length === 0, debit, credit, difference, errors };
@@ -674,7 +699,7 @@ export function createVoucherDraft(workspace, { transactionId, summary, note = "
     lines = directTransactionLines(next, transaction, classification);
   }
 
-  const validation = validateVoucherBalance({ lines }, accountingRules(next).amountTolerance);
+  const validation = validateVoucherBalance({ lines }, accountingRules(next).amountTolerance, next);
   if (!validation.balanced) throw new AccountingRuleError("VOUCHER_UNBALANCED", validation.errors.join("；"), validation);
   const trace = evidenceAndSources(next, transaction, allocations);
   const voucherId = nextRecordId(next.vouchers || [], "voucher");
@@ -739,7 +764,7 @@ export function createMemberEventVoucherDraft(workspace, { eventId, summary, not
   }
 
   const lines = memberEventVoucherLines(next, event);
-  const validation = validateVoucherBalance({ lines }, accountingRules(next).amountTolerance);
+  const validation = validateVoucherBalance({ lines }, accountingRules(next).amountTolerance, next);
   if (!validation.balanced) throw new AccountingRuleError("VOUCHER_UNBALANCED", validation.errors.join("；"), validation);
   const relatedBill = event.billId ? findBill(next, event.billId) : null;
   const voucher = {
@@ -807,7 +832,7 @@ export function createAdvanceApplicationVoucherDraft(workspace, { applicationId,
   const advanceBill = findBill(next, application.advanceBillId);
   const targetBill = findBill(next, application.targetBillId);
   const lines = advanceApplicationVoucherLines(next, application);
-  const validation = validateVoucherBalance({ lines }, accountingRules(next).amountTolerance);
+  const validation = validateVoucherBalance({ lines }, accountingRules(next).amountTolerance, next);
   if (!validation.balanced) throw new AccountingRuleError("VOUCHER_UNBALANCED", validation.errors.join("；"), validation);
   const sourceIds = collectSourceIds(
     application.id,
@@ -946,7 +971,7 @@ export function postVoucher(workspace, { voucherId, reviewNote, mode = "manual" 
   if (!["draft", "changes_requested"].includes(voucher.status)) {
     throw new AccountingRuleError("VOUCHER_NOT_POSTABLE", `当前状态不能入账：${voucher.status}`);
   }
-  const validation = validateVoucherBalance(voucher, accountingRules(next).amountTolerance);
+  const validation = validateVoucherBalance(voucher, accountingRules(next).amountTolerance, next);
   if (!validation.balanced) throw new AccountingRuleError("VOUCHER_UNBALANCED", validation.errors.join("；"), validation);
   ensurePostingAllowed(next, voucher, mode);
   const before = { status: voucher.status, version: voucher.version };
@@ -1067,9 +1092,15 @@ export function reviseDraftVoucher(workspace, { voucherId, summary, lines, evide
   if (voucher.status === "superseded") throw new AccountingRuleError("SUPERSEDED_VOUCHER_IMMUTABLE", "已被替代的凭证不能修改");
   const before = voucherSnapshot(voucher, resolvedContext, reason);
   if (summary != null) voucher.summary = summary;
-  if (lines != null) voucher.lines = aggregateLines(lines);
+  if (lines != null) {
+    const inputValidation = validateVoucherBalance({ lines }, accountingRules(next).amountTolerance, next);
+    if (!inputValidation.balanced) {
+      throw new AccountingRuleError("VOUCHER_LINES_INVALID", inputValidation.errors.join("；"), inputValidation);
+    }
+    voucher.lines = aggregateLines(lines);
+  }
   if (evidenceIds != null) voucher.evidenceIds = collectSourceIds(evidenceIds);
-  const validation = validateVoucherBalance(voucher, accountingRules(next).amountTolerance);
+  const validation = validateVoucherBalance(voucher, accountingRules(next).amountTolerance, next);
   if (!validation.balanced) throw new AccountingRuleError("VOUCHER_UNBALANCED", validation.errors.join("；"), validation);
   voucher.version += 1;
   voucher.status = "draft";
