@@ -22,16 +22,19 @@ import {
   billSettlement,
   buildAttachmentPackage,
   classifyBankTransaction,
+  createPostedVoucherRevision,
   createVoucherDraft,
   linkInternalTransfer,
   linkRefundToOriginal,
   postVoucher,
   recordManualConfirmation,
   recordReconciliationSuggestions,
+  reviseDraftVoucher,
   reviewTransactionEvidence,
   reverseReconciliation,
   suggestReconciliations,
   transactionSettlement,
+  traceVoucherSources,
   unresolvedExceptionTasks,
   vouchersForSource,
 } from "../../domain/accounting/index.js";
@@ -83,6 +86,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   const [reviewReason, setReviewReason] = useState("");
   const [reversalReason, setReversalReason] = useState("");
   const [voucherNote, setVoucherNote] = useState("");
+  const [voucherSummaries, setVoucherSummaries] = useState({});
   const [refundSourceId, setRefundSourceId] = useState("");
   const [transferSourceId, setTransferSourceId] = useState("");
   const [error, setError] = useState("");
@@ -119,6 +123,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     setReviewReason("");
     setReversalReason("");
     setVoucherNote("");
+    setVoucherSummaries({});
     setRefundSourceId("");
     setTransferSourceId("");
     setError("");
@@ -263,6 +268,27 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     );
   }
 
+  function reviseVoucher(voucher) {
+    run(
+      (workspace) => reviseDraftVoucher(workspace, {
+        voucherId: voucher.id,
+        summary: voucherSummaries[voucher.id] ?? voucher.summary,
+        reason: voucherNote,
+      }, { actor: "周会计" }),
+      "凭证草稿已形成新版本，旧版本仍保留",
+    );
+  }
+
+  function createRevision(voucherId) {
+    run(
+      (workspace) => createPostedVoucherRevision(workspace, {
+        voucherId,
+        reason: voucherNote,
+      }, { actor: "周会计" }),
+      "已入账凭证未被覆盖，已创建独立更正草稿",
+    );
+  }
+
   return (
     <section className="accounting-workbench">
       <div className="accounting-heading">
@@ -342,7 +368,27 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         {!vouchers.length && <button className="secondary-button wide" type="button" onClick={createDraft}><Plus size={16} />生成凭证草稿</button>}
         {vouchers.map((voucher) => {
           const attachments = buildAttachmentPackage(activeWorkspace, voucher.id);
-          return <div className="engine-voucher-row" key={voucher.id}><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借贷 ¥{money(voucher.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0))} · 附件包 {attachments.status === "complete" ? "完整" : "待补"}</small></span><em>{voucher.status}</em>{voucher.status !== "posted" && <button type="button" onClick={() => postDraft(voucher.id)}><CheckCircle size={16} />复核入账</button>}</div>;
+          const trace = traceVoucherSources(activeWorkspace, voucher.id);
+          return (
+            <article className="engine-voucher-card" key={voucher.id}>
+              <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借贷 ¥{money(voucher.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0))} · 附件包 {attachments.status === "complete" ? "完整" : "待补"} · V{voucher.version}</small></span><em>{voucher.status}</em></div>
+              {voucher.status !== "posted" && voucher.status !== "superseded" && <input value={voucherSummaries[voucher.id] ?? voucher.summary} onChange={(event) => setVoucherSummaries((current) => ({ ...current, [voucher.id]: event.target.value }))} aria-label="凭证摘要" />}
+              <div className="engine-inline">
+                {voucher.status !== "posted" && voucher.status !== "superseded" && <button className="secondary-button" type="button" onClick={() => reviseVoucher(voucher)}>保存修订</button>}
+                {voucher.status !== "posted" && voucher.status !== "superseded" && <button className="primary-button" type="button" onClick={() => postDraft(voucher.id)}><CheckCircle size={16} />复核入账</button>}
+                {voucher.status === "posted" && <button className="secondary-button" type="button" onClick={() => createRevision(voucher.id)}><Plus size={16} />创建更正草稿</button>}
+              </div>
+              <details>
+                <summary>查看来源与附件清单</summary>
+                <p>流水 {trace.transactions.length} · 账单 {trace.bills.length} · 资料 {trace.documents.length} · 历史版本 {trace.versions.length} · 审计 {trace.audit.length}</p>
+                <ul className="engine-trace-list">
+                  {attachments.manifest.map((item) => <li key={item.id}><strong>{item.kind}</strong><span>{item.name}</span></li>)}
+                  {trace.versions.map((version, index) => <li key={`${version.version || "history"}-${index}`}><strong>历史版本 V{version.version || index + 1}</strong><span>{version.summary || version.reason || "凭证修订记录"}</span></li>)}
+                </ul>
+                {attachments.missing.length > 0 && <div className="engine-missing">{attachments.missing.map((item) => <span key={item.id}>待补：{item.label || item.id}</span>)}</div>}
+              </details>
+            </article>
+          );
         })}
       </div>
     </section>

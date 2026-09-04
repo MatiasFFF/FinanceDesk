@@ -103,6 +103,43 @@
   border-top: 1px solid var(--line-soft);
 }
 
+.engine-voucher-card {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--paper-strong);
+}
+
+.engine-voucher-card > input {
+  width: 100%;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+  color: var(--espresso);
+  font: inherit;
+  font-size: 11px;
+}
+
+.engine-voucher-card details {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.engine-voucher-card summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.engine-trace-list {
+  display: grid;
+  gap: 4px;
+  margin: 7px 0 0;
+  padding-left: 16px;
+}
+
 .engine-form {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
