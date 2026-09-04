@@ -203,8 +203,17 @@ test("余额不平时给出明确差额而不是伪装通过", () => {
   assert.equal(plan.reconciliation.available, true);
   assert.equal(plan.reconciliation.passed, false);
   assert.equal(plan.status, "reconciliation_failed");
+  assert.equal(plan.canImport, true);
+  assert.equal(plan.importDisposition, "ready_with_reconciliation_issue");
   assert.match(plan.reconciliation.message, /余额相差/);
-  assert.throws(() => applyBankImport(stateWithTestAccount(), workspace.id, plan, { now: fixedNow }), /尚未勾稽通过/);
+  const applied = applyBankImport(stateWithTestAccount(), workspace.id, plan, { now: fixedNow, actor: "测试会计" });
+  const updated = getWorkspace(applied);
+  assert.equal(updated.transactions.length, workspace.transactions.length + 2);
+  assert.equal(updated.stages.s3.status, "needs_review");
+  assert.equal(updated.bankImports.at(-1).monthlyReconciliation.passed, false);
+  const reconciliationTask = updated.exceptionTasks.find((task) => task.sourceType === "bankReconciliation");
+  assert.equal(reconciliationTask.status, "open");
+  assert.equal(reconciliationTask.workflowState, "awaiting_reconciliation");
 });
 
 test("空白余额输入会使用账户期初和流水末行余额完成勾稽", () => {
@@ -2020,6 +2029,7 @@ test("人工确认后建立三方关联，并按资料类型逐项自动关闭�
       evidenceIds: [],
     }],
     businessEvents: [],
+    vouchers: [],
     documents: [],
     evidenceLinks: [],
     exceptionTasks: [],

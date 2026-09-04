@@ -120,5 +120,6 @@ test("app wiring uses workspace modules for creation, navigation, operator ident
   assert.match(appSource, /showMemberBusiness=\{workspaceModuleEnabled\(workspace, "members"\)\}/);
   assert.match(managerSource, /actions\.updateWorkspaceModules/);
   assert.match(accountingSource, /showMemberBusiness && memberBusinessEnabled\(activeWorkspace\) && <MemberBusinessAccountingQueue/);
-  assert.match(accountingSource, /accountDefinition\(id, activeWorkspace\)\.label/);
+  assert.match(accountingSource, /workspaceAccountOptions\(activeWorkspace\)/);
+  assert.match(accountingSource, /accountDefinition\(account\.id, workspace\)/);
 });

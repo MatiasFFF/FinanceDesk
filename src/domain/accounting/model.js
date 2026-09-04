@@ -23,6 +23,24 @@ export const EVENT_TYPES = Object.freeze({
   UNKNOWN: "unknown",
 });
 
+export const CATEGORY_RULE_BUSINESS_TYPES = Object.freeze([
+  { id: "customerReceipt", label: "客户收款", eventType: EVENT_TYPES.CUSTOMER_RECEIPT },
+  { id: "memberRecharge", label: "会员充值 / 预收", eventType: EVENT_TYPES.MEMBER_RECHARGE, memberOnly: true },
+  { id: "memberConsumption", label: "会员耗课", eventType: EVENT_TYPES.MEMBER_CONSUMPTION, memberOnly: true },
+  { id: "supplierPayment", label: "供应商结算", eventType: EVENT_TYPES.SUPPLIER_SETTLEMENT },
+  { id: "supplierPrepayment", label: "供应商预付", eventType: EVENT_TYPES.SUPPLIER_PREPAYMENT },
+  { id: "purchaseExpense", label: "采购与费用", eventType: EVENT_TYPES.PURCHASE_EXPENSE },
+  { id: "payroll", label: "工资社保", eventType: EVENT_TYPES.PAYROLL },
+  { id: "rentAndProperty", label: "房租物业", eventType: EVENT_TYPES.RENT_AND_PROPERTY },
+  { id: "bankFee", label: "银行手续费", eventType: EVENT_TYPES.BANK_FEE },
+  { id: "loanBorrowing", label: "取得借款", eventType: EVENT_TYPES.LOAN },
+  { id: "loanRepayment", label: "归还借款", eventType: EVENT_TYPES.LOAN },
+  { id: "employeeAdvance", label: "员工代垫", eventType: EVENT_TYPES.EMPLOYEE_ADVANCE },
+  { id: "relatedParty", label: "关联方往来", eventType: EVENT_TYPES.RELATED_PARTY },
+  { id: "refund", label: "退款", eventType: EVENT_TYPES.REFUND },
+  { id: "internalTransfer", label: "内部转账", eventType: EVENT_TYPES.INTERNAL_TRANSFER },
+]);
+
 export const ACCOUNT_CATALOG = Object.freeze({
   bank: { label: "银行存款", category: "asset", normalSide: "debit", cash: true },
   cash: { label: "库存现金", category: "asset", normalSide: "debit", cash: true },
@@ -243,6 +261,82 @@ export function workspaceAccountDefinitions(workspace = {}) {
   }).sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
 }
 
+const ACCOUNT_BUSINESS_TYPE_DEFAULTS = Object.freeze({
+  receivable: "customerReceipt",
+  revenuePrivate: "customerReceipt",
+  revenueGroup: "customerReceipt",
+  contractLiability: "memberRecharge",
+  payable: "supplierPayment",
+  prepayment: "supplierPrepayment",
+  expenseFee: "bankFee",
+  expensePayroll: "payroll",
+  expenseRent: "rentAndProperty",
+  loan: "loanRepayment",
+  relatedParty: "relatedParty",
+  salesReturns: "refund",
+  bank: "internalTransfer",
+});
+
+function inferredCategoryRuleBusinessType(rule = {}) {
+  if (CATEGORY_RULE_BUSINESS_TYPES.some((item) => item.id === rule.businessType)) return rule.businessType;
+  const byEventType = CATEGORY_RULE_BUSINESS_TYPES.find((item) => item.eventType === rule.eventType);
+  if (byEventType) return byEventType.id;
+  return ACCOUNT_BUSINESS_TYPE_DEFAULTS[String(rule.account || rule.accountId || "").split(":")[0]] || "purchaseExpense";
+}
+
+export function categoryKeywordRules(workspace = {}) {
+  const usedIds = new Set();
+  return (accountingRules(workspace).categoryKeywords || []).map((rule, index) => {
+    let id = String(rule?.id || `category-rule-${String(index + 1).padStart(4, "0")}`);
+    while (usedIds.has(id)) id = `${id}-${index + 1}`;
+    usedIds.add(id);
+    return {
+      id,
+      keyword: String(rule?.keyword || ""),
+      businessType: inferredCategoryRuleBusinessType(rule),
+      account: String(rule?.account || rule?.accountId || ""),
+      enabled: rule?.enabled !== false && !["inactive", "disabled"].includes(rule?.status),
+    };
+  });
+}
+
+function normalizeCategoryKeywordRules(workspace, rules) {
+  if (!Array.isArray(rules)) throw new AccountingRuleError("CATEGORY_RULES_INVALID", "分类规则必须是列表");
+  const activeAccounts = workspaceAccountDefinitions(workspace).filter((account) => account.status !== "inactive");
+  const usedIds = new Set();
+  return rules.map((rule, index) => {
+    const keyword = String(rule?.keyword || "").trim();
+    if (!keyword) throw new AccountingRuleError("CATEGORY_RULE_KEYWORD_REQUIRED", `第 ${index + 1} 条分类规则缺少关键词`);
+    try {
+      new RegExp(keyword, "i");
+    } catch {
+      throw new AccountingRuleError("CATEGORY_RULE_KEYWORD_INVALID", `第 ${index + 1} 条分类规则的关键词表达式无效`);
+    }
+    const requestedBusinessType = String(rule?.businessType || "").trim();
+    if (requestedBusinessType && !CATEGORY_RULE_BUSINESS_TYPES.some((item) => item.id === requestedBusinessType)) {
+      throw new AccountingRuleError("CATEGORY_RULE_BUSINESS_TYPE_INVALID", `第 ${index + 1} 条分类规则的业务类型无效`);
+    }
+    const businessType = inferredCategoryRuleBusinessType(rule);
+    const businessDefinition = CATEGORY_RULE_BUSINESS_TYPES.find((item) => item.id === businessType);
+    if (!businessDefinition) throw new AccountingRuleError("CATEGORY_RULE_BUSINESS_TYPE_INVALID", `第 ${index + 1} 条分类规则的业务类型无效`);
+    const requestedAccount = String(rule?.account || rule?.accountId || "").trim();
+    const account = activeAccounts.find((candidate) => candidate.id === requestedAccount);
+    if (!account) throw new AccountingRuleError("CATEGORY_RULE_ACCOUNT_INVALID", `第 ${index + 1} 条分类规则必须选择当前工作台的有效科目`);
+    let id = String(rule?.id || `category-rule-${String(index + 1).padStart(4, "0")}`);
+    while (usedIds.has(id)) id = `${id}-${index + 1}`;
+    usedIds.add(id);
+    return {
+      id,
+      keyword,
+      businessType,
+      eventType: businessDefinition.eventType,
+      account: account.id,
+      enabled: rule?.enabled !== false,
+      requiresMemberModule: Boolean(businessDefinition.memberOnly),
+    };
+  });
+}
+
 function validateAccountValues(values) {
   const name = String(values.name || values.label || "").trim();
   const category = String(values.category || "").trim();
@@ -333,6 +427,10 @@ export function saveActiveAccountingRuleSet(workspace, values, context = {}) {
   const active = activeAccountingRuleSet(next);
   const index = active ? records.findIndex((ruleSet) => ruleSet.id === active.id) : -1;
   const before = index >= 0 ? { ...records[index] } : null;
+  const categoryKeywords = normalizeCategoryKeywordRules(
+    next,
+    values.categoryKeywords ?? categoryKeywordRules(next),
+  );
   const record = {
     ...(before || {}),
     id: before?.id || nextRecordId(records, "rule-set"),
@@ -343,6 +441,7 @@ export function saveActiveAccountingRuleSet(workspace, values, context = {}) {
     amountTolerance: normalizeRuleNumber(values.amountTolerance, "金额容差", { min: 0 }),
     requireEvidenceForExpenses: Boolean(values.requireEvidenceForExpenses),
     allowOverAllocation: Boolean(values.allowOverAllocation),
+    categoryKeywords,
     createdAt: before?.createdAt || resolvedContext.at,
     createdBy: before?.createdBy || resolvedContext.actor,
     updatedAt: resolvedContext.at,
@@ -354,7 +453,7 @@ export function saveActiveAccountingRuleSet(workspace, values, context = {}) {
     action: before ? "accounting_rules.update" : "accounting_rules.create",
     entityType: "ruleSet",
     entityId: record.id,
-    detail: `${before ? "更新" : "创建"}当前有效账务规则：${record.name}`,
+    detail: `${before ? "更新" : "创建"}当前有效账务规则：${record.name}；分类规则 ${record.categoryKeywords.length} 条`,
     before,
     after: record,
     sourceIds: [record.id],

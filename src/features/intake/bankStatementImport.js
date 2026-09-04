@@ -43,6 +43,7 @@ const BANK_FEE_PATTERN = /银行手续费|账户管理费|账户管理手续费|
 const DEFAULT_TRANSFER_DAY_WINDOW = 3;
 const DETERMINISTIC_EVENT_TYPES = new Set(["internalTransfer", "bankFee"]);
 const SUPERSEDED_IMPORT_ANOMALY_CODES = new Set(["bank_unknown_counterparty", "bank_related_party"]);
+const BANK_RECONCILIATION_EXCEPTION_CODE = "bank_monthly_reconciliation_incomplete";
 
 function normalizedHeader(value) {
   return String(value ?? "")
@@ -823,6 +824,93 @@ function reconcileRows(rows, account, options = {}) {
   };
 }
 
+function reconciliationIssue(reconciliation, { accountId, period } = {}) {
+  if (reconciliation?.passed) return null;
+  const available = Boolean(reconciliation?.available);
+  return {
+    code: BANK_RECONCILIATION_EXCEPTION_CODE,
+    label: available ? "月度余额差异" : "月度勾稽资料不全",
+    message: reconciliation?.message || "月度勾稽尚未完成",
+    accountId: accountId || null,
+    period: period || null,
+    available,
+    difference: reconciliation?.difference ?? null,
+    openingBalance: reconciliation?.openingBalance ?? null,
+    statementClosing: reconciliation?.statementClosing ?? null,
+    calculatedClosing: reconciliation?.calculatedClosing ?? null,
+  };
+}
+
+function reconciliationTaskIdentity(accountId, period) {
+  return `${BANK_RECONCILIATION_EXCEPTION_CODE}:${accountId}:${period}`;
+}
+
+function synchronizeBankReconciliationTask(tasks, monthly, plan, actor) {
+  const next = [...(tasks || [])];
+  const identity = reconciliationTaskIdentity(plan.accountId, plan.period);
+  const index = next.findIndex((task) => task.identity === identity && task.status !== "resolved");
+  const current = index >= 0 ? next[index] : null;
+  if (monthly.passed) {
+    if (current) next[index] = {
+      ...current,
+      status: "resolved",
+      resolution: "monthly_reconciliation_completed",
+      resolvedAt: plan.importedAt,
+      resolvedBy: actor,
+      updatedAt: plan.importedAt,
+      history: [...(current.history || []), {
+        at: plan.importedAt,
+        actor,
+        action: "resolved",
+        note: monthly.message,
+      }],
+    };
+    return next;
+  }
+  const issue = reconciliationIssue(monthly, { accountId: plan.accountId, period: plan.period });
+  const accountName = monthly.accountName || plan.accountId;
+  const message = `${accountName} · ${plan.period}：${issue.message}。流水已保存，可继续导入缺失流水或更正余额后重新勾稽。`;
+  const sourceIds = [...new Set([...(current?.sourceIds || []), plan.accountId, plan.id, plan.sourceDocumentId].filter(Boolean))];
+  if (current) {
+    next[index] = {
+      ...current,
+      message,
+      status: "open",
+      workflowState: "awaiting_reconciliation",
+      updatedAt: plan.importedAt,
+      sourceIds,
+      reconciliation: issue,
+      history: [...(current.history || []), {
+        at: plan.importedAt,
+        actor,
+        action: "recalculated",
+        note: issue.message,
+      }],
+    };
+    return next;
+  }
+  next.push({
+    id: createId("exception"),
+    identity,
+    code: BANK_RECONCILIATION_EXCEPTION_CODE,
+    sourceType: "bankReconciliation",
+    sourceId: plan.accountId,
+    accountId: plan.accountId,
+    period: plan.period,
+    importId: plan.id,
+    message,
+    missingEvidence: [],
+    status: "open",
+    workflowState: "awaiting_reconciliation",
+    reconciliation: issue,
+    createdAt: plan.importedAt,
+    updatedAt: plan.importedAt,
+    sourceIds,
+    history: [{ at: plan.importedAt, actor, action: "created", note: issue.message }],
+  });
+  return next;
+}
+
 export function buildBankMonthlyReconciliation(workspace, { accountId, period }) {
   const account = (workspace.bankAccounts || []).find((item) => item.id === accountId);
   const transactions = (workspace.transactions || []).filter((transaction) => (
@@ -1321,6 +1409,12 @@ export function prepareBankImport(workspace, input) {
   });
   const recognitionAnalysis = recognizeBankImportTransactions(workspace, aliasAnalysis.transactions, input);
   const anomalyAnalysis = analyzeBankImportAnomalies(workspace, recognitionAnalysis.transactions, input);
+  const reconciliationAlert = reconciliationIssue(reconciliation, { accountId: input.accountId, period });
+  const canImport = normalized.errors.length === 0 && anomalyAnalysis.transactions.length > 0;
+  const blockingReasons = [
+    ...(normalized.errors.length ? [`${normalized.errors.length} 行字段错误`] : []),
+    ...(!anomalyAnalysis.transactions.length ? [duplicates.length ? "没有新的可导入流水" : "文件中没有有效流水"] : []),
+  ];
   return {
     id: normalized.importId,
     workspaceId: workspace.id,
@@ -1354,15 +1448,26 @@ export function prepareBankImport(workspace, input) {
     counterpartyAliasRules: aliasAnalysis.rules,
     counterpartyApplications: aliasAnalysis.applications,
     reconciliation,
+    reconciliationIssue: reconciliationAlert,
+    reconciliationIssueCount: reconciliationAlert ? 1 : 0,
+    canImport,
+    blockingReasons,
+    importDisposition: !canImport
+      ? "blocked"
+      : reconciliationAlert
+        ? "ready_with_reconciliation_issue"
+        : "ready",
     status: normalized.errors.length
       ? "completed_with_errors"
-      : !reconciliation.available
-        ? "reconciliation_required"
-        : !reconciliation.passed
-        ? "reconciliation_failed"
-        : anomalyAnalysis.anomalies.length
-          ? "completed_with_alerts"
-          : "completed",
+      : !anomalyAnalysis.transactions.length
+        ? "completed_without_new_rows"
+        : !reconciliation.available
+          ? "reconciliation_required"
+          : !reconciliation.passed
+            ? "reconciliation_failed"
+            : anomalyAnalysis.anomalies.length
+              ? "completed_with_alerts"
+              : "completed",
   };
 }
 
@@ -1372,7 +1477,6 @@ export function applyBankImport(state, workspaceId, plan, options = {}) {
   if (!existingWorkspace) throw new Error(`找不到工作台：${workspaceId}`);
   if ((existingWorkspace.bankImports || []).some((item) => item.id === plan.id)) throw new Error("这份导入计划已经执行过");
   if (plan.errorCount > 0) throw new Error(`文件仍有 ${plan.errorCount} 行错误，请修正后重新预检查`);
-  if (!plan.reconciliation?.available || !plan.reconciliation?.passed) throw new Error("银行期初、收支与期末余额尚未勾稽通过，不能落库");
   if (!validPeriod(plan.period)) throw new Error("导入计划缺少有效账期");
   if ((plan.transactions || []).some((transaction) => transaction.date?.slice(0, 7) !== plan.period)) {
     throw new Error(`导入流水日期与所选账期 ${plan.period} 不一致`);
@@ -1418,6 +1522,7 @@ export function applyBankImport(state, workspaceId, plan, options = {}) {
     largeTransactionThreshold: plan.largeTransactionThreshold,
   });
   const actor = options.actor || "本地用户";
+  const reconciliationAlert = reconciliationIssue(plan.reconciliation, { accountId: plan.accountId, period: plan.period });
   const effectivePlan = {
     ...plan,
     actor,
@@ -1436,7 +1541,12 @@ export function applyBankImport(state, workspaceId, plan, options = {}) {
     businessEvents: recognitionAnalysis.businessEvents,
     counterpartyAliasRules: aliasAnalysis.rules,
     counterpartyApplications: aliasAnalysis.applications,
-    status: anomalyAnalysis.anomalies.length ? "completed_with_alerts" : "completed",
+    reconciliationIssue: reconciliationAlert,
+    reconciliationIssueCount: reconciliationAlert ? 1 : 0,
+    canImport: true,
+    blockingReasons: [],
+    importDisposition: reconciliationAlert ? "imported_with_reconciliation_issue" : "imported",
+    status: anomalyAnalysis.anomalies.length || reconciliationAlert ? "completed_with_alerts" : "completed",
   };
   const record = deepClone({ ...effectivePlan, transactions: undefined });
   const exceptionTasks = anomalyAnalysis.anomalies.map((anomaly) => ({
@@ -1537,32 +1647,65 @@ export function applyBankImport(state, workspaceId, plan, options = {}) {
         history: [{ at: effectivePlan.importedAt, actor, action: "created", note: "人工映射为关联方，保留复核任务" }],
       }));
     const aliasRules = mergeCounterpartyAliasRules(workspace.counterpartyAliasRules, newAliasRules, actor, effectivePlan.importedAt);
-    return {
+    const nextTransactions = [
+      ...effectivePlan.transactions,
+      ...workspace.transactions.map((transaction) => aliasUpdates.get(transaction.id) || counterpartUpdates.get(transaction.id) || transaction),
+    ];
+    const nextBankAccounts = workspace.bankAccounts.map((account) => account.id === effectivePlan.accountId ? {
+      ...account,
+      openingBalance: effectivePlan.reconciliation.openingBalance ?? account.openingBalance,
+      statementClosing: effectivePlan.reconciliation.statementClosing ?? account.statementClosing,
+      lastImportedAt: effectivePlan.importedAt,
+      lastImportedPeriod: effectivePlan.period,
+      updatedAt: effectivePlan.importedAt,
+    } : account);
+    const projectedWorkspace = {
       ...workspace,
       currentPeriod: effectivePlan.period,
       periods: [effectivePlan.period, ...(workspace.periods || []).filter((period) => period !== effectivePlan.period)],
       tax: { ...workspace.tax, period: effectivePlan.period },
       delivery: { ...workspace.delivery, filing: { ...workspace.delivery.filing, period: effectivePlan.period } },
       bankImports: [...workspace.bankImports, record],
-      transactions: [
-        ...effectivePlan.transactions,
-        ...workspace.transactions.map((transaction) => aliasUpdates.get(transaction.id) || counterpartUpdates.get(transaction.id) || transaction),
-      ],
+      transactions: nextTransactions,
       businessEvents: [...eventsById.values()],
-      exceptionTasks: [...updatedExceptionTasks, ...exceptionTasks, ...relatedAliasTasks],
       counterpartyAliasRules: aliasRules,
-      bankAccounts: workspace.bankAccounts.map((account) => account.id === effectivePlan.accountId ? {
-        ...account,
-        openingBalance: effectivePlan.reconciliation.openingBalance ?? account.openingBalance,
-        statementClosing: effectivePlan.reconciliation.statementClosing ?? account.statementClosing,
-        lastImportedAt: effectivePlan.importedAt,
-        lastImportedPeriod: effectivePlan.period,
-        updatedAt: effectivePlan.importedAt,
-      } : account),
+      bankAccounts: nextBankAccounts,
+    };
+    const monthly = buildBankMonthlyReconciliation(projectedWorkspace, {
+      accountId: effectivePlan.accountId,
+      period: effectivePlan.period,
+    });
+    const monthlyReconciliation = {
+      available: monthly.available,
+      passed: monthly.passed,
+      status: monthly.status,
+      message: monthly.message,
+      openingBalance: monthly.openingBalance,
+      income: monthly.income,
+      expense: monthly.expense,
+      calculatedClosing: monthly.calculatedClosing,
+      statementClosing: monthly.statementClosing,
+      difference: monthly.difference,
+    };
+    const finalRecord = { ...record, monthlyReconciliation };
+    const withFinalRecord = {
+      ...projectedWorkspace,
+      bankImports: [...workspace.bankImports, finalRecord],
+    };
+    const importTasks = [...updatedExceptionTasks, ...exceptionTasks, ...relatedAliasTasks];
+    const reconciledTasks = synchronizeBankReconciliationTask(importTasks, monthly, effectivePlan, actor);
+    const accountSummary = buildBankAccountReconciliationSummary(withFinalRecord, { period: effectivePlan.period });
+    const hasOpenImportTasks = reconciledTasks.some((task) => (
+      task.status !== "resolved"
+      && ["bankTransaction", "bankReconciliation"].includes(task.sourceType)
+    ));
+    return {
+      ...withFinalRecord,
+      exceptionTasks: reconciledTasks,
       stages: {
         ...workspace.stages,
         s3: {
-          status: effectivePlan.status === "completed" && effectivePlan.reconciliation.passed ? "complete" : "needs_review",
+          status: accountSummary.passed && !hasOpenImportTasks ? "complete" : "needs_review",
           updatedAt: effectivePlan.importedAt,
         },
       },
@@ -1570,7 +1713,7 @@ export function applyBankImport(state, workspaceId, plan, options = {}) {
   }, {
     actor: options.actor,
     action: "导入银行流水",
-    detail: `${effectivePlan.fileName}：新增 ${effectivePlan.importableRowCount} 笔，重复 ${effectivePlan.duplicateCount} 笔，识别 ${effectivePlan.recognitionCount} 项，异常 ${effectivePlan.anomalyCount} 项，错误 ${effectivePlan.errorCount} 行；${effectivePlan.reconciliation.message}`,
+    detail: `${effectivePlan.fileName}：新增 ${effectivePlan.importableRowCount} 笔，重复 ${effectivePlan.duplicateCount} 笔，识别 ${effectivePlan.recognitionCount} 项，流水异常 ${effectivePlan.anomalyCount} 项，勾稽异常 ${effectivePlan.reconciliationIssueCount} 项，错误 ${effectivePlan.errorCount} 行；${effectivePlan.reconciliation.message}`,
     objectType: "bankImports",
     objectId: effectivePlan.id,
   }, options);

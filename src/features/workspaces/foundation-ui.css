@@ -602,6 +602,7 @@
 .import-report {
   align-items: flex-start;
   padding: 11px 12px;
+  border: 1px solid transparent;
   border-radius: 9px;
   background: var(--sage-soft);
   color: #52604d;
@@ -612,9 +613,59 @@
   color: #8e4937;
 }
 
+.import-report.reconciliation-pending {
+  border-color: rgba(184, 132, 54, 0.28);
+  background: #f8edd7;
+  color: #80551f;
+}
+
+.import-report.blocked {
+  border-color: rgba(174, 70, 57, 0.28);
+  background: #f6dfdc;
+  color: #8b382f;
+}
+
 .import-report > div {
   display: grid;
   gap: 3px;
+}
+
+.import-decision-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.import-decision-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 22px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+.import-decision-badge.ready {
+  background: rgba(114, 128, 106, 0.15);
+  color: var(--sage);
+}
+
+.import-decision-badge.pending {
+  background: rgba(184, 132, 54, 0.16);
+  color: #80551f;
+}
+
+.import-decision-badge.blocked {
+  background: rgba(174, 70, 57, 0.14);
+  color: #8b382f;
+}
+
+.reconciliation-followup {
+  font-weight: 650;
 }
 
 .import-report p,

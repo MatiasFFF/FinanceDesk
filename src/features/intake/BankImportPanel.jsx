@@ -279,11 +279,16 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
       });
       setPlan(nextPlan);
       setCounterpartyMappingDirty(false);
-      setNotice(`预检查完成：可导入 ${nextPlan.importableRowCount} 笔，重复 ${nextPlan.duplicateCount} 笔，错误 ${nextPlan.errorCount} 行`);
+      const disposition = !nextPlan.canImport
+        ? "存在不可导入问题"
+        : nextPlan.reconciliationIssue
+          ? "流水可保存，月度勾稽仍待完成"
+          : "流水可导入";
+      setNotice(`预检查完成：${disposition}；新增 ${nextPlan.importableRowCount} 笔，重复 ${nextPlan.duplicateCount} 笔，错误 ${nextPlan.errorCount} 行`);
     } catch (caught) {
       setPlan(null);
       setNotice("");
-      setError(caught.message || "导入预检查失败");
+      setError(`不可导入：${caught.message || "导入预检查失败"}`);
     }
   }
 
@@ -320,9 +325,6 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
         counterpartyMappings,
       });
       if (refreshedPlan.errorCount > 0) throw new Error(`文件仍有 ${refreshedPlan.errorCount} 行错误，请修正后重新预检查`);
-      if (!refreshedPlan.reconciliation.available || !refreshedPlan.reconciliation.passed) {
-        throw new Error(`余额未勾稽通过：${refreshedPlan.reconciliation.message}`);
-      }
       if (!refreshedPlan.importableRowCount) throw new Error("没有可导入的新流水，全部为重复记录");
       sourceDocument = await saveLocalDocument({
         store,
@@ -372,7 +374,10 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
     if (completedPlan) {
       const recognitionText = completedPlan.recognitionCount ? `，自动识别 ${completedPlan.recognitionCount} 项` : "";
       const anomalyText = completedPlan.anomalyCount ? `，形成 ${completedPlan.anomalyCount} 项异常待复核` : "";
-      const message = `已导入 ${completedPlan.importableRowCount} 笔流水，跳过 ${completedPlan.duplicateCount} 笔重复${recognitionText}${anomalyText}`;
+      const reconciliationText = completedPlan.monthlyReconciliation?.passed === false
+        ? `；${completedPlan.monthlyReconciliation.message}，已生成月度勾稽异常，可继续补导后重新勾稽`
+        : "";
+      const message = `已导入 ${completedPlan.importableRowCount} 笔流水，跳过 ${completedPlan.duplicateCount} 笔重复${recognitionText}${anomalyText}${reconciliationText}`;
       setNotice(message);
       onToast?.(message);
       onComplete?.(completedPlan);
@@ -523,6 +528,37 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
     }
   }
 
+  const bankPlanBlocked = Boolean(plan && (
+    counterpartyMappingDirty
+    || !plan.importableRowCount
+    || plan.errorCount > 0
+    || plan.canImport === false
+  ));
+  const bankPlanReconciliationPending = Boolean(plan && !bankPlanBlocked && plan.reconciliationIssue);
+  const bankPlanHasTransactionAlerts = Boolean(plan && !bankPlanBlocked && plan.anomalyCount);
+  const bankPlanTone = bankPlanBlocked
+    ? "blocked"
+    : bankPlanReconciliationPending
+      ? "reconciliation-pending"
+      : bankPlanHasTransactionAlerts
+        ? "warning"
+        : "passed";
+  const bankPlanHeadline = !plan
+    ? ""
+    : counterpartyMappingDirty
+      ? "不可导入：交易对手映射已修改，请重新预检查"
+      : plan.errorCount > 0
+        ? `不可导入：仍有 ${plan.errorCount} 行字段错误`
+        : !plan.importableRowCount
+          ? "不可导入：没有新的有效流水"
+          : bankPlanReconciliationPending
+            ? plan.reconciliation.available
+              ? `可导入，但余额相差 ${displayMoney(plan.reconciliation.difference)} 元`
+              : "可导入，但期初或期末余额尚未齐全"
+            : bankPlanHasTransactionAlerts
+              ? `可导入；${plan.anomalyCount} 项流水异常将在导入后待复核`
+              : "可导入；本批次余额勾稽通过";
+
   return (
     <section className={`foundation-section bank-import-panel ${compact ? "compact" : "intake-wide"}`}>
       <div className="foundation-section-heading"><div><small>CSV / Excel · 不联网</small><h3><Table size={18} />银行流水导入</h3></div>{parsed && <button className="foundation-icon-button" disabled={busy} type="button" aria-label="取消当前文件" onClick={cancelBankFile}><X size={16} /></button>}</div>
@@ -575,7 +611,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
         <div className="bank-import-workspace">
           <div className="bank-file-summary"><span><strong>{displayAccountIdentity(account)} · {period} 月度勾稽</strong><small>{monthlyReconciliation.batchCount} 个导入批次 · {monthlyReconciliation.transactionCount} 笔账户流水{monthlyReconciliation.dateFrom ? ` · ${monthlyReconciliation.dateFrom} 至 ${monthlyReconciliation.dateTo}` : ""}</small></span><span className={monthlyReconciliation.passed ? "mapping-badge" : "mapping-badge warning"}>{monthlyReconciliation.passed ? "已完成" : "未完成"}</span></div>
           <div className={`import-report ${monthlyReconciliation.passed ? "passed" : "warning"}`}><span>{monthlyReconciliation.passed ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} />}</span><div><strong>{monthlyReconciliation.message}</strong><p>期初 {displayMoney(monthlyReconciliation.openingBalance)} ＋ 收入 {displayMoney(monthlyReconciliation.income)} − 支出 {displayMoney(monthlyReconciliation.expense)} ＝ 计算期末 {displayMoney(monthlyReconciliation.calculatedClosing)}；对账单期末 {displayMoney(monthlyReconciliation.statementClosing)}；差额 {displayMoney(monthlyReconciliation.difference)}</p></div></div>
-          {monthlyReconciliation.imports.length > 0 && <div className="bank-preview-scroll"><table><thead><tr><th>导入文件</th><th>数据起止日期</th><th>导入时间</th><th>操作者</th><th>新增</th><th>重复</th><th>异常</th></tr></thead><tbody>{monthlyReconciliation.imports.map((record) => <tr key={record.id}><td>{record.fileName}</td><td>{record.dateFrom || "—"} 至 {record.dateTo || "—"}</td><td>{displayDateTime(record.importedAt)}</td><td>{record.actor}</td><td>{record.importableRowCount} 笔</td><td>{record.duplicateCount} 笔</td><td>{record.anomalousRowCount} 笔</td></tr>)}</tbody></table></div>}
+          {monthlyReconciliation.imports.length > 0 && <div className="bank-preview-scroll"><table><thead><tr><th>导入文件</th><th>数据起止日期</th><th>导入时间</th><th>操作者</th><th>新增</th><th>重复</th><th>流水异常</th><th>导入时勾稽</th></tr></thead><tbody>{monthlyReconciliation.imports.map((record) => <tr key={record.id}><td>{record.fileName}</td><td>{record.dateFrom || "—"} 至 {record.dateTo || "—"}</td><td>{displayDateTime(record.importedAt)}</td><td>{record.actor}</td><td>{record.importableRowCount} 笔</td><td>{record.duplicateCount} 笔</td><td>{record.anomalousRowCount} 笔</td><td>{record.reconciliation?.passed ? "已通过" : record.reconciliation?.message || "未完成"}</td></tr>)}</tbody></table></div>}
         </div>
       )}
 
@@ -599,9 +635,25 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
 
           {plan && counterpartyPreviewGroups.length > 0 && <div><div className="bank-file-summary"><span><strong>交易对手标准化</strong><small>把原始名称映射到当前工作台对象，或填写手工标准名称；确认导入后保存为本地别名规则。</small></span><span className={counterpartyMappingDirty ? "mapping-badge warning" : "mapping-badge"}>{counterpartyMappingDirty ? "待重新预检查" : "映射已计入预览"}</span></div>{counterpartyPreviewGroups.map((group) => { const selected = counterpartyMappings[group.key]; return <div key={group.key}><div className="bank-file-summary"><span><strong>{group.rawName || "未提供对方名称"}</strong><small>{group.counterpartyAccount ? `账号 ${group.counterpartyAccount} · ` : ""}${group.rowCount} 笔流水</small></span><span className={group.mappingSource ? "mapping-badge" : "mapping-badge warning"}>{group.mappingSource ? `已套用：${group.standardName}` : "尚未标准化"}</span></div><div className="mapping-grid"><label className="foundation-field"><span>映射到标准对象</span><select value={selected?.targetKey || ""} onChange={(event) => chooseCounterpartyTarget(group, event.target.value)}><option value="">暂不映射</option>{counterpartyTargetGroups.map((targetGroup) => <optgroup label={targetGroup.label} key={targetGroup.label}>{targetGroup.items.map((target) => <option value={target.key} key={target.key}>{target.name}</option>)}</optgroup>)}<option value="manual">手工标准名称</option></select></label>{selected?.targetKey === "manual" && <><label className="foundation-field"><span>标准名称</span><input value={selected.standardName || ""} onChange={(event) => updateManualCounterparty(group, { standardName: event.target.value })} placeholder="例如：上海青禾科技有限公司" /></label><label className="foundation-field"><span>对象类型</span><select value={selected.kind || "other"} onChange={(event) => updateManualCounterparty(group, { kind: event.target.value })}><option value="customer">客户</option><option value="supplier">供应商</option><option value="employee">员工</option><option value="related_party">关联方</option><option value="other">其他</option></select></label></>}</div></div>; })}</div>}
 
-          <div className="foundation-inline-actions bank-import-actions"><button className="secondary-button" disabled={busy} type="button" onClick={previewImport}>{counterpartyMappingDirty ? "保存映射并重新预检查" : "预检查去重、余额与异常"}</button>{plan && <button className="primary-button" type="button" onClick={applyImport} disabled={busy || counterpartyMappingDirty || !plan.importableRowCount || plan.errorCount > 0 || !plan.reconciliation.available || !plan.reconciliation.passed}>{busy ? "正在写入…" : `确认导入 ${plan.importableRowCount} 笔`}</button>}<button className="text-danger-button" disabled={busy} type="button" onClick={cancelBankFile}>取消本次文件</button></div>
+          <div className="foundation-inline-actions bank-import-actions">
+            <button className="secondary-button" disabled={busy} type="button" onClick={previewImport}>{counterpartyMappingDirty ? "保存映射并重新预检查" : "预检查去重、余额与异常"}</button>
+            {plan && <button className="primary-button" type="button" onClick={applyImport} disabled={busy || bankPlanBlocked}>{busy ? "正在写入…" : bankPlanReconciliationPending ? `保存 ${plan.importableRowCount} 笔并继续勾稽` : `确认导入 ${plan.importableRowCount} 笔`}</button>}
+            <button className="text-danger-button" disabled={busy} type="button" onClick={cancelBankFile}>取消本次文件</button>
+          </div>
 
-          {plan && <div className={`import-report ${plan.reconciliation.passed && !plan.anomalyCount ? "passed" : "warning"}`}><span>{plan.reconciliation.passed && !plan.anomalyCount ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} />}</span><div><strong>{plan.reconciliation.message}</strong><p>账期 {plan.period} · 可导入 {plan.importableRowCount} 笔 · 重复 {plan.duplicateCount} 笔 · 自动识别 {plan.recognitionCount || 0} 项 · 异常 {plan.anomalyCount || 0} 项 · 错误 {plan.errorCount} 行 · 流水变动 {plan.reconciliation.movement.toFixed(2)} 元</p>{(plan.recognitions || []).slice(0, 5).map((item) => <small key={`${item.id}-${item.transactionId}`}>第 {plan.transactions.find((transaction) => transaction.id === item.transactionId)?.sourceRow || "—"} 行 · {item.label}：{item.message}</small>)}{plan.recognitionCount > 5 && <small>另有 {plan.recognitionCount - 5} 项确定事项将在导入时一并写入。</small>}{plan.errors.slice(0, 3).map((item) => <small key={`error-${item.rowNumber}`}>第 {item.rowNumber} 行：{item.message}</small>)}{(plan.anomalies || []).slice(0, 5).map((item) => <small key={`${item.transactionId}-${item.code}`}>第 {item.sourceRow} 行 · {item.label}：{item.message}</small>)}{plan.anomalyCount > 5 && <small>另有 {plan.anomalyCount - 5} 项异常，导入后进入待复核。</small>}</div></div>}
+          {plan && <div className={`import-report ${bankPlanTone}`}>
+            <span>{bankPlanTone === "passed" ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} />}</span>
+            <div>
+              <div className="import-decision-line"><span className={`import-decision-badge ${bankPlanBlocked ? "blocked" : bankPlanReconciliationPending ? "pending" : "ready"}`}>{bankPlanBlocked ? "不可导入" : bankPlanReconciliationPending ? "可导入 · 勾稽未完成" : "可导入"}</span><strong>{bankPlanHeadline}</strong></div>
+              <p>账期 {plan.period} · 新增 {plan.importableRowCount} 笔 · 重复 {plan.duplicateCount} 笔 · 自动识别 {plan.recognitionCount || 0} 项 · 流水异常 {plan.anomalyCount || 0} 项 · 字段错误 {plan.errorCount} 行 · 流水变动 {plan.reconciliation.movement.toFixed(2)} 元</p>
+              {bankPlanReconciliationPending && <small className="reconciliation-followup">保存后会生成账户月度勾稽异常，月度状态保持“未完成”；后续补导缺失流水时继续重算。</small>}
+              {(plan.recognitions || []).slice(0, 5).map((item) => <small key={`${item.id}-${item.transactionId}`}>第 {plan.transactions.find((transaction) => transaction.id === item.transactionId)?.sourceRow || "—"} 行 · {item.label}：{item.message}</small>)}
+              {plan.recognitionCount > 5 && <small>另有 {plan.recognitionCount - 5} 项确定事项将在导入时一并写入。</small>}
+              {plan.errors.slice(0, 3).map((item) => <small key={`error-${item.rowNumber}`}>第 {item.rowNumber} 行：{item.message}</small>)}
+              {(plan.anomalies || []).slice(0, 5).map((item) => <small key={`${item.transactionId}-${item.code}`}>第 {item.sourceRow} 行 · {item.label}：{item.message}</small>)}
+              {plan.anomalyCount > 5 && <small>另有 {plan.anomalyCount - 5} 项流水异常，导入后进入待复核。</small>}
+            </div>
+          </div>}
         </div>
       )}
 

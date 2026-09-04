@@ -125,6 +125,76 @@
   background: var(--paper-strong);
 }
 
+.engine-account-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.engine-account-grid > label,
+.engine-voucher-line > label {
+  min-width: 0;
+}
+
+.engine-form label > small,
+.engine-account-grid small,
+.engine-voucher-line small {
+  color: var(--quiet);
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.engine-voucher-lines {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.engine-voucher-line {
+  display: grid;
+  grid-template-columns: minmax(88px, 0.42fr) minmax(0, 1.58fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--canvas);
+}
+
+.engine-voucher-line-amount,
+.engine-voucher-line-account {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.engine-voucher-line-amount strong,
+.engine-voucher-line-account strong {
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.engine-voucher-line > label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 9px;
+}
+
+.engine-voucher-line > label > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.engine-voucher-line > label > small {
+  grid-column: 2;
+}
+
 .engine-voucher-card > input {
   width: 100%;
   padding: 8px 9px;
@@ -181,11 +251,13 @@
 
 .engine-form select,
 .engine-form textarea,
+.engine-account-grid select,
 .engine-exceptions textarea,
 .engine-allocation input,
 .engine-allocation-history input,
 .engine-special select,
 .engine-special textarea,
+.engine-voucher-line select,
 .engine-vouchers textarea {
   min-width: 0;
   width: 100%;
@@ -864,9 +936,11 @@
 
 .engine-form select,
 .engine-voucher-card > input,
+.engine-account-grid select,
 .engine-allocation input,
 .engine-allocation-history input,
 .engine-special select,
+.engine-voucher-line select,
 .settlement-form input,
 .settlement-form select,
 .ledger-filters input,
@@ -938,6 +1012,7 @@
 
   .engine-summary,
   .engine-form,
+  .engine-account-grid,
   .settlement-metrics,
   .settlement-form,
   .ledger-filters {
@@ -961,9 +1036,19 @@
   }
 
   .engine-allocation label,
-  .engine-allocation-history > div {
+  .engine-allocation-history > div,
+  .engine-voucher-line {
     grid-template-columns: 1fr;
     align-items: start;
+  }
+
+  .engine-voucher-line > label {
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .engine-voucher-line > label > small {
+    grid-column: auto;
   }
 
   .engine-allocation-history button {

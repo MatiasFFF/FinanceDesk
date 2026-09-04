@@ -15,8 +15,10 @@ import {
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
 import {
   ACCOUNT_CATEGORIES,
+  CATEGORY_RULE_BUSINESS_TYPES,
   accountingRules,
   activeAccountingRuleSet,
+  categoryKeywordRules,
   saveActiveAccountingRuleSet,
   setWorkspaceAccountStatus,
   upsertWorkspaceAccount,
@@ -751,13 +753,31 @@ function ruleDraft(workspace) {
     amountTolerance: rules.amountTolerance,
     requireEvidenceForExpenses: rules.requireEvidenceForExpenses,
     allowOverAllocation: rules.allowOverAllocation,
+    categoryKeywords: categoryKeywordRules(workspace),
   };
+}
+
+function nextCategoryRuleId(rules) {
+  const maximum = (rules || []).reduce((current, rule) => {
+    const match = /^category-rule-(\d+)$/.exec(String(rule.id || ""));
+    return match ? Math.max(current, Number(match[1])) : current;
+  }, 0);
+  return `category-rule-${String(maximum + 1).padStart(4, "0")}`;
 }
 
 function AccountingRuleEditor({ onToast }) {
   const { state, activeWorkspace, actions } = useFinanceDesk();
   const active = activeAccountingRuleSet(activeWorkspace);
   const effective = accountingRules(activeWorkspace);
+  const membersEnabled = memberModuleEnabled(activeWorkspace);
+  const activeAccounts = useMemo(
+    () => workspaceAccountDefinitions(activeWorkspace).filter((account) => account.status !== "inactive"),
+    [activeWorkspace],
+  );
+  const businessTypes = useMemo(
+    () => CATEGORY_RULE_BUSINESS_TYPES.filter((item) => membersEnabled || !item.memberOnly),
+    [membersEnabled],
+  );
   const [draft, setDraft] = useState(() => ruleDraft(activeWorkspace));
   const [error, setError] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
@@ -778,6 +798,36 @@ function AccountingRuleEditor({ onToast }) {
     setDraft(ruleDraft(activeWorkspace));
     setError("");
     setEditorOpen(false);
+  }
+
+  function updateCategoryRule(ruleId, patch) {
+    setDraft((current) => ({
+      ...current,
+      categoryKeywords: current.categoryKeywords.map((rule) => rule.id === ruleId ? { ...rule, ...patch } : rule),
+    }));
+  }
+
+  function addCategoryRule() {
+    setDraft((current) => ({
+      ...current,
+      categoryKeywords: [
+        ...current.categoryKeywords,
+        {
+          id: nextCategoryRuleId(current.categoryKeywords),
+          keyword: "",
+          businessType: businessTypes[0]?.id || "customerReceipt",
+          account: activeAccounts[0]?.id || "",
+          enabled: true,
+        },
+      ],
+    }));
+  }
+
+  function removeCategoryRule(ruleId) {
+    setDraft((current) => ({
+      ...current,
+      categoryKeywords: current.categoryKeywords.filter((rule) => rule.id !== ruleId),
+    }));
   }
 
   function save(event) {
@@ -803,6 +853,7 @@ function AccountingRuleEditor({ onToast }) {
         <article className="foundation-summary-card"><small>判断阈值</small><h4>人工复核 {effective.confidenceThreshold}</h4><p>自动建议 {effective.automaticPostingThreshold}</p></article>
         <article className="foundation-summary-card"><small>金额控制</small><h4>容差 ¥{effective.amountTolerance}</h4><p>超额核销：{effective.allowOverAllocation ? "允许" : "禁止"}</p></article>
         <article className="foundation-summary-card"><small>费用凭证要求</small><h4>{effective.requireEvidenceForExpenses ? "必须提供证据" : "不强制提供证据"}</h4><p>规则保存后立即用于当前工作台</p></article>
+        <article className="foundation-summary-card"><small>关键词分类</small><h4>{categoryKeywordRules(activeWorkspace).filter((rule) => rule.enabled).length} 条启用</h4><p>共 {categoryKeywordRules(activeWorkspace).length} 条结构化规则</p></article>
       </div>
       <div className="foundation-notice"><WarningCircle size={17} />自动建议阈值只决定是否形成自动处理建议；系统仍遵守现有复核与入账门槛，不会自动入账。</div>
       <button className="foundation-editor-toggle secondary-button" type="button" aria-expanded={editorOpen} aria-controls="accounting-rule-editor" onClick={edit}><PencilSimple size={16} />编辑规则</button>
@@ -815,6 +866,30 @@ function AccountingRuleEditor({ onToast }) {
           <label className="foundation-field"><span>金额容差</span><input required type="number" min="0" step="0.01" value={draft.amountTolerance} onChange={(event) => setDraft((current) => ({ ...current, amountTolerance: event.target.value }))} /></label>
           <label className="foundation-field"><span>费用必须有证据</span><select value={String(draft.requireEvidenceForExpenses)} onChange={(event) => setDraft((current) => ({ ...current, requireEvidenceForExpenses: event.target.value === "true" }))}><option value="true">是</option><option value="false">否</option></select></label>
           <label className="foundation-field"><span>允许超额核销</span><select value={String(draft.allowOverAllocation)} onChange={(event) => setDraft((current) => ({ ...current, allowOverAllocation: event.target.value === "true" }))}><option value="false">禁止</option><option value="true">允许</option></select></label>
+          <div className="foundation-divider" />
+          <div className="foundation-section-heading"><div><small>按列表顺序匹配流水摘要与交易对方</small><h4>关键词分类规则</h4></div><button className="secondary-button" type="button" onClick={addCategoryRule}><Plus size={16} />新增规则</button></div>
+          <p className="foundation-hint">关键词支持用“|”表示任一关键词；目标科目只列出当前工作台已启用的科目。规则只形成分类建议，不会自动入账。</p>
+          <div className="foundation-record-list">
+            {draft.categoryKeywords.map((rule, index) => {
+              const selectedBusinessType = CATEGORY_RULE_BUSINESS_TYPES.find((item) => item.id === rule.businessType);
+              const businessTypeAvailable = businessTypes.some((item) => item.id === rule.businessType);
+              const selectedAccount = activeAccounts.find((account) => account.id === rule.account);
+              return (
+                <article className="foundation-record" key={rule.id}>
+                  <div className="entity-form">
+                    <label className="foundation-field"><span>关键词</span><input required value={rule.keyword} onChange={(event) => updateCategoryRule(rule.id, { keyword: event.target.value })} placeholder="例如：电费|国家电网" /></label>
+                    {!businessTypeAvailable && selectedBusinessType
+                      ? <label className="foundation-field"><span>业务类型</span><input value={`${selectedBusinessType.label}（会员模块已停用）`} readOnly /></label>
+                      : <label className="foundation-field"><span>业务类型</span><select required value={rule.businessType} onChange={(event) => updateCategoryRule(rule.id, { businessType: event.target.value })}>{businessTypes.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>}
+                    <label className="foundation-field"><span>目标有效科目</span><select required value={rule.account} onChange={(event) => updateCategoryRule(rule.id, { account: event.target.value })}>{!selectedAccount && rule.account && <option value={rule.account} disabled>{rule.account}（已停用或不存在）</option>}{activeAccounts.map((account) => <option value={account.id} key={account.id}>{account.label}</option>)}</select></label>
+                    <label className="foundation-field"><span>状态</span><select value={String(rule.enabled)} onChange={(event) => updateCategoryRule(rule.id, { enabled: event.target.value === "true" })}><option value="true">启用</option><option value="false">停用</option></select></label>
+                  </div>
+                  <span className="foundation-record-actions"><small className="foundation-record-status">规则 {index + 1}</small><button type="button" aria-label={`删除第 ${index + 1} 条分类规则`} onClick={() => removeCategoryRule(rule.id)}><Trash size={15} /></button></span>
+                </article>
+              );
+            })}
+            {!draft.categoryKeywords.length && <p className="foundation-empty">还没有关键词分类规则。</p>}
+          </div>
           <div className="foundation-inline-actions"><button className="primary-button" type="submit">保存并启用规则</button><button className="secondary-button" type="button" onClick={cancel}>取消</button></div>
           {error && <p className="entity-error">{error}</p>}
         </form>
