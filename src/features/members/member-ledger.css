@@ -253,3 +253,99 @@
   .member-card-foot { align-items: stretch; flex-direction: column; }
   .member-card-foot label { width: 100%; }
 }
+
+/* Keep member operations compact; use warm surfaces instead of nested frames. */
+.member-ledger-page,
+.member-ledger-page > *,
+.member-entry-layout > *,
+.member-entry-form > *,
+.commission-rule-layout > *,
+.membership-package-rule-list > *,
+.member-card-grid > *,
+.member-reconciliation-sources > * {
+  min-width: 0;
+}
+
+.member-ledger-hero,
+.member-metric {
+  border-radius: var(--radius-panel, 12px);
+}
+
+.member-entry-form label {
+  grid-template-rows: minmax(30px, 1fr) auto;
+}
+
+.member-entry-form label > small {
+  align-self: end;
+  overflow-wrap: anywhere;
+}
+
+.member-entry-form input,
+.member-entry-form select,
+.member-card-foot select {
+  min-height: var(--control-height, 40px);
+  border-radius: var(--radius-control, 8px);
+}
+
+.membership-package-form,
+.commission-rule-form {
+  border: 0;
+  border-radius: 10px;
+  background: var(--canvas);
+}
+
+.membership-package-rule-list > article,
+.commission-rule-list > article,
+.member-balance-card {
+  border: 0;
+  background: var(--canvas);
+}
+
+.membership-package-empty {
+  border: 0;
+  background: var(--canvas);
+}
+
+.member-reconciliation-table,
+.member-package-balance-table {
+  min-width: 0;
+  max-width: 100%;
+  border-color: var(--line);
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.member-reconciliation-sources section {
+  border: 0;
+  background: var(--canvas);
+}
+
+@media (max-width: 720px) {
+  .membership-package-form,
+  .commission-rule-form {
+    grid-template-columns: 1fr;
+  }
+
+  .membership-package-form > *,
+  .commission-rule-form > * {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 520px) {
+  .member-event-list > article {
+    grid-template-columns: 1fr;
+  }
+
+  .member-event-main,
+  .member-event-quantity,
+  .member-event-amount,
+  .member-event-accounting,
+  .member-event-status {
+    grid-column: auto;
+  }
+
+  .member-event-status {
+    justify-items: stretch;
+  }
+}

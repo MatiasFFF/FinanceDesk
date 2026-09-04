@@ -36,6 +36,34 @@ export const WORKSPACE_OPERATIONAL_COLLECTIONS = Object.freeze([
   "reportVersions",
 ]);
 
+export const WORKSPACE_MODULE_DEFAULTS = Object.freeze({
+  overview: true,
+  members: false,
+  reconcile: true,
+  reports: true,
+  tax: true,
+  archive: true,
+  setup: true,
+});
+
+export const FITNESS_WORKSPACE_MODULE_DEFAULTS = Object.freeze({
+  ...WORKSPACE_MODULE_DEFAULTS,
+  members: true,
+});
+
+const ALWAYS_ENABLED_WORKSPACE_MODULES = Object.freeze(["overview", "reports", "archive", "setup"]);
+const CONFIGURABLE_WORKSPACE_MODULES = Object.freeze(["members", "reconcile", "tax"]);
+
+export function normalizeWorkspaceModules(modules, options = {}) {
+  const defaults = options.fitnessTemplate ? FITNESS_WORKSPACE_MODULE_DEFAULTS : WORKSPACE_MODULE_DEFAULTS;
+  const normalized = { ...defaults };
+  CONFIGURABLE_WORKSPACE_MODULES.forEach((id) => {
+    if (typeof modules?.[id] === "boolean") normalized[id] = modules[id];
+  });
+  ALWAYS_ENABLED_WORKSPACE_MODULES.forEach((id) => { normalized[id] = true; });
+  return normalized;
+}
+
 const ALL_MUTABLE_COLLECTIONS = new Set([
   ...WORKSPACE_ENTITY_COLLECTIONS,
   ...WORKSPACE_OPERATIONAL_COLLECTIONS,
@@ -81,6 +109,12 @@ const DEFAULT_RULE_SET = {
   },
   categoryKeywords: [],
 };
+
+const NEUTRAL_ACCOUNT_LABELS = Object.freeze([
+  { id: "revenuePrivate", label: "主营业务收入 · 服务收入" },
+  { id: "revenueGroup", label: "主营业务收入 · 其他收入" },
+  { id: "expenseCommission", label: "销售费用 · 业务提成" },
+]);
 
 function nowIso(now = () => new Date()) {
   const value = now();
@@ -163,6 +197,9 @@ export function normalizeWorkspace(input, options = {}) {
   const id = workspace.id || createId("workspace");
   const name = String(workspace.name || workspace.company?.legalName || "未命名工作台").trim();
   const isFitnessTemplate = id === "workspace-shanlan" || workspace.templateId === "fitness-studio" || workspace.isDemo;
+  const hasMemberBusiness = isFitnessTemplate
+    || (workspace.members || []).length > 0
+    || (workspace.businessEvents || []).some((event) => event.memberId || event.memberName || event.coach);
   const company = {
     legalName: name,
     entityType: "limited_company",
@@ -187,7 +224,9 @@ export function normalizeWorkspace(input, options = {}) {
     status: "active",
     address: "",
   }];
-  const sourceUsers = workspace.users?.length ? workspace.users : [{ id: "user-accountant", name: "本地负责人", roleId: "role-owner", role: "经营者" }];
+  const sourceUsers = Array.isArray(workspace.users)
+    ? workspace.users
+    : [{ id: "user-accountant", name: "本地负责人", roleId: "role-owner", role: "经营者" }];
   const users = sourceUsers.map((user, index) => ({
     id: user.id || `user-${index + 1}`,
     name: user.name || "未命名用户",
@@ -273,9 +312,11 @@ export function normalizeWorkspace(input, options = {}) {
     isDemo: Boolean(workspace.isDemo),
     createdAt: workspace.createdAt || timestamp,
     updatedAt: workspace.updatedAt || timestamp,
+    modules: normalizeWorkspaceModules(workspace.modules, { fitnessTemplate: hasMemberBusiness }),
     currentPeriod,
     periods: [...new Set([currentPeriod, ...(workspace.periods || [])])],
     company,
+    chartOfAccounts: deepClone(workspace.chartOfAccounts?.length ? workspace.chartOfAccounts : (isFitnessTemplate ? [] : NEUTRAL_ACCOUNT_LABELS)),
     books: uniqueById(books.map((item) => timestamped(item, timestamp))),
     stores: uniqueById(stores.map((item) => timestamped(item, timestamp))),
     users: uniqueById(users.map((item) => timestamped(item, timestamp))),
@@ -396,6 +437,7 @@ export function createBlankWorkspace(input = {}, options = {}) {
       verificationStatus: "unverified",
     },
     currentPeriod: input.currentPeriod || timestamp.slice(0, 7),
+    modules: normalizeWorkspaceModules(input.modules),
     periods: [input.currentPeriod || timestamp.slice(0, 7)],
     books: [{ id: `book-${id}`, name: "默认账套", accountingStandard: "小企业会计准则", currency: "CNY", status: "active" }],
     stores: [{ id: `store-${id}`, name, status: "active", address: "" }],
@@ -456,15 +498,18 @@ export function validateState(state) {
     if (ids.has(workspace?.id)) errors.push(`工作台 id 重复：${workspace.id}`);
     ids.add(workspace?.id);
     if (!String(workspace?.name || "").trim()) errors.push(`工作台 ${workspace?.id || workspaceIndex + 1} 缺少名称`);
+    if (!workspace?.modules || typeof workspace.modules !== "object") errors.push(`工作台 ${workspace?.id || workspaceIndex + 1} 缺少模块配置`);
     [...WORKSPACE_ENTITY_COLLECTIONS, ...WORKSPACE_OPERATIONAL_COLLECTIONS, "bankAccounts", "auditLog"].forEach((key) => {
       if (!Array.isArray(workspace?.[key])) errors.push(`工作台 ${workspace?.id || workspaceIndex + 1} 的 ${key} 必须是数组`);
     });
   });
   if (state.workspaces?.length && !ids.has(state.activeWorkspaceId)) errors.push("当前工作台不存在");
   const activeWorkspace = state.workspaces?.find((workspace) => workspace.id === state.activeWorkspaceId);
-  if (activeWorkspace && !activeWorkspace.users.some((user) => user.id === state.activeUserId && user.status === "active")) {
+  const activeUsers = activeWorkspace?.users?.filter((user) => user.status === "active") || [];
+  if (activeUsers.length && !activeUsers.some((user) => user.id === state.activeUserId)) {
     errors.push("当前本地操作用户不属于活动工作台或已停用");
   }
+  if (!activeUsers.length && state.activeUserId != null) errors.push("没有启用用户时，当前本地操作用户必须为空");
   return { ok: errors.length === 0, errors };
 }
 
@@ -568,7 +613,11 @@ export function updateWorkspace(state, workspaceId, updater, audit, options = {}
     };
   });
   if (!found) throw new Error(`找不到工作台：${workspaceId}`);
-  const next = { ...state, workspaces, updatedAt: timestamp };
+  const activeWorkspace = workspaces.find((workspace) => workspace.id === state.activeWorkspaceId);
+  const activeUserId = activeWorkspace?.users?.some((user) => user.id === state.activeUserId && user.status === "active")
+    ? state.activeUserId
+    : activeWorkspace?.users?.find((user) => user.status === "active")?.id || null;
+  const next = { ...state, workspaces, activeUserId, updatedAt: timestamp };
   return assertValidState(audit ? appendRootAudit(next, { ...audit, workspaceId }, timestamp) : next);
 }
 
@@ -584,6 +633,13 @@ export function addWorkspace(state, input = {}, options = {}) {
       id: input.id || createId("workspace"),
       name: String(input.name || `${source.name} 副本`).trim(),
       templateLabel: `复制自 ${source.name}`,
+      modules: input.modules || source.modules,
+      company: {
+        ...(source.company || {}),
+        legalName: input.legalName || input.name || source.company?.legalName,
+        industry: input.industry || source.company?.industry,
+        taxpayerType: input.taxpayerType || source.company?.taxpayerType,
+      },
       isDemo: false,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -625,6 +681,19 @@ export function renameWorkspace(state, workspaceId, name, options = {}) {
     actor: options.actor,
     action: "重命名工作台",
     detail: `「${previous.name}」改为「${nextName}」`,
+  }, options);
+}
+
+export function updateWorkspaceModules(state, workspaceId, modules, options = {}) {
+  const workspace = getWorkspace(state, workspaceId);
+  if (!workspace) throw new Error(`找不到工作台：${workspaceId}`);
+  const nextModules = normalizeWorkspaceModules({ ...workspace.modules, ...deepClone(modules || {}) }, {
+    fitnessTemplate: workspace.templateId === "fitness-studio" || workspace.isDemo,
+  });
+  return updateWorkspace(state, workspaceId, (current) => ({ ...current, modules: nextModules }), {
+    actor: options.actor,
+    action: "更新工作台模块",
+    detail: `会员业务${nextModules.members ? "启用" : "停用"}；流水核销${nextModules.reconcile ? "启用" : "停用"}；确认与申报${nextModules.tax ? "启用" : "停用"}`,
   }, options);
 }
 
@@ -698,6 +767,7 @@ export function clearWorkspace(state, workspaceId, options = {}) {
       industry: workspace.company?.industry,
       taxpayerType: workspace.company?.taxpayerType,
       currentPeriod: workspace.currentPeriod,
+      modules: workspace.modules,
     }, options);
     const currentUser = workspace.users.find((user) => user.id === state.activeUserId && user.status === "active");
     if (currentUser) {

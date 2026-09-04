@@ -49,6 +49,17 @@ export const ACCOUNT_CATALOG = Object.freeze({
   expenseOther: { label: "管理费用 · 其他", category: "expense", normalSide: "debit" },
 });
 
+export const ACCOUNT_CATEGORIES = Object.freeze([
+  { id: "asset", label: "资产" },
+  { id: "liability", label: "负债" },
+  { id: "equity", label: "所有者权益" },
+  { id: "revenue", label: "收入" },
+  { id: "contraRevenue", label: "收入抵减" },
+  { id: "cost", label: "成本" },
+  { id: "expense", label: "费用" },
+  { id: "other", label: "其他" },
+]);
+
 export const DEFAULT_ACCOUNTING_RULES = Object.freeze({
   confidenceThreshold: 85,
   automaticPostingThreshold: 95,
@@ -114,6 +125,13 @@ export function accountingRules(workspace) {
   };
 }
 
+export function activeAccountingRuleSet(workspace = {}) {
+  return [...(workspace.ruleSets || [])]
+    .filter((ruleSet) => ruleSet.status === "active")
+    .sort((left, right) => String(left.updatedAt || "").localeCompare(String(right.updatedAt || "")))
+    .at(-1) || null;
+}
+
 export function nextRecordId(records = [], prefix = "record") {
   const expression = new RegExp(`^${prefix}-(\\d+)$`);
   const maximum = records.reduce((current, record) => {
@@ -154,10 +172,12 @@ export function appendAuditEntry(workspace, entry, context = {}) {
 
 export function accountDefinition(accountId, workspace = {}) {
   const baseId = String(accountId || "").split(":")[0];
-  const custom = (workspace.chartOfAccounts || []).find((account) => account.id === accountId || account.id === baseId);
+  const exactCustom = (workspace.chartOfAccounts || []).find((account) => account.id === accountId);
+  const baseCustom = (workspace.chartOfAccounts || []).find((account) => account.id === baseId);
+  const custom = exactCustom || baseCustom;
   const bankAccount = [...(workspace.bankAccounts || []), ...(workspace.accounts || [])]
     .find((account) => account.id === accountId);
-  return custom || ACCOUNT_CATALOG[accountId] || ACCOUNT_CATALOG[baseId] || (bankAccount ? {
+  const standard = ACCOUNT_CATALOG[accountId] || ACCOUNT_CATALOG[baseId] || (bankAccount ? {
     ...bankAccount,
     label: bankAccount.label || bankAccount.name || "银行存款",
     category: "asset",
@@ -168,6 +188,156 @@ export function accountDefinition(accountId, workspace = {}) {
     category: "other",
     normalSide: "debit",
   };
+  if (!custom) return standard;
+  return {
+    ...standard,
+    ...custom,
+    id: accountId || custom.id,
+    label: custom.label || custom.name || standard.label,
+    name: custom.name || custom.label || standard.label,
+    category: custom.category || standard.category,
+    normalSide: custom.normalSide || standard.normalSide,
+    cash: custom.cash ?? custom.isCash ?? Boolean(standard.cash),
+    status: custom.status || "active",
+  };
+}
+
+export function workspaceAccountDefinitions(workspace = {}) {
+  const accountIds = collectSourceIds(
+    Object.keys(ACCOUNT_CATALOG),
+    (workspace.chartOfAccounts || []).map((account) => account.id),
+  );
+  return accountIds.map((id) => {
+    const custom = (workspace.chartOfAccounts || []).find((account) => account.id === id);
+    const definition = accountDefinition(id, workspace);
+    return {
+      ...definition,
+      id,
+      label: definition.label || definition.name || id,
+      name: definition.name || definition.label || id,
+      status: custom?.status || "active",
+      builtIn: Object.hasOwn(ACCOUNT_CATALOG, id),
+    };
+  }).sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
+}
+
+function validateAccountValues(values) {
+  const name = String(values.name || values.label || "").trim();
+  const category = String(values.category || "").trim();
+  const normalSide = String(values.normalSide || "").trim();
+  if (!name) throw new AccountingRuleError("ACCOUNT_NAME_REQUIRED", "请填写科目名称");
+  if (!ACCOUNT_CATEGORIES.some((item) => item.id === category)) {
+    throw new AccountingRuleError("ACCOUNT_CATEGORY_INVALID", "请选择有效的科目类别");
+  }
+  if (!['debit', 'credit'].includes(normalSide)) {
+    throw new AccountingRuleError("ACCOUNT_NORMAL_SIDE_INVALID", "科目方向只能是借方或贷方");
+  }
+  return { name, category, normalSide, cash: Boolean(values.cash) };
+}
+
+export function upsertWorkspaceAccount(workspace, values, context = {}) {
+  const next = cloneAccountingState(workspace);
+  const resolvedContext = operationContext(context);
+  const normalized = validateAccountValues(values);
+  const records = next.chartOfAccounts || (next.chartOfAccounts = []);
+  const accountId = values.id || nextRecordId(records, "account");
+  const index = records.findIndex((account) => account.id === accountId);
+  const before = index >= 0 ? { ...records[index] } : null;
+  const auditBefore = before || (Object.hasOwn(ACCOUNT_CATALOG, accountId) ? {
+    id: accountId,
+    ...ACCOUNT_CATALOG[accountId],
+    status: "active",
+    builtIn: true,
+  } : null);
+  const record = {
+    ...(before || {}),
+    id: accountId,
+    label: normalized.name,
+    name: normalized.name,
+    category: normalized.category,
+    normalSide: normalized.normalSide,
+    cash: normalized.cash,
+    status: values.status || before?.status || "active",
+    builtInOverride: Object.hasOwn(ACCOUNT_CATALOG, accountId),
+    createdAt: before?.createdAt || resolvedContext.at,
+    createdBy: before?.createdBy || resolvedContext.actor,
+    updatedAt: resolvedContext.at,
+    updatedBy: resolvedContext.actor,
+  };
+  if (!['active', 'inactive'].includes(record.status)) {
+    throw new AccountingRuleError("ACCOUNT_STATUS_INVALID", "科目状态只能是有效或停用");
+  }
+  if (index >= 0) records[index] = record;
+  else records.push(record);
+  appendAuditEntry(next, {
+    action: auditBefore ? "account.update" : "account.create",
+    entityType: "account",
+    entityId: accountId,
+    detail: `${auditBefore ? "修改" : "新增"}科目：${record.label}`,
+    before: auditBefore,
+    after: record,
+    sourceIds: [accountId],
+  }, resolvedContext);
+  return next;
+}
+
+export function setWorkspaceAccountStatus(workspace, { accountId, status }, context = {}) {
+  if (!['active', 'inactive'].includes(status)) {
+    throw new AccountingRuleError("ACCOUNT_STATUS_INVALID", "科目状态只能是有效或停用");
+  }
+  const current = workspaceAccountDefinitions(workspace).find((account) => account.id === accountId);
+  if (!current) throw new AccountingRuleError("ACCOUNT_NOT_FOUND", `找不到科目：${accountId}`);
+  const next = upsertWorkspaceAccount(workspace, { ...current, status }, context);
+  const audit = next.auditLog?.at(-1);
+  if (audit) {
+    audit.action = status === "inactive" ? "account.deactivate" : "account.activate";
+    audit.detail = `${status === "inactive" ? "停用" : "启用"}科目：${current.label}`;
+  }
+  return next;
+}
+
+function normalizeRuleNumber(value, label, { min = 0, max = Number.POSITIVE_INFINITY } = {}) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < min || number > max) {
+    throw new AccountingRuleError("ACCOUNTING_RULE_INVALID", `${label}必须在 ${min}–${max === Number.POSITIVE_INFINITY ? "有效数值" : max} 之间`);
+  }
+  return number;
+}
+
+export function saveActiveAccountingRuleSet(workspace, values, context = {}) {
+  const next = cloneAccountingState(workspace);
+  const resolvedContext = operationContext(context);
+  const records = next.ruleSets || (next.ruleSets = []);
+  const active = activeAccountingRuleSet(next);
+  const index = active ? records.findIndex((ruleSet) => ruleSet.id === active.id) : -1;
+  const before = index >= 0 ? { ...records[index] } : null;
+  const record = {
+    ...(before || {}),
+    id: before?.id || nextRecordId(records, "rule-set"),
+    name: String(values.name || before?.name || "当前账务规则").trim() || "当前账务规则",
+    status: "active",
+    confidenceThreshold: normalizeRuleNumber(values.confidenceThreshold, "人工复核阈值", { min: 0, max: 100 }),
+    automaticPostingThreshold: normalizeRuleNumber(values.automaticPostingThreshold, "自动建议阈值", { min: 0, max: 100 }),
+    amountTolerance: normalizeRuleNumber(values.amountTolerance, "金额容差", { min: 0 }),
+    requireEvidenceForExpenses: Boolean(values.requireEvidenceForExpenses),
+    allowOverAllocation: Boolean(values.allowOverAllocation),
+    createdAt: before?.createdAt || resolvedContext.at,
+    createdBy: before?.createdBy || resolvedContext.actor,
+    updatedAt: resolvedContext.at,
+    updatedBy: resolvedContext.actor,
+  };
+  if (index >= 0) records[index] = record;
+  else records.push(record);
+  appendAuditEntry(next, {
+    action: before ? "accounting_rules.update" : "accounting_rules.create",
+    entityType: "ruleSet",
+    entityId: record.id,
+    detail: `${before ? "更新" : "创建"}当前有效账务规则：${record.name}`,
+    before,
+    after: record,
+    sourceIds: [record.id],
+  }, resolvedContext);
+  return next;
 }
 
 export function activeAllocations(transaction) {

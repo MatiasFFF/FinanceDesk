@@ -4,6 +4,7 @@ import test from "node:test";
 import * as XLSX from "xlsx";
 
 import { createAccountingFixture } from "../src/domain/accounting/fixtures.js";
+import { createBlankWorkspace } from "../src/domain/foundation.js";
 import {
   FROZEN_REPORT_EXCEL_SHEETS,
   buildFrozenReportExcelWorkbook,
@@ -15,6 +16,7 @@ const generatedAt = "2026-09-05T08:30:00.000Z";
 
 function frozenWorkspace() {
   const base = createAccountingFixture();
+  base.modules = { overview: true, members: true, reconcile: true, reports: true, tax: true, archive: true, setup: true };
   const sourceFingerprint = workflowSourceFingerprint(base);
   const version = {
     id: "report-version-current",
@@ -76,6 +78,47 @@ test("current frozen report exports seven traceable worksheets and survives XLSX
   const bytes = XLSX.write(workbook, { bookType: "xlsx", type: "array", cellStyles: true });
   const reopened = XLSX.read(bytes, { type: "array", cellStyles: true });
   assert.deepEqual(reopened.SheetNames, FROZEN_REPORT_EXCEL_SHEETS);
+});
+
+test("member module controls fitness-specific content in the owner workbook sheet", () => {
+  const blank = createBlankWorkspace({ id: "workspace-neutral-excel", name: "通用服务工作台" }, { timestamp: generatedAt });
+  const blankFingerprint = workflowSourceFingerprint(blank);
+  const blankVersion = {
+    id: "report-version-neutral",
+    period: blank.currentPeriod,
+    label: "V1",
+    createdAt: generatedAt,
+    actor: "本地用户",
+    frozen: true,
+    sourceFingerprint: blankFingerprint,
+    snapshot: buildReportSnapshot(blank),
+  };
+  const blankWorkspace = {
+    ...blank,
+    delivery: { ...blank.delivery, reportVersions: [blankVersion] },
+  };
+  const { workbook: blankWorkbook } = buildFrozenReportExcelWorkbook(blankWorkspace, {
+    reportVersion: blankVersion,
+    currentSourceFingerprint: blankFingerprint,
+    generatedAt,
+  });
+  const blankOwnerRows = XLSX.utils.sheet_to_json(blankWorkbook.Sheets["老板管理报表"], { header: 1, defval: "" });
+  assert.doesNotMatch(JSON.stringify(blankOwnerRows), /会员|教练|私教|团课|门店经营汇总/);
+  assert.notEqual(
+    workflowSourceFingerprint({ ...blank, modules: { ...blank.modules, members: true } }),
+    blankFingerprint,
+    "模块变化必须让旧冻结版本失效",
+  );
+
+  const { workspace, version, sourceFingerprint } = frozenWorkspace();
+  const { workbook: fitnessWorkbook } = buildFrozenReportExcelWorkbook(workspace, {
+    reportVersion: version,
+    currentSourceFingerprint: sourceFingerprint,
+    generatedAt,
+  });
+  const fitnessOwnerRows = XLSX.utils.sheet_to_json(fitnessWorkbook.Sheets["老板管理报表"], { header: 1, defval: "" });
+  assert.match(JSON.stringify(fitnessOwnerRows), /教练提成/);
+  assert.match(JSON.stringify(fitnessOwnerRows), /门店经营汇总/);
 });
 
 test("missing, old, or stale frozen versions cannot export", () => {

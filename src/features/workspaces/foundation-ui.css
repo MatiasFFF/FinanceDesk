@@ -638,3 +638,118 @@
     flex-direction: column;
   }
 }
+
+/* Align paired setup cards and let background, not nested outlines, show depth. */
+.foundation-page,
+.foundation-grid,
+.foundation-grid > *,
+.foundation-section,
+.foundation-record-list,
+.bank-import-workspace,
+.document-record-grid {
+  min-width: 0;
+}
+
+.foundation-page-heading h2 {
+  font-size: clamp(21px, 2.1vw, 28px);
+}
+
+.foundation-section {
+  display: flex;
+  flex-direction: column;
+  border-color: var(--line);
+  border-radius: var(--radius-panel, 12px);
+}
+
+.foundation-section-heading h3 {
+  font-size: 16px;
+}
+
+.foundation-grid {
+  align-items: stretch;
+}
+
+.foundation-grid > :only-child {
+  grid-column: 1 / -1;
+}
+
+.foundation-section > .entity-form,
+.foundation-section > .company-form {
+  margin-top: auto;
+}
+
+.company-form {
+  padding-top: 13px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.entity-form > .foundation-field,
+.company-form > .foundation-field {
+  min-width: 0;
+  grid-template-rows: minmax(30px, 1fr) 40px;
+}
+
+.foundation-field > span {
+  align-self: end;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.foundation-field input,
+.foundation-field select,
+.compact-select,
+.stage-status-control select {
+  width: 100%;
+  height: var(--control-height, 40px);
+  border-radius: var(--radius-control, 8px);
+}
+
+.foundation-record,
+.document-record {
+  border: 0;
+  background: var(--canvas);
+}
+
+.foundation-empty {
+  border: 0;
+  background: var(--canvas);
+}
+
+.bank-preview-scroll {
+  min-width: 0;
+  max-width: 100%;
+  overscroll-behavior-inline: contain;
+}
+
+@media (max-width: 900px) {
+  .foundation-grid > :only-child {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .foundation-page-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .stage-status-control,
+  .stage-status-control select {
+    width: 100%;
+  }
+
+  .document-intake-controls,
+  .mapping-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .company-form {
+    grid-template-columns: 1fr;
+  }
+
+  .company-form > .primary-button {
+    grid-column: auto;
+  }
+}

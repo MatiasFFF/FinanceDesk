@@ -7,6 +7,11 @@ import {
 } from "./domain/accounting/index.js";
 import { buildPayrollSocialSummary, buildStructuredInvoiceVatSummary } from "./features/intake/documentIntake.js";
 import {
+  FITNESS_WORKSPACE_MODULE_DEFAULTS,
+  WORKSPACE_MODULE_DEFAULTS,
+  normalizeWorkspaceModules,
+} from "./domain/foundation.js";
+import {
   ACCOUNT_LABELS,
   APP_STORAGE_KEY,
   allocatedForBill,
@@ -29,14 +34,38 @@ export const CLOSE_STAGES = [
 ];
 
 export const PRIMARY_NAV = [
-  { id: "overview", label: "月结总览", shortLabel: "总览" },
-  { id: "members", label: "会员台账", shortLabel: "会员" },
-  { id: "reconcile", label: "批量核销", shortLabel: "核销" },
-  { id: "reports", label: "报表中心", shortLabel: "报表" },
-  { id: "tax", label: "确认与申报", shortLabel: "确认" },
-  { id: "archive", label: "资料归档", shortLabel: "归档" },
-  { id: "setup", label: "基础资料", shortLabel: "基础" },
+  { id: "overview", moduleId: "overview", label: "月结总览", shortLabel: "总览" },
+  { id: "members", moduleId: "members", label: "会员台账", shortLabel: "会员" },
+  { id: "reconcile", moduleId: "reconcile", label: "批量核销", shortLabel: "核销" },
+  { id: "reports", moduleId: "reports", label: "报表中心", shortLabel: "报表" },
+  { id: "tax", moduleId: "tax", label: "确认与申报", shortLabel: "确认" },
+  { id: "archive", moduleId: "archive", label: "资料归档", shortLabel: "归档" },
+  { id: "setup", moduleId: "setup", label: "基础资料", shortLabel: "基础" },
 ];
+
+export const WORKSPACE_MODULE_OPTIONS = Object.freeze([
+  { id: "members", label: "会员业务", description: "会员台账、履约、退款与业务提成" },
+  { id: "reconcile", label: "流水核销", description: "银行流水、往来账单与会计处理" },
+  { id: "tax", label: "确认与申报", description: "客户确认、申报底稿与本地申报包" },
+]);
+
+export function defaultWorkspaceModules(mode = "blank") {
+  return { ...(mode === "fitness" ? FITNESS_WORKSPACE_MODULE_DEFAULTS : WORKSPACE_MODULE_DEFAULTS) };
+}
+
+export function workspaceModuleEnabled(workspace, moduleId) {
+  const hasMemberBusiness = workspace?.templateId === "fitness-studio"
+    || workspace?.isDemo
+    || (workspace?.members || []).length > 0
+    || (workspace?.businessEvents || []).some((event) => event.memberId || event.memberName || event.coach);
+  return normalizeWorkspaceModules(workspace?.modules, {
+    fitnessTemplate: hasMemberBusiness,
+  })[moduleId] !== false;
+}
+
+export function primaryNavigationForWorkspace(workspace) {
+  return PRIMARY_NAV.filter((item) => workspaceModuleEnabled(workspace, item.moduleId));
+}
 
 const emptyFiling = (period) => ({
   period,
@@ -67,6 +96,9 @@ export function ensureWorkspace(workspace) {
   return {
     ...workspace,
     name: workspace.name || "未命名工作台",
+    modules: normalizeWorkspaceModules(workspace.modules, {
+      fitnessTemplate: workspace.templateId === "fitness-studio" || workspace.isDemo,
+    }),
     periods: [...new Set([period, ...safeArray(workspace.periods)])],
     accounts: safeArray(workspace.accounts),
     members: safeArray(workspace.members),
@@ -486,6 +518,7 @@ export function recordVatReconciliation(workspace, input, context = {}) {
 }
 
 export function buildReportSnapshot(workspace) {
+  const memberBusinessEnabled = workspaceModuleEnabled(workspace, "members");
   const statements = calculatePeriodLedger(workspace);
   const engine = statements.engine;
   const management = buildManagementMetrics(workspace, { period: workspace.currentPeriod });
@@ -621,13 +654,17 @@ export function buildReportSnapshot(workspace) {
       income: {
         label: "利润表",
         rows: [
-          makeRow("privateRevenue", "私教课收入", -amountForAccount(statements.ledger, "revenuePrivate"), accountRows(workspace, ["revenuePrivate"])),
-          makeRow("groupRevenue", "团课收入", -amountForAccount(statements.ledger, "revenueGroup"), accountRows(workspace, ["revenueGroup"])),
+          ...(memberBusinessEnabled ? [
+            makeRow("privateRevenue", "私教课收入", -amountForAccount(statements.ledger, "revenuePrivate"), accountRows(workspace, ["revenuePrivate"])),
+            makeRow("groupRevenue", "团课收入", -amountForAccount(statements.ledger, "revenueGroup"), accountRows(workspace, ["revenueGroup"])),
+          ] : [
+            makeRow("serviceRevenue", "服务收入", -amountForAccount(statements.ledger, "revenuePrivate") - amountForAccount(statements.ledger, "revenueGroup"), accountRows(workspace, ["revenuePrivate", "revenueGroup"])),
+          ]),
           makeTraceableRow("revenue", "营业收入", statements.revenue, revenueDetails, "收入类发生额 − 销售退回与折让"),
           makeRow("rent", "房租费用", amountForAccount(statements.ledger, "expenseRent"), accountRows(workspace, ["expenseRent"])),
           makeRow("utility", "水电费用", amountForAccount(statements.ledger, "expenseUtility"), accountRows(workspace, ["expenseUtility"])),
           makeRow("fees", "手续费", amountForAccount(statements.ledger, "expenseFee"), accountRows(workspace, ["expenseFee"])),
-          makeRow("commission", "教练提成", amountForAccount(statements.ledger, "expenseCommission"), accountRows(workspace, ["expenseCommission"])),
+          makeRow("commission", memberBusinessEnabled ? "教练提成" : "业务提成", amountForAccount(statements.ledger, "expenseCommission"), accountRows(workspace, ["expenseCommission"])),
           makeTraceableRow("expenses", "期间费用", statements.expenses, expenseDetails, "本期各费用类科目借方净发生额"),
           makeTraceableRow("profit", "本月利润", statements.profit, profitDetails, "营业收入 − 销售退回 − 成本 − 期间费用"),
         ],
@@ -650,12 +687,12 @@ export function buildReportSnapshot(workspace) {
           makeRow("ownerRevenue", "本月收入", statements.revenue, accountRows(workspace, ["revenuePrivate", "revenueGroup"])),
           makeTraceableRow("ownerGrossProfit", "本月毛利", engine.incomeStatement.grossProfit.value, [...revenueDetails, ...costDetails.map((item) => ({ ...item, amount: -item.amount }))], "营业收入 − 销售退回 − 营业成本"),
           makeTraceableRow("ownerProfit", "本月利润", statements.profit, profitDetails, "营业收入 − 销售退回 − 成本 − 期间费用"),
-          makeTraceableRow("ownerPrepaid", "会员预收 / 未履约服务", contractLiability, contractLiabilityDetails, "合同负债科目期末贷方余额"),
+          makeTraceableRow("ownerPrepaid", memberBusinessEnabled ? "会员预收 / 未履约服务" : "客户预收 / 未履约服务", contractLiability, contractLiabilityDetails, "合同负债科目期末贷方余额"),
           makeTraceableRow("ownerReceivable", "应收账款", receivable, receivableDetails, "应收账款科目期末借方余额"),
           makeTraceableRow("ownerPayable", "供应商应付", payable, payableDetails, "应付账款科目期末贷方余额"),
           makeTraceableRow("ownerPrepayment", "供应商预付", prepayment, prepaymentDetails, "预付款项科目期末借方余额"),
-          makeRow("ownerRefund", "待处理退款", refunds.reduce((sum, item) => sum + Number(item.amount || 0), 0), refunds.map((item) => ({ id: item.id, date: item.date, title: item.memberName, reference: "会员退款", description: item.note, amount: item.amount }))),
-          makeRow("ownerCommission", "教练提成", commissions.reduce((sum, item) => sum + Number(item.amount || 0), 0), commissions.map((item) => ({ id: item.id, date: item.date, title: item.coach || item.memberName, reference: "提成", description: item.note, amount: item.amount }))),
+          makeRow("ownerRefund", "待处理退款", refunds.reduce((sum, item) => sum + Number(item.amount || 0), 0), refunds.map((item) => ({ id: item.id, date: item.date, title: memberBusinessEnabled ? item.memberName : (item.counterparty || "本地业务"), reference: memberBusinessEnabled ? "会员退款" : "业务退款", description: item.note, amount: item.amount }))),
+          makeRow("ownerCommission", memberBusinessEnabled ? "教练提成" : "业务提成", commissions.reduce((sum, item) => sum + Number(item.amount || 0), 0), commissions.map((item) => ({ id: item.id, date: item.date, title: memberBusinessEnabled ? (item.coach || item.memberName) : (item.counterparty || "本地业务"), reference: "提成", description: item.note, amount: item.amount }))),
           makeTraceableRow("ownerTax", "预计税款（演示估算）", estimatedTax, taxEstimateDetails, "增值税估算 + 附加税费估算 + 所得税估算"),
           makeTraceableRow("ownerGap", "未来现金缺口", cashGapValue, cashGapDetails, "max(0，应付与预计税费 − 可用现金)"),
         ],
@@ -800,6 +837,7 @@ export function getLatestReportVersion(workspace) {
 
 const WORKFLOW_SOURCE_KEYS = [
   "company",
+  "modules",
   "accounts",
   "bankAccounts",
   "transactions",
@@ -838,7 +876,7 @@ function workflowSourceValue(workspace, key) {
   if (key === "payrollRecords") {
     return (workspace.payrollRecords || []).filter((record) => record.period === workspace.currentPeriod);
   }
-  return workspace[key] || (key === "company" || key === "openingLedger" || key === "rules" ? {} : []);
+  return workspace[key] || (["company", "modules", "openingLedger", "rules"].includes(key) ? {} : []);
 }
 
 export function workflowSourceFingerprint(workspace) {
@@ -954,6 +992,7 @@ function comparableSnapshot(snapshot) {
 }
 
 export function workflowChecks(workspace) {
+  const taxEnabled = workspaceModuleEnabled(workspace, "tax");
   const snapshot = buildReportSnapshot(workspace);
   const statementsBalanced = Object.values(snapshot.summary.engineChecks || {}).every((check) => check.passed);
   const currentTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
@@ -995,11 +1034,14 @@ export function workflowChecks(workspace) {
       && filing.receipt?.packageId === filing.exportedPackage?.id
       && filing.receipt?.packageHash === filing.exportedPackage?.hash), page: "archive" },
   ];
+  const archiveChecks = taxEnabled
+    ? checks
+    : checks.filter((check) => !["finance", "payroll", "socialSecurity", "owner", "vatReconciliation", "exported", "receipt"].includes(check.id));
   return {
     checks,
     prepare: checks.slice(0, 8),
     export: checks.slice(0, 10),
-    archive: checks,
+    archive: archiveChecks,
     snapshot,
     unresolved,
     openExceptionTasks,

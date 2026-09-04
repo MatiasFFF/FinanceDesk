@@ -405,7 +405,7 @@ function MemberBusinessAccountingQueue({ onToast }) {
   );
 }
 
-export function ReceivablesPayablesPanel({ onToast }) {
+export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true }) {
   const { activeWorkspace, actions, state, store } = useFinanceDesk();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(() => emptyBillForm(activeWorkspace?.currentPeriod || new Date().toISOString().slice(0, 7)));
@@ -540,7 +540,7 @@ export function ReceivablesPayablesPanel({ onToast }) {
 
   return (
     <>
-      <MemberBusinessAccountingQueue onToast={onToast} />
+      {showMemberBusiness && <MemberBusinessAccountingQueue onToast={onToast} />}
       <section className="panel settlement-panel">
       <div className="settlement-heading">
         <div><p className="eyebrow">应收应付与核销</p><h2>往来账单与实时余额</h2><p>新增账单后，在下方打开一笔流水，即可一次拆分核销多张账单；同一账单也可由多笔流水分次结清。</p></div>
@@ -1005,7 +1005,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
           {selectedBusinessDefinition && (
             <>
               {selectedBusinessDefinition.counterpartyRequired && <label><span>交易对手 *</span><input required value={judgement.counterparty} onChange={(event) => setJudgement((current) => ({ ...current, counterparty: event.target.value }))} placeholder="客户、供应商、员工或资金方" /></label>}
-              <label><span>会计属性 / 主科目 *</span><select required value={judgement.account} onChange={(event) => setJudgement((current) => ({ ...current, account: event.target.value }))}>{Object.entries(ACCOUNT_CATALOG).map(([id, account]) => <option value={id} key={id}>{account.label}</option>)}</select></label>
+              <label><span>会计属性 / 主科目 *</span><select required value={judgement.account} onChange={(event) => setJudgement((current) => ({ ...current, account: event.target.value }))}>{Object.entries(ACCOUNT_CATALOG).map(([id]) => <option value={id} key={id}>{accountDefinition(id, activeWorkspace).label}</option>)}</select></label>
               <label><span>业务期间 *</span><input required type="month" value={judgement.businessPeriod} onChange={(event) => setJudgement((current) => ({ ...current, businessPeriod: event.target.value }))} /></label>
               <label><span>资金期间</span><input readOnly value={String(transaction.date || "").slice(0, 7)} /></label>
               {selectedBusinessDefinition.billKinds.length > 0 && <label><span>关联账单{selectedBusinessDefinition.referenceMode === "bill_or_reference" ? "（与编号至少一项）" : ""}</span><select value={judgement.relatedBillId} onChange={(event) => setJudgement((current) => ({ ...current, relatedBillId: event.target.value }))}><option value="">暂不选择账单</option>{businessEventBills.map((bill) => <option value={bill.id} key={bill.id}>{bill.no || bill.id} · {bill.counterparty} · ¥{money(bill.amount)}</option>)}</select></label>}

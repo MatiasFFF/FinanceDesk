@@ -755,3 +755,95 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* Preserve accounting density while removing card-within-card visual noise. */
+.accounting-workbench,
+.accounting-workbench > *,
+.engine-form > *,
+.settlement-panel,
+.settlement-form > *,
+.settlement-bill-row > *,
+.accounting-ledger-panel,
+.ledger-filters > * {
+  min-width: 0;
+}
+
+.accounting-workbench {
+  border-color: var(--line);
+  border-radius: var(--radius-panel, 12px);
+}
+
+.engine-summary span,
+.engine-voucher-card,
+.engine-suggestions button,
+.engine-allocation label,
+.engine-allocation-history > div,
+.engine-voucher-row {
+  border: 0;
+  border-radius: 8px;
+  background: var(--canvas);
+}
+
+.engine-voucher-card {
+  background: var(--paper-strong);
+}
+
+.engine-form select,
+.engine-voucher-card > input,
+.engine-allocation input,
+.engine-allocation-history input,
+.engine-special select,
+.settlement-form input,
+.settlement-form select,
+.ledger-filters input,
+.ledger-filters select {
+  min-height: var(--control-height, 40px);
+  border-radius: var(--radius-control, 8px);
+}
+
+.settlement-form,
+.ledger-filters {
+  border: 0;
+  border-radius: 10px;
+  background: var(--canvas);
+}
+
+.settlement-metrics > span,
+.settlement-bill-row {
+  border: 0;
+  background: var(--paper-strong);
+}
+
+.ledger-tabs {
+  border-color: var(--line);
+  border-radius: 9px;
+}
+
+.ledger-table-wrap {
+  min-width: 0;
+  max-width: 100%;
+  border-color: var(--line);
+  border-radius: 9px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+@media (max-width: 720px) {
+  .accounting-workbench {
+    padding: 12px;
+  }
+
+  .settlement-metrics,
+  .settlement-form,
+  .ledger-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .settlement-metrics,
+  .settlement-form,
+  .ledger-filters {
+    grid-template-columns: 1fr;
+  }
+}

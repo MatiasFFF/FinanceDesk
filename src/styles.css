@@ -4664,3 +4664,185 @@ summary.forecast-week-row {
     padding-inline: 4px;
   }
 }
+
+/* Visual and responsive refinement: keep one clear container boundary per region. */
+:root {
+  --layout-content-max: 1440px;
+  --radius-panel: 12px;
+  --radius-control: 8px;
+  --control-height: 40px;
+}
+
+.page-content {
+  width: 100%;
+  max-width: var(--layout-content-max);
+  margin-inline: auto;
+}
+
+.reconcile-page {
+  width: 100%;
+  max-width: calc(var(--layout-content-max) + 390px);
+  margin-inline: auto;
+}
+
+.topbar {
+  padding-inline: max(
+    clamp(24px, 3vw, 46px),
+    calc((100vw - 236px - var(--layout-content-max)) / 2 + clamp(24px, 3vw, 46px))
+  );
+}
+
+.page-content,
+.reconcile-main,
+.reconcile-page,
+.hero-grid > *,
+.metric-grid > *,
+.reports-layout > *,
+.tax-layout > *,
+.owner-liquidity-layout > *,
+.final-review-grid > *,
+.final-tax-grid > *,
+.final-statement-grid > *,
+.final-payroll-grid > *,
+.workpaper-grid > *,
+.document-grid > * {
+  min-width: 0;
+}
+
+.primary-button,
+.secondary-button,
+.soft-button {
+  min-height: var(--control-height);
+  border-radius: var(--radius-control);
+}
+
+.period-select,
+.search-field,
+.archive-tools .search-field {
+  height: var(--control-height);
+  border-radius: var(--radius-control);
+}
+
+.icon-button {
+  width: var(--control-height);
+  height: var(--control-height);
+  border-radius: var(--radius-control);
+}
+
+.icon-button.compact {
+  width: 32px;
+  height: 32px;
+}
+
+.filter-tabs button,
+.page-tabs button,
+.report-tabs button {
+  min-height: var(--control-height);
+  border-radius: var(--radius-control);
+}
+
+.progress-card,
+.next-action-card,
+.summary-card,
+.panel,
+.upload-hero,
+.archive-hero,
+.archive-content-panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+
+.confirmation-item,
+.final-review-section,
+.final-risk-section,
+.final-open-section,
+.final-deduction-summary,
+.final-attestations label,
+.final-deduction-choice label {
+  border: 0;
+  border-radius: 9px;
+  background: var(--canvas);
+}
+
+.confirmation-item.approved {
+  background: var(--sage-soft);
+}
+
+.confirmation-item.rejected {
+  background: var(--clay-soft);
+}
+
+.final-statement-grid > article {
+  border: 0;
+  background: var(--paper-strong);
+}
+
+.final-deduction-summary.required {
+  border: 0;
+}
+
+.receipt-upload-card {
+  border: 0;
+  border-radius: 10px;
+}
+
+.table-scroll,
+.voucher-table-wrap,
+.transaction-list,
+.store-report-table,
+.report-tabs {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.form-grid > *,
+.tax-input-grid > *,
+.confirmation-form > *,
+.final-confirm-form > * {
+  min-width: 0;
+}
+
+.confirmation-decisions {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 900px) {
+  .topbar {
+    padding-inline: 20px;
+  }
+
+  .page-content,
+  .reconcile-main {
+    padding-inline: 20px;
+  }
+}
+
+@media (max-width: 720px) {
+  .topbar {
+    padding: 16px 14px;
+  }
+
+  .page-content,
+  .reconcile-main {
+    padding: 16px 14px 34px;
+  }
+
+  .final-confirm-form > button,
+  .confirmation-form > button {
+    width: 100%;
+    justify-self: stretch;
+  }
+
+  .archive-tools .search-field {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .stage-rail {
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+  }
+}

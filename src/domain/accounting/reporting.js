@@ -975,6 +975,9 @@ export function buildFrozenReportExcelWorkbook(workspace, {
   const version = validateFrozenReportExcelRequest(workspace, { reportVersion, currentSourceFingerprint });
   const snapshot = version.snapshot;
   const management = buildManagementMetrics(workspace, { period: workspace.currentPeriod });
+  const memberBusinessEnabled = typeof workspace.modules?.members === "boolean"
+    ? workspace.modules.members
+    : Boolean(workspace.templateId === "fitness-studio" || workspace.isDemo || (workspace.members || []).length || (workspace.businessEvents || []).some((event) => event.memberId || event.memberName || event.coach));
   const sourceIndex = sourceDescriptionIndex(workspace);
   const metricSources = [];
   const addMetric = (sheetName, metricId, label, value, sourceIds, unit = "CNY") => {
@@ -1024,15 +1027,17 @@ export function buildFrozenReportExcelWorkbook(workspace, {
       const sourceIds = frozenSnapshotRowSourceIds(row);
       return { kind: /(利润|余额|缺口)/.test(row.label) ? "total" : "data", values: [row.label, addMetric("老板管理报表", `owner:${row.id}`, row.label, row.value, sourceIds), row.formula || "冻结管理报表汇总", sourceIds.length || 1] };
     }),
-    { kind: "blank", values: [] },
-    { kind: "section", values: ["门店经营汇总"] },
-    { kind: "header", values: ["门店", ...storeMetrics.map(([, label]) => label), "来源数"] },
-    { kind: "total", values: ["全部门店", ...storeMetrics.map(([id, label]) => addMetric("老板管理报表", `store-total:${id}`, `全部门店 ${label}`, management.storeReport.totals[id], management.storeReport.sourceIds)), management.storeReport.sourceIds.length] },
-    ...management.storeReport.stores.map((store) => ({
-      kind: "data",
-      values: [store.name, ...storeMetrics.map(([id, label]) => addMetric("老板管理报表", `store:${store.id}:${id}`, `${store.name} ${label}`, store.metrics[id], store.sourceIds)), store.sourceIds.length],
-    })),
-    { kind: "note", values: ["入账覆盖", `本期已入账 ${management.storeReport.postingCoverage.postedEventCount} / 已确认 ${management.storeReport.postingCoverage.recognizedEventCount} 笔业务；未入账业务不进入本表。`] },
+    ...(memberBusinessEnabled ? [
+      { kind: "blank", values: [] },
+      { kind: "section", values: ["门店经营汇总"] },
+      { kind: "header", values: ["门店", ...storeMetrics.map(([, label]) => label), "来源数"] },
+      { kind: "total", values: ["全部门店", ...storeMetrics.map(([id, label]) => addMetric("老板管理报表", `store-total:${id}`, `全部门店 ${label}`, management.storeReport.totals[id], management.storeReport.sourceIds)), management.storeReport.sourceIds.length] },
+      ...management.storeReport.stores.map((store) => ({
+        kind: "data",
+        values: [store.name, ...storeMetrics.map(([id, label]) => addMetric("老板管理报表", `store:${store.id}:${id}`, `${store.name} ${label}`, store.metrics[id], store.sourceIds)), store.sourceIds.length],
+      })),
+      { kind: "note", values: ["入账覆盖", `本期已入账 ${management.storeReport.postingCoverage.postedEventCount} / 已确认 ${management.storeReport.postingCoverage.recognizedEventCount} 笔业务；未入账业务不进入本表。`] },
+    ] : []),
   ];
   XLSX.utils.book_append_sheet(workbook, exportSheet(workspace, version, "老板管理报表", ownerEntries, [25, 16, 16, 16, 16, 16, 18, 11], generatedAt), "老板管理报表");
 

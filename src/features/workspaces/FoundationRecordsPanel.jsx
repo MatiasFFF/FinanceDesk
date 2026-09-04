@@ -5,6 +5,7 @@ import {
   FileText,
   PencilSimple,
   Plus,
+  Power,
   ShieldCheck,
   Trash,
   UsersThree,
@@ -12,6 +13,15 @@ import {
 } from "@phosphor-icons/react";
 
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
+import {
+  ACCOUNT_CATEGORIES,
+  accountingRules,
+  activeAccountingRuleSet,
+  saveActiveAccountingRuleSet,
+  setWorkspaceAccountStatus,
+  upsertWorkspaceAccount,
+  workspaceAccountDefinitions,
+} from "../../domain/accounting/model.js";
 import { BankImportPanel } from "../intake/BankImportPanel.jsx";
 import { DocumentIntakePanel } from "../intake/DocumentIntakePanel.jsx";
 import "./foundation-ui.css";
@@ -177,6 +187,33 @@ const COLLECTION_CONFIG = {
   },
 };
 
+const MEMBER_BUSINESS_EVENT_TYPES = new Set(["memberRecharge", "memberConsumption"]);
+
+function moduleSettingEnabled(value) {
+  if (typeof value === "boolean") return value;
+  if (value && typeof value === "object" && "enabled" in value) return value.enabled !== false;
+  return value !== false;
+}
+
+function memberModuleEnabled(workspace) {
+  const settings = workspace.moduleSettings;
+  const explicitSetting = settings?.members ?? settings?.member;
+  if (explicitSetting != null) return moduleSettingEnabled(explicitSetting);
+
+  const enabled = workspace.enabledModules;
+  if (Array.isArray(enabled)) {
+    return enabled.some((item) => {
+      const id = typeof item === "string" ? item : item?.id;
+      return ["members", "member"].includes(id) && moduleSettingEnabled(item);
+    });
+  }
+  if (enabled && typeof enabled === "object") {
+    const explicit = enabled.members ?? enabled.member;
+    return explicit == null ? false : moduleSettingEnabled(explicit);
+  }
+  return true;
+}
+
 function emptyDraft(config) {
   return Object.fromEntries(config.fields.map((field) => [field.key, field.type === "status" ? "active" : field.type === "select" ? field.options?.[0]?.[0] || "" : ""]));
 }
@@ -196,14 +233,24 @@ function EntityEditor({ collection, onToast }) {
   const { activeWorkspace, actions } = useFinanceDesk();
   const config = useMemo(() => {
     const base = COLLECTION_CONFIG[collection];
-    if (collection !== "users") return base;
-    return {
-      ...base,
-      fields: base.fields.map((field) => field.key === "roleId"
-        ? { ...field, options: activeWorkspace.roles.map((role) => [role.id, `${role.name}${role.status === "active" ? "" : "（停用）"}`]) }
-        : field),
-    };
-  }, [collection, activeWorkspace.roles]);
+    if (collection === "users") {
+      return {
+        ...base,
+        fields: base.fields.map((field) => field.key === "roleId"
+          ? { ...field, options: activeWorkspace.roles.map((role) => [role.id, `${role.name}${role.status === "active" ? "" : "（停用）"}`]) }
+          : field),
+      };
+    }
+    if (collection === "businessEvents" && !memberModuleEnabled(activeWorkspace)) {
+      return {
+        ...base,
+        fields: base.fields.map((field) => field.key === "type"
+          ? { ...field, options: field.options.filter(([id]) => !MEMBER_BUSINESS_EVENT_TYPES.has(id)) }
+          : field),
+      };
+    }
+    return base;
+  }, [collection, activeWorkspace.roles, activeWorkspace.enabledModules, activeWorkspace.moduleSettings]);
   const Icon = config.icon;
   const items = activeWorkspace[collection] || [];
   const [draft, setDraft] = useState(() => emptyDraft(config));
@@ -264,6 +311,152 @@ function EntityEditor({ collection, onToast }) {
       <form className="entity-form" onSubmit={save}>
         {config.fields.map((field) => <label className="foundation-field" key={field.key}><span>{field.label}</span><Field field={field} value={draft[field.key]} onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))} /></label>)}
         <div className="foundation-inline-actions"><button className="primary-button" type="submit"><Plus size={16} />{draft.id ? "保存修改" : "新增记录"}</button>{draft.id && <button className="secondary-button" type="button" onClick={() => setDraft(emptyDraft(config))}>取消编辑</button>}</div>
+        {error && <p className="entity-error">{error}</p>}
+      </form>
+    </section>
+  );
+}
+
+function operationActor(state, workspace) {
+  return workspace.users?.find((user) => user.id === state.activeUserId)?.name || "本地用户";
+}
+
+function emptyAccountDraft() {
+  return { id: "", name: "", category: "expense", normalSide: "debit", cash: false };
+}
+
+function AccountCatalogEditor({ onToast }) {
+  const { state, activeWorkspace, actions } = useFinanceDesk();
+  const accounts = useMemo(() => workspaceAccountDefinitions(activeWorkspace), [activeWorkspace]);
+  const [draft, setDraft] = useState(emptyAccountDraft);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setDraft(emptyAccountDraft());
+    setError("");
+  }, [activeWorkspace.id]);
+
+  function edit(account) {
+    setDraft({
+      id: account.id,
+      name: account.label,
+      category: account.category,
+      normalSide: account.normalSide,
+      cash: Boolean(account.cash),
+    });
+    setError("");
+  }
+
+  function save(event) {
+    event.preventDefault();
+    setError("");
+    try {
+      const next = upsertWorkspaceAccount(activeWorkspace, draft, {
+        actor: operationActor(state, activeWorkspace),
+        mode: "manual",
+      });
+      actions.replaceWorkspace(activeWorkspace.id, next);
+      setDraft(emptyAccountDraft());
+      onToast?.(draft.id ? "科目修改已保存，并立即用于凭证、账簿和报表" : "新科目已保存到当前工作台");
+    } catch (caught) {
+      setError(caught.message || "科目保存失败");
+    }
+  }
+
+  function toggleStatus(account) {
+    setError("");
+    try {
+      const status = account.status === "inactive" ? "active" : "inactive";
+      const next = setWorkspaceAccountStatus(activeWorkspace, { accountId: account.id, status }, {
+        actor: operationActor(state, activeWorkspace),
+        mode: "manual",
+      });
+      actions.replaceWorkspace(activeWorkspace.id, next);
+      if (draft.id === account.id) setDraft(emptyAccountDraft());
+      onToast?.(`科目已${status === "inactive" ? "停用" : "启用"}；历史凭证仍保留当前名称`);
+    } catch (caught) {
+      setError(caught.message || "科目状态更新失败");
+    }
+  }
+
+  return (
+    <section className="foundation-section entity-editor">
+      <div className="foundation-section-heading"><div><small>当前工作台科目表</small><h3><FileText size={18} />会计科目</h3></div><span>{accounts.filter((account) => account.status !== "inactive").length} 个有效</span></div>
+      <div className="foundation-record-list">
+        {accounts.map((account) => (
+          <article className="foundation-record" key={account.id}>
+            <div><strong>{account.label}</strong><small>{account.id} · {ACCOUNT_CATEGORIES.find((item) => item.id === account.category)?.label || account.category} · {account.normalSide === "credit" ? "贷方" : "借方"}{account.cash ? " · 现金类" : ""} · {account.status === "inactive" ? "已停用" : "有效"}</small></div>
+            <span className="foundation-record-actions">
+              <button type="button" aria-label={`编辑${account.label}`} onClick={() => edit(account)}><PencilSimple size={15} /></button>
+              <button type="button" aria-label={`${account.status === "inactive" ? "启用" : "停用"}${account.label}`} title={account.status === "inactive" ? "启用科目" : "停用科目"} onClick={() => toggleStatus(account)}><Power size={15} /></button>
+            </span>
+          </article>
+        ))}
+      </div>
+      <form className="entity-form" onSubmit={save}>
+        {draft.id && <label className="foundation-field"><span>科目编码</span><input value={draft.id} readOnly /></label>}
+        <label className="foundation-field"><span>科目名称</span><input required value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} placeholder="例如：主营业务收入" /></label>
+        <label className="foundation-field"><span>科目类别</span><select value={draft.category} onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value }))}>{ACCOUNT_CATEGORIES.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+        <label className="foundation-field"><span>余额方向</span><select value={draft.normalSide} onChange={(event) => setDraft((current) => ({ ...current, normalSide: event.target.value }))}><option value="debit">借方</option><option value="credit">贷方</option></select></label>
+        <label className="foundation-field"><span>现金类科目</span><select value={String(draft.cash)} onChange={(event) => setDraft((current) => ({ ...current, cash: event.target.value === "true" }))}><option value="false">否</option><option value="true">是</option></select></label>
+        <div className="foundation-inline-actions"><button className="primary-button" type="submit"><Plus size={16} />{draft.id ? "保存科目修改" : "新增科目"}</button>{draft.id && <button className="secondary-button" type="button" onClick={() => setDraft(emptyAccountDraft())}>取消编辑</button>}</div>
+        {error && <p className="entity-error">{error}</p>}
+      </form>
+    </section>
+  );
+}
+
+function ruleDraft(workspace) {
+  const rules = accountingRules(workspace);
+  const active = activeAccountingRuleSet(workspace);
+  return {
+    name: active?.name || "当前账务规则",
+    confidenceThreshold: rules.confidenceThreshold,
+    automaticPostingThreshold: rules.automaticPostingThreshold,
+    amountTolerance: rules.amountTolerance,
+    requireEvidenceForExpenses: rules.requireEvidenceForExpenses,
+    allowOverAllocation: rules.allowOverAllocation,
+  };
+}
+
+function AccountingRuleEditor({ onToast }) {
+  const { state, activeWorkspace, actions } = useFinanceDesk();
+  const active = activeAccountingRuleSet(activeWorkspace);
+  const [draft, setDraft] = useState(() => ruleDraft(activeWorkspace));
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setDraft(ruleDraft(activeWorkspace));
+    setError("");
+  }, [activeWorkspace.id, active?.updatedAt]);
+
+  function save(event) {
+    event.preventDefault();
+    setError("");
+    try {
+      const next = saveActiveAccountingRuleSet(activeWorkspace, draft, {
+        actor: operationActor(state, activeWorkspace),
+        mode: "manual",
+      });
+      actions.replaceWorkspace(activeWorkspace.id, next);
+      onToast?.("当前有效账务规则已保存并立即生效");
+    } catch (caught) {
+      setError(caught.message || "账务规则保存失败");
+    }
+  }
+
+  return (
+    <section className="foundation-section entity-editor">
+      <div className="foundation-section-heading"><div><small>当前有效规则集</small><h3><ShieldCheck size={18} />账务规则</h3></div><span>{active?.name || "使用默认值"}</span></div>
+      <div className="foundation-notice"><WarningCircle size={17} />自动建议阈值只决定是否形成自动处理建议；系统仍遵守现有复核与入账门槛，不会自动入账。</div>
+      <form className="entity-form" onSubmit={save}>
+        <label className="foundation-field"><span>规则名称</span><input required value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} /></label>
+        <label className="foundation-field"><span>人工复核阈值（0–100）</span><input required type="number" min="0" max="100" step="1" value={draft.confidenceThreshold} onChange={(event) => setDraft((current) => ({ ...current, confidenceThreshold: event.target.value }))} /></label>
+        <label className="foundation-field"><span>自动建议阈值（0–100）</span><input required type="number" min="0" max="100" step="1" value={draft.automaticPostingThreshold} onChange={(event) => setDraft((current) => ({ ...current, automaticPostingThreshold: event.target.value }))} /></label>
+        <label className="foundation-field"><span>金额容差</span><input required type="number" min="0" step="0.01" value={draft.amountTolerance} onChange={(event) => setDraft((current) => ({ ...current, amountTolerance: event.target.value }))} /></label>
+        <label className="foundation-field"><span>费用必须有证据</span><select value={String(draft.requireEvidenceForExpenses)} onChange={(event) => setDraft((current) => ({ ...current, requireEvidenceForExpenses: event.target.value === "true" }))}><option value="true">是</option><option value="false">否</option></select></label>
+        <label className="foundation-field"><span>允许超额核销</span><select value={String(draft.allowOverAllocation)} onChange={(event) => setDraft((current) => ({ ...current, allowOverAllocation: event.target.value === "true" }))}><option value="false">禁止</option><option value="true">允许</option></select></label>
+        <button className="primary-button" type="submit">保存并启用规则</button>
         {error && <p className="entity-error">{error}</p>}
       </form>
     </section>
@@ -395,7 +588,7 @@ export function FoundationRecordsPanel({ initialStage = "s0", onToast }) {
   const body = useMemo(() => {
     if (stage === "documents") return <div className="foundation-grid"><DocumentIntakePanel defaultCategory="其他资料" onToast={onToast} /></div>;
     if (stage === "s0") return <div className="foundation-grid"><LocalUserControl onToast={onToast} /><CompanyProfile onToast={onToast} /><EntityEditor collection="books" onToast={onToast} /><EntityEditor collection="stores" onToast={onToast} /><EntityEditor collection="users" onToast={onToast} /><EntityEditor collection="roles" onToast={onToast} /><AuthorizationEditor onToast={onToast} /></div>;
-    if (stage === "s1") return <div className="foundation-grid"><EntityEditor collection="ruleSets" onToast={onToast} /></div>;
+    if (stage === "s1") return <div className="foundation-grid"><AccountCatalogEditor onToast={onToast} /><AccountingRuleEditor onToast={onToast} /></div>;
     if (stage === "s2") return <div className="foundation-grid"><EntityEditor collection="counterparties" onToast={onToast} /><EntityEditor collection="contracts" onToast={onToast} /><EntityEditor collection="bills" onToast={onToast} /><EntityEditor collection="businessEvents" onToast={onToast} /><DocumentIntakePanel defaultCategory="合同" onToast={onToast} /></div>;
     if (stage === "s3") return <div className="foundation-grid"><EntityEditor collection="bankAccounts" onToast={onToast} /><BankImportPanel onToast={onToast} /></div>;
     return <div className="foundation-grid"><EntityEditor collection="invoices" onToast={onToast} /><EntityEditor collection="approvals" onToast={onToast} /><EntityEditor collection="personnelRecords" onToast={onToast} /><DocumentIntakePanel defaultCategory="人员资料" onToast={onToast} /></div>;

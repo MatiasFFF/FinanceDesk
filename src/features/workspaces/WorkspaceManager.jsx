@@ -12,6 +12,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
+import { WORKSPACE_MODULE_OPTIONS, defaultWorkspaceModules } from "../../productWorkflow.js";
 import { copyWorkspaceLocalFiles, pruneUnreferencedLocalFiles, refreshLocalFileAvailability } from "../intake/documentIntake.js";
 import "./foundation-ui.css";
 
@@ -41,6 +42,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
   const { state, activeWorkspace, actions, store, fileVault } = useFinanceDesk();
   const [createMode, setCreateMode] = useState("blank");
   const [sourceWorkspaceId, setSourceWorkspaceId] = useState(activeWorkspace.id);
+  const [newModules, setNewModules] = useState(() => defaultWorkspaceModules("blank"));
   const [newName, setNewName] = useState("");
   const [renameValue, setRenameValue] = useState(activeWorkspace.name);
   const [importMode, setImportMode] = useState("merge");
@@ -50,7 +52,8 @@ export function WorkspaceManager({ open, onClose, onToast }) {
   useEffect(() => {
     setRenameValue(activeWorkspace.name);
     setSourceWorkspaceId(activeWorkspace.id);
-  }, [activeWorkspace.id, activeWorkspace.name]);
+    setNewModules(createMode === "copy" ? { ...activeWorkspace.modules } : defaultWorkspaceModules("blank"));
+  }, [activeWorkspace.id, activeWorkspace.name, createMode]);
 
   if (!open) return null;
 
@@ -77,8 +80,8 @@ export function WorkspaceManager({ open, onClose, onToast }) {
     let created = null;
     try {
       const input = createMode === "copy"
-        ? { name, sourceWorkspaceId }
-        : { name, industry: "其他服务业", taxpayerType: "小规模纳税人" };
+        ? { name, sourceWorkspaceId, modules: newModules }
+        : { name, industry: "其他服务业", taxpayerType: "小规模纳税人", modules: newModules };
       created = actions.createWorkspace(input);
       if (createMode === "copy") {
         await copyWorkspaceLocalFiles({ store, fileVault, sourceWorkspaceId, targetWorkspaceId: created.id });
@@ -96,6 +99,25 @@ export function WorkspaceManager({ open, onClose, onToast }) {
       }
       setError(caught.message || "创建工作台失败");
     }
+  }
+
+  function setCreationMode(mode) {
+    setCreateMode(mode);
+    const source = state.workspaces.find((workspace) => workspace.id === sourceWorkspaceId) || activeWorkspace;
+    setNewModules(mode === "copy" ? { ...source.modules } : defaultWorkspaceModules("blank"));
+  }
+
+  function selectCopySource(workspaceId) {
+    setSourceWorkspaceId(workspaceId);
+    const source = state.workspaces.find((workspace) => workspace.id === workspaceId);
+    if (source) setNewModules({ ...source.modules });
+  }
+
+  function toggleActiveModule(moduleId, enabled) {
+    run(
+      () => actions.updateWorkspaceModules(activeWorkspace.id, { [moduleId]: enabled }),
+      `${WORKSPACE_MODULE_OPTIONS.find((item) => item.id === moduleId)?.label || "模块"}已${enabled ? "启用" : "停用"}`,
+    );
   }
 
   async function deleteActive() {
@@ -230,14 +252,23 @@ export function WorkspaceManager({ open, onClose, onToast }) {
               <button className="danger-button" type="button" disabled={state.workspaces.length === 1} onClick={deleteActive}><Trash size={16} />删除</button>
             </div>
             {state.workspaces.length === 1 && <p className="foundation-hint">至少保留一个工作台；先创建新工作台后即可删除当前模板。</p>}
+            <div className="foundation-divider" />
+            <div className="foundation-section-heading"><div><small>当前配置</small><h3>启用模块</h3></div></div>
+            <div className="choice-cards">
+              {WORKSPACE_MODULE_OPTIONS.map((module) => <label className={activeWorkspace.modules?.[module.id] ? "active" : ""} key={module.id}><input type="checkbox" checked={Boolean(activeWorkspace.modules?.[module.id])} onChange={(event) => toggleActiveModule(module.id, event.target.checked)} /><span><strong>{module.label}</strong><small>{module.description}</small></span></label>)}
+            </div>
+            <p className="foundation-hint">月结总览、报表中心、资料归档和基础资料始终保留。</p>
           </section>
 
           <section className="foundation-section">
             <div className="foundation-section-heading"><div><small>创建</small><h3>新工作台</h3></div><Plus size={19} /></div>
             <form className="foundation-form" onSubmit={createWorkspace}>
               <label className="foundation-field"><span>名称</span><input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="例如：静安门店" /></label>
-              <label className="foundation-field"><span>创建方式</span><select value={createMode} onChange={(event) => setCreateMode(event.target.value)}><option value="blank">空白工作台</option><option value="copy">复制现有工作台</option></select></label>
-              {createMode === "copy" && <label className="foundation-field"><span>复制来源</span><select value={sourceWorkspaceId} onChange={(event) => setSourceWorkspaceId(event.target.value)}>{state.workspaces.map((workspace) => <option value={workspace.id} key={workspace.id}>{workspace.name}</option>)}</select></label>}
+              <label className="foundation-field"><span>创建方式</span><select value={createMode} onChange={(event) => setCreationMode(event.target.value)}><option value="blank">空白工作台</option><option value="copy">复制现有工作台</option></select></label>
+              {createMode === "copy" && <label className="foundation-field"><span>复制来源</span><select value={sourceWorkspaceId} onChange={(event) => selectCopySource(event.target.value)}>{state.workspaces.map((workspace) => <option value={workspace.id} key={workspace.id}>{workspace.name}</option>)}</select></label>}
+              <div className="choice-cards">
+                {WORKSPACE_MODULE_OPTIONS.map((module) => <label className={newModules[module.id] ? "active" : ""} key={module.id}><input type="checkbox" checked={Boolean(newModules[module.id])} onChange={(event) => setNewModules((current) => ({ ...current, [module.id]: event.target.checked }))} /><span><strong>{module.label}</strong><small>{module.description}</small></span></label>)}
+              </div>
               <button className="primary-button" type="submit"><Plus size={17} />创建并切换</button>
             </form>
 
