@@ -113,6 +113,21 @@ test("the visible report snapshot uses the accounting engine for statements and 
   assert.equal(snapshot.sections.cashflow.rows.find((row) => row.id === "netCash").value, statements.cashFlow.netChange.value);
 });
 
+test("report totals retain formulas and voucher-level detail whose amounts reconcile to the visible number", () => {
+  const workspace = ensureWorkspace(createAccountingFixture());
+  const snapshot = buildReportSnapshot(workspace);
+  const sumDetails = (row) => Math.round(row.details.reduce((sum, item) => sum + Number(item.amount || 0), 0) * 100) / 100;
+  const assets = snapshot.sections.balance.rows.find((row) => row.id === "assets");
+  const profit = snapshot.sections.income.rows.find((row) => row.id === "profit");
+  const ownerGrossProfit = snapshot.sections.owner.rows.find((row) => row.id === "ownerGrossProfit");
+
+  assert.match(assets.formula, /资产类科目/);
+  assert.equal(sumDetails(assets), assets.value);
+  assert.match(profit.formula, /营业收入/);
+  assert.equal(sumDetails(profit), profit.value);
+  assert.equal(ownerGrossProfit.details.length > 0, true);
+});
+
 test("a real product bank account id is treated as cash and enters the statements", () => {
   const workspace = createInitialState({ now: fixedNow }).workspaces[0];
   const account = workspace.bankAccounts[0];
@@ -131,6 +146,29 @@ test("only posted and explicitly ignored items stop blocking the product close w
 
   const flow = workflowChecks(workspace);
   assert.deepEqual(flow.unresolved.map((item) => item.status), ["pending", "reconciled"]);
+});
+
+test("an inherited open notice is visible to the workflow and blocks a new close until resolved", () => {
+  const workspace = ensureWorkspace(createAccountingFixture());
+  workspace.transactions = workspace.transactions.map((transaction) => ({ ...transaction, status: "ignored" }));
+  workspace.exceptionTasks = [];
+  workspace.delivery.notices = [{
+    id: "carry-2026-08-txn-old",
+    period: workspace.currentPeriod,
+    sourceId: "txn-old",
+    status: "open",
+    message: "上期待处理事项",
+    amount: 88,
+  }];
+
+  const blocked = workflowChecks(workspace);
+  assert.equal(blocked.openNotices.length, 1);
+  assert.equal(blocked.checks.find((item) => item.id === "exceptions").ok, false);
+
+  workspace.delivery.notices[0].status = "resolved";
+  const resolved = workflowChecks(workspace);
+  assert.equal(resolved.openNotices.length, 0);
+  assert.equal(resolved.checks.find((item) => item.id === "exceptions").ok, true);
 });
 
 test("a frozen report becomes stale after its financial source data changes", () => {

@@ -188,6 +188,7 @@ export function calculatePeriodLedger(workspace) {
     difference: engine.balanceSheet.difference.value,
     engineChecks: engine.checks,
     cashFlow: engine.cashFlow,
+    engine,
   };
 }
 
@@ -225,8 +226,55 @@ function makeRow(id, label, value, details = []) {
   return { id, label, value: roundMoney(value), details };
 }
 
+function makeTraceableRow(id, label, value, details = [], formula = "") {
+  return { ...makeRow(id, label, value, details), formula };
+}
+
+function ledgerDetails(workspace, engine, predicate, contribution) {
+  const voucherById = new Map((workspace.vouchers || []).map((voucher) => [voucher.id, voucher]));
+  return engine.ledger.accounts
+    .filter(predicate)
+    .flatMap((account) => {
+      const rows = [];
+      const openingAmount = roundMoney(contribution(account.opening, account.account));
+      if (Math.abs(openingAmount) > 0.01) {
+        rows.push({
+          id: `opening-${account.accountId}`,
+          date: `${workspace.currentPeriod}-01`,
+          title: `${account.account.label}期初余额`,
+          reference: "期初结转",
+          description: `科目 ${account.accountId} · 由上期归档余额继承`,
+          amount: openingAmount,
+        });
+      }
+      account.entries.forEach((entry) => {
+        const voucher = voucherById.get(entry.voucherId);
+        const amount = roundMoney(contribution(Number(entry.debit || 0) - Number(entry.credit || 0), account.account));
+        if (Math.abs(amount) <= 0.01) return;
+        rows.push({
+          id: `${entry.voucherId}-${account.accountId}-${entry.lineIndex}`,
+          date: entry.date,
+          title: `${entry.summary} · ${account.account.label}`,
+          reference: entry.voucherNo || entry.voucherId,
+          description: `${(entry.sourceIds || []).length} 个来源 · ${(voucher?.evidenceIds || []).length} 份本地附件`,
+          amount,
+          voucherId: entry.voucherId,
+          sourceIds: entry.sourceIds || [],
+          evidenceIds: voucher?.evidenceIds || [],
+        });
+      });
+      return rows;
+    })
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
+function formulaDetail(id, title, amount, description) {
+  return { id, title, reference: "计算口径", description, amount: roundMoney(amount) };
+}
+
 export function buildReportSnapshot(workspace) {
   const statements = calculatePeriodLedger(workspace);
+  const engine = statements.engine;
   const management = buildManagementMetrics(workspace, { period: workspace.currentPeriod });
   const managementById = Object.fromEntries(management.metrics.map((metric) => [metric.id, metric]));
   const engineTax = buildTaxWorkpaper(workspace, { period: workspace.currentPeriod });
@@ -245,6 +293,30 @@ export function buildReportSnapshot(workspace) {
   const estimatedIncomeTax = roundMoney(Math.max(0, statements.profit) * 0.05);
   const estimatedTax = roundMoney(estimatedVat + estimatedSurtax + estimatedIncomeTax);
   const cashBalance = statements.cashFlow.closingCash.value;
+  const assetDetails = ledgerDetails(workspace, engine, (item) => item.account.category === "asset", (amount) => amount);
+  const liabilityDetails = ledgerDetails(workspace, engine, (item) => item.account.category === "liability", (amount) => -amount);
+  const equityAccountDetails = ledgerDetails(workspace, engine, (item) => item.account.category === "equity", (amount) => -amount);
+  const revenueDetails = ledgerDetails(workspace, engine, (item) => ["revenue", "contraRevenue"].includes(item.account.category), (amount) => -amount);
+  const expenseDetails = ledgerDetails(workspace, engine, (item) => item.account.category === "expense", (amount) => amount);
+  const costDetails = ledgerDetails(workspace, engine, (item) => item.account.category === "cost", (amount) => amount);
+  const profitDetails = ledgerDetails(workspace, engine, (item) => ["revenue", "contraRevenue", "cost", "expense"].includes(item.account.category), (amount) => -amount);
+  const cashDetails = ledgerDetails(workspace, engine, (item) => item.account.cash, (amount) => amount);
+  const receivableDetails = ledgerDetails(workspace, engine, (item) => item.accountId === "receivable", (amount) => amount);
+  const prepaymentDetails = ledgerDetails(workspace, engine, (item) => item.accountId === "prepayment", (amount) => amount);
+  const equipmentDetails = ledgerDetails(workspace, engine, (item) => item.accountId === "equipment", (amount) => amount);
+  const payableDetails = ledgerDetails(workspace, engine, (item) => item.accountId === "payable", (amount) => -amount);
+  const contractLiabilityDetails = ledgerDetails(workspace, engine, (item) => item.accountId === "contractLiability", (amount) => -amount);
+  const taxEstimateDetails = [
+    formulaDetail("estimated-vat", "增值税估算", estimatedVat, `销项估算减进项税额，税率 ${(Number(workspace.tax.vatRate ?? 0.03) * 100).toFixed(2)}%`),
+    formulaDetail("estimated-surtax", "附加税费估算", estimatedSurtax, "按增值税估算额的 12% 演示计算"),
+    formulaDetail("estimated-income-tax", "所得税估算", estimatedIncomeTax, "按正数会计利润的 5% 演示计算"),
+  ];
+  const cashGapValue = Math.abs(Math.min(0, managementById.cashGap?.value ?? (cashBalance - payable - estimatedTax)));
+  const cashGapDetails = [
+    formulaDetail("gap-cash", "可用现金余额", cashBalance, "来自已入账凭证与期初结转"),
+    formulaDetail("gap-payable", "减：供应商应付", -payable, "来自未结清应付账单"),
+    formulaDetail("gap-tax", "减：预计税费", -estimatedTax, "本地演示估算，不代表正式申报额"),
+  ];
 
   return {
     period: workspace.currentPeriod,
@@ -272,16 +344,16 @@ export function buildReportSnapshot(workspace) {
       balance: {
         label: "资产负债表",
         rows: [
-          makeRow("cash", "货币资金", cashBalance, accountRows(workspace, ["bank", "cash"])),
-          makeRow("receivable", "应收账款", amountForAccount(statements.ledger, "receivable"), detailsFromBills(workspace, "receivable")),
-          makeRow("prepayment", "预付款项", amountForAccount(statements.ledger, "prepayment"), detailsFromBills(workspace, "prepaymentPaid")),
-          makeRow("equipment", "固定资产", amountForAccount(statements.ledger, "equipment"), accountRows(workspace, ["equipment"])),
-          makeRow("assets", "资产合计", statements.assets),
-          makeRow("payable", "应付账款", -amountForAccount(statements.ledger, "payable"), detailsFromBills(workspace, "payable")),
-          makeRow("contractLiability", "合同负债", contractLiability, detailsFromBills(workspace, "depositReceived")),
-          makeRow("liabilities", "负债合计", statements.liabilities),
-          makeRow("equity", "所有者权益", statements.equity),
-          makeRow("liabilitiesEquity", "负债和所有者权益合计", statements.liabilities + statements.equity),
+          makeTraceableRow("cash", "货币资金", cashBalance, cashDetails, "期初现金 + 本期已入账现金变动"),
+          makeTraceableRow("receivable", "应收账款", amountForAccount(statements.ledger, "receivable"), receivableDetails, "期初应收 + 借方发生额 − 贷方发生额"),
+          makeTraceableRow("prepayment", "预付款项", amountForAccount(statements.ledger, "prepayment"), prepaymentDetails, "期初预付 + 借方发生额 − 贷方发生额"),
+          makeTraceableRow("equipment", "固定资产", amountForAccount(statements.ledger, "equipment"), equipmentDetails, "期初固定资产 + 本期净增加"),
+          makeTraceableRow("assets", "资产合计", statements.assets, assetDetails, "所有资产类科目期末余额合计"),
+          makeTraceableRow("payable", "应付账款", -amountForAccount(statements.ledger, "payable"), payableDetails, "期初应付 + 贷方发生额 − 借方发生额"),
+          makeTraceableRow("contractLiability", "合同负债", contractLiability, contractLiabilityDetails, "期初合同负债 + 预收 − 履约确认"),
+          makeTraceableRow("liabilities", "负债合计", statements.liabilities, liabilityDetails, "所有负债类科目期末余额合计"),
+          makeTraceableRow("equity", "所有者权益", statements.equity, [...equityAccountDetails, ...profitDetails], "权益类科目期末余额 + 本期利润"),
+          makeTraceableRow("liabilitiesEquity", "负债和所有者权益合计", statements.liabilities + statements.equity, [...liabilityDetails, ...equityAccountDetails, ...profitDetails], "负债合计 + 所有者权益"),
         ],
       },
       income: {
@@ -289,13 +361,13 @@ export function buildReportSnapshot(workspace) {
         rows: [
           makeRow("privateRevenue", "私教课收入", -amountForAccount(statements.ledger, "revenuePrivate"), accountRows(workspace, ["revenuePrivate"])),
           makeRow("groupRevenue", "团课收入", -amountForAccount(statements.ledger, "revenueGroup"), accountRows(workspace, ["revenueGroup"])),
-          makeRow("revenue", "营业收入", statements.revenue),
+          makeTraceableRow("revenue", "营业收入", statements.revenue, revenueDetails, "收入类发生额 − 销售退回与折让"),
           makeRow("rent", "房租费用", amountForAccount(statements.ledger, "expenseRent"), accountRows(workspace, ["expenseRent"])),
           makeRow("utility", "水电费用", amountForAccount(statements.ledger, "expenseUtility"), accountRows(workspace, ["expenseUtility"])),
           makeRow("fees", "手续费", amountForAccount(statements.ledger, "expenseFee"), accountRows(workspace, ["expenseFee"])),
           makeRow("commission", "教练提成", amountForAccount(statements.ledger, "expenseCommission"), accountRows(workspace, ["expenseCommission"])),
-          makeRow("expenses", "期间费用", statements.expenses),
-          makeRow("profit", "本月利润", statements.profit),
+          makeTraceableRow("expenses", "期间费用", statements.expenses, expenseDetails, "本期各费用类科目借方净发生额"),
+          makeTraceableRow("profit", "本月利润", statements.profit, profitDetails, "营业收入 − 销售退回 − 成本 − 期间费用"),
         ],
       },
       cashflow: {
@@ -305,41 +377,42 @@ export function buildReportSnapshot(workspace) {
           makeRow("investing", "投资活动现金流量净额", statements.cashFlow.investing.value, statements.cashFlow.investing.rows.map((item) => ({ id: item.voucherId, date: item.date, title: item.summary, reference: "已入账凭证", amount: item.amount }))),
           makeRow("financing", "筹资活动现金流量净额", statements.cashFlow.financing.value, statements.cashFlow.financing.rows.map((item) => ({ id: item.voucherId, date: item.date, title: item.summary, reference: "已入账凭证", amount: item.amount }))),
           makeRow("netCash", "现金净增加额", statements.cashFlow.netChange.value, cashMovements.map((item) => ({ id: item.voucherId, date: item.date, title: item.summary, reference: "已入账凭证", amount: item.amount }))),
-          makeRow("closingCash", "期末现金余额", cashBalance, accountRows(workspace, ["bank", "cash"])),
+          makeTraceableRow("closingCash", "期末现金余额", cashBalance, cashDetails, "期初现金 + 本期现金净增加额"),
         ],
       },
       owner: {
         label: "老板报表",
         rows: [
-          makeRow("ownerCash", "现金余额", cashBalance, accountRows(workspace, ["bank", "cash"])),
+          makeTraceableRow("ownerCash", "现金余额", cashBalance, cashDetails, "期初现金 + 本期已入账现金变动"),
           makeRow("ownerCashIn", "本月收款", cashIn, cashMovements.filter((item) => item.amount > 0).map((item) => ({ id: item.voucherId, date: item.date, title: item.summary, reference: "已入账凭证", amount: item.amount }))),
           makeRow("ownerRevenue", "本月收入", statements.revenue, accountRows(workspace, ["revenuePrivate", "revenueGroup"])),
-          makeRow("ownerProfit", "本月利润", statements.profit),
+          makeTraceableRow("ownerGrossProfit", "本月毛利", engine.incomeStatement.grossProfit.value, [...revenueDetails, ...costDetails.map((item) => ({ ...item, amount: -item.amount }))], "营业收入 − 销售退回 − 营业成本"),
+          makeTraceableRow("ownerProfit", "本月利润", statements.profit, profitDetails, "营业收入 − 销售退回 − 成本 − 期间费用"),
           makeRow("ownerPrepaid", "会员预收 / 未履约服务", contractLiability, detailsFromBills(workspace, "depositReceived")),
           makeRow("ownerReceivable", "应收账款", receivable, detailsFromBills(workspace, "receivable")),
           makeRow("ownerPayable", "供应商应付", payable, detailsFromBills(workspace, "payable")),
           makeRow("ownerPrepayment", "供应商预付", prepayment, detailsFromBills(workspace, "prepaymentPaid")),
           makeRow("ownerRefund", "待处理退款", refunds.reduce((sum, item) => sum + Number(item.amount || 0), 0), refunds.map((item) => ({ id: item.id, date: item.date, title: item.memberName, reference: "会员退款", description: item.note, amount: item.amount }))),
           makeRow("ownerCommission", "教练提成", commissions.reduce((sum, item) => sum + Number(item.amount || 0), 0), commissions.map((item) => ({ id: item.id, date: item.date, title: item.memberName, reference: "提成", description: item.note, amount: item.amount }))),
-          makeRow("ownerTax", "预计税款（演示估算）", estimatedTax),
-          makeRow("ownerGap", "未来现金缺口", Math.abs(Math.min(0, managementById.cashGap?.value ?? (cashBalance - payable - estimatedTax)))),
+          makeTraceableRow("ownerTax", "预计税款（演示估算）", estimatedTax, taxEstimateDetails, "增值税估算 + 附加税费估算 + 所得税估算"),
+          makeTraceableRow("ownerGap", "未来现金缺口", cashGapValue, cashGapDetails, "max(0，应付与预计税费 − 可用现金)"),
         ],
       },
     },
     taxWorkpaper: {
       disclaimer: "本地演示估算口径，不是正式申报结果；税务局连接将在后续阶段提供。",
       rows: [
-        makeRow("taxRevenue", "账面营业收入", statements.revenue),
-        makeRow("taxAdjustments", "税会调整", Number(workspace.tax.adjustments || 0)),
-        makeRow("taxBase", "增值税估算计税基础", Math.max(0, statements.revenue + Number(workspace.tax.adjustments || 0))),
-        makeRow("vat", "增值税估算", estimatedVat),
-        makeRow("inputVat", "进项税额", engineTax.inputVat.value),
-        makeRow("vatPayable", "应交增值税", engineTax.vatPayable.value),
-        makeRow("surtax", "附加税费估算", estimatedSurtax),
-        makeRow("incomeTax", "所得税估算", estimatedIncomeTax),
-        makeRow("payroll", "工资薪金", Number(workspace.tax.payroll || 0)),
-        makeRow("socialSecurity", "社保数据", Number(workspace.tax.socialSecurity || 0)),
-        makeRow("taxTotal", "预计税费合计", estimatedTax),
+        makeTraceableRow("taxRevenue", "账面营业收入", statements.revenue, revenueDetails, "收入类发生额 − 销售退回与折让"),
+        makeTraceableRow("taxAdjustments", "税会调整", Number(workspace.tax.adjustments || 0), [], "客户或财务人员在本地底稿中录入"),
+        makeTraceableRow("taxBase", "增值税估算计税基础", Math.max(0, statements.revenue + Number(workspace.tax.adjustments || 0)), revenueDetails, "max(0，账面营业收入 + 税会调整)"),
+        makeTraceableRow("vat", "增值税估算", estimatedVat, taxEstimateDetails.slice(0, 1), "计税基础 × 本地配置税率"),
+        makeTraceableRow("inputVat", "进项税额", engineTax.inputVat.value, ledgerDetails(workspace, engine, (item) => String(item.accountId).startsWith("taxInput"), (amount) => amount), "进项税额科目借方净发生额"),
+        makeTraceableRow("vatPayable", "应交增值税", engineTax.vatPayable.value, taxEstimateDetails.slice(0, 1), "max(0，销项税额估算 − 进项税额)"),
+        makeTraceableRow("surtax", "附加税费估算", estimatedSurtax, taxEstimateDetails.slice(1, 2), "增值税估算额 × 12%"),
+        makeTraceableRow("incomeTax", "所得税估算", estimatedIncomeTax, taxEstimateDetails.slice(2, 3), "max(0，本月利润) × 5%"),
+        makeTraceableRow("payroll", "工资薪金", Number(workspace.tax.payroll || 0), [], "财务人员在本地底稿中单独录入并由客户确认"),
+        makeTraceableRow("socialSecurity", "社保数据", Number(workspace.tax.socialSecurity || 0), [], "财务人员在本地底稿中单独录入并由客户确认"),
+        makeTraceableRow("taxTotal", "预计税费合计", estimatedTax, taxEstimateDetails, "增值税估算 + 附加税费估算 + 所得税估算"),
       ],
     },
   };
@@ -453,6 +526,9 @@ export function workflowChecks(workspace) {
   const currentTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
   const unresolved = currentTransactions.filter((item) => !["posted", "ignored"].includes(item.status));
   const openExceptionTasks = (workspace.exceptionTasks || []).filter((task) => task.status !== "resolved");
+  const openNotices = (workspace.delivery.notices || []).filter((notice) => (
+    notice.period === workspace.currentPeriod && notice.status !== "resolved"
+  ));
   const bankReconciliationIssues = (workspace.bankImports || []).filter((bankImport) => (
     bankImport.period === workspace.currentPeriod
     && (bankImport.status !== "completed" || !bankImport.reconciliation?.passed)
@@ -471,7 +547,7 @@ export function workflowChecks(workspace) {
   const checks = [
     { id: "balanced", label: "试算、资产负债与现金变动勾稽通过", ok: statementsBalanced, page: "reports", detail: statementsBalanced ? "三项校验通过" : "至少一项校验存在差异" },
     { id: "bank", label: "本期银行流水余额勾稽通过", ok: bankReconciliationIssues.length === 0, page: "setup", detail: bankReconciliationIssues.length ? `${bankReconciliationIssues.length} 份银行流水有差异或错误行` : "已完成" },
-    { id: "exceptions", label: "流水与异常事项已完成复核入账", ok: unresolved.length === 0 && openExceptionTasks.length === 0, page: "reconcile", detail: unresolved.length || openExceptionTasks.length ? `${unresolved.length} 笔流水、${openExceptionTasks.length} 项异常未完成` : "已完成" },
+    { id: "exceptions", label: "流水、异常与跨期事项已完成复核", ok: unresolved.length === 0 && openExceptionTasks.length === 0 && openNotices.length === 0, page: openNotices.length ? "overview" : "reconcile", detail: unresolved.length || openExceptionTasks.length || openNotices.length ? `${unresolved.length} 笔流水、${openExceptionTasks.length} 项异常、${openNotices.length} 项跨期待办未完成` : "已完成" },
     { id: "vouchers", label: "本期凭证已全部复核入账", ok: pendingVouchers.length === 0, page: "reconcile", detail: pendingVouchers.length ? `${pendingVouchers.length} 张草稿或更正待处理` : "已完成" },
     { id: "frozen", label: "本期当前数据已有冻结版本", ok: Boolean(version), page: "reports", detail: latestVersion && !version ? "上游数据已变化，请重新冻结" : undefined },
     { id: "finance", label: "客户已完成首次财务确认", ok: Boolean(version && workspace.tax.financeConfirmedAt && workspace.tax.financeConfirmedVersionId === version.id), page: "tax" },
@@ -488,6 +564,7 @@ export function workflowChecks(workspace) {
     snapshot,
     unresolved,
     openExceptionTasks,
+    openNotices,
     bankReconciliationIssues,
     pendingVouchers,
     latestVersion,

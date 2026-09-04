@@ -269,13 +269,17 @@ function MetricCard({ label, value, note, icon: Icon, tone = "plain", onClick })
   return onClick ? <button className={`metric-card ${tone}`} onClick={onClick} type="button">{content}</button> : <article className={`metric-card ${tone}`}>{content}</article>;
 }
 
-function OverviewPage({ workspace, onPage }) {
+function OverviewPage({ workspace, onPage, onResolveNotice }) {
   const flow = workflowChecks(workspace);
   const snapshot = flow.snapshot;
   const periodTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
-  const completionItems = [workspace.documents.length > 0, periodTransactions.length > 0, flow.unresolved.length === 0, workspace.vouchers.length > 0, Boolean(flow.version), Boolean(workspace.tax.ownerConfirmedAt)];
+  const periodNotices = (workspace.delivery.notices || []).filter((notice) => notice.period === workspace.currentPeriod);
+  const openNotices = periodNotices.filter((notice) => notice.status !== "resolved");
+  const completionItems = [workspace.documents.length > 0, periodTransactions.length > 0, flow.unresolved.length === 0, openNotices.length === 0, workspace.vouchers.length > 0, Boolean(flow.version), Boolean(workspace.tax.ownerConfirmedAt)];
   const progress = Math.round((completionItems.filter(Boolean).length / completionItems.length) * 100);
-  const nextAction = flow.unresolved.length
+  const nextAction = openNotices.length
+    ? { title: `先处理 ${openNotices.length} 项上期结转事项`, body: "延期事项已带入本期，处理后会保留来源与审计记录。", page: "overview", action: "查看结转事项" }
+    : flow.unresolved.length
     ? { title: `先处理 ${flow.unresolved.length} 笔未完成流水`, body: "低置信度和证据不足事项不会自动入账。", page: "reconcile", action: "进入批量核销" }
     : !flow.version
       ? { title: "冻结本期第一版报表", body: "冻结后会保留不可覆盖的版本快照和后续差异。", page: "reports", action: "查看报表" }
@@ -291,6 +295,7 @@ function OverviewPage({ workspace, onPage }) {
   const focusTransaction = flow.unresolved[0] || periodTransactions[0];
   const linkedDocuments = focusTransaction ? workspace.documents.filter((document) => focusTransaction.evidenceIds?.includes(document.id)) : [];
   const tasks = [
+    { label: "处理上期结转事项", meta: openNotices.length ? `${openNotices.length} 项待处理` : "已完成", done: openNotices.length === 0, page: "overview" },
     { label: "完成异常与低置信度复核", meta: flow.unresolved.length ? `${flow.unresolved.length} 笔待处理` : "已完成", done: flow.unresolved.length === 0, page: "reconcile" },
     { label: "冻结月度报表版本", meta: flow.version ? `${flow.version.label} · ${formatDateTime(flow.version.createdAt)}` : "尚未冻结", done: Boolean(flow.version), page: "reports" },
     { label: "客户首次确认财务与工资社保", meta: workspace.tax.financeConfirmedAt && workspace.tax.payrollConfirmedAt ? formatDateTime(workspace.tax.financeConfirmedAt) : "等待确认", done: Boolean(workspace.tax.financeConfirmedAt && workspace.tax.payrollConfirmedAt), page: "tax" },
@@ -303,6 +308,7 @@ function OverviewPage({ workspace, onPage }) {
         <article className="progress-card"><div className="section-heading compact"><div><p className="eyebrow">本月关账进度</p><h2>{progress === 100 ? "本期交付已经闭环" : "距离关账，还差几件小事"}</h2></div><span className="progress-number">{progress}%</span></div><div className="progress-track"><i style={{ width: `${progress}%` }} /></div><div className="progress-meta"><span><i className="dot sage" />已完成 {completionItems.filter(Boolean).length} / {completionItems.length} 个阶段</span><span><i className="dot clay" />{flow.unresolved.length} 笔待复核</span></div></article>
         <article className="next-action-card"><span className="card-kicker"><Sparkle size={17} weight="fill" />下一步建议</span><h3>{nextAction.title}</h3><p>{nextAction.body}</p><button className="text-button" onClick={() => onPage(nextAction.page)} type="button">{nextAction.action}<ArrowRight size={16} /></button></article>
       </section>
+      {periodNotices.length > 0 && <section className="panel carry-forward-panel"><div className="panel-heading"><div><p className="eyebrow">S13 · 跨期事项</p><h2>上期延续到本期的待办</h2></div><TonePill tone={openNotices.length ? "warning" : "success"}>{openNotices.length ? `${openNotices.length} 项待处理` : "全部处理完成"}</TonePill></div><div className="carry-forward-list">{periodNotices.map((notice) => <article className={notice.status === "resolved" ? "resolved" : ""} key={notice.id}><span><strong>{notice.message}</strong><small>来源 {notice.sourceId} · {formatCurrency(notice.amount, { sign: true })}</small></span>{notice.status === "resolved" ? <TonePill tone="success">已处理</TonePill> : <button className="secondary-button" onClick={() => onResolveNotice(notice.id)} type="button">标记已处理</button>}</article>)}</div></section>}
       <section className="metric-grid four">
         <MetricCard label="本月收款" value={formatCurrency(snapshot.summary.cashIn)} note={`${periodTransactions.filter((item) => Number(item.amount) > 0).length} 笔流入`} icon={Bank} />
         <MetricCard label="本月收入" value={formatCurrency(snapshot.summary.revenue)} note="来自已入账凭证" icon={TrendUp} tone="sage" onClick={() => onPage("reports")} />
@@ -390,7 +396,7 @@ function ReconcilePage({ workspace, onPage, onStatus, onReview, onEvidence, onEx
 
 function DrilldownPanel({ row, sectionLabel, onClose }) {
   if (!row) return null;
-  return <aside className="detail-panel report-detail"><div className="detail-heading"><div><p className="eyebrow">{sectionLabel} · 数字追溯</p><h2>{row.label}</h2></div><button className="icon-button compact" onClick={onClose} type="button" aria-label="关闭下钻"><X size={19} /></button></div><div className="detail-scroll"><div className="drill-total"><span>报表金额</span><strong>{formatCurrency(row.value)}</strong></div>{row.details?.length ? <div className="drill-list">{row.details.map((item) => <div key={item.id}><span><strong>{item.title}</strong><small>{item.date || "—"} · {item.reference || "本地记录"}</small>{item.description && <small>{item.description}</small>}</span><b>{formatCurrency(item.amount, { sign: true })}</b></div>)}</div> : <EmptyState title="这是汇总或结转数字" description="当前数字由同表明细或期初余额汇总，没有额外的单笔来源。" />}</div></aside>;
+  return <aside className="detail-panel report-detail"><div className="detail-heading"><div><p className="eyebrow">{sectionLabel} · 数字追溯</p><h2>{row.label}</h2></div><button className="icon-button compact" onClick={onClose} type="button" aria-label="关闭下钻"><X size={19} /></button></div><div className="detail-scroll"><div className="drill-total"><span>报表金额</span><strong>{formatCurrency(row.value)}</strong></div>{row.formula && <div className="drill-formula"><small>计算口径</small><strong>{row.formula}</strong></div>}{row.details?.length ? <div className="drill-list">{row.details.map((item) => <div key={item.id}><span><strong>{item.title}</strong><small>{item.date || "—"} · {item.reference || "本地记录"}</small>{item.description && <small>{item.description}</small>}{(item.sourceIds?.length || item.evidenceIds?.length) && <small>{item.sourceIds?.length || 0} 个业务来源 · {item.evidenceIds?.length || 0} 份凭证附件</small>}</span><b>{formatCurrency(item.amount, { sign: true })}</b></div>)}</div> : <EmptyState title="当前数字来自明确计算口径" description={row.formula || "没有额外的单笔来源。"} />}</div></aside>;
 }
 
 function ReportsPage({ workspace, onPage, onFreeze }) {
@@ -761,16 +767,39 @@ function App() {
     }
   }
   function resolveException(taskId) {
-    mutateActive((current) => {
-      const now = new Date().toISOString();
-      const task = (current.exceptionTasks || []).find((item) => item.id === taskId);
-      if (!task) throw new Error("找不到要关闭的异常任务");
-      return audit({
-        ...current,
-        exceptionTasks: current.exceptionTasks.map((item) => item.id === taskId ? { ...item, status: "resolved", resolvedAt: now, updatedAt: now, history: [...(item.history || []), { at: now, actor: "周会计", action: "resolved", note: "已在本地复核并准备重新出具报表" }] } : item),
-      }, "关闭异常任务", `${task.code}：${task.message}`);
-    });
-    setToast({ tone: "success", message: "异议已关闭；请重新核对并冻结新的报表版本" });
+    try {
+      mutateActive((current) => {
+        const now = new Date().toISOString();
+        const task = (current.exceptionTasks || []).find((item) => item.id === taskId);
+        if (!task) throw new Error("找不到要关闭的异常任务");
+        return audit({
+          ...current,
+          exceptionTasks: current.exceptionTasks.map((item) => item.id === taskId ? { ...item, status: "resolved", resolvedAt: now, updatedAt: now, history: [...(item.history || []), { at: now, actor: "周会计", action: "resolved", note: "已在本地复核并准备重新出具报表" }] } : item),
+        }, "关闭异常任务", `${task.code}：${task.message}`);
+      });
+      setToast({ tone: "success", message: "异议已关闭；请重新核对并冻结新的报表版本" });
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "异常任务关闭失败" });
+    }
+  }
+  function resolveNotice(noticeId) {
+    try {
+      mutateActive((current) => {
+        const notice = (current.delivery.notices || []).find((item) => item.id === noticeId);
+        if (!notice) throw new Error("找不到要处理的跨期事项");
+        const resolvedAt = new Date().toISOString();
+        return audit({
+          ...current,
+          delivery: {
+            ...current.delivery,
+            notices: current.delivery.notices.map((item) => item.id === noticeId ? { ...item, status: "resolved", resolvedAt, resolvedBy: "周会计" } : item),
+          },
+        }, "处理跨期事项", `${notice.sourceId}：${notice.message}`);
+      });
+      setToast({ tone: "success", message: "跨期事项已处理并保留来源记录" });
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "跨期事项处理失败" });
+    }
   }
   function prepareDraft() { mutateActive((current) => prepareFilingDraft(current)); setToast({ tone: "success", message: "本地申报底稿已生成，尚未连接税务局" }); }
   function finalConfirm(name) {
@@ -845,7 +874,7 @@ function App() {
       <div className="app-main">
         <Topbar state={state} workspace={workspace} page={page} onPeriod={changePeriod} onImport={() => setImportOpen(true)} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={openWorkspaceDialog} />
         {loadReport.recovered && <div className="danger-banner recovery-banner"><WarningCircle size={18} /><span><strong>{loadReport.source === "backup" ? "本地数据已从上一次有效副本恢复。" : "本地主副本与备用副本均无法读取，当前已加载初始模板。"}</strong>{loadReport.errors?.length ? ` 原因：${loadReport.errors.join("；")}` : " 请先核对数据并导出备份。"}</span></div>}
-        {page === "overview" && <OverviewPage workspace={workspace} onPage={setPage} />}
+        {page === "overview" && <OverviewPage workspace={workspace} onPage={setPage} onResolveNotice={resolveNotice} />}
         {page === "reconcile" && <ReconcilePage workspace={workspace} onPage={setPage} onStatus={setTransactionStatus} onReview={reviewTransactions} onEvidence={addEvidence} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} />}
         {page === "reports" && <ReportsPage workspace={workspace} onPage={setPage} onFreeze={freezeReport} />}
         {page === "tax" && <TaxPage workspace={workspace} onPage={setPage} onTaxChange={changeTax} onTaxCommit={commitTax} onInitialConfirm={initialConfirm} onDispute={disputeConfirmation} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} />}

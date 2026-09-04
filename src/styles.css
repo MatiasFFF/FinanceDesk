@@ -632,6 +632,32 @@ button:disabled {
   gap: 16px;
 }
 
+.carry-forward-panel {
+  display: grid;
+  gap: 2px;
+  border-color: #dfcfaa;
+  background: #fffaf0;
+}
+
+.carry-forward-list {
+  display: grid;
+  border-top: 1px solid var(--line-soft);
+}
+
+.carry-forward-list article {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.carry-forward-list article:last-child { border-bottom: 0; }
+.carry-forward-list article.resolved { opacity: 0.65; }
+.carry-forward-list article > span { display: grid; gap: 4px; }
+.carry-forward-list small { color: var(--quiet); font-size: 10px; }
+
 .panel {
   min-width: 0;
   padding: 22px;
@@ -2146,6 +2172,19 @@ button.metric-card:hover {
   font-family: ui-serif, "Songti SC", serif;
   font-size: 21px;
 }
+
+.drill-formula {
+  display: grid;
+  gap: 5px;
+  margin: 0 0 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--sand);
+}
+
+.drill-formula small { color: var(--quiet); font-size: 9px; }
+.drill-formula strong { font-size: 11px; line-height: 1.55; }
 
 .drill-list {
   margin: 0 18px 22px;
