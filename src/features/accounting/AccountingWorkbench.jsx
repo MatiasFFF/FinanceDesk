@@ -13,7 +13,9 @@ import {
 
 import {
   ACCOUNT_CATALOG,
+  BILL_KINDS,
   EVENT_TYPES,
+  accountDefinition,
   activeAllocations,
   allocationDirectionMatchesBill,
   applyManualClassification,
@@ -23,6 +25,7 @@ import {
   buildAttachmentPackage,
   classifyBankTransaction,
   confirmedAllocationsForBill,
+  createMemberEventVoucherDraft,
   createSettlementBill,
   createPostedVoucherRevision,
   createVoucherDraft,
@@ -39,8 +42,16 @@ import {
   transactionSettlement,
   traceVoucherSources,
   unresolvedExceptionTasks,
+  validateVoucherBalance,
+  vouchersForMemberEvent,
   vouchersForSource,
 } from "../../domain/accounting/index.js";
+import {
+  MEMBER_EVENT_DEFINITIONS,
+  isRecognizedMemberEvent,
+  memberEventKind,
+  memberEventStatusLabel,
+} from "../members/memberLedger.js";
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
 import "./accounting-workbench.css";
 
@@ -88,9 +99,119 @@ const BILL_KIND_META = {
   prepaymentPaid: { label: "供应商预付", counterparty: "供应商", balance: "待支付" },
 };
 
+const MEMBER_REPORT_EFFECTS = {
+  recharge: "货币资金、合同负债与经营现金流",
+  consumption: "营业收入、合同负债与本月利润",
+  refund: "货币资金、合同负债与经营现金流",
+  commission: "教练提成费用、应付职工薪酬与本月利润",
+  commissionPayment: "货币资金、应付职工薪酬与经营现金流",
+};
+
 function emptyBillForm(period) {
   const date = `${period}-01`;
   return { kind: BILL_KINDS.RECEIVABLE, counterparty: "", summary: "", amount: "", date, dueDate: date, no: "" };
+}
+
+function MemberBusinessAccountingQueue({ onToast }) {
+  const { activeWorkspace, actions, state, store } = useFinanceDesk();
+  const [reviewNotes, setReviewNotes] = useState({});
+  const [error, setError] = useState("");
+  const actor = activeWorkspace?.users?.find((user) => user.id === state.activeUserId)?.name || "本地用户";
+  const rows = useMemo(() => {
+    if (!activeWorkspace) return [];
+    return (activeWorkspace.businessEvents || [])
+      .filter((event) => String(event.date || "").startsWith(activeWorkspace.currentPeriod) && isRecognizedMemberEvent(event))
+      .map((event) => {
+        const related = vouchersForMemberEvent(activeWorkspace, event);
+        const voucher = related.find((item) => !["posted", "superseded"].includes(item.status))
+          || [...related].reverse().find((item) => item.status === "posted")
+          || null;
+        return { event, voucher, validation: voucher ? validateVoucherBalance(voucher) : null };
+      })
+      .sort((left, right) => String(right.event.date || "").localeCompare(String(left.event.date || "")));
+  }, [activeWorkspace]);
+
+  if (!activeWorkspace) return null;
+
+  const readyCount = rows.filter((row) => !row.voucher).length;
+  const draftCount = rows.filter((row) => row.voucher && row.voucher.status !== "posted").length;
+  const postedCount = rows.filter((row) => row.voucher?.status === "posted").length;
+
+  function run(action, successMessage) {
+    setError("");
+    try {
+      const current = store.getActiveWorkspace();
+      const next = action(current);
+      actions.replaceWorkspace(current.id, next);
+      onToast?.(successMessage);
+      return true;
+    } catch (caught) {
+      setError(caught.message || "会员业务会计处理失败");
+      return false;
+    }
+  }
+
+  function createDraft(eventId) {
+    run(
+      (workspace) => createMemberEventVoucherDraft(workspace, { eventId }, { actor }),
+      "已由会员台账生成借贷平衡的凭证草稿",
+    );
+  }
+
+  function postDraft(event, voucher) {
+    const reviewNote = String(reviewNotes[event.id] || "").trim();
+    if (!reviewNote) {
+      setError("复核入账前，请填写这笔会员业务的复核意见");
+      return;
+    }
+    if (run(
+      (workspace) => postVoucher(workspace, {
+        voucherId: voucher.id,
+        mode: "manual",
+        reviewNote,
+      }, { actor }),
+      "会员业务凭证已复核入账，对应报表已实时更新",
+    )) setReviewNotes((current) => ({ ...current, [event.id]: "" }));
+  }
+
+  return (
+    <section className="panel settlement-panel">
+      <div className="settlement-heading">
+        <div><p className="eyebrow">会员台账 → 会计处理</p><h2>已确认会员业务</h2><p>充值、耗课、退款、提成计提与实际付款在这里生成凭证；只有人工复核入账后，数字才进入对应财务报表。</p></div>
+      </div>
+      <div className="settlement-metrics">
+        <span><small>待生成凭证</small><strong>{readyCount} 笔</strong></span>
+        <span><small>待复核入账</small><strong>{draftCount} 笔</strong></span>
+        <span><small>已进入报表</small><strong>{postedCount} 笔</strong></span>
+        <span><small>本期已确认</small><strong>{rows.length} 笔</strong></span>
+      </div>
+      {error && <div className="engine-error"><WarningCircle size={16} />{error}</div>}
+      <div className="settlement-bill-list">
+        {rows.length ? rows.map(({ event, voucher, validation }) => {
+          const kind = memberEventKind(event);
+          const definition = MEMBER_EVENT_DEFINITIONS[kind];
+          const voucherLabel = !voucher ? "待生成" : voucher.status === "posted" ? `${voucher.no || "已编号"} · 已入账` : "凭证草稿";
+          return (
+            <article className="settlement-bill-row" key={event.id}>
+              <div className="settlement-bill-main"><span className="settlement-kind">{definition.label}</span><strong>{event.memberName || event.coach}</strong><small>{event.date} · {memberEventStatusLabel(event)} · {event.note || definition.accountingLabel}</small></div>
+              <div className="settlement-bill-amounts"><span><small>业务金额</small><strong>¥{money(event.amount)}</strong></span><span><small>会计状态</small><strong>{voucherLabel}</strong></span><span><small>报表影响</small><strong>{MEMBER_REPORT_EFFECTS[kind]}</strong></span></div>
+              <details open={Boolean(voucher && voucher.status !== "posted")}>
+                <summary>{voucher ? "查看凭证分录与复核" : definition.suggestedEntry}</summary>
+                {voucher ? <div className="engine-voucher-card">
+                  <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借方 ¥{money(validation?.debit)} · 贷方 ¥{money(validation?.credit)} · {validation?.balanced ? "借贷平衡" : "借贷不平"}</small></span><em>{voucher.status}</em></div>
+                  <div className="engine-summary">{voucher.lines.map((line, index) => <span key={`${line.account}-${index}`}><small>{line.debit ? "借方" : "贷方"}</small><strong>{accountDefinition(line.account, activeWorkspace).label} · ¥{money(line.debit || line.credit)}</strong></span>)}</div>
+                  {voucher.status === "posted" ? <div className="engine-inline"><span className="engine-badge"><CheckCircle size={14} weight="fill" />已进入 {MEMBER_REPORT_EFFECTS[kind]}</span></div> : <form className="engine-form" onSubmit={(submitEvent) => { submitEvent.preventDefault(); postDraft(event, voucher); }}>
+                    <label className="full"><span>复核意见 *</span><textarea value={reviewNotes[event.id] || ""} onChange={(changeEvent) => setReviewNotes((current) => ({ ...current, [event.id]: changeEvent.target.value }))} placeholder="例如：已核对会员台账、金额和会计科目" /></label>
+                    <button className="primary-button wide" disabled={!validation?.balanced} type="submit"><CheckCircle size={16} />复核入账并更新报表</button>
+                  </form>}
+                </div> : <div className="engine-inline"><span><strong>{definition.accountingLabel}</strong><small>{definition.suggestedEntry}</small></span><button className="secondary-button" type="button" onClick={() => createDraft(event.id)}><Plus size={16} />生成平衡凭证</button></div>}
+              </details>
+            </article>
+          );
+        }) : <p className="settlement-empty">本期还没有已确认的会员业务。请先到会员台账记录并确认业务状态。</p>}
+      </div>
+    </section>
+  );
 }
 
 export function ReceivablesPayablesPanel({ onToast }) {
@@ -148,7 +269,9 @@ export function ReceivablesPayablesPanel({ onToast }) {
   }
 
   return (
-    <section className="panel settlement-panel">
+    <>
+      <MemberBusinessAccountingQueue onToast={onToast} />
+      <section className="panel settlement-panel">
       <div className="settlement-heading">
         <div><p className="eyebrow">应收应付与核销</p><h2>往来账单与实时余额</h2><p>新增账单后，在下方打开一笔流水，即可一次拆分核销多张账单；同一账单也可由多笔流水分次结清。</p></div>
         <button className="secondary-button" type="button" onClick={() => { setShowForm((current) => !current); setError(""); }}><Plus size={16} />新增账单</button>
@@ -189,7 +312,8 @@ export function ReceivablesPayablesPanel({ onToast }) {
           );
         }) : <p className="settlement-empty">还没有往来账单。新增第一张客户应收或供应商应付后即可开始核销。</p>}
       </div>
-    </section>
+      </section>
+    </>
   );
 }
 

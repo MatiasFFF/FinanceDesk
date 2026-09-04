@@ -22,6 +22,7 @@ const STAGES = [
   { id: "s2", label: "S2 往来与合同" },
   { id: "s3", label: "S3 银行流水" },
   { id: "s4", label: "S4 发票与组织" },
+  { id: "documents", label: "本地资料库" },
 ];
 
 const STATUS_OPTIONS = [
@@ -392,6 +393,7 @@ export function FoundationRecordsPanel({ initialStage = "s0", onToast }) {
   const { activeWorkspace } = useFinanceDesk();
   const [stage, setStage] = useState(initialStage);
   const body = useMemo(() => {
+    if (stage === "documents") return <div className="foundation-grid"><DocumentIntakePanel defaultCategory="其他资料" onToast={onToast} /></div>;
     if (stage === "s0") return <div className="foundation-grid"><LocalUserControl onToast={onToast} /><CompanyProfile onToast={onToast} /><EntityEditor collection="books" onToast={onToast} /><EntityEditor collection="stores" onToast={onToast} /><EntityEditor collection="users" onToast={onToast} /><EntityEditor collection="roles" onToast={onToast} /><AuthorizationEditor onToast={onToast} /></div>;
     if (stage === "s1") return <div className="foundation-grid"><EntityEditor collection="ruleSets" onToast={onToast} /></div>;
     if (stage === "s2") return <div className="foundation-grid"><EntityEditor collection="counterparties" onToast={onToast} /><EntityEditor collection="contracts" onToast={onToast} /><EntityEditor collection="bills" onToast={onToast} /><EntityEditor collection="businessEvents" onToast={onToast} /><DocumentIntakePanel defaultCategory="合同" onToast={onToast} /></div>;
@@ -402,8 +404,8 @@ export function FoundationRecordsPanel({ initialStage = "s0", onToast }) {
   return (
     <div className="page-content foundation-page">
       <section className="foundation-page-heading">
-        <div><p className="eyebrow">S0–S4 本地数据入口</p><h2>企业、规则、合同、流水与组织资料</h2><p>每一项修改都会保存在当前工作台并写入操作审计；不同工作台的数据互相隔离。</p></div>
-        <StageStatusControl stage={stage} onToast={onToast} />
+        <div><p className="eyebrow">S0–S4 与本地资料库</p><h2>企业、规则、业务数据与原文件</h2><p>每一项修改都会保存在当前工作台并写入操作审计；不同工作台的数据与原文件互相隔离。</p></div>
+        {stage !== "documents" && <StageStatusControl stage={stage} onToast={onToast} />}
       </section>
       <nav className="foundation-stage-tabs" aria-label="基础资料阶段">{STAGES.map((item) => <button className={stage === item.id ? "active" : ""} key={item.id} type="button" onClick={() => setStage(item.id)}>{item.label}</button>)}</nav>
       {body}

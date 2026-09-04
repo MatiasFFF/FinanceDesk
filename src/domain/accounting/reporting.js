@@ -12,6 +12,7 @@ import {
 } from "./model.js";
 import { classifyBankTransaction } from "./classification.js";
 import { buildAdvanceBalances, buildAgeingSchedule } from "../../features/reconciliation/reconciliationEngine.js";
+import { buildMemberServiceReconciliation } from "../../features/members/memberLedger.js";
 
 function valueWithSources(value, sourceIds = [], extra = {}) {
   return {
@@ -178,6 +179,7 @@ export function buildFinancialStatements(workspace, { period = workspace.current
   const incomeStatement = buildIncomeStatement(workspace, { period, ledger });
   const balanceSheet = buildBalanceSheet(workspace, { period, ledger, incomeStatement });
   const cashFlow = buildCashFlowStatement(workspace, { period });
+  const memberServiceReconciliation = buildMemberServiceReconciliation(workspace, { period });
   const ledgerCash = sumMoney(ledger.accounts.filter((item) => item.account.cash).map((item) => item.closing));
   return {
     period,
@@ -185,10 +187,20 @@ export function buildFinancialStatements(workspace, { period = workspace.current
     balanceSheet,
     incomeStatement,
     cashFlow,
+    memberServiceReconciliation,
     checks: {
       trialBalance: { passed: Math.abs(ledger.totals.difference) <= 0.01, difference: ledger.totals.difference, sourceIds: ledger.vouchers },
       balanceSheet: { passed: balanceSheet.balanced, difference: balanceSheet.difference.value, sourceIds: balanceSheet.difference.sourceIds },
       cashMovement: { passed: Math.abs(roundMoney(ledgerCash - cashFlow.closingCash.value)) <= 0.01, difference: roundMoney(ledgerCash - cashFlow.closingCash.value), sourceIds: cashFlow.closingCash.sourceIds },
+      memberService: {
+        passed: memberServiceReconciliation.passed,
+        applicable: memberServiceReconciliation.applicable,
+        difference: memberServiceReconciliation.difference,
+        memberBalance: memberServiceReconciliation.memberBalance,
+        contractLiabilityBalance: memberServiceReconciliation.contractLiabilityBalance,
+        detail: memberServiceReconciliation.message,
+        sourceIds: memberServiceReconciliation.sourceIds,
+      },
     },
   };
 }

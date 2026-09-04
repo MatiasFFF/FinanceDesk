@@ -76,6 +76,44 @@
 .member-accounting-hint strong { font-size: 10px; }
 .member-accounting-hint small { color: var(--muted); font-size: 9px; }
 
+.commission-rules-panel { overflow: hidden; }
+.commission-rules-panel > .panel-heading { align-items: start; }
+.commission-rules-panel > .panel-heading p:last-child { max-width: 720px; margin: 5px 0 0; color: var(--quiet); font-size: 10px; line-height: 1.55; }
+.commission-rules-panel > .panel-heading > span { color: var(--quiet); font-size: 11px; }
+.commission-rule-layout { display: grid; grid-template-columns: minmax(300px, 0.72fr) minmax(0, 1.55fr); gap: 14px; }
+.commission-rule-form { align-content: start; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 14px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--sand); }
+.commission-rule-form > label:first-child { grid-column: 1 / -1; }
+.commission-rule-explanation { display: grid; grid-column: 1 / -1; gap: 3px; padding: 10px 11px; border-radius: 8px; background: var(--sage-soft); }
+.commission-rule-explanation strong { color: var(--sage); font-size: 10px; }
+.commission-rule-explanation small { color: var(--muted); font-size: 9px; line-height: 1.5; }
+.commission-rule-form-actions { display: flex; grid-column: 1 / -1; gap: 8px; }
+.commission-rule-form-actions button { flex: 1; }
+.commission-rule-list { display: grid; align-content: start; gap: 10px; }
+.commission-rule-list > article { display: grid; gap: 11px; padding: 13px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--paper-strong); }
+.commission-rule-list > article.disabled { opacity: 0.62; }
+.commission-rule-head { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.commission-rule-head > div:first-child { display: grid; min-width: 0; gap: 3px; }
+.commission-rule-head > div:first-child > span { width: max-content; padding: 3px 7px; border-radius: 999px; background: var(--clay-soft); color: var(--clay-dark); font-size: 8px; font-weight: 750; }
+.commission-rule-head strong { font-size: 12px; }
+.commission-rule-head small { color: var(--quiet); font-size: 9px; }
+.commission-rule-head > div:last-child { display: flex; gap: 6px; }
+.commission-rule-head button { min-height: 29px; padding: 0 8px; font-size: 9px; }
+.commission-rule-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+.commission-rule-metrics > span { display: grid; gap: 3px; padding: 9px; border-radius: 8px; background: var(--sand); }
+.commission-rule-metrics small { color: var(--quiet); font-size: 8px; }
+.commission-rule-metrics strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.commission-rule-list details { border-top: 1px solid var(--line-soft); }
+.commission-rule-list summary { padding: 10px 0 0; color: var(--muted); cursor: pointer; font-size: 9px; font-weight: 700; }
+.commission-calculation-list { display: grid; margin-top: 8px; border-top: 1px solid var(--line-soft); }
+.commission-calculation-list > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+.commission-calculation-list > div > span { display: grid; min-width: 0; gap: 2px; }
+.commission-calculation-list > div > span:last-child { flex: 0 0 auto; text-align: right; }
+.commission-calculation-list strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.commission-calculation-list small, .commission-calculation-list p { margin: 0; color: var(--quiet); font-size: 8px; }
+.commission-rule-feedback { margin: 11px 0 0; padding: 9px 11px; border-radius: 8px; font-size: 10px; }
+.commission-rule-feedback.success { background: var(--sage-soft); color: var(--sage); }
+.commission-rule-feedback.danger { background: var(--clay-soft); color: var(--clay-dark); }
+
 .member-balance-panel, .member-events-panel { overflow: hidden; }
 .member-balance-panel > .panel-heading > span, .member-events-panel > .panel-heading > span { color: var(--quiet); font-size: 11px; }
 .member-card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; }
@@ -88,6 +126,7 @@
 .member-card-head small { overflow: hidden; color: var(--quiet); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .member-balance-values { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .member-balance-values > span { display: grid; gap: 4px; padding: 10px; border-radius: 8px; background: var(--sand); }
+.member-balance-values > span.primary { grid-column: 1 / -1; background: var(--sage-soft); }
 .member-balance-values small { color: var(--quiet); font-size: 9px; }
 .member-balance-values strong { font-family: ui-serif, "Songti SC", serif; font-size: 15px; }
 .member-card-foot { display: flex; align-items: end; justify-content: space-between; gap: 10px; color: var(--quiet); font-size: 9px; }
@@ -110,6 +149,39 @@
 .member-event-status > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .member-event-status button { min-height: 30px; padding: 0 9px; font-size: 9px; }
 
+.member-reconciliation-panel { overflow: hidden; }
+.member-reconciliation-panel > .panel-heading { align-items: start; }
+.member-reconciliation-panel > .panel-heading p:last-child { margin: 5px 0 0; color: var(--quiet); font-size: 10px; }
+.member-reconciliation-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.member-reconciliation-metrics > span { display: grid; gap: 4px; padding: 11px; border-radius: 9px; background: var(--sand); }
+.member-reconciliation-metrics small { color: var(--quiet); font-size: 9px; }
+.member-reconciliation-metrics strong { overflow: hidden; font-family: ui-serif, "Songti SC", serif; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.member-reconciliation-result { display: flex; align-items: center; gap: 9px; margin-top: 10px; padding: 10px 11px; border-radius: 9px; }
+.member-reconciliation-result.success { background: var(--sage-soft); color: var(--sage); }
+.member-reconciliation-result.danger { background: var(--clay-soft); color: var(--clay-dark); }
+.member-reconciliation-result > span { display: grid; gap: 2px; }
+.member-reconciliation-result strong { font-size: 10px; }
+.member-reconciliation-result small { color: var(--muted); font-size: 9px; }
+.member-reconciliation-table { display: grid; margin-top: 11px; overflow-x: auto; border: 1px solid var(--line-soft); border-radius: 9px; }
+.member-reconciliation-row { display: grid; min-width: 760px; grid-template-columns: minmax(140px, 1.3fr) repeat(5, minmax(100px, 1fr)); align-items: center; gap: 8px; padding: 9px 11px; border-bottom: 1px solid var(--line-soft); font-size: 9px; }
+.member-reconciliation-row:last-child { border-bottom: 0; }
+.member-reconciliation-row.heading { background: var(--sand); color: var(--quiet); font-size: 8px; font-weight: 750; }
+.member-reconciliation-row > span { display: grid; min-width: 0; gap: 2px; }
+.member-reconciliation-row strong { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.member-reconciliation-row small { color: var(--quiet); font-size: 8px; }
+.member-reconciliation-empty { margin: 0; padding: 16px; color: var(--quiet); font-size: 9px; text-align: center; }
+.member-reconciliation-sources { margin-top: 10px; border-top: 1px solid var(--line-soft); }
+.member-reconciliation-sources > summary { padding-top: 10px; color: var(--muted); cursor: pointer; font-size: 9px; font-weight: 750; }
+.member-reconciliation-sources > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 9px; }
+.member-reconciliation-sources section { overflow: hidden; border: 1px solid var(--line-soft); border-radius: 9px; }
+.member-reconciliation-sources h3 { margin: 0; padding: 9px 10px; background: var(--sand); font-size: 10px; }
+.member-reconciliation-sources section > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border-top: 1px solid var(--line-soft); }
+.member-reconciliation-sources section > div > span { display: grid; min-width: 0; gap: 2px; }
+.member-reconciliation-sources section > div strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.member-reconciliation-sources section > div > strong { flex: 0 0 auto; }
+.member-reconciliation-sources section small, .member-reconciliation-sources section > p { color: var(--quiet); font-size: 8px; }
+.member-reconciliation-sources section > p { margin: 0; padding: 14px 10px; text-align: center; }
+
 .member-empty { display: grid; min-height: 130px; place-items: center; align-content: center; gap: 6px; color: var(--quiet); text-align: center; }
 .member-empty strong { color: var(--muted); font-size: 12px; }
 .member-empty span { font-size: 10px; }
@@ -122,6 +194,7 @@
 }
 
 @media (max-width: 900px) {
+  .commission-rule-layout { grid-template-columns: 1fr; }
   .member-entry-layout { grid-template-columns: 1fr; }
   .member-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -130,6 +203,9 @@
   .member-ledger-hero { align-items: flex-start; flex-direction: column; }
   .member-entry-form { grid-template-columns: 1fr; }
   .member-entry-form label.full, .member-entry-form > .wide, .member-accounting-hint, .member-entry-form .form-help { grid-column: auto; }
+  .commission-rule-form > label:first-child, .commission-rule-explanation, .commission-rule-form-actions { grid-column: auto; }
+  .commission-rule-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .member-reconciliation-metrics, .member-reconciliation-sources > div { grid-template-columns: 1fr; }
   .member-card-grid { grid-template-columns: 1fr; }
   .member-event-list > article { grid-template-columns: 1fr 1fr; }
   .member-event-main, .member-event-accounting, .member-event-status { grid-column: 1 / -1; }
