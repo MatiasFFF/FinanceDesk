@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build && node scripts/prepare-sites-build.mjs && node scripts/build-standalone.mjs",
     "preview": "vite preview",
+    "test:foundation": "node --test tests/local-foundation.test.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs"
   },
   "dependencies": {
