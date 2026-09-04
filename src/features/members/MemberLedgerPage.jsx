@@ -98,6 +98,11 @@ function MembershipPackagesPanel({ workspace }) {
   const actor = workspace.users?.find((user) => user.id === state.activeUserId)?.name || "本地用户";
   const previewPrice = membershipPackagePrice(form);
 
+  useEffect(() => {
+    setForm(emptyMembershipPackage());
+    setFeedback(null);
+  }, [workspace.id]);
+
   function run(change, successMessage) {
     setFeedback(null);
     try {
@@ -203,6 +208,11 @@ function CommissionRulesPanel({ workspace }) {
     period: workspace.currentPeriod,
   })), [rules, workspace]);
   const actor = workspace.users?.find((user) => user.id === state.activeUserId)?.name || "本地用户";
+
+  useEffect(() => {
+    setForm(emptyCommissionRule(coaches[0] || ""));
+    setFeedback(null);
+  }, [workspace.id, workspace.currentPeriod]);
 
   function run(change, successMessage) {
     setFeedback(null);
@@ -360,6 +370,10 @@ function EventForm({ workspace, members, onSubmit }) {
     .filter((option) => option.refundableAmount > 0 && option.refundableSessions > 0), [workspace, form.memberId]);
   const selectedRecharge = refundOptions.find((option) => option.rechargeId === form.originalRechargeId);
 
+  useEffect(() => {
+    setForm({ kind: MEMBER_EVENT_KINDS.RECHARGE, memberId: members[0]?.id || "", packageId: "", packageRechargeId: "", originalRechargeId: "", date: today(), amount: "", quantity: "", ...defaultDimensions(workspace, members[0]), note: "" });
+  }, [workspace.id, workspace.currentPeriod]);
+
   function changeMember(memberId) {
     const member = members.find((item) => item.id === memberId);
     setForm((current) => ({ ...current, memberId, packageRechargeId: "", originalRechargeId: "", ...defaultDimensions(workspace, member) }));
@@ -424,6 +438,9 @@ function EventForm({ workspace, members, onSubmit }) {
 
 function MemberForm({ workspace, onSubmit }) {
   const [form, setForm] = useState({ name: "", phone: "", ...defaultDimensions(workspace) });
+  useEffect(() => {
+    setForm({ name: "", phone: "", ...defaultDimensions(workspace) });
+  }, [workspace.id]);
   function submit(event) {
     event.preventDefault();
     const saved = onSubmit(form);

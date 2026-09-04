@@ -240,10 +240,9 @@ export function normalizeWorkspace(input, options = {}) {
   const roles = roleSource.map((role) => ({
     status: "active",
     ...role,
-    permissions: [...new Set([
-      ...(role.permissions || []),
-      ...(BUILTIN_ROLE_REQUIRED_PERMISSIONS[role.id] || []),
-    ])],
+    permissions: [...new Set(Array.isArray(role.permissions)
+      ? role.permissions
+      : (BUILTIN_ROLE_REQUIRED_PERMISSIONS[role.id] || []))],
   }));
   const legacyRule = workspace.rules || {};
   const ruleSets = workspace.ruleSets?.length ? workspace.ruleSets : [{
@@ -897,6 +896,12 @@ export function upsertWorkspaceEntity(state, workspaceId, collection, values, op
   const activeUser = activeWorkspaceUser(state, workspaceId);
   if (collection === "roles" && item.status !== "active" && activeUser && (activeUser.roleId === item.id || activeUser.role === item.name)) {
     throw new Error("当前用户所属角色不能停用；请先切换用户或调整该用户角色");
+  }
+  if (collection === "roles" && activeUser && (activeUser.roleId === item.id || activeUser.role === item.name)) {
+    const permissions = item.permissions || [];
+    if (!permissions.includes("*") && !permissions.includes("workspace.manage")) {
+      throw new Error("当前操作身份所属角色必须保留“管理工作台”权限；如需移除，请先切换到其他管理员");
+    }
   }
   const created = !(currentWorkspace[collection] || []).some((candidate) => candidate.id === item.id);
   const next = updateWorkspace(state, workspaceId, (workspace) => {

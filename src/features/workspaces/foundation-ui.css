@@ -172,6 +172,84 @@
   font-weight: 650;
 }
 
+.permission-field {
+  grid-column: 1 / -1;
+}
+
+.permission-option-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
+}
+
+.permission-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper-strong);
+  color: var(--espresso);
+  cursor: pointer;
+}
+
+.permission-option.selected {
+  border-color: rgba(128, 145, 119, 0.72);
+  background: var(--sage-soft);
+}
+
+.foundation-field .permission-option input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--sage);
+}
+
+.permission-option > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.permission-option strong {
+  font-size: 12px;
+}
+
+.permission-option small {
+  color: var(--quiet);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.permission-unknown-list {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--quiet);
+}
+
+.permission-unknown-list > span {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.permission-unknown-list code {
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--espresso);
+  font-size: 10px;
+}
+
 .authorization-list {
   max-height: 150px;
 }

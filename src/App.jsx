@@ -523,7 +523,12 @@ function ReconcilePage({ workspace, onPage, onStatus, onReview, onEvidence, onLi
   const [query, setQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [focusedId, setFocusedId] = useState(null);
-  useEffect(() => { setSelectedIds(new Set()); setFocusedId(null); }, [workspace.id, workspace.currentPeriod]);
+  useEffect(() => {
+    setFilter("unresolved");
+    setQuery("");
+    setSelectedIds(new Set());
+    setFocusedId(null);
+  }, [workspace.id, workspace.currentPeriod]);
   const periodTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
   const counts = { all: periodTransactions.length, unresolved: periodTransactions.filter((item) => !["reconciled", "posted", "ignored"].includes(item.status)).length, reconciled: periodTransactions.filter((item) => ["reconciled", "posted"].includes(item.status)).length, ignored: periodTransactions.filter((item) => item.status === "ignored").length };
   const filtered = periodTransactions.filter((item) => { const filterOk = filter === "all" || (filter === "unresolved" ? !["reconciled", "posted", "ignored"].includes(item.status) : filter === "reconciled" ? ["reconciled", "posted"].includes(item.status) : item.status === filter); const haystack = `${item.counterparty} ${item.summary} ${item.serial} ${item.suggestion}`.toLowerCase(); return filterOk && haystack.includes(query.trim().toLowerCase()); });
@@ -1002,6 +1007,10 @@ function ArchivePage({ workspace, onPage, onDocuments, onReceipt, onArchive, onN
   const archived = workspace.delivery.archives.find((item) => item.period === workspace.currentPeriod);
   const documents = workspace.documents.filter((item) => `${item.name} ${item.type || item.category || ""} ${item.status || item.lifecycleStatus || ""}`.toLowerCase().includes(query.trim().toLowerCase()));
   const archiveReady = flow.archive.every((item) => item.ok);
+  useEffect(() => {
+    setTab("documents");
+    setQuery("");
+  }, [workspace.id, workspace.currentPeriod]);
   return (
     <div className="page-content archive-page">
       <StageRail workspace={workspace} onPage={onPage} />

@@ -62,6 +62,19 @@ const STATUS_LABELS = Object.freeze({
   overdue: "已逾期",
 });
 
+const PERMISSION_OPTIONS = [
+  ["workspace.manage", "管理工作台", "管理工作台、人员与角色"],
+  ["data.read", "查看数据", "查看当前工作台中的业务数据"],
+  ["data.write", "处理业务", "新增和修改业务记录"],
+  ["documents.add", "管理资料", "上传、关联和管理本地资料"],
+  ["rules.manage", "管理规则", "调整当前工作台的账务规则"],
+  ["confirm.finance", "财务确认", "执行财务复核与确认"],
+  ["confirm.owner", "负责人确认", "执行负责人最终确认"],
+  ["*", "全部权限", "拥有当前工作台的全部操作权限"],
+];
+
+const PERMISSION_LABELS = Object.fromEntries(PERMISSION_OPTIONS.map(([id, label]) => [id, label]));
+
 function statusLabel(status) {
   return STATUS_LABELS[status] || status || "未设置状态";
 }
@@ -136,11 +149,19 @@ const COLLECTION_CONFIG = {
     icon: ShieldCheck,
     fields: [
       { key: "name", label: "角色名称", required: true },
-      { key: "permissionsText", label: "权限", placeholder: "data.read, documents.add" },
+      { key: "permissions", label: "权限", type: "permissions" },
       { key: "status", label: "状态", type: "status" },
     ],
-    fromDraft: (draft) => ({ ...draft, permissions: String(draft.permissionsText || "").split(",").map((item) => item.trim()).filter(Boolean) }),
-    toDraft: (item) => ({ ...item, permissionsText: (item.permissions || []).join(", ") }),
+    fromDraft: (draft) => {
+      const next = { ...draft, permissions: [...new Set(Array.isArray(draft.permissions) ? draft.permissions : [])] };
+      delete next.permissionsText;
+      return next;
+    },
+    toDraft: (item) => {
+      const next = { ...item, permissions: [...new Set(item.permissions || [])] };
+      delete next.permissionsText;
+      return next;
+    },
   },
   ruleSets: {
     title: "账务规则",
@@ -290,10 +311,46 @@ function isMemberBusinessEvent(item) {
 }
 
 function emptyDraft(config) {
-  return Object.fromEntries(config.fields.map((field) => [field.key, field.type === "status" ? "active" : field.type === "select" ? field.options?.[0]?.[0] || "" : ""]));
+  return Object.fromEntries(config.fields.map((field) => [
+    field.key,
+    field.type === "status"
+      ? "active"
+      : field.type === "select"
+        ? field.options?.[0]?.[0] || ""
+        : field.type === "permissions"
+          ? []
+          : "",
+  ]));
 }
 
 function Field({ field, value, onChange }) {
+  if (field.type === "permissions") {
+    const selected = Array.isArray(value) ? value : [];
+    const unknown = selected.filter((permission) => !PERMISSION_LABELS[permission]);
+    return (
+      <div className="permission-option-grid" role="group" aria-label={field.label}>
+        {PERMISSION_OPTIONS.map(([permission, label, description]) => (
+          <label className={`permission-option ${selected.includes(permission) ? "selected" : ""}`} key={permission}>
+            <input
+              type="checkbox"
+              checked={selected.includes(permission)}
+              onChange={(event) => onChange(event.target.checked
+                ? [...new Set([...selected, permission])]
+                : selected.filter((item) => item !== permission))}
+            />
+            <span><strong>{label}</strong><small>{description}</small></span>
+          </label>
+        ))}
+        {unknown.length > 0 && (
+          <div className="permission-unknown-list">
+            <strong>保留的扩展权限</strong>
+            <span>{unknown.map((permission) => <code key={permission}>{permission}</code>)}</span>
+            <small>这些权限不是当前界面的内置选项，保存时会原样保留。</small>
+          </div>
+        )}
+      </div>
+    );
+  }
   const common = { value: value ?? "", onChange: (event) => onChange(event.target.value), required: field.required };
   if (field.type === "status") return <select {...common}>{STATUS_OPTIONS.map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select>;
   if (field.type === "select") return <select {...common}>{field.options.map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select>;
@@ -326,7 +383,7 @@ function recordDescription(item, collection, workspace) {
   } else if (collection === "users") {
     parts.push(workspace.roles.find((role) => role.id === item.roleId)?.name || item.role || "未分配角色");
   } else if (collection === "roles") {
-    parts.push(`${(item.permissions || []).length} 项权限`);
+    parts.push((item.permissions || []).map((permission) => PERMISSION_LABELS[permission] || `扩展权限 ${permission}`).join("、") || "未配置权限");
   } else if (collection === "counterparties") {
     parts.push(recordTypeLabel(item) || "往来单位", item.taxId ? `税号 ${item.taxId}` : "税号未填写");
   } else if (collection === "contracts") {
@@ -501,7 +558,9 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
       {editorOpen && <div className="foundation-editor-panel" id={`${collection}-editor`}>
         <div className="foundation-section-heading"><div><small>{draft.id ? "编辑现有记录" : "新增本地记录"}</small><h4>{draft.id ? `编辑「${displayName(draft, collection, config.title)}」` : `新增${config.title}`}</h4></div></div>
         <form className="entity-form" onSubmit={save}>
-          {config.fields.map((field) => <label className="foundation-field" key={field.key}><span>{field.label}</span><Field field={field} value={draft[field.key]} onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))} /></label>)}
+          {config.fields.map((field) => field.type === "permissions"
+            ? <div className="foundation-field permission-field" key={field.key}><span>{field.label}</span><Field field={field} value={draft[field.key]} onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))} /></div>
+            : <label className="foundation-field" key={field.key}><span>{field.label}</span><Field field={field} value={draft[field.key]} onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))} /></label>)}
           <div className="foundation-inline-actions"><button className="primary-button" type="submit"><Plus size={16} />{draft.id ? "保存修改" : "新增记录"}</button><button className="secondary-button" type="button" onClick={cancel}>取消</button></div>
           {error && <p className="entity-error">{error}</p>}
         </form>
@@ -710,16 +769,6 @@ function AccountingRuleEditor({ onToast }) {
     </section>
   );
 }
-
-const PERMISSION_LABELS = {
-  "workspace.manage": "管理工作台",
-  "data.read": "查看数据",
-  "data.write": "处理业务",
-  "documents.add": "管理资料",
-  "rules.manage": "管理规则",
-  "confirm.finance": "财务确认",
-  "confirm.owner": "负责人确认",
-};
 
 function LocalUserControl({ onToast }) {
   const { state, activeWorkspace, actions } = useFinanceDesk();

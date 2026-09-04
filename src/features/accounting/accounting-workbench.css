@@ -1,10 +1,11 @@
 .accounting-workbench {
   display: grid;
-  gap: 12px;
-  padding: 14px;
+  gap: 15px;
+  padding: clamp(14px, 1.4vw, 18px);
   border: 1px solid var(--line-soft);
-  border-radius: 11px;
+  border-radius: var(--radius-panel, 14px);
   background: var(--paper);
+  box-shadow: 0 12px 30px rgba(75, 53, 41, 0.055);
 }
 
 .accounting-heading,
@@ -23,9 +24,16 @@
   gap: 10px;
 }
 
+.accounting-heading {
+  align-items: flex-start;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
 .accounting-heading > div {
   display: grid;
   gap: 2px;
+  min-width: 0;
 }
 
 .accounting-heading small,
@@ -38,6 +46,8 @@
 .engine-voucher-row small {
   color: var(--quiet);
   font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .engine-badge {
@@ -75,13 +85,16 @@
 .engine-summary span {
   display: grid;
   gap: 2px;
-  padding: 8px;
+  min-width: 0;
+  padding: 9px 10px;
   border: 1px solid var(--line-soft);
-  border-radius: 8px;
+  border-radius: 9px;
 }
 
 .engine-summary strong {
   font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .engine-reasons {
@@ -98,17 +111,17 @@
 .engine-special,
 .engine-vouchers {
   display: grid;
-  gap: 9px;
-  padding-top: 11px;
+  gap: 10px;
+  padding-top: 14px;
   border-top: 1px solid var(--line-soft);
 }
 
 .engine-voucher-card {
   display: grid;
-  gap: 7px;
-  padding: 8px;
+  gap: 9px;
+  padding: 11px;
   border: 1px solid var(--line-soft);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--paper-strong);
 }
 
@@ -204,11 +217,19 @@
 .engine-exceptions > div span {
   display: grid;
   gap: 2px;
+  min-width: 0;
 }
 
 .engine-inline {
   justify-content: flex-end;
   gap: 7px;
+  min-width: 0;
+}
+
+.engine-inline > span {
+  min-width: 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .engine-suggestions {
@@ -224,9 +245,9 @@
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
-  padding: 8px;
+  padding: 9px 10px;
   border: 1px solid var(--line-soft);
-  border-radius: 8px;
+  border-radius: 9px;
   background: var(--paper-strong);
   text-align: left;
 }
@@ -243,6 +264,15 @@
   display: grid;
   gap: 2px;
   min-width: 0;
+}
+
+.engine-suggestions span strong,
+.engine-suggestions span small,
+.engine-allocation label > span,
+.engine-allocation-history > div > span,
+.engine-voucher-row > span strong,
+.engine-voucher-row > span small {
+  overflow-wrap: anywhere;
 }
 
 .engine-suggestions b,
@@ -290,7 +320,8 @@
 
 .settlement-panel {
   display: grid;
-  gap: 14px;
+  gap: 16px;
+  min-width: 0;
 }
 
 .settlement-heading {
@@ -326,9 +357,10 @@
 .settlement-metrics > span {
   display: grid;
   gap: 4px;
-  padding: 11px 12px;
+  min-width: 0;
+  padding: 12px 13px;
   border: 1px solid var(--line-soft);
-  border-radius: 9px;
+  border-radius: 11px;
   background: var(--paper-strong);
 }
 
@@ -348,7 +380,7 @@
   gap: 10px;
   padding: 13px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 11px;
   background: var(--paper-strong);
 }
 
@@ -388,11 +420,11 @@
 
 .settlement-bill-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.25fr) minmax(280px, 1fr);
-  gap: 10px 18px;
-  padding: 12px;
+  grid-template-columns: minmax(300px, 1.05fr) minmax(520px, 1.35fr);
+  gap: 12px 24px;
+  padding: 14px 16px;
   border: 1px solid var(--line-soft);
-  border-radius: 9px;
+  border-radius: 12px;
   background: var(--paper-strong);
 }
 
@@ -408,6 +440,13 @@
   grid-column: 1 / -1;
 }
 
+.settlement-bill-main > strong,
+.settlement-bill-main > small {
+  min-width: 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .settlement-kind {
   padding: 3px 6px;
   border-radius: 999px;
@@ -419,18 +458,43 @@
 
 .settlement-bill-amounts {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: minmax(104px, 0.72fr) minmax(156px, 1fr) minmax(176px, 1.12fr);
+  align-items: center;
+  gap: 0;
+  min-width: 0;
 }
 
 .settlement-bill-amounts > span {
   display: grid;
   gap: 2px;
-  text-align: right;
+  min-width: 0;
+  padding: 2px 14px;
+  border-left: 1px solid var(--line-soft);
+  text-align: left;
+}
+
+.settlement-bill-amounts > span:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.settlement-bill-amounts > span:last-child {
+  padding-right: 0;
+}
+
+.settlement-bill-amounts strong {
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.settlement-bill-amounts > span:first-child strong {
+  white-space: nowrap;
 }
 
 .settlement-bill-row details {
   grid-column: 1 / -1;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
   color: var(--muted);
   font-size: 10px;
 }
@@ -471,7 +535,7 @@
   font-size: 12px;
 }
 
-@media (max-width: 520px) {
+@media (max-width: 640px) {
   .engine-form {
     grid-template-columns: 1fr;
   }
@@ -502,7 +566,7 @@
   }
 }
 
-@media (min-width: 521px) and (max-width: 900px) {
+@media (min-width: 641px) and (max-width: 1180px) {
   .settlement-metrics,
   .settlement-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -735,13 +799,13 @@
   font-size: 11px;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1180px) {
   .ledger-filters {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
-@media (max-width: 520px) {
+@media (max-width: 640px) {
   .ledger-heading {
     align-items: stretch;
     flex-direction: column;
@@ -769,8 +833,8 @@
 }
 
 .accounting-workbench {
-  border-color: var(--line);
-  border-radius: var(--radius-panel, 12px);
+  border-color: var(--line-soft);
+  border-radius: var(--radius-panel, 14px);
 }
 
 .engine-summary span,
@@ -779,13 +843,23 @@
 .engine-allocation label,
 .engine-allocation-history > div,
 .engine-voucher-row {
-  border: 0;
-  border-radius: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
   background: var(--canvas);
+  box-shadow: 0 1px 0 rgba(75, 53, 41, 0.025);
 }
 
 .engine-voucher-card {
   background: var(--paper-strong);
+  box-shadow: 0 8px 20px rgba(75, 53, 41, 0.045);
+}
+
+.engine-voucher-card > .engine-voucher-row {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .engine-form select,
@@ -803,15 +877,16 @@
 
 .settlement-form,
 .ledger-filters {
-  border: 0;
-  border-radius: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 11px;
   background: var(--canvas);
 }
 
 .settlement-metrics > span,
 .settlement-bill-row {
-  border: 0;
+  border: 1px solid var(--line-soft);
   background: var(--paper-strong);
+  box-shadow: 0 8px 22px rgba(75, 53, 41, 0.04);
 }
 
 .ledger-tabs {
@@ -828,22 +903,124 @@
   overscroll-behavior-inline: contain;
 }
 
-@media (max-width: 720px) {
-  .accounting-workbench {
-    padding: 12px;
-  }
-
+@media (max-width: 1180px) {
   .settlement-metrics,
   .settlement-form,
   .ledger-filters {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .settlement-form .full {
+    grid-column: 1 / -1;
+  }
+
+  .settlement-bill-row {
+    grid-template-columns: 1fr;
+  }
+
+  .settlement-bill-row details {
+    grid-column: auto;
+  }
 }
 
-@media (max-width: 520px) {
+@media (max-width: 720px) {
+  .accounting-workbench {
+    padding: 12px;
+  }
+}
+
+@media (max-width: 640px) {
+  .accounting-heading,
+  .engine-subheading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .engine-summary,
+  .engine-form,
   .settlement-metrics,
   .settlement-form,
   .ledger-filters {
     grid-template-columns: 1fr;
+  }
+
+  .engine-form .full,
+  .engine-form > button,
+  .settlement-form .full {
+    grid-column: auto;
+  }
+
+  .engine-inline {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .engine-inline > button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .engine-allocation label,
+  .engine-allocation-history > div {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .engine-allocation-history button {
+    justify-self: start;
+  }
+
+  .engine-voucher-row {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .engine-voucher-row em,
+  .engine-voucher-row button {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .settlement-bill-main {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .settlement-bill-main > small {
+    grid-column: auto;
+  }
+
+  .settlement-kind {
+    justify-self: start;
+  }
+
+  .settlement-bill-amounts {
+    grid-template-columns: 1fr;
+    padding-top: 7px;
+    border-top: 1px solid var(--line-soft);
+  }
+
+  .settlement-bill-amounts > span,
+  .settlement-bill-amounts > span:first-child,
+  .settlement-bill-amounts > span:last-child {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+    align-items: baseline;
+    gap: 10px;
+    padding: 7px 0;
+    border-top: 1px solid var(--line-soft);
+    border-left: 0;
+  }
+
+  .settlement-bill-amounts > span:first-child {
+    border-top: 0;
+  }
+
+  .settlement-bill-amounts strong {
+    text-align: right;
+  }
+
+  .settlement-source-list > div {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
