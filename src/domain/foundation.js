@@ -90,6 +90,12 @@ const DEFAULT_ROLE_DEFINITIONS = [
   },
 ];
 
+export const BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS = Object.freeze(
+  DEFAULT_ROLE_DEFINITIONS
+    .filter((role) => role.status === "active" && (role.permissions.includes("*") || role.permissions.includes("workspace.manage")))
+    .map((role) => Object.freeze({ id: role.id, name: role.name })),
+);
+
 const BUILTIN_ROLE_REQUIRED_PERMISSIONS = Object.fromEntries(
   DEFAULT_ROLE_DEFINITIONS.map((role) => [role.id, role.permissions]),
 );
@@ -424,10 +430,15 @@ export function createBlankWorkspace(input = {}, options = {}) {
   const id = input.id || createId("workspace");
   const name = String(input.name || "新工作台").trim();
   const initialUserName = String(input.initialUserName || "").trim();
+  const initialRoleId = input.initialUserRoleId || BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS[0]?.id;
+  const initialRole = DEFAULT_ROLE_DEFINITIONS.find((role) => role.id === initialRoleId);
+  if (!Array.isArray(input.users) && initialUserName && (!initialRole || !BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS.some((role) => role.id === initialRole.id))) {
+    throw new Error("首位本地操作人员必须选择具备“管理工作台”权限的有效角色");
+  }
   const users = Array.isArray(input.users)
     ? deepClone(input.users)
     : initialUserName
-      ? [{ id: `user-${id}`, name: initialUserName, roleId: "role-owner", role: "经营者", status: "active", localOnly: true }]
+      ? [{ id: `user-${id}`, name: initialUserName, roleId: initialRole.id, role: initialRole.name, status: "active", localOnly: true }]
       : [];
   return normalizeWorkspace({
     id,
@@ -950,15 +961,53 @@ export function upsertWorkspaceEntity(state, workspaceId, collection, values, op
       ? [...prepared, item]
       : prepared.map((candidate) => candidate.id === item.id ? { ...candidate, ...item, createdAt: candidate.createdAt, updatedAt: timestamp } : candidate);
     const updatedWorkspace = { ...workspace, [collection]: items };
-    if (collection !== "roles") return updatedWorkspace;
-    return {
-      ...updatedWorkspace,
-      users: (workspace.users || []).map((user) => (
-        user.roleId === item.id || (!user.roleId && previousRoleName && user.role === previousRoleName)
-          ? { ...user, roleId: item.id, role: item.name, updatedAt: timestamp }
-          : user
-      )),
-    };
+    if (collection === "roles") {
+      return {
+        ...updatedWorkspace,
+        users: (workspace.users || []).map((user) => (
+          user.roleId === item.id || (!user.roleId && previousRoleName && user.role === previousRoleName)
+            ? { ...user, roleId: item.id, role: item.name, updatedAt: timestamp }
+            : user
+        )),
+      };
+    }
+    if (collection === "users") {
+      const relationWasProvided = Object.prototype.hasOwnProperty.call(values, "personnelRecordId");
+      const previousPersonnelRecordId = existingItem?.personnelRecordId || null;
+      const personnelRecordId = relationWasProvided ? (item.personnelRecordId || null) : previousPersonnelRecordId;
+      return {
+        ...updatedWorkspace,
+        users: items.map((user) => {
+          if (user.id === item.id) return { ...user, personnelRecordId };
+          if (personnelRecordId && user.personnelRecordId === personnelRecordId) return { ...user, personnelRecordId: null, updatedAt: timestamp };
+          return user;
+        }),
+        personnelRecords: (workspace.personnelRecords || []).map((personnel) => {
+          if (personnel.id === personnelRecordId) return { ...personnel, userId: item.id, name: item.name, updatedAt: timestamp };
+          if (personnel.userId === item.id || personnel.id === previousPersonnelRecordId) return { ...personnel, userId: null, updatedAt: timestamp };
+          return personnel;
+        }),
+      };
+    }
+    if (collection === "personnelRecords") {
+      const relationWasProvided = Object.prototype.hasOwnProperty.call(values, "userId");
+      const previousUserId = existingItem?.userId || null;
+      const userId = relationWasProvided ? (item.userId || null) : previousUserId;
+      return {
+        ...updatedWorkspace,
+        personnelRecords: items.map((personnel) => {
+          if (personnel.id === item.id) return { ...personnel, userId };
+          if (userId && personnel.userId === userId) return { ...personnel, userId: null, updatedAt: timestamp };
+          return personnel;
+        }),
+        users: (workspace.users || []).map((user) => {
+          if (user.id === userId) return { ...user, personnelRecordId: item.id, name: item.name, updatedAt: timestamp };
+          if (user.personnelRecordId === item.id || user.id === previousUserId) return { ...user, personnelRecordId: null, updatedAt: timestamp };
+          return user;
+        }),
+      };
+    }
+    return updatedWorkspace;
   }, {
     actor: options.actor,
     action: created ? `新增${options.label || collection}` : `更新${options.label || collection}`,
@@ -979,6 +1028,16 @@ function collectReferencePaths(workspace, collection, itemId) {
     auditLog: [],
   };
   if (collection === "bankAccounts") root.accounts = [];
+  if (collection === "users") {
+    root.personnelRecords = (root.personnelRecords || []).map((personnel) => (
+      personnel.userId === itemId ? { ...personnel, userId: null } : personnel
+    ));
+  }
+  if (collection === "personnelRecords") {
+    root.users = (root.users || []).map((user) => (
+      user.personnelRecordId === itemId ? { ...user, personnelRecordId: null } : user
+    ));
+  }
   const paths = [];
   function visit(value, path) {
     if (paths.length >= 6 || value == null) return;
@@ -1008,6 +1067,7 @@ export function removeWorkspaceEntity(state, workspaceId, collection, itemId, op
   const workspace = getWorkspace(state, workspaceId);
   const item = workspace?.[collection]?.find((candidate) => candidate.id === itemId);
   if (!item) throw new Error(`找不到要删除的记录：${collection}/${itemId}`);
+  const timestamp = options.timestamp || nowIso(options.now);
   if (state.activeUserId === itemId) throw new Error("当前正在使用的本地用户不能删除；请先切换到其他启用用户");
   if (collection === "ruleSets" && item.status === "active") throw new Error("正在生效的规则版本不能删除；请先启用另一版本或将其停用");
   if (collection === "roles") {
@@ -1024,13 +1084,23 @@ export function removeWorkspaceEntity(state, workspaceId, collection, itemId, op
     ...current,
     [collection]: current[collection].filter((candidate) => candidate.id !== itemId),
     ...(collection === "bankAccounts" ? { accounts: current.accounts.filter((candidate) => candidate.id !== itemId) } : {}),
+    ...(collection === "users" ? {
+      personnelRecords: current.personnelRecords.map((personnel) => (
+        personnel.userId === itemId ? { ...personnel, userId: null, updatedAt: timestamp } : personnel
+      )),
+    } : {}),
+    ...(collection === "personnelRecords" ? {
+      users: current.users.map((user) => (
+        user.personnelRecordId === itemId ? { ...user, personnelRecordId: null, updatedAt: timestamp } : user
+      )),
+    } : {}),
   }), {
     actor: options.actor,
     action: `删除${options.label || collection}`,
     detail: options.detail || item.name || item.title || item.no || item.id,
     objectType: collection,
     objectId: itemId,
-  }, options);
+  }, { ...options, timestamp });
 }
 
 export function setWorkspaceEntityStatus(state, workspaceId, collection, itemId, status, options = {}) {

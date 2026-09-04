@@ -69,6 +69,8 @@ export function createAccountingFixture({ withReconciliations = true, withPosted
   return {
     id: "workspace-accounting-fixture",
     name: "山岚健身工作室（可删除样板）",
+    templateId: "fitness-studio",
+    modules: { members: true, reconcile: true, tax: true },
     currentPeriod: "2026-08",
     rules: {
       confidenceThreshold: 85,

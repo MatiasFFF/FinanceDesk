@@ -23,6 +23,7 @@ import {
   classifyBankTransaction,
   effectiveBankTransactionClassification,
   memberBusinessEnabled,
+  resolveWorkspaceAccountDefinition,
 } from "../../domain/accounting/classification.js";
 import {
   assessTransactionEvidence,
@@ -304,9 +305,18 @@ export const MANUAL_BUSINESS_EVENT_TYPES = Object.freeze([
 ]);
 
 export function manualBusinessEventTypesForWorkspace(workspace) {
-  return MANUAL_BUSINESS_EVENT_TYPES.filter((definition) => (
-    !definition.requiresMemberModule || memberBusinessEnabled(workspace)
-  ));
+  return MANUAL_BUSINESS_EVENT_TYPES
+    .filter((definition) => !definition.requiresMemberModule || memberBusinessEnabled(workspace))
+    .map((definition) => {
+      const account = resolveWorkspaceAccountDefinition(workspace, definition.account);
+      const accountLabel = account?.label || definition.account;
+      return {
+        ...definition,
+        account: account?.id || definition.account,
+        accountLabel,
+        accountingTreatment: `${definition.accountingTreatment}；主科目：${accountLabel}`,
+      };
+    });
 }
 
 export function manualBusinessEventDefinition(businessType, workspace) {
@@ -530,6 +540,9 @@ function updateBusinessEventReviewState(workspace, transaction, event, context, 
     eventType: event.eventType,
     businessType: event.businessType,
     account: event.accountingAttributes.primaryAccount,
+    accountLabel: resolveWorkspaceAccountDefinition(workspace, event.accountingAttributes.primaryAccount)?.label
+      || event.accountingAttributes.primaryAccountLabel
+      || event.accountingAttributes.primaryAccount,
     direction: event.direction,
     confidence: event.confidence,
     reasons: event.reasons,
@@ -653,7 +666,13 @@ export function confirmBankTransactionBusinessEvent(workspace, input, context = 
     selectedEvidenceIds,
   );
 
-  const account = String(input.account || definition.account || "").trim();
+  const requestedAccount = String(input.account || definition.account || "").trim();
+  const resolvedAccount = resolveWorkspaceAccountDefinition(seed, requestedAccount, { allowInactive: false });
+  if (!resolvedAccount) {
+    throw new AccountingRuleError("BUSINESS_EVENT_ACCOUNT_INVALID", `当前科目表中找不到可用科目：${requestedAccount || "未选择"}`);
+  }
+  const account = resolvedAccount.id;
+  const accountLabel = resolvedAccount.label;
   let next = applyManualClassification(seed, {
     transactionId: seedTransaction.id,
     eventType: definition.eventType,
@@ -668,6 +687,7 @@ export function confirmBankTransactionBusinessEvent(workspace, input, context = 
     eventType: definition.eventType,
     businessType: definition.id,
     account,
+    accountLabel,
     direction,
     confidence: roundMoney(confidence),
     reasons: [reason],
@@ -685,6 +705,7 @@ export function confirmBankTransactionBusinessEvent(workspace, input, context = 
   }, resolvedContext);
   const systemReasons = [
     `${definition.label}由${resolvedContext.actor}人工确认`,
+    `主科目：${accountLabel}`,
     `业务期 ${businessPeriod}；资金期 ${fundingPeriod}`,
     `证据完整度 ${assessment.completeness}%`,
     `税务属性：${BUSINESS_EVENT_TAX_TREATMENTS.find((item) => item.id === taxTreatment)?.label || taxTreatment}`,
@@ -744,6 +765,7 @@ export function confirmBankTransactionBusinessEvent(workspace, input, context = 
     crossPeriod: businessPeriod !== fundingPeriod,
     accountingAttributes: {
       primaryAccount: account,
+      primaryAccountLabel: accountLabel,
       cashAccountId: transaction.accountId || "bank",
       treatment: definition.accountingTreatment,
       postingPolicy: "manual_only",
@@ -828,6 +850,9 @@ function reassessBankTransactionBusinessEvent(workspace, transactionId, context)
     eventType: event.eventType,
     businessType: event.businessType,
     account: event.accountingAttributes.primaryAccount,
+    accountLabel: resolveWorkspaceAccountDefinition(next, event.accountingAttributes.primaryAccount)?.label
+      || event.accountingAttributes.primaryAccountLabel
+      || event.accountingAttributes.primaryAccount,
     direction: event.direction,
     confidence: event.confidence,
     reasons: event.reasons,
@@ -1493,28 +1518,16 @@ const TREATMENT_LABELS = {
   [EVENT_TYPES.INTERNAL_TRANSFER]: "内部转账",
 };
 
-const ACCOUNT_LABELS = {
-  receivable: "应收账款",
-  contractLiability: "合同负债",
-  payable: "应付账款",
-  prepayment: "预付账款",
-  expenseOther: "其他费用",
-  expenseFee: "财务费用",
-  expensePayroll: "工资费用",
-  expenseRent: "房租物业费",
-  salesReturns: "销售退回",
-  bank: "银行存款",
-  loan: "借款",
-  relatedParty: "关联方往来",
-};
-
-function directTreatment(eventType, account) {
+function directTreatment(workspace, eventType, account) {
+  const resolvedAccount = resolveWorkspaceAccountDefinition(workspace, account, { allowInactive: false });
+  if (!resolvedAccount) return null;
   return {
-    id: `classification:${eventType}:${account}`,
+    id: `classification:${eventType}:${resolvedAccount.id}`,
     kind: "classification",
     eventType,
-    account,
-    label: `${TREATMENT_LABELS[eventType] || eventType} → ${ACCOUNT_LABELS[account] || account}`,
+    account: resolvedAccount.id,
+    accountLabel: resolvedAccount.label,
+    label: `${TREATMENT_LABELS[eventType] || eventType} → ${resolvedAccount.label}`,
   };
 }
 
@@ -1532,22 +1545,24 @@ function accountingTreatmentsForException(workspace, transaction, classification
       reasons: suggestion.reasons,
     }));
   if (classification.eventType !== EVENT_TYPES.UNKNOWN && classification.account) {
-    treatments.push(directTreatment(classification.eventType, classification.account));
+    treatments.push(directTreatment(workspace, classification.eventType, classification.account));
   } else if (Number(transaction.amount) >= 0) {
     treatments.push(
-      directTreatment(EVENT_TYPES.CUSTOMER_RECEIPT, "receivable"),
-      directTreatment(EVENT_TYPES.MEMBER_RECHARGE, "contractLiability"),
-      directTreatment(EVENT_TYPES.RELATED_PARTY, "relatedParty"),
+      directTreatment(workspace, EVENT_TYPES.CUSTOMER_RECEIPT, "receivable"),
+      ...(memberBusinessEnabled(workspace)
+        ? [directTreatment(workspace, EVENT_TYPES.MEMBER_RECHARGE, "contractLiability")]
+        : []),
+      directTreatment(workspace, EVENT_TYPES.RELATED_PARTY, "relatedParty"),
     );
   } else {
     treatments.push(
-      directTreatment(EVENT_TYPES.SUPPLIER_SETTLEMENT, "payable"),
-      directTreatment(EVENT_TYPES.SUPPLIER_PREPAYMENT, "prepayment"),
-      directTreatment(EVENT_TYPES.PURCHASE_EXPENSE, "expenseOther"),
-      directTreatment(EVENT_TYPES.REFUND, "salesReturns"),
+      directTreatment(workspace, EVENT_TYPES.SUPPLIER_SETTLEMENT, "payable"),
+      directTreatment(workspace, EVENT_TYPES.SUPPLIER_PREPAYMENT, "prepayment"),
+      directTreatment(workspace, EVENT_TYPES.PURCHASE_EXPENSE, "expenseOther"),
+      directTreatment(workspace, EVENT_TYPES.REFUND, "salesReturns"),
     );
   }
-  return treatments.filter((treatment, index, all) => (
+  return treatments.filter(Boolean).filter((treatment, index, all) => (
     all.findIndex((candidate) => candidate.id === treatment.id) === index
   ));
 }
@@ -1558,7 +1573,7 @@ export function buildReconciliationExceptionCases(workspace, transactionId) {
   return tasks.map((task) => {
     const transaction = findTransaction(workspace, task.sourceId);
     const classification = effectiveBankTransactionClassification(workspace, transaction);
-    const assessment = transaction.evidenceAssessment || assessTransactionEvidence(workspace, transaction, classification);
+    const assessment = assessTransactionEvidence(workspace, transaction, classification);
     const suggestions = (transaction.matchSuggestions || []).length
       ? transaction.matchSuggestions
       : suggestReconciliations(workspace, transaction.id, { limit: 8 });
@@ -1765,7 +1780,7 @@ export function handleReconciliationException(workspace, {
 function validateAutomaticReconciliation(workspace, transaction) {
   const rules = accountingRules(workspace);
   const classification = effectiveBankTransactionClassification(workspace, transaction);
-  const assessment = transaction.evidenceAssessment || assessTransactionEvidence(workspace, transaction, classification);
+  const assessment = assessTransactionEvidence(workspace, transaction, classification);
   if (!rules.allowAutomaticReconciliation) {
     throw new AccountingRuleError("FINANCE_REVIEW_REQUIRED", "客户和供应商核销必须由财务人员确认；本地规则只能形成建议");
   }

@@ -13,7 +13,11 @@ import {
   roundMoney,
   sumMoney,
 } from "./model.js";
-import { classifyBankTransaction } from "./classification.js";
+import {
+  effectiveBankTransactionClassification,
+  memberBusinessEnabled,
+  resolveWorkspaceAccountDefinition,
+} from "./classification.js";
 import {
   assessTransactionEvidence,
   unresolvedExceptionTasks,
@@ -53,6 +57,50 @@ function findAdvanceApplication(workspace, applicationId) {
   const application = (workspace.advanceApplications || []).find((item) => item.id === applicationId);
   if (!application) throw new AccountingRuleError("ADVANCE_APPLICATION_NOT_FOUND", `找不到预收/预付冲销关系：${applicationId}`);
   return application;
+}
+
+const VOUCHER_EVENT_LABELS = Object.freeze({
+  [EVENT_TYPES.CUSTOMER_RECEIPT]: "客户收款",
+  [EVENT_TYPES.SUPPLIER_SETTLEMENT]: "供应商付款",
+  [EVENT_TYPES.SUPPLIER_PREPAYMENT]: "供应商预付",
+  [EVENT_TYPES.PURCHASE_EXPENSE]: "采购或费用支出",
+  [EVENT_TYPES.PAYROLL]: "工资社保支出",
+  [EVENT_TYPES.RENT_AND_PROPERTY]: "房租物业支出",
+  [EVENT_TYPES.BANK_FEE]: "银行手续费",
+  [EVENT_TYPES.LOAN]: "借款往来",
+  [EVENT_TYPES.EMPLOYEE_ADVANCE]: "员工代垫",
+  [EVENT_TYPES.RELATED_PARTY]: "关联方往来",
+  [EVENT_TYPES.REFUND]: "退款",
+  [EVENT_TYPES.INTERNAL_TRANSFER]: "内部转账",
+});
+
+function resolvedVoucherAccount(workspace, accountValue, errorCode = "VOUCHER_ACCOUNT_INVALID") {
+  const account = resolveWorkspaceAccountDefinition(workspace, accountValue, { allowInactive: false });
+  if (!account) {
+    throw new AccountingRuleError(errorCode, `当前科目表中找不到可用科目：${accountValue || "未选择"}`);
+  }
+  return account;
+}
+
+function effectiveEvidenceAssessment(workspace, transaction, classification) {
+  return assessTransactionEvidence(workspace, transaction, classification);
+}
+
+function memberScopedEvent(event) {
+  return event?.sourceType === "memberEvent"
+    || event?.businessType === "memberRecharge"
+    || [EVENT_TYPES.MEMBER_RECHARGE, EVENT_TYPES.MEMBER_CONSUMPTION].includes(event?.eventType);
+}
+
+function defaultVoucherSummary(workspace, transaction, classification, lines, label) {
+  const bankAccount = transaction.accountId || "bank";
+  const counterLine = (lines || []).find((line) => line.account !== bankAccount);
+  const accountLabel = resolveWorkspaceAccountDefinition(
+    workspace,
+    counterLine?.account || classification.account,
+  )?.label || classification.accountLabel || counterLine?.account || classification.account;
+  const subject = transaction.counterparty || transaction.summary || "银行流水";
+  return `${label || VOUCHER_EVENT_LABELS[classification.eventType] || "银行流水处理"} · ${subject}${accountLabel ? ` · ${accountLabel}` : ""}`;
 }
 
 function voucherAccountForBill(bill) {
@@ -112,6 +160,9 @@ function advanceApplicationVoucherLines(workspace, application) {
 }
 
 function memberEventVoucherLines(workspace, event) {
+  if (!memberBusinessEnabled(workspace)) {
+    throw new AccountingRuleError("MEMBER_MODULE_DISABLED", "当前工作台未启用会员模块，不能生成会员业务凭证");
+  }
   const kind = memberEventKind(event);
   const amount = absoluteAmount(event.amount);
   const sourceIds = [event.id];
@@ -196,10 +247,19 @@ function directTransactionLines(workspace, transaction, classification) {
       { account: transaction.accountId || "bank", debit: 0, credit: amount, sourceIds: [transaction.id] },
     ];
   }
-  const counterAccount = transaction.directAccount || classification.account;
+  const classificationOwnsAccount = [
+    "workspace-rule",
+    "manual-confirmation",
+    "manual-business-event",
+    "manual-business-event-reviewed",
+  ].includes(classification.source);
+  const counterAccount = classificationOwnsAccount
+    ? classification.account
+    : (transaction.directAccount || classification.account);
   if (!counterAccount || classification.eventType === EVENT_TYPES.UNKNOWN) {
     throw new AccountingRuleError("ACCOUNTING_JUDGEMENT_REQUIRED", "业务性质或会计科目尚未确认，不能生成凭证草稿");
   }
+  const resolvedCounterAccount = resolvedVoucherAccount(workspace, counterAccount, "ACCOUNTING_JUDGEMENT_REQUIRED");
   return aggregateLines([
     {
       account: transaction.accountId || "bank",
@@ -208,7 +268,7 @@ function directTransactionLines(workspace, transaction, classification) {
       sourceIds: [transaction.id],
     },
     {
-      account: counterAccount,
+      account: resolvedCounterAccount.id,
       debit: incoming ? 0 : amount,
       credit: incoming ? amount : 0,
       sourceIds: collectSourceIds(transaction.id, (transaction.refundLinks || []).map((item) => item.originalSourceId)),
@@ -268,7 +328,8 @@ function bankBusinessEventVoucherLines(workspace, event, transaction) {
   const primaryAccount = event.accountingAttributes?.primaryAccount;
   const cashAccount = event.accountingAttributes?.cashAccountId || transaction.accountId || "bank";
   if (!primaryAccount) throw new AccountingRuleError("BUSINESS_EVENT_ACCOUNT_REQUIRED", "业务事件缺少已确认的会计主科目");
-  if (primaryAccount === cashAccount) {
+  const resolvedPrimaryAccount = resolvedVoucherAccount(workspace, primaryAccount, "BUSINESS_EVENT_ACCOUNT_REQUIRED");
+  if (resolvedPrimaryAccount.id === cashAccount) {
     throw new AccountingRuleError("BUSINESS_EVENT_ACCOUNT_INVALID", "业务主科目不能与当前银行账户相同");
   }
   const incoming = event.direction === "in";
@@ -281,7 +342,7 @@ function bankBusinessEventVoucherLines(workspace, event, transaction) {
       sourceIds,
     },
     {
-      account: primaryAccount,
+      account: resolvedPrimaryAccount.id,
       auxiliaryId: event.counterparty || null,
       debit: incoming ? 0 : amount,
       credit: incoming ? amount : 0,
@@ -302,6 +363,9 @@ export function createBankBusinessEventVoucherDraft(workspace, {
   }
   const event = findBankBusinessEvent(next, eventId);
   const transaction = findTransaction(next, event.transactionId);
+  if (!memberBusinessEnabled(next) && memberScopedEvent(event)) {
+    throw new AccountingRuleError("MEMBER_MODULE_DISABLED", "当前工作台未启用会员模块，不能生成会员业务凭证");
+  }
   const activeVoucher = (next.vouchers || []).find((voucher) => (
     (voucher.bankBusinessEventId === event.id || voucher.sourceIds?.includes(event.id))
     && voucher.status !== "superseded"
@@ -313,8 +377,8 @@ export function createBankBusinessEventVoucherDraft(workspace, {
     throw new AccountingRuleError("SOURCE_ALREADY_VOUCHERED", `业务事件 ${event.businessEventNo || event.id} 已进入凭证链`);
   }
 
-  const classification = transaction.classification || classifyBankTransaction(next, transaction);
-  const assessment = transaction.evidenceAssessment || assessTransactionEvidence(next, transaction, classification);
+  const classification = effectiveBankTransactionClassification(next, transaction);
+  const assessment = effectiveEvidenceAssessment(next, transaction, classification);
   if (Number(event.evidenceCompleteness) !== 100 || Number(assessment.completeness) !== 100) {
     throw new AccountingRuleError("BUSINESS_EVENT_EVIDENCE_INCOMPLETE", "证据不完整，不能生成银行业务事件凭证草稿", {
       eventCompleteness: event.evidenceCompleteness,
@@ -368,7 +432,13 @@ export function createBankBusinessEventVoucherDraft(workspace, {
     date: event.date || transaction.date,
     period: event.businessPeriod,
     fundingPeriod: event.fundingPeriod,
-    summary: summary || `${event.businessEventNo || event.id} · ${event.businessTypeLabel || event.businessType} · ${event.counterparty || transaction.counterparty || "银行流水"}`,
+    summary: summary || defaultVoucherSummary(
+      next,
+      transaction,
+      classification,
+      lines,
+      event.businessTypeLabel || VOUCHER_EVENT_LABELS[event.eventType],
+    ),
     status: "draft",
     version: 1,
     sourceType: "bankBusinessEvent",
@@ -384,6 +454,10 @@ export function createBankBusinessEventVoucherDraft(workspace, {
     judgement: {
       eventType: event.eventType,
       businessType: event.businessType,
+      account: event.accountingAttributes?.primaryAccount,
+      accountLabel: resolveWorkspaceAccountDefinition(next, event.accountingAttributes?.primaryAccount)?.label
+        || event.accountingAttributes?.primaryAccountLabel
+        || event.accountingAttributes?.primaryAccount,
       confidence: event.confidence,
       reasons: event.reasons || [],
       note,
@@ -480,8 +554,8 @@ export function createVoucherDraft(workspace, { transactionId, summary, note = "
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext(context);
   const transaction = findTransaction(next, transactionId);
-  const classification = transaction.classification || classifyBankTransaction(next, transaction);
-  const assessment = transaction.evidenceAssessment || assessTransactionEvidence(next, transaction, classification);
+  const classification = effectiveBankTransactionClassification(next, transaction);
+  const assessment = effectiveEvidenceAssessment(next, transaction, classification);
   const usedSources = postedSourceIds(next);
   const allocations = activeAllocations(transaction).filter((allocation) => (
     allocation.status !== "suspected"
@@ -509,7 +583,7 @@ export function createVoucherDraft(workspace, { transactionId, summary, note = "
     no: null,
     date: transaction.date,
     period: String(transaction.date || "").slice(0, 7),
-    summary: summary || transaction.summary || `处理${transaction.counterparty || "银行流水"}`,
+    summary: summary || defaultVoucherSummary(next, transaction, classification, lines),
     status: "draft",
     version: 1,
     lines,
@@ -517,6 +591,11 @@ export function createVoucherDraft(workspace, { transactionId, summary, note = "
     evidenceIds: trace.evidenceIds,
     judgement: {
       eventType: classification.eventType,
+      account: classification.account,
+      accountLabel: resolveWorkspaceAccountDefinition(next, classification.account)?.label
+        || classification.accountLabel
+        || classification.account,
+      ruleId: classification.ruleId,
       confidence: classification.confidence,
       reasons: classification.reasons,
       note,
@@ -544,6 +623,9 @@ export function createVoucherDraft(workspace, { transactionId, summary, note = "
 export function createMemberEventVoucherDraft(workspace, { eventId, summary, note = "" }, context = {}) {
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext(context);
+  if (!memberBusinessEnabled(next)) {
+    throw new AccountingRuleError("MEMBER_MODULE_DISABLED", "当前工作台未启用会员模块，不能生成会员业务凭证");
+  }
   const event = findBusinessEvent(next, eventId);
   const kind = memberEventKind(event);
   const definition = MEMBER_EVENT_DEFINITIONS[kind];
@@ -693,6 +775,14 @@ function sourceTransactionsForVoucher(workspace, voucher) {
 }
 
 function ensurePostingAllowed(workspace, voucher, mode) {
+  const linkedEvent = (workspace.businessEvents || []).find((event) => (
+    event.id === voucher.memberEventId
+    || event.id === voucher.bankBusinessEventId
+    || voucher.sourceIds?.includes(event.id)
+  ));
+  if (!memberBusinessEnabled(workspace) && (voucher.sourceType === "memberEvent" || memberScopedEvent(linkedEvent))) {
+    throw new AccountingRuleError("MEMBER_MODULE_DISABLED", "当前工作台未启用会员模块，会员业务凭证不能入账");
+  }
   const transactions = sourceTransactionsForVoucher(workspace, voucher);
   const unresolved = transactions.flatMap((transaction) => unresolvedExceptionTasks(workspace, transaction.id));
   if (unresolved.length) {
@@ -702,8 +792,8 @@ function ensurePostingAllowed(workspace, voucher, mode) {
   }
   const rules = accountingRules(workspace);
   transactions.forEach((transaction) => {
-    const classification = transaction.classification || classifyBankTransaction(workspace, transaction);
-    const assessment = transaction.evidenceAssessment || assessTransactionEvidence(workspace, transaction, classification);
+    const classification = effectiveBankTransactionClassification(workspace, transaction);
+    const assessment = effectiveEvidenceAssessment(workspace, transaction, classification);
     if (mode === "automatic" && (
       classification.confidence < rules.automaticPostingThreshold || !assessment.canAutomaticallyPost
     )) {
@@ -939,13 +1029,10 @@ export function buildAttachmentPackage(workspace, voucherId) {
   const advanceApplications = (workspace.advanceApplications || []).filter((application) => (
     application.id === voucher.advanceApplicationId || voucher.sourceIds?.includes(application.id)
   ));
-  const assessments = transactions.map((transaction) => (
-    transaction.evidenceAssessment || assessTransactionEvidence(
-      workspace,
-      transaction,
-      transaction.classification || classifyBankTransaction(workspace, transaction),
-    )
-  ));
+  const assessments = transactions.map((transaction) => {
+    const classification = effectiveBankTransactionClassification(workspace, transaction);
+    return effectiveEvidenceAssessment(workspace, transaction, classification);
+  });
   const missing = assessments.flatMap((assessment) => assessment.missing).filter((item, index, all) => (
     all.findIndex((candidate) => candidate.id === item.id) === index
   ));

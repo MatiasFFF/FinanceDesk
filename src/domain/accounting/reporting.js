@@ -9,10 +9,9 @@ import {
   periodOf,
   roundMoney,
   sumMoney,
+  workspaceUsesMemberBusinessTerms,
 } from "./model.js";
-import { normalizeWorkspaceModules } from "../foundation.js";
 import * as XLSX from "xlsx";
-import { classifyBankTransaction } from "./classification.js";
 import { buildAdvanceBalances, buildAgeingSchedule } from "../../features/reconciliation/reconciliationEngine.js";
 import {
   MEMBER_EVENT_DEFINITIONS,
@@ -31,11 +30,7 @@ function valueWithSources(value, sourceIds = [], extra = {}) {
 }
 
 function reportMemberBusinessEnabled(workspace) {
-  const hasMemberBusiness = workspace?.templateId === "fitness-studio"
-    || workspace?.isDemo
-    || (workspace?.members || []).length > 0
-    || (workspace?.businessEvents || []).some((event) => event.memberId || event.memberName || event.coach);
-  return normalizeWorkspaceModules(workspace?.modules, { fitnessTemplate: hasMemberBusiness }).members !== false;
+  return workspaceUsesMemberBusinessTerms(workspace);
 }
 
 function activePostedVouchers(workspace, period) {
@@ -278,7 +273,7 @@ function addStoreMetric(target, key, amount) {
   target[key] = roundMoney(Number(target[key] || 0) + Number(amount || 0));
 }
 
-function postedMemberEventAmount(workspace, vouchers, kind, fallback) {
+function postedMemberEventAmount(workspace, vouchers, kind) {
   const lines = vouchers.flatMap((voucher) => voucher.lines || []);
   let amount = 0;
   if (kind === MEMBER_EVENT_KINDS.RECHARGE) {
@@ -297,13 +292,14 @@ function postedMemberEventAmount(workspace, vouchers, kind, fallback) {
     amount = sumMoney(lines.filter((line) => String(line.account).split(":")[0] === "expenseCommission")
       .map((line) => Number(line.debit || 0) - Number(line.credit || 0)));
   }
-  return Math.abs(amount) > 0.001 ? roundMoney(amount) : roundMoney(fallback || 0);
+  return roundMoney(amount);
 }
 
 export function buildStoreManagementReport(workspace, {
   period = workspace.currentPeriod,
   asOf = null,
 } = {}) {
+  const memberBusinessEnabled = reportMemberBusinessEnabled(workspace);
   const resolvedAsOf = validDate(asOf) || periodEndDate(period);
   const postedVouchers = (workspace.vouchers || []).filter((voucher) => voucher.status === "posted");
   const vouchersBySource = new Map();
@@ -338,7 +334,7 @@ export function buildStoreManagementReport(workspace, {
     if (!store.members.has(memberId)) {
       store.members.set(memberId, {
         id: memberId,
-        name: member?.name || "未关联会员",
+        name: member?.name || (memberBusinessEnabled ? "未关联会员" : "未关联客户"),
         storeId: dimensions.storeId,
         coach: dimensions.coach,
         department: dimensions.department,
@@ -366,7 +362,7 @@ export function buildStoreManagementReport(workspace, {
       id: sourceId,
       eventId: null,
       kind: "opening",
-      label: "会员期初未履约余额",
+      label: memberBusinessEnabled ? "会员期初未履约余额" : "客户期初未履约余额",
       date: "",
       memberId: member.id,
       memberName: member.name,
@@ -399,10 +395,10 @@ export function buildStoreManagementReport(workspace, {
     const store = ensureStore(dimensions);
     const memberRow = event.memberId ? ensureMember(store, member || {
       id: event.memberId,
-      name: event.memberName || "未命名会员",
+      name: event.memberName || (memberBusinessEnabled ? "未命名会员" : "未命名客户"),
     }, dimensions) : null;
     const vouchers = vouchersBySource.get(event.id) || [];
-    const amount = postedMemberEventAmount(workspace, vouchers, kind, event.amount);
+    const amount = postedMemberEventAmount(workspace, vouchers, kind);
     const inPeriod = periodOf(event.date) === period;
     const impacts = emptyStoreMetrics();
     if (inPeriod && kind === MEMBER_EVENT_KINDS.RECHARGE) impacts.collections = amount;
@@ -428,7 +424,9 @@ export function buildStoreManagementReport(workspace, {
       id: event.id,
       eventId: event.id,
       kind,
-      label: MEMBER_EVENT_DEFINITIONS[kind]?.label || "会员业务",
+      label: memberBusinessEnabled
+        ? MEMBER_EVENT_DEFINITIONS[kind]?.label || "会员业务"
+        : event.summary || event.counterparty || "业务事件",
       date: event.date,
       memberId: event.memberId || null,
       memberName: event.memberName || member?.name || "",
@@ -473,7 +471,7 @@ export function buildStoreManagementReport(workspace, {
       postedEventCount: periodPosted.length,
       unpostedEventCount: periodRecognized.length - periodPosted.length,
     },
-    grossProfitFormula: "确认收入 − 教练提成",
+    grossProfitFormula: memberBusinessEnabled ? "确认收入 − 教练提成" : "确认收入 − 业务提成",
   };
 }
 
@@ -838,12 +836,12 @@ export function buildManagementMetrics(workspace, { period = workspace.currentPe
     asOf: resolvedAsOf,
     statements,
   });
-  const incoming = (workspace.transactions || []).filter((transaction) => {
-    const eventType = (transaction.classification || classifyBankTransaction(workspace, transaction)).eventType;
-    return periodOf(transaction.date) === period && Number(transaction.amount) > 0 &&
-      !["internalTransfer", "unknown"].includes(eventType) && !transaction.internalTransferLink;
-  });
-  const collections = valueWithSources(sumMoney(incoming.map((transaction) => transaction.amount)), incoming.map((transaction) => transaction.id));
+  const postedCashReceipts = (statements.cashFlow.movements || []).filter((movement) => movement.amount > 0);
+  const collections = valueWithSources(
+    sumMoney(postedCashReceipts.map((movement) => movement.amount)),
+    postedCashReceipts.map((movement) => movement.sourceIds),
+    { voucherIds: collectSourceIds(postedCashReceipts.map((movement) => movement.voucherId)) },
+  );
   const cashLine = valueWithSources(statements.cashFlow.closingCash.value, statements.cashFlow.closingCash.sourceIds);
   const receivableRows = ageing.rows.filter((row) => row.kind === "receivable");
   const payableRows = ageing.rows.filter((row) => row.kind === "payable");
@@ -916,7 +914,13 @@ function sourceDescriptionIndex(workspace, { memberBusinessEnabled = true } = {}
   add(workspace.vouchers, "会计凭证", (item) => `${item.no || item.id} ${item.summary || ""}`.trim());
   add(workspace.bills, "应收应付", (item) => `${item.no || item.billNo || item.id} ${item.counterparty || ""}`.trim());
   add(workspace.documents, "本地资料", (item) => item.name || item.id);
-  add(workspace.businessEvents, memberBusinessEnabled ? "会员业务" : "业务事件", (item) => item.accountingLabel || item.memberName || item.summary || item.id);
+  add(
+    workspace.businessEvents,
+    memberBusinessEnabled ? "会员业务" : "业务事件",
+    (item) => memberBusinessEnabled
+      ? item.accountingLabel || item.memberName || item.summary || item.id
+      : item.summary || item.counterparty || item.id,
+  );
   add(workspace.payrollRecords, "工资社保记录", (item) => `${item.employeeName || "员工"} ${item.sourceFileName || item.sourceKind || ""}`.trim());
   add(workspace.invoices, "发票", (item) => item.invoiceNumber || item.name || item.id);
   add(workspace.confirmations, "客户确认", (item) => `${item.period || ""} ${item.kind || "确认"}`.trim());
@@ -1033,7 +1037,7 @@ export function buildFrozenReportExcelWorkbook(workspace, {
     ["collections", "本期收款"],
     ["recognizedRevenue", "确认收入"],
     ["refunds", "退款"],
-    ["coachCommission", "教练提成"],
+    ["coachCommission", memberBusinessEnabled ? "教练提成" : "业务提成"],
     ["grossProfit", "毛利"],
     ["unfulfilledBalance", "预收 / 未履约"],
   ];

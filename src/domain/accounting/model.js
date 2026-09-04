@@ -37,16 +37,22 @@ export const ACCOUNT_CATALOG = Object.freeze({
   socialSecurityPayable: { label: "应付社保", category: "liability", normalSide: "credit" },
   relatedParty: { label: "关联方往来", category: "liability", normalSide: "credit" },
   equity: { label: "所有者权益", category: "equity", normalSide: "credit" },
-  revenuePrivate: { label: "主营业务收入 · 私教课", category: "revenue", normalSide: "credit" },
-  revenueGroup: { label: "主营业务收入 · 团课", category: "revenue", normalSide: "credit" },
+  revenuePrivate: { label: "主营业务收入 · 服务收入", category: "revenue", normalSide: "credit" },
+  revenueGroup: { label: "主营业务收入 · 其他收入", category: "revenue", normalSide: "credit" },
   salesReturns: { label: "销售退款与折让", category: "contraRevenue", normalSide: "debit" },
   costOfSales: { label: "主营业务成本", category: "cost", normalSide: "debit" },
   expenseRent: { label: "管理费用 · 房租物业", category: "expense", normalSide: "debit" },
   expenseUtility: { label: "管理费用 · 水电费", category: "expense", normalSide: "debit" },
   expenseFee: { label: "财务费用 · 手续费", category: "expense", normalSide: "debit" },
-  expenseCommission: { label: "销售费用 · 教练提成", category: "expense", normalSide: "debit" },
+  expenseCommission: { label: "销售费用 · 业务提成", category: "expense", normalSide: "debit" },
   expensePayroll: { label: "管理费用 · 工资", category: "expense", normalSide: "debit" },
   expenseOther: { label: "管理费用 · 其他", category: "expense", normalSide: "debit" },
+});
+
+const MEMBER_ACCOUNT_LABELS = Object.freeze({
+  revenuePrivate: "主营业务收入 · 私教课",
+  revenueGroup: "主营业务收入 · 团课",
+  expenseCommission: "销售费用 · 教练提成",
 });
 
 export const ACCOUNT_CATEGORIES = Object.freeze([
@@ -170,6 +176,15 @@ export function appendAuditEntry(workspace, entry, context = {}) {
   return audit;
 }
 
+export function workspaceUsesMemberBusinessTerms(workspace = {}) {
+  if (workspace.modules?.members === false) return false;
+  if (workspace.modules?.members === true) return true;
+  return workspace.templateId === "fitness-studio"
+    || Boolean(workspace.isDemo)
+    || (workspace.members || []).length > 0
+    || (workspace.businessEvents || []).some((event) => event.memberId || event.memberName || event.coach);
+}
+
 export function accountDefinition(accountId, workspace = {}) {
   const baseId = String(accountId || "").split(":")[0];
   const exactCustom = (workspace.chartOfAccounts || []).find((account) => account.id === accountId);
@@ -177,7 +192,14 @@ export function accountDefinition(accountId, workspace = {}) {
   const custom = exactCustom || baseCustom;
   const bankAccount = [...(workspace.bankAccounts || []), ...(workspace.accounts || [])]
     .find((account) => account.id === accountId);
-  const standard = ACCOUNT_CATALOG[accountId] || ACCOUNT_CATALOG[baseId] || (bankAccount ? {
+  const catalogDefinition = ACCOUNT_CATALOG[accountId] || ACCOUNT_CATALOG[baseId];
+  const memberLabel = workspaceUsesMemberBusinessTerms(workspace)
+    ? MEMBER_ACCOUNT_LABELS[accountId] || MEMBER_ACCOUNT_LABELS[baseId]
+    : null;
+  const standard = catalogDefinition ? {
+    ...catalogDefinition,
+    ...(memberLabel ? { label: memberLabel } : {}),
+  } : (bankAccount ? {
     ...bankAccount,
     label: bankAccount.label || bankAccount.name || "银行存款",
     category: "asset",

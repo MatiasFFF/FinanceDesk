@@ -249,6 +249,7 @@ const COLLECTION_CONFIG = {
       { key: "department", label: "部门 / 门店" },
       { key: "role", label: "岗位" },
       { key: "socialSecurityLocation", label: "社保归属" },
+      { key: "userId", label: "关联操作用户", type: "select", options: [] },
       { key: "status", label: "状态", type: "status" },
     ],
   },
@@ -382,6 +383,8 @@ function recordDescription(item, collection, workspace) {
     parts.push(item.address || "地址未填写");
   } else if (collection === "users") {
     parts.push(workspace.roles.find((role) => role.id === item.roleId)?.name || item.role || "未分配角色");
+    const personnel = workspace.personnelRecords.find((record) => record.id === item.personnelRecordId || record.userId === item.id);
+    if (personnel) parts.push(`人员资料 ${personnel.name}`);
   } else if (collection === "roles") {
     parts.push((item.permissions || []).map((permission) => PERMISSION_LABELS[permission] || `扩展权限 ${permission}`).join("、") || "未配置权限");
   } else if (collection === "counterparties") {
@@ -400,6 +403,8 @@ function recordDescription(item, collection, workspace) {
     parts.push(recordTypeLabel(item) || item.kind || "审批事项", item.no ? `审批号 ${item.no}` : "", amountSummary("金额", item.amount));
   } else if (collection === "personnelRecords") {
     parts.push(item.department ? `部门 ${item.department}` : "部门未填写", item.role ? `岗位 ${item.role}` : "岗位未填写", item.socialSecurityLocation ? `社保归属 ${item.socialSecurityLocation}` : "");
+    const user = workspace.users.find((candidate) => candidate.id === item.userId || candidate.personnelRecordId === item.id);
+    parts.push(user ? `操作用户 ${user.name}${user.status === "active" ? "" : "（已停用）"}` : "未关联操作用户");
   } else {
     parts.push(recordTypeLabel(item));
   }
@@ -427,6 +432,20 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
           : field),
       };
     }
+    if (collection === "personnelRecords") {
+      return {
+        ...base,
+        fields: base.fields.map((field) => field.key === "userId"
+          ? {
+            ...field,
+            options: [
+              ["", "不关联操作用户"],
+              ...activeWorkspace.users.map((user) => [user.id, `${user.name}${user.status === "active" ? "" : "（已停用）"}`]),
+            ],
+          }
+          : field),
+      };
+    }
     if (collection === "businessEvents" && !membersEnabled) {
       return {
         ...base,
@@ -436,7 +455,7 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
       };
     }
     return base;
-  }, [collection, activeWorkspace.roles, activeWorkspace.modules, activeWorkspace.enabledModules, activeWorkspace.moduleSettings, hasActiveUsers, membersEnabled]);
+  }, [collection, activeWorkspace.roles, activeWorkspace.users, activeWorkspace.modules, activeWorkspace.enabledModules, activeWorkspace.moduleSettings, hasActiveUsers, membersEnabled]);
   const Icon = config.icon;
   const items = collection === "businessEvents" && !membersEnabled
     ? (activeWorkspace[collection] || []).filter((item) => !isMemberBusinessEvent(item))
@@ -467,7 +486,12 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
 
   function edit(item) {
     onCancelDelete();
-    setDraft(config.toDraft ? config.toDraft(item) : { ...item });
+    const nextDraft = config.toDraft ? config.toDraft(item) : { ...item };
+    if (collection === "personnelRecords") {
+      const linkedUser = activeWorkspace.users.find((user) => user.id === item.userId || user.personnelRecordId === item.id);
+      nextDraft.userId = linkedUser?.id || "";
+    }
+    setDraft(nextDraft);
     setError("");
     setEditorOpen(true);
   }
@@ -528,20 +552,50 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
     }
   }
 
+  function convertPersonnelToUser(personnel, roleId) {
+    setError("");
+    try {
+      const role = activeWorkspace.roles.find((candidate) => candidate.id === roleId && candidate.status === "active");
+      if (!role) throw new Error("请选择一个有效角色");
+      actions.upsertEntity(activeWorkspace.id, "users", {
+        name: personnel.name,
+        roleId: role.id,
+        role: role.name,
+        status: "active",
+        personnelRecordId: personnel.id,
+      }, { label: "工作台人员" });
+      onToast?.(`「${personnel.name}」已成为操作用户，角色为「${role.name}」${!hasActiveUsers ? "，并已切换为当前身份" : ""}`);
+    } catch (caught) {
+      setError(caught.message || "创建操作用户失败");
+    }
+  }
+
+  const conversionRoles = activeWorkspace.roles.filter((role) => (
+    role.status === "active"
+    && (hasActiveUsers || (role.permissions || []).includes("*") || (role.permissions || []).includes("workspace.manage"))
+  ));
+
   return (
     <section className="foundation-section entity-editor">
       <div className="foundation-section-heading"><div><small>{collection === "users" ? "可新增、改名、调整角色、停用或删除" : "本地资料"}</small><h3><Icon size={18} />{config.title}</h3></div><span>{items.length} 条</span></div>
       {collection === "users" && !hasActiveUsers && <p className="foundation-hint">当前没有启用人员。首位启用人员需选择具备“管理工作台”权限的启用角色；保存后会自动成为当前本地操作身份。</p>}
+      {collection === "personnelRecords" && <p className="foundation-hint">关联后两处共用同一姓名；人员资料状态与操作用户权限状态仍分别管理。</p>}
       <div className="foundation-record-list">
         {items.map((item, index) => {
           const name = displayName(item, collection, config.title);
+          const linkedUser = collection === "personnelRecords"
+            ? activeWorkspace.users.find((user) => user.id === item.userId || user.personnelRecordId === item.id)
+            : null;
           const confirming = pendingDeleteId === item.id;
           const titleId = `${collection}-delete-title-${index}`;
           const descriptionId = `${collection}-delete-description-${index}`;
           return (
             <article className={`foundation-record${confirming ? " is-confirming-delete" : ""}`} key={item.id}>
               <div><strong>{name}</strong><small>{recordDescription(item, collection, activeWorkspace)}</small></div>
-              <span className="foundation-record-actions"><button type="button" aria-label={`编辑${name}`} onClick={() => edit(item)}><PencilSimple size={15} /></button><button type="button" aria-label={`删除${name}`} aria-haspopup="dialog" aria-expanded={confirming} onClick={() => requestRemove(item)}><Trash size={15} /></button></span>
+              <span className="foundation-record-actions">
+                {collection === "personnelRecords" && !linkedUser && <select className="compact-select" value="" aria-label={`将${name}设为操作用户`} disabled={!conversionRoles.length} onChange={(event) => event.target.value && convertPersonnelToUser(item, event.target.value)}><option value="">{conversionRoles.length ? "设为操作用户…" : "无可用角色"}</option>{conversionRoles.map((role) => <option value={role.id} key={role.id}>使用角色：{role.name}</option>)}</select>}
+                <button type="button" aria-label={`编辑${name}`} onClick={() => edit(item)}><PencilSimple size={15} /></button><button type="button" aria-label={`删除${name}`} aria-haspopup="dialog" aria-expanded={confirming} onClick={() => requestRemove(item)}><Trash size={15} /></button>
+              </span>
               {confirming && <div className="foundation-record-delete-confirm" role="alertdialog" aria-labelledby={titleId} aria-describedby={descriptionId} onKeyDown={(event) => { if (event.key === "Escape") cancelRemove(); }}>
                 <p id={titleId}><WarningCircle size={16} /><strong>确认删除「{name}」？</strong></p>
                 <small id={descriptionId}>删除后无法在本页面撤销，系统仍会执行原有的关联与权限检查。</small>

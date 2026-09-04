@@ -90,15 +90,102 @@ function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function uniqueSourceIds(...groups) {
+  return [...new Set(groups.flat(Infinity).filter((value) => value !== null && value !== undefined && value !== ""))];
+}
+
+function replaceGeneratedAccountLabels(value, workspace) {
+  if (typeof value !== "string") return value;
+  const replacements = [
+    ["主营业务收入 · 私教课", accountDefinition("revenuePrivate", workspace).label],
+    ["主营业务收入 · 团课", accountDefinition("revenueGroup", workspace).label],
+    ["销售费用 · 教练提成", accountDefinition("expenseCommission", workspace).label],
+  ];
+  return replacements.reduce((current, [legacyLabel, currentLabel]) => (
+    legacyLabel === currentLabel || current.includes(currentLabel)
+      ? current
+      : current.replaceAll(legacyLabel, currentLabel)
+  ), value);
+}
+
+function neutralGeneratedReportLabel(value, workspace) {
+  const exactLabels = {
+    私教课收入: accountDefinition("revenuePrivate", workspace).label,
+    团课收入: accountDefinition("revenueGroup", workspace).label,
+    教练提成: accountDefinition("expenseCommission", workspace).label,
+    "会员预收 / 未履约服务": "客户预收 / 未履约服务",
+    会员退款: "业务退款",
+    会员业务: "业务事件",
+  };
+  return exactLabels[value] || replaceGeneratedAccountLabels(value, workspace);
+}
+
+function neutralGeneratedReportFormula(value, workspace) {
+  if (typeof value !== "string") return value;
+  const commissionLabel = accountDefinition("expenseCommission", workspace).label;
+  return replaceGeneratedAccountLabels(value, workspace)
+    .replace("确认收入 − 教练提成", `确认收入 − ${commissionLabel}`);
+}
+
+function normalizeFrozenReportVersionTerminology(version, workspace) {
+  if (!version?.snapshot || workspaceModuleEnabled(workspace, "members")) return version;
+  const vouchers = safeArray(workspace.vouchers);
+  const voucherForDetail = (detail) => vouchers.find((voucher) => (
+    detail?.voucherId === voucher.id
+    || detail?.id === voucher.id
+    || String(detail?.id || "").startsWith(`${voucher.id}-`)
+  ));
+  const normalizeDetail = (detail) => {
+    const voucher = voucherForDetail(detail);
+    return {
+      ...detail,
+      title: replaceGeneratedAccountLabels(detail?.title, workspace),
+      reference: neutralGeneratedReportLabel(detail?.reference, workspace),
+      description: replaceGeneratedAccountLabels(detail?.description, workspace),
+      ...(voucher ? {
+        voucherId: voucher.id,
+        sourceIds: uniqueSourceIds(detail?.sourceIds, voucher.id),
+      } : {}),
+    };
+  };
+  const normalizeRow = (row) => ({
+    ...row,
+    label: neutralGeneratedReportLabel(row?.label, workspace),
+    formula: neutralGeneratedReportFormula(row?.formula, workspace),
+    details: safeArray(row?.details).map(normalizeDetail),
+  });
+  const snapshot = version.snapshot;
+  return {
+    ...version,
+    snapshot: {
+      ...snapshot,
+      sections: Object.fromEntries(Object.entries(snapshot.sections || {}).map(([sectionId, section]) => [sectionId, {
+        ...section,
+        rows: safeArray(section?.rows).map(normalizeRow),
+      }])),
+      taxWorkpaper: snapshot.taxWorkpaper ? {
+        ...snapshot.taxWorkpaper,
+        rows: safeArray(snapshot.taxWorkpaper.rows).map(normalizeRow),
+      } : snapshot.taxWorkpaper,
+    },
+  };
+}
+
 export function ensureWorkspace(workspace) {
   const period = workspace.currentPeriod || new Date().toISOString().slice(0, 7);
   const delivery = workspace.delivery || emptyDelivery(period);
+  const modules = normalizeWorkspaceModules(workspace.modules, {
+    fitnessTemplate: workspace.templateId === "fitness-studio" || workspace.isDemo,
+  });
+  const terminologyWorkspace = {
+    ...workspace,
+    modules,
+    vouchers: safeArray(workspace.vouchers),
+  };
   return {
     ...workspace,
     name: workspace.name || "未命名工作台",
-    modules: normalizeWorkspaceModules(workspace.modules, {
-      fitnessTemplate: workspace.templateId === "fitness-studio" || workspace.isDemo,
-    }),
+    modules,
     periods: [...new Set([period, ...safeArray(workspace.periods)])],
     accounts: safeArray(workspace.accounts),
     members: safeArray(workspace.members),
@@ -135,7 +222,8 @@ export function ensureWorkspace(workspace) {
     delivery: {
       ...emptyDelivery(period),
       ...delivery,
-      reportVersions: safeArray(delivery.reportVersions),
+      reportVersions: safeArray(delivery.reportVersions)
+        .map((version) => normalizeFrozenReportVersionTerminology(version, terminologyWorkspace)),
       archives: safeArray(delivery.archives),
       notices: safeArray(delivery.notices),
       filing: {
@@ -196,21 +284,44 @@ function amountForAccount(ledger, account) {
   return roundMoney(Number(ledger[account] || 0));
 }
 
-function accountRows(workspace, accountNames) {
-  const periodVouchers = workspace.vouchers.filter(
+function accountRows(workspace, accountNames, multiplier = 1) {
+  const periodVouchers = safeArray(workspace.vouchers).filter(
     (voucher) => voucher.status === "posted" && String(voucher.date || "").startsWith(workspace.currentPeriod),
   );
   return periodVouchers
-    .flatMap((voucher) => voucher.lines
-      .filter((line) => accountNames.includes(line.account) || (accountNames.some((account) => ["bank", "cash"].includes(account)) && accountDefinition(line.account, workspace).cash))
-      .map((line) => ({
-        id: `${voucher.id}-${line.account}`,
+    .flatMap((voucher) => safeArray(voucher.lines)
+      .map((line, lineIndex) => ({ line, lineIndex }))
+      .filter(({ line }) => accountNames.includes(String(line.account).split(":")[0]) || (accountNames.some((account) => ["bank", "cash"].includes(account)) && accountDefinition(line.account, workspace).cash))
+      .map(({ line, lineIndex }) => ({
+        id: `${voucher.id}-${line.account}-${lineIndex}`,
         date: voucher.date,
-        title: voucher.summary,
-        reference: voucher.no,
-        amount: roundMoney(Number(line.debit || 0) - Number(line.credit || 0)),
+        title: `${voucher.summary || voucher.no || voucher.id} · ${accountDefinition(line.account, workspace).label}`,
+        reference: voucher.no || voucher.id,
+        description: `${uniqueSourceIds(voucher.id, voucher.sourceIds, line.sourceIds).length} 个来源 · ${safeArray(voucher.evidenceIds).length} 份本地附件`,
+        amount: roundMoney((Number(line.debit || 0) - Number(line.credit || 0)) * multiplier),
+        voucherId: voucher.id,
+        sourceIds: uniqueSourceIds(voucher.id, voucher.sourceIds, line.sourceIds),
+        evidenceIds: safeArray(voucher.evidenceIds),
       })))
     .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
+function detailTotal(details) {
+  return roundMoney(safeArray(details).reduce((sum, detail) => sum + Number(detail.amount || 0), 0));
+}
+
+function cashMovementDetails(workspace, movements) {
+  const voucherById = new Map(safeArray(workspace.vouchers).map((voucher) => [voucher.id, voucher]));
+  return safeArray(movements).map((movement) => ({
+    id: movement.voucherId,
+    voucherId: movement.voucherId,
+    date: movement.date,
+    title: movement.summary,
+    reference: "已入账凭证",
+    amount: movement.amount,
+    sourceIds: uniqueSourceIds(movement.voucherId, movement.sourceIds),
+    evidenceIds: safeArray(voucherById.get(movement.voucherId)?.evidenceIds),
+  }));
 }
 
 export function calculatePeriodLedger(workspace) {
@@ -539,7 +650,6 @@ export function buildReportSnapshot(workspace) {
     ? payrollSocialSummary.totals.socialSecurityPayable
     : Number(workspace.tax.socialSecurity || 0);
   const usesStructuredInvoiceVat = invoiceVatSummary.usesStructuredInvoices;
-  const periodTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
   const cashMovements = statements.cashFlow.movements || [];
   const cashIn = roundMoney(cashMovements.filter((item) => item.amount > 0).reduce((sum, item) => sum + item.amount, 0));
   const cashOut = roundMoney(cashMovements.filter((item) => item.amount < 0).reduce((sum, item) => sum + Math.abs(item.amount), 0));
@@ -547,9 +657,6 @@ export function buildReportSnapshot(workspace) {
   const payable = roundMoney(Math.max(0, -amountForAccount(statements.ledger, "payable")));
   const prepayment = roundMoney(Math.max(0, amountForAccount(statements.ledger, "prepayment")));
   const contractLiability = roundMoney(Math.max(0, -amountForAccount(statements.ledger, "contractLiability")));
-  const currentBusinessEvents = workspace.businessEvents.filter((item) => item.status !== "void" && String(item.date || "").startsWith(workspace.currentPeriod));
-  const refunds = currentBusinessEvents.filter((item) => item.kind === "refund" || item.type === "refund");
-  const commissions = currentBusinessEvents.filter((item) => item.kind === "commission" || item.type === "commission" || item.accountingSubtype === "coachCommission");
   const estimatedOutputVat = usesStructuredInvoiceVat ? invoiceVatSummary.outputVat : engineTax.outputVat.value;
   const deductibleInputVat = usesStructuredInvoiceVat ? invoiceVatSummary.deductibleInputVat : engineTax.inputVat.value;
   const nonDeductibleInputVat = usesStructuredInvoiceVat ? invoiceVatSummary.nonDeductibleInputVat : 0;
@@ -561,16 +668,48 @@ export function buildReportSnapshot(workspace) {
   const assetDetails = ledgerDetails(workspace, engine, (item) => item.account.category === "asset", (amount) => amount);
   const liabilityDetails = ledgerDetails(workspace, engine, (item) => item.account.category === "liability", (amount) => -amount);
   const equityAccountDetails = ledgerDetails(workspace, engine, (item) => item.account.category === "equity", (amount) => -amount);
-  const revenueDetails = ledgerDetails(workspace, engine, (item) => ["revenue", "contraRevenue"].includes(item.account.category), (amount) => -amount);
-  const expenseDetails = ledgerDetails(workspace, engine, (item) => item.account.category === "expense", (amount) => amount);
-  const costDetails = ledgerDetails(workspace, engine, (item) => item.account.category === "cost", (amount) => amount);
-  const profitDetails = ledgerDetails(workspace, engine, (item) => ["revenue", "contraRevenue", "cost", "expense"].includes(item.account.category), (amount) => -amount);
+  const revenueDetails = ledgerDetails(workspace, engine, (item) => ["revenue", "contraRevenue"].includes(item.account.category), (amount) => -amount)
+    .filter((detail) => detail.voucherId);
+  const expenseDetails = ledgerDetails(workspace, engine, (item) => item.account.category === "expense", (amount) => amount)
+    .filter((detail) => detail.voucherId);
+  const costDetails = ledgerDetails(workspace, engine, (item) => item.account.category === "cost", (amount) => amount)
+    .filter((detail) => detail.voucherId);
+  const profitDetails = ledgerDetails(workspace, engine, (item) => ["revenue", "contraRevenue", "cost", "expense"].includes(item.account.category), (amount) => -amount)
+    .filter((detail) => detail.voucherId);
   const cashDetails = ledgerDetails(workspace, engine, (item) => item.account.cash, (amount) => amount);
   const receivableDetails = ledgerDetails(workspace, engine, (item) => item.accountId === "receivable", (amount) => amount);
   const prepaymentDetails = ledgerDetails(workspace, engine, (item) => item.accountId === "prepayment", (amount) => amount);
   const equipmentDetails = ledgerDetails(workspace, engine, (item) => item.accountId === "equipment", (amount) => amount);
   const payableDetails = ledgerDetails(workspace, engine, (item) => item.accountId === "payable", (amount) => -amount);
   const contractLiabilityDetails = ledgerDetails(workspace, engine, (item) => item.accountId === "contractLiability", (amount) => -amount);
+  const privateRevenueDetails = accountRows(workspace, ["revenuePrivate"], -1);
+  const groupRevenueDetails = accountRows(workspace, ["revenueGroup"], -1);
+  const combinedRevenueDetails = [...privateRevenueDetails, ...groupRevenueDetails]
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const refundDetails = ledgerDetails(
+    workspace,
+    engine,
+    (item) => item.account.category === "contraRevenue",
+    (amount) => amount,
+  ).filter((detail) => detail.voucherId);
+  const commissionDetails = accountRows(workspace, ["expenseCommission"]);
+  const rentDetails = accountRows(workspace, ["expenseRent"]);
+  const utilityDetails = accountRows(workspace, ["expenseUtility"]);
+  const feeDetails = accountRows(workspace, ["expenseFee"]);
+  const cashFlowDetails = cashMovementDetails(workspace, cashMovements);
+  const primaryRevenueLabel = accountDefinition("revenuePrivate", workspace).label;
+  const otherRevenueLabel = accountDefinition("revenueGroup", workspace).label;
+  const combinedRevenueLabel = [...new Set([primaryRevenueLabel, otherRevenueLabel])].join(" / ");
+  const commissionLabel = accountDefinition("expenseCommission", workspace).label;
+  const rentLabel = accountDefinition("expenseRent", workspace).label;
+  const utilityLabel = accountDefinition("expenseUtility", workspace).label;
+  const feeLabel = accountDefinition("expenseFee", workspace).label;
+  const receivableLabel = accountDefinition("receivable", workspace).label;
+  const prepaymentLabel = accountDefinition("prepayment", workspace).label;
+  const equipmentLabel = accountDefinition("equipment", workspace).label;
+  const payableLabel = accountDefinition("payable", workspace).label;
+  const contractLiabilityLabel = accountDefinition("contractLiability", workspace).label;
+  const salesReturnsLabel = accountDefinition("salesReturns", workspace).label;
   const outputInvoiceGrossDetails = structuredInvoiceDetails(invoiceVatSummary, "outputVat", "grossAmount");
   const outputInvoiceNetDetails = structuredInvoiceDetails(invoiceVatSummary, "outputVat", "netAmount");
   const outputInvoiceVatDetails = structuredInvoiceDetails(invoiceVatSummary, "outputVat", "taxAmount");
@@ -640,12 +779,12 @@ export function buildReportSnapshot(workspace) {
         label: "资产负债表",
         rows: [
           makeTraceableRow("cash", "货币资金", cashBalance, cashDetails, "期初现金 + 本期已入账现金变动"),
-          makeTraceableRow("receivable", "应收账款", amountForAccount(statements.ledger, "receivable"), receivableDetails, "期初应收 + 借方发生额 − 贷方发生额"),
-          makeTraceableRow("prepayment", "预付款项", amountForAccount(statements.ledger, "prepayment"), prepaymentDetails, "期初预付 + 借方发生额 − 贷方发生额"),
-          makeTraceableRow("equipment", "固定资产", amountForAccount(statements.ledger, "equipment"), equipmentDetails, "期初固定资产 + 本期净增加"),
+          makeTraceableRow("receivable", receivableLabel, amountForAccount(statements.ledger, "receivable"), receivableDetails, `${receivableLabel}期初余额 + 借方发生额 − 贷方发生额`),
+          makeTraceableRow("prepayment", prepaymentLabel, amountForAccount(statements.ledger, "prepayment"), prepaymentDetails, `${prepaymentLabel}期初余额 + 借方发生额 − 贷方发生额`),
+          makeTraceableRow("equipment", equipmentLabel, amountForAccount(statements.ledger, "equipment"), equipmentDetails, `${equipmentLabel}期初余额 + 本期净增加`),
           makeTraceableRow("assets", "资产合计", statements.assets, assetDetails, "所有资产类科目期末余额合计"),
-          makeTraceableRow("payable", "应付账款", -amountForAccount(statements.ledger, "payable"), payableDetails, "期初应付 + 贷方发生额 − 借方发生额"),
-          makeTraceableRow("contractLiability", "合同负债", contractLiability, contractLiabilityDetails, "期初合同负债 + 预收 − 履约确认"),
+          makeTraceableRow("payable", payableLabel, -amountForAccount(statements.ledger, "payable"), payableDetails, `${payableLabel}期初余额 + 贷方发生额 − 借方发生额`),
+          makeTraceableRow("contractLiability", contractLiabilityLabel, contractLiability, contractLiabilityDetails, `${contractLiabilityLabel}期初余额 + 预收 − 履约确认`),
           makeTraceableRow("liabilities", "负债合计", statements.liabilities, liabilityDetails, "所有负债类科目期末余额合计"),
           makeTraceableRow("equity", "所有者权益", statements.equity, [...equityAccountDetails, ...profitDetails], "权益类科目期末余额 + 本期利润"),
           makeTraceableRow("liabilitiesEquity", "负债和所有者权益合计", statements.liabilities + statements.equity, [...liabilityDetails, ...equityAccountDetails, ...profitDetails], "负债合计 + 所有者权益"),
@@ -655,16 +794,16 @@ export function buildReportSnapshot(workspace) {
         label: "利润表",
         rows: [
           ...(memberBusinessEnabled ? [
-            makeRow("privateRevenue", "私教课收入", -amountForAccount(statements.ledger, "revenuePrivate"), accountRows(workspace, ["revenuePrivate"])),
-            makeRow("groupRevenue", "团课收入", -amountForAccount(statements.ledger, "revenueGroup"), accountRows(workspace, ["revenueGroup"])),
+            makeRow("privateRevenue", primaryRevenueLabel, detailTotal(privateRevenueDetails), privateRevenueDetails),
+            makeRow("groupRevenue", otherRevenueLabel, detailTotal(groupRevenueDetails), groupRevenueDetails),
           ] : [
-            makeRow("serviceRevenue", "服务收入", -amountForAccount(statements.ledger, "revenuePrivate") - amountForAccount(statements.ledger, "revenueGroup"), accountRows(workspace, ["revenuePrivate", "revenueGroup"])),
+            makeRow("serviceRevenue", combinedRevenueLabel, detailTotal(combinedRevenueDetails), combinedRevenueDetails),
           ]),
           makeTraceableRow("revenue", "营业收入", statements.revenue, revenueDetails, "收入类发生额 − 销售退回与折让"),
-          makeRow("rent", "房租费用", amountForAccount(statements.ledger, "expenseRent"), accountRows(workspace, ["expenseRent"])),
-          makeRow("utility", "水电费用", amountForAccount(statements.ledger, "expenseUtility"), accountRows(workspace, ["expenseUtility"])),
-          makeRow("fees", "手续费", amountForAccount(statements.ledger, "expenseFee"), accountRows(workspace, ["expenseFee"])),
-          makeRow("commission", memberBusinessEnabled ? "教练提成" : "业务提成", amountForAccount(statements.ledger, "expenseCommission"), accountRows(workspace, ["expenseCommission"])),
+          makeRow("rent", rentLabel, detailTotal(rentDetails), rentDetails),
+          makeRow("utility", utilityLabel, detailTotal(utilityDetails), utilityDetails),
+          makeRow("fees", feeLabel, detailTotal(feeDetails), feeDetails),
+          makeRow("commission", commissionLabel, detailTotal(commissionDetails), commissionDetails),
           makeTraceableRow("expenses", "期间费用", statements.expenses, expenseDetails, "本期各费用类科目借方净发生额"),
           makeTraceableRow("profit", "本月利润", statements.profit, profitDetails, "营业收入 − 销售退回 − 成本 − 期间费用"),
         ],
@@ -672,10 +811,10 @@ export function buildReportSnapshot(workspace) {
       cashflow: {
         label: "现金流量表",
         rows: [
-          makeRow("operating", "经营活动现金流量净额", statements.cashFlow.operating.value, statements.cashFlow.operating.rows.map((item) => ({ id: item.voucherId, date: item.date, title: item.summary, reference: "已入账凭证", amount: item.amount }))),
-          makeRow("investing", "投资活动现金流量净额", statements.cashFlow.investing.value, statements.cashFlow.investing.rows.map((item) => ({ id: item.voucherId, date: item.date, title: item.summary, reference: "已入账凭证", amount: item.amount }))),
-          makeRow("financing", "筹资活动现金流量净额", statements.cashFlow.financing.value, statements.cashFlow.financing.rows.map((item) => ({ id: item.voucherId, date: item.date, title: item.summary, reference: "已入账凭证", amount: item.amount }))),
-          makeRow("netCash", "现金净增加额", statements.cashFlow.netChange.value, cashMovements.map((item) => ({ id: item.voucherId, date: item.date, title: item.summary, reference: "已入账凭证", amount: item.amount }))),
+          makeRow("operating", "经营活动现金流量净额", statements.cashFlow.operating.value, cashMovementDetails(workspace, statements.cashFlow.operating.rows)),
+          makeRow("investing", "投资活动现金流量净额", statements.cashFlow.investing.value, cashMovementDetails(workspace, statements.cashFlow.investing.rows)),
+          makeRow("financing", "筹资活动现金流量净额", statements.cashFlow.financing.value, cashMovementDetails(workspace, statements.cashFlow.financing.rows)),
+          makeRow("netCash", "现金净增加额", statements.cashFlow.netChange.value, cashFlowDetails),
           makeTraceableRow("closingCash", "期末现金余额", cashBalance, cashDetails, "期初现金 + 本期现金净增加额"),
         ],
       },
@@ -683,16 +822,16 @@ export function buildReportSnapshot(workspace) {
         label: "老板报表",
         rows: [
           makeTraceableRow("ownerCash", "现金余额", cashBalance, cashDetails, "期初现金 + 本期已入账现金变动"),
-          makeRow("ownerCashIn", "本月收款", cashIn, cashMovements.filter((item) => item.amount > 0).map((item) => ({ id: item.voucherId, date: item.date, title: item.summary, reference: "已入账凭证", amount: item.amount }))),
-          makeRow("ownerRevenue", "本月收入", statements.revenue, accountRows(workspace, ["revenuePrivate", "revenueGroup"])),
+          makeTraceableRow("ownerCashIn", "本月收款", cashIn, cashFlowDetails.filter((item) => item.amount > 0), "本期已入账现金流入合计"),
+          makeTraceableRow("ownerRevenue", "本月收入", statements.revenue, revenueDetails, "收入类发生额 − 销售退回与折让"),
           makeTraceableRow("ownerGrossProfit", "本月毛利", engine.incomeStatement.grossProfit.value, [...revenueDetails, ...costDetails.map((item) => ({ ...item, amount: -item.amount }))], "营业收入 − 销售退回 − 营业成本"),
           makeTraceableRow("ownerProfit", "本月利润", statements.profit, profitDetails, "营业收入 − 销售退回 − 成本 − 期间费用"),
           makeTraceableRow("ownerPrepaid", memberBusinessEnabled ? "会员预收 / 未履约服务" : "客户预收 / 未履约服务", contractLiability, contractLiabilityDetails, "合同负债科目期末贷方余额"),
           makeTraceableRow("ownerReceivable", "应收账款", receivable, receivableDetails, "应收账款科目期末借方余额"),
           makeTraceableRow("ownerPayable", "供应商应付", payable, payableDetails, "应付账款科目期末贷方余额"),
           makeTraceableRow("ownerPrepayment", "供应商预付", prepayment, prepaymentDetails, "预付款项科目期末借方余额"),
-          makeRow("ownerRefund", "待处理退款", refunds.reduce((sum, item) => sum + Number(item.amount || 0), 0), refunds.map((item) => ({ id: item.id, date: item.date, title: memberBusinessEnabled ? item.memberName : (item.counterparty || "本地业务"), reference: memberBusinessEnabled ? "会员退款" : "业务退款", description: item.note, amount: item.amount }))),
-          makeRow("ownerCommission", memberBusinessEnabled ? "教练提成" : "业务提成", commissions.reduce((sum, item) => sum + Number(item.amount || 0), 0), commissions.map((item) => ({ id: item.id, date: item.date, title: memberBusinessEnabled ? (item.coach || item.memberName) : (item.counterparty || "本地业务"), reference: "提成", description: item.note, amount: item.amount }))),
+          makeTraceableRow("ownerRefund", "本月退款", engine.incomeStatement.salesReturns.value, refundDetails, `${salesReturnsLabel}本期借方净发生额`),
+          makeTraceableRow("ownerCommission", commissionLabel, detailTotal(commissionDetails), commissionDetails, `${commissionLabel}本期借方净发生额`),
           makeTraceableRow("ownerTax", "预计税款（演示估算）", estimatedTax, taxEstimateDetails, "增值税估算 + 附加税费估算 + 所得税估算"),
           makeTraceableRow("ownerGap", "未来现金缺口", cashGapValue, cashGapDetails, "max(0，应付与预计税费 − 可用现金)"),
         ],
