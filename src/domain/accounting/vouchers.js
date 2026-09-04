@@ -137,6 +137,103 @@ function aggregateLines(lines) {
   return [...grouped.values()].filter((line) => line.debit || line.credit);
 }
 
+function voucherLineAccountMetadata(workspace, lines = []) {
+  const accountsById = new Map();
+  lines.forEach((line, lineIndex) => {
+    const accountId = String(line.account || "").trim();
+    if (!accountId) return;
+    const definition = resolveWorkspaceAccountDefinition(workspace, accountId);
+    const current = accountsById.get(accountId) || {
+      account: accountId,
+      accountLabel: definition?.label || accountId,
+      category: definition?.category || "other",
+      cash: Boolean(definition?.cash),
+      debit: 0,
+      credit: 0,
+      lineCount: 0,
+      lineIndexes: [],
+      auxiliaryIds: [],
+      sourceIds: [],
+    };
+    current.debit = roundMoney(current.debit + Number(line.debit || 0));
+    current.credit = roundMoney(current.credit + Number(line.credit || 0));
+    current.lineCount += 1;
+    current.lineIndexes.push(lineIndex);
+    current.auxiliaryIds = collectSourceIds(current.auxiliaryIds, line.auxiliaryId);
+    current.sourceIds = collectSourceIds(current.sourceIds, line.sourceIds || []);
+    accountsById.set(accountId, current);
+  });
+
+  const lineAccounts = [...accountsById.values()];
+  const businessAccounts = lineAccounts.filter((account) => !account.cash);
+  const primaryAccount = businessAccounts.length === 1 ? businessAccounts[0] : null;
+  const accountMode = primaryAccount
+    ? "single_business_account"
+    : businessAccounts.length > 1
+      ? "multiple_business_accounts"
+      : lineAccounts.length
+        ? "cash_only"
+        : "empty";
+  return {
+    account: primaryAccount?.account || null,
+    accountLabel: primaryAccount?.accountLabel || null,
+    accountMode,
+    lineAccounts,
+  };
+}
+
+function originalVoucherAccountJudgement(judgement = {}) {
+  const accountingAttributes = structuredClone(judgement.accountingAttributes || {});
+  const account = judgement.account ?? accountingAttributes.primaryAccount ?? null;
+  return {
+    account,
+    accountLabel: judgement.accountLabel ?? accountingAttributes.primaryAccountLabel ?? account,
+    accountingAttributes,
+  };
+}
+
+function synchronizeVoucherJudgementAccounts(workspace, voucher, context, reason) {
+  const judgement = voucher.judgement || {};
+  const originalAccountJudgement = judgement.originalAccountJudgement
+    ? structuredClone(judgement.originalAccountJudgement)
+    : originalVoucherAccountJudgement(judgement);
+  const current = voucherLineAccountMetadata(workspace, voucher.lines || []);
+  const lineAccounts = structuredClone(current.lineAccounts);
+  const accountingAttributes = {
+    ...(judgement.accountingAttributes || {}),
+    primaryAccount: current.account,
+    primaryAccountLabel: current.accountLabel,
+    accountMode: current.accountMode,
+    lineAccounts,
+  };
+
+  voucher.judgement = {
+    ...judgement,
+    originalAccountJudgement,
+    account: current.account,
+    accountLabel: current.accountLabel,
+    accountMode: current.accountMode,
+    lineAccounts,
+    accountingAttributes,
+    accountSync: {
+      source: "voucher.lines",
+      version: voucher.version,
+      at: context.at,
+      actor: context.actor,
+      reason: String(reason || "同步凭证分录科目").trim(),
+    },
+  };
+  if (voucher.accountingAttributes) {
+    voucher.accountingAttributes = {
+      ...voucher.accountingAttributes,
+      primaryAccount: current.account,
+      primaryAccountLabel: current.accountLabel,
+      accountMode: current.accountMode,
+      lineAccounts: structuredClone(lineAccounts),
+    };
+  }
+}
+
 function advanceApplicationVoucherLines(workspace, application) {
   const advanceBill = findBill(workspace, application.advanceBillId);
   const targetBill = findBill(workspace, application.targetBillId);
@@ -473,6 +570,7 @@ export function createBankBusinessEventVoucherDraft(workspace, {
     reviews: [],
     versions: [],
   };
+  synchronizeVoucherJudgementAccounts(next, voucher, resolvedContext, "由已确认银行业务事件生成凭证草稿");
   voucher.versions.push(voucherSnapshot(voucher, resolvedContext, "由已确认银行业务事件生成凭证草稿"));
   next.vouchers = [...(next.vouchers || []), voucher];
   event.accountingStatus = "voucher_draft";
@@ -534,6 +632,8 @@ function voucherSnapshot(voucher, context, reason) {
     summary: voucher.summary,
     lines: structuredClone(voucher.lines || []),
     evidenceIds: [...(voucher.evidenceIds || [])],
+    judgement: structuredClone(voucher.judgement || {}),
+    accountingAttributes: structuredClone(voucher.accountingAttributes || {}),
     status: voucher.status,
   };
 }
@@ -607,6 +707,7 @@ export function createVoucherDraft(workspace, { transactionId, summary, note = "
     reviews: [],
     versions: [],
   };
+  synchronizeVoucherJudgementAccounts(next, voucher, resolvedContext, "创建凭证草稿");
   voucher.versions.push(voucherSnapshot(voucher, resolvedContext, "创建凭证草稿"));
   next.vouchers = [...(next.vouchers || []), voucher];
   appendAuditEntry(next, {
@@ -672,6 +773,7 @@ export function createMemberEventVoucherDraft(workspace, { eventId, summary, not
     reviews: [],
     versions: [],
   };
+  synchronizeVoucherJudgementAccounts(next, voucher, resolvedContext, "由已确认会员业务生成凭证草稿");
   voucher.versions.push(voucherSnapshot(voucher, resolvedContext, "由已确认会员业务生成凭证草稿"));
   next.vouchers = [...(next.vouchers || []), voucher];
   event.accountingStatus = "voucher_draft";
@@ -748,6 +850,7 @@ export function createAdvanceApplicationVoucherDraft(workspace, { applicationId,
     reviews: [],
     versions: [],
   };
+  synchronizeVoucherJudgementAccounts(next, voucher, resolvedContext, "由已确认预收/预付冲销关系生成凭证草稿");
   voucher.versions.push(voucherSnapshot(voucher, resolvedContext, "由已确认预收/预付冲销关系生成凭证草稿"));
   next.vouchers = [...(next.vouchers || []), voucher];
   application.accountingStatus = "voucher_draft";
@@ -972,14 +1075,15 @@ export function reviseDraftVoucher(workspace, { voucherId, summary, lines, evide
   voucher.status = "draft";
   voucher.updatedAt = resolvedContext.at;
   voucher.updatedBy = resolvedContext.actor;
+  synchronizeVoucherJudgementAccounts(next, voucher, resolvedContext, reason.trim());
   voucher.versions = [...(voucher.versions || []), before, voucherSnapshot(voucher, resolvedContext, reason.trim())];
   appendAuditEntry(next, {
     action: "voucher.revise",
     entityType: "voucher",
     entityId: voucher.id,
     detail: reason.trim(),
-    before: { version: before.version, summary: before.summary, lines: before.lines },
-    after: { version: voucher.version, summary: voucher.summary, lines: voucher.lines },
+    before: { version: before.version, summary: before.summary, lines: before.lines, judgement: before.judgement },
+    after: { version: voucher.version, summary: voucher.summary, lines: voucher.lines, judgement: structuredClone(voucher.judgement) },
     sourceIds: collectSourceIds(voucher.id, voucher.sourceIds, voucher.evidenceIds),
   }, resolvedContext);
   return next;
@@ -1007,6 +1111,7 @@ export function createPostedVoucherRevision(workspace, { voucherId, reason }, co
     reviews: [],
     versions: [voucherSnapshot(original, resolvedContext, "修订前已入账版本")],
   };
+  synchronizeVoucherJudgementAccounts(next, revision, resolvedContext, reason.trim());
   next.vouchers.push(revision);
   appendAuditEntry(next, {
     action: "voucher.create_revision",

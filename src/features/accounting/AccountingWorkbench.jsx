@@ -222,6 +222,65 @@ function WorkspaceAccountSelect({ workspace, accounts, value, onChange, required
   );
 }
 
+function voucherLineAccountPresentation(workspace, accounts, lines = []) {
+  const seen = new Set();
+  const lineAccounts = [];
+  lines.forEach((line) => {
+    const accountId = String(line.account || "").trim();
+    if (!accountId || seen.has(accountId)) return;
+    seen.add(accountId);
+    const definition = accounts.find((account) => account.id === accountId)
+      || accountDefinition(accountId, workspace);
+    lineAccounts.push({
+      account: accountId,
+      accountLabel: definition?.label || accountId,
+      cash: Boolean(definition?.cash),
+    });
+  });
+  const businessAccounts = lineAccounts.filter((account) => !account.cash);
+  const primaryText = businessAccounts.length === 1
+    ? businessAccounts[0].accountLabel
+    : businessAccounts.length > 1
+      ? `多科目（${businessAccounts.length} 项），不指定单一主科目`
+      : lineAccounts.length
+        ? "资金类分录，不指定业务主科目"
+        : "无有效分录科目";
+  return {
+    lineAccounts,
+    accountText: lineAccounts.map((account) => account.accountLabel).join("、") || "无有效分录科目",
+    primaryText,
+  };
+}
+
+function VoucherAccountJudgement({ workspace, accounts, voucher, lines, pending = false }) {
+  const current = voucherLineAccountPresentation(workspace, accounts, lines);
+  const judgement = voucher.judgement || {};
+  const original = judgement.originalAccountJudgement || (
+    judgement.account || judgement.accountLabel || judgement.accountingAttributes?.primaryAccount
+      ? {
+        account: judgement.account || judgement.accountingAttributes?.primaryAccount,
+        accountLabel: judgement.accountLabel || judgement.accountingAttributes?.primaryAccountLabel,
+      }
+      : null
+  );
+  const originalLabel = original?.accountLabel
+    || (original?.account ? workspaceAccountLabel(workspace, accounts, original.account) : null);
+  const sync = judgement.accountSync;
+  const syncText = pending
+    ? "保存后写入新版本"
+    : sync
+      ? `V${sync.version} · ${sync.actor || "系统"}`
+      : "历史凭证，待下次修订同步";
+  return (
+    <div className="engine-summary">
+      <span><small>{pending ? "待保存分录科目" : "当前分录科目"}</small><strong>{current.accountText}</strong></span>
+      <span><small>当前主科目口径</small><strong>{current.primaryText}</strong></span>
+      {originalLabel && <span><small>原始业务判断（仅追溯）</small><strong>{originalLabel}</strong></span>}
+      <span><small>判断同步</small><strong>{syncText}</strong></span>
+    </div>
+  );
+}
+
 function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChange }) {
   return (
     <div className="engine-voucher-lines">
@@ -521,6 +580,13 @@ function MemberBusinessAccountingQueue({ onToast }) {
                 <summary>{voucher ? "查看凭证分录与复核" : definition.suggestedEntry}</summary>
                 {voucher ? <div className="engine-voucher-card">
                   <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借方 ¥{money(validation?.debit)} · 贷方 ¥{money(validation?.credit)} · {validation?.balanced ? "借贷平衡" : "借贷不平"}</small></span><em>{voucher.status}</em></div>
+                  <VoucherAccountJudgement
+                    workspace={activeWorkspace}
+                    accounts={accountOptions}
+                    voucher={voucher}
+                    lines={editableLines}
+                    pending={Boolean(voucherLineDrafts[voucher.id])}
+                  />
                   <VoucherLineAccountEditor
                     workspace={activeWorkspace}
                     accounts={accountOptions}
@@ -1304,7 +1370,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
           <div className="engine-subheading"><strong>{businessEvent.businessEventNo} · {businessEvent.businessTypeLabel}</strong><small>已形成人工业务事件；入账策略：仅允许后续人工复核</small></div>
           <div className="engine-summary">
             <span><small>业务期 / 资金期</small><strong>{businessEvent.businessPeriod} / {businessEvent.fundingPeriod}</strong></span>
-            <span><small>会计属性</small><strong>{accountDefinition(businessEvent.accountingAttributes.primaryAccount, activeWorkspace).label}</strong></span>
+            <span><small>业务事件原判断</small><strong>{accountDefinition(businessEvent.accountingAttributes.primaryAccount, activeWorkspace).label}</strong></span>
             <span><small>税务属性</small><strong>{BUSINESS_EVENT_TAX_TREATMENTS.find((item) => item.id === businessEvent.taxAttributes.treatment)?.label || businessEvent.taxAttributes.treatment}</strong></span>
             <span><small>证据 / 置信度</small><strong>{businessEvent.evidenceCompleteness}% / {businessEvent.confidence}%</strong></span>
             <span><small>凭证状态</small><strong>{businessEvent.accountingStatus || "unprocessed"}</strong></span>
@@ -1443,6 +1509,13 @@ export function AccountingWorkbench({ transactionId, onToast }) {
             <article className="engine-voucher-card" key={voucher.id}>
               <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借贷 ¥{money(voucher.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0))} · 附件包 {attachments.status === "complete" ? "完整" : "待补"} · V{voucher.version}</small></span><em>{voucher.status}</em></div>
               {editable && <input value={voucherSummaries[voucher.id] ?? voucher.summary} onChange={(event) => setVoucherSummaries((current) => ({ ...current, [voucher.id]: event.target.value }))} aria-label="凭证摘要" />}
+              <VoucherAccountJudgement
+                workspace={activeWorkspace}
+                accounts={accountOptions}
+                voucher={voucher}
+                lines={editableLines}
+                pending={Boolean(voucherLineDrafts[voucher.id])}
+              />
               <VoucherLineAccountEditor workspace={activeWorkspace} accounts={accountOptions} lines={editableLines} editable={editable} onChange={(lineIndex, account) => changeVoucherLineAccount(voucher, lineIndex, account)} />
               {editable && hasUnavailableAccount && <div className="engine-missing"><span>草稿含已停用科目：历史分录仍可查看，但必须改选有效科目后才能保存或入账。</span></div>}
               <div className="engine-inline">
@@ -1456,7 +1529,10 @@ export function AccountingWorkbench({ transactionId, onToast }) {
                 <p>流水 {trace.transactions.length} · 关联流水 {trace.relatedTransactions?.length || 0} · 业务事件 {trace.businessEvents.length} · 账单 {trace.bills.length} · 订单/合同 {trace.businessReferences?.filter((reference) => reference.kind === "order_contract").length || 0} · 资料 {trace.documents.length} · 历史版本 {trace.versions.length} · 审计 {trace.audit.length}</p>
                 <ul className="engine-trace-list">
                   {attachments.manifest.map((item) => <li key={item.id}><strong>{item.kind}</strong><span>{item.name}</span></li>)}
-                  {trace.versions.map((version, index) => <li key={`${version.version || "history"}-${index}`}><strong>历史版本 V{version.version || index + 1}</strong><span>{version.summary || version.reason || "凭证修订记录"}</span></li>)}
+                  {trace.versions.map((version, index) => {
+                    const versionAccounts = voucherLineAccountPresentation(activeWorkspace, accountOptions, version.lines || []);
+                    return <li key={`${version.version || "history"}-${index}`}><strong>历史版本 V{version.version || index + 1}</strong><span>{version.summary || "凭证修订记录"} · {version.reason || "无单独修订说明"} · 分录科目：{versionAccounts.accountText}</span></li>;
+                  })}
                 </ul>
                 {attachments.missing.length > 0 && <div className="engine-missing">{attachments.missing.map((item) => <span key={item.id}>待补：{item.label || item.id}</span>)}</div>}
               </details>

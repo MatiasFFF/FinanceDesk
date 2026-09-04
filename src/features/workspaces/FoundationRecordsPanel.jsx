@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Buildings,
+  CaretDown,
+  CaretUp,
   Check,
   FileText,
   PencilSimple,
@@ -765,6 +767,9 @@ function nextCategoryRuleId(rules) {
   return `category-rule-${String(maximum + 1).padStart(4, "0")}`;
 }
 
+const CATEGORY_RULE_PREVIEW_LIMIT = 6;
+const MEMBER_CATEGORY_RULE_LANGUAGE = /会员|私教|团课|教练|课包|耗课/;
+
 function AccountingRuleEditor({ onToast }) {
   const { state, activeWorkspace, actions } = useFinanceDesk();
   const active = activeAccountingRuleSet(activeWorkspace);
@@ -781,6 +786,52 @@ function AccountingRuleEditor({ onToast }) {
   const [draft, setDraft] = useState(() => ruleDraft(activeWorkspace));
   const [error, setError] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
+  const categoryRulePreview = useMemo(() => {
+    const invalidRuleIndexes = [];
+    const eligibleRules = draft.categoryKeywords.flatMap((rule, index) => {
+      if (!rule.enabled) return [];
+      const businessDefinition = CATEGORY_RULE_BUSINESS_TYPES.find((item) => item.id === rule.businessType);
+      const memberOnly = Boolean(businessDefinition?.memberOnly)
+        || MEMBER_CATEGORY_RULE_LANGUAGE.test(`${rule.id || ""} ${rule.keyword || ""}`);
+      if (!membersEnabled && memberOnly) return [];
+      const keyword = String(rule.keyword || "").trim();
+      if (!keyword) {
+        invalidRuleIndexes.push(index);
+        return [];
+      }
+      try {
+        return [{ rule, index, expression: new RegExp(keyword, "i") }];
+      } catch {
+        invalidRuleIndexes.push(index);
+        return [];
+      }
+    });
+    let totalMatches = 0;
+    const samples = [];
+    (activeWorkspace.transactions || []).forEach((transaction) => {
+      const text = `${transaction.counterparty || ""} ${transaction.summary || ""}`;
+      const matched = eligibleRules.find(({ expression }) => expression.test(text));
+      if (!matched) return;
+      totalMatches += 1;
+      if (samples.length >= CATEGORY_RULE_PREVIEW_LIMIT) return;
+      const businessDefinition = CATEGORY_RULE_BUSINESS_TYPES.find((item) => item.id === matched.rule.businessType);
+      const account = activeAccounts.find((item) => item.id === matched.rule.account);
+      samples.push({
+        transaction,
+        rule: matched.rule,
+        ruleIndex: matched.index,
+        businessTypeLabel: businessDefinition?.label || matched.rule.businessType || "未设置业务类型",
+        accountLabel: account?.label || `${matched.rule.account || "未选择科目"}（不可用）`,
+      });
+    });
+    return {
+      eligibleRuleCount: eligibleRules.length,
+      invalidRuleIndexes,
+      samples,
+      totalMatches,
+      totalTransactions: (activeWorkspace.transactions || []).length,
+    };
+  }, [draft.categoryKeywords, activeWorkspace.transactions, activeAccounts, membersEnabled]);
 
   useEffect(() => {
     setDraft(ruleDraft(activeWorkspace));
@@ -830,6 +881,17 @@ function AccountingRuleEditor({ onToast }) {
     }));
   }
 
+  function moveCategoryRule(ruleId, offset) {
+    setDraft((current) => {
+      const index = current.categoryKeywords.findIndex((rule) => rule.id === ruleId);
+      const targetIndex = index + offset;
+      if (index < 0 || targetIndex < 0 || targetIndex >= current.categoryKeywords.length) return current;
+      const categoryKeywords = [...current.categoryKeywords];
+      [categoryKeywords[index], categoryKeywords[targetIndex]] = [categoryKeywords[targetIndex], categoryKeywords[index]];
+      return { ...current, categoryKeywords };
+    });
+  }
+
   function save(event) {
     event.preventDefault();
     setError("");
@@ -869,14 +931,14 @@ function AccountingRuleEditor({ onToast }) {
           <div className="foundation-divider" />
           <div className="foundation-section-heading"><div><small>按列表顺序匹配流水摘要与交易对方</small><h4>关键词分类规则</h4></div><button className="secondary-button" type="button" onClick={addCategoryRule}><Plus size={16} />新增规则</button></div>
           <p className="foundation-hint">关键词支持用“|”表示任一关键词；目标科目只列出当前工作台已启用的科目。规则只形成分类建议，不会自动入账。</p>
-          <div className="foundation-record-list">
+          <div className="foundation-record-list category-rule-list">
             {draft.categoryKeywords.map((rule, index) => {
               const selectedBusinessType = CATEGORY_RULE_BUSINESS_TYPES.find((item) => item.id === rule.businessType);
               const businessTypeAvailable = businessTypes.some((item) => item.id === rule.businessType);
               const selectedAccount = activeAccounts.find((account) => account.id === rule.account);
               return (
-                <article className="foundation-record" key={rule.id}>
-                  <div className="entity-form">
+                <article className="foundation-record category-rule-record" key={rule.id}>
+                  <div className="entity-form category-rule-fields">
                     <label className="foundation-field"><span>关键词</span><input required value={rule.keyword} onChange={(event) => updateCategoryRule(rule.id, { keyword: event.target.value })} placeholder="例如：电费|国家电网" /></label>
                     {!businessTypeAvailable && selectedBusinessType
                       ? <label className="foundation-field"><span>业务类型</span><input value={`${selectedBusinessType.label}（会员模块已停用）`} readOnly /></label>
@@ -884,12 +946,52 @@ function AccountingRuleEditor({ onToast }) {
                     <label className="foundation-field"><span>目标有效科目</span><select required value={rule.account} onChange={(event) => updateCategoryRule(rule.id, { account: event.target.value })}>{!selectedAccount && rule.account && <option value={rule.account} disabled>{rule.account}（已停用或不存在）</option>}{activeAccounts.map((account) => <option value={account.id} key={account.id}>{account.label}</option>)}</select></label>
                     <label className="foundation-field"><span>状态</span><select value={String(rule.enabled)} onChange={(event) => updateCategoryRule(rule.id, { enabled: event.target.value === "true" })}><option value="true">启用</option><option value="false">停用</option></select></label>
                   </div>
-                  <span className="foundation-record-actions"><small className="foundation-record-status">规则 {index + 1}</small><button type="button" aria-label={`删除第 ${index + 1} 条分类规则`} onClick={() => removeCategoryRule(rule.id)}><Trash size={15} /></button></span>
+                  <span className="foundation-record-actions category-rule-order-actions">
+                    <small className="foundation-record-status">优先级 {index + 1}</small>
+                    <button type="button" aria-label={`上移第 ${index + 1} 条分类规则`} title="提高优先级" disabled={index === 0} onClick={() => moveCategoryRule(rule.id, -1)}><CaretUp size={15} /></button>
+                    <button type="button" aria-label={`下移第 ${index + 1} 条分类规则`} title="降低优先级" disabled={index === draft.categoryKeywords.length - 1} onClick={() => moveCategoryRule(rule.id, 1)}><CaretDown size={15} /></button>
+                    <button type="button" aria-label={`删除第 ${index + 1} 条分类规则`} title="删除规则" onClick={() => removeCategoryRule(rule.id)}><Trash size={15} /></button>
+                  </span>
                 </article>
               );
             })}
             {!draft.categoryKeywords.length && <p className="foundation-empty">还没有关键词分类规则。</p>}
           </div>
+          <section className="category-rule-preview" aria-live="polite">
+            <div className="category-rule-preview-heading">
+              <div><small>即时预览 · 当前工作台真实流水</small><h4>关键词命中结果</h4></div>
+              <span>{categoryRulePreview.totalMatches} / {categoryRulePreview.totalTransactions} 条命中</span>
+            </div>
+            {categoryRulePreview.invalidRuleIndexes.length > 0 && <p className="category-rule-preview-warning">规则 {categoryRulePreview.invalidRuleIndexes.map((index) => index + 1).join("、")} 的关键词为空或表达式无效，当前未参与预览。</p>}
+            {categoryRulePreview.totalTransactions === 0
+              ? <p className="foundation-empty">当前工作台还没有真实银行流水，暂时无法预览命中结果。</p>
+              : categoryRulePreview.eligibleRuleCount === 0
+                ? <p className="foundation-empty">当前没有可参与预览的启用规则；停用规则和已关闭模块的会员规则不会参与。</p>
+                : categoryRulePreview.totalMatches === 0
+                  ? <p className="foundation-empty">当前工作台流水没有命中任何启用规则。</p>
+                  : <div className="category-rule-preview-list">
+                    {categoryRulePreview.samples.map(({ transaction, rule, ruleIndex, businessTypeLabel, accountLabel }, sampleIndex) => {
+                      const amount = Number(transaction.amount);
+                      const amountLabel = Number.isFinite(amount)
+                        ? `${amount >= 0 ? "+" : "-"}¥${Math.abs(amount).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : "金额未填写";
+                      return (
+                        <article className="category-rule-preview-item" key={`${transaction.id || "transaction"}-${sampleIndex}`}>
+                          <div className="category-rule-preview-transaction">
+                            <span><strong>{transaction.counterparty || "未填写交易对方"}</strong><small>{transaction.summary || "无流水摘要"}</small></span>
+                            <span><small>{transaction.date || "日期未填写"}</small><strong className={amount >= 0 ? "income" : "expense"}>{amountLabel}</strong></span>
+                          </div>
+                          <dl className="category-rule-preview-meta">
+                            <div><dt>命中规则</dt><dd>优先级 {ruleIndex + 1} · {rule.keyword}</dd></div>
+                            <div><dt>业务类型</dt><dd>{businessTypeLabel}</dd></div>
+                            <div><dt>目标科目</dt><dd>{accountLabel}</dd></div>
+                          </dl>
+                        </article>
+                      );
+                    })}
+                    {categoryRulePreview.totalMatches > categoryRulePreview.samples.length && <p className="foundation-hint">仅展示前 {CATEGORY_RULE_PREVIEW_LIMIT} 条，共命中 {categoryRulePreview.totalMatches} 条真实流水。</p>}
+                  </div>}
+          </section>
           <div className="foundation-inline-actions"><button className="primary-button" type="submit">保存并启用规则</button><button className="secondary-button" type="button" onClick={cancel}>取消</button></div>
           {error && <p className="entity-error">{error}</p>}
         </form>

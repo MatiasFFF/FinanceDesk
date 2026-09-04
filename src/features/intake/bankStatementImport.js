@@ -869,7 +869,7 @@ function synchronizeBankReconciliationTask(tasks, monthly, plan, actor) {
   }
   const issue = reconciliationIssue(monthly, { accountId: plan.accountId, period: plan.period });
   const accountName = monthly.accountName || plan.accountId;
-  const message = `${accountName} · ${plan.period}：${issue.message}。流水已保存，可继续导入缺失流水或更正余额后重新勾稽。`;
+  const message = `${accountName} · ${plan.period}：${issue.message}。当前流水与余额资料已保留，可继续导入缺失流水或更正余额后重新勾稽。`;
   const sourceIds = [...new Set([...(current?.sourceIds || []), plan.accountId, plan.id, plan.sourceDocumentId].filter(Boolean))];
   if (current) {
     next[index] = {
@@ -897,7 +897,7 @@ function synchronizeBankReconciliationTask(tasks, monthly, plan, actor) {
     sourceId: plan.accountId,
     accountId: plan.accountId,
     period: plan.period,
-    importId: plan.id,
+    importId: plan.id || null,
     message,
     missingEvidence: [],
     status: "open",
@@ -913,6 +913,8 @@ function synchronizeBankReconciliationTask(tasks, monthly, plan, actor) {
 
 export function buildBankMonthlyReconciliation(workspace, { accountId, period }) {
   const account = (workspace.bankAccounts || []).find((item) => item.id === accountId);
+  const reviewedBalances = account?.reconciliationBalances?.[period];
+  const hasReviewedBalances = Boolean(reviewedBalances && typeof reviewedBalances === "object");
   const transactions = (workspace.transactions || []).filter((transaction) => (
     transaction.accountId === accountId && String(transaction.date || "").slice(0, 7) === period
   ));
@@ -944,10 +946,14 @@ export function buildBankMonthlyReconciliation(workspace, { accountId, period })
   const openingRecord = chronological.find((record) => normalizeMoney(record.reconciliation?.openingBalance) != null);
   const closingRecord = closingOrder.find((record) => normalizeMoney(record.reconciliation?.statementClosing) != null);
   const accountFallbackAllowed = imports.length === 0 && period === workspace.currentPeriod;
-  const openingBalance = normalizeMoney(openingRecord?.reconciliation?.openingBalance
-    ?? (accountFallbackAllowed ? account?.openingBalance : null));
-  const statementClosing = normalizeMoney(closingRecord?.reconciliation?.statementClosing
-    ?? (accountFallbackAllowed ? account?.statementClosing : null));
+  const openingBalance = hasReviewedBalances
+    ? normalizeMoney(reviewedBalances.openingBalance)
+    : normalizeMoney(openingRecord?.reconciliation?.openingBalance
+      ?? (accountFallbackAllowed ? account?.openingBalance : null));
+  const statementClosing = hasReviewedBalances
+    ? normalizeMoney(reviewedBalances.statementClosing)
+    : normalizeMoney(closingRecord?.reconciliation?.statementClosing
+      ?? (accountFallbackAllowed ? account?.statementClosing : null));
   const income = Math.round(transactions.filter((transaction) => Number(transaction.amount) > 0)
     .reduce((sum, transaction) => sum + Number(transaction.amount), 0) * 100) / 100;
   const expense = Math.round(transactions.filter((transaction) => Number(transaction.amount) < 0)
@@ -990,6 +996,9 @@ export function buildBankMonthlyReconciliation(workspace, { accountId, period })
     passed,
     status,
     message,
+    balanceSource: hasReviewedBalances ? "account_recheck" : imports.length ? "import_records" : "account_master",
+    balanceReviewedAt: hasReviewedBalances ? reviewedBalances.reconciledAt || null : null,
+    balanceReviewedBy: hasReviewedBalances ? reviewedBalances.reconciledBy || null : null,
   };
 }
 
@@ -1024,6 +1033,86 @@ export function buildBankAccountReconciliationSummary(workspace, { period }) {
     incompleteCount,
     passed,
     message,
+  };
+}
+
+function bankReconciliationStageState(workspace, exceptionTasks, period, updatedAt) {
+  const accountSummary = buildBankAccountReconciliationSummary(workspace, { period });
+  const hasOpenImportTasks = (exceptionTasks || []).some((task) => (
+    task.status !== "resolved"
+    && ["bankTransaction", "bankReconciliation"].includes(task.sourceType)
+  ));
+  return {
+    accountSummary,
+    stage: {
+      status: accountSummary.passed && !hasOpenImportTasks ? "complete" : "needs_review",
+      updatedAt,
+    },
+  };
+}
+
+export function reconcileBankAccountPeriod(workspace, input = {}) {
+  if (!workspace?.id) throw new Error("找不到需要重新勾稽的工作台");
+  const accountId = String(input.accountId || "").trim();
+  const period = String(input.period || "").trim();
+  if (!validPeriod(period)) throw new Error("请选择有效账期后再重新勾稽");
+  const account = (workspace.bankAccounts || []).find((item) => item.id === accountId);
+  if (!account) throw new Error("找不到需要重新勾稽的银行账户");
+  const actor = String(input.actor || "本地用户").trim() || "本地用户";
+  const reconciledAt = input.reconciledAt || new Date().toISOString();
+  const balanceSnapshot = {
+    openingBalance: normalizeMoney(account.openingBalance),
+    statementClosing: normalizeMoney(account.statementClosing),
+    reconciledAt,
+    reconciledBy: actor,
+    source: "bank_account_master",
+  };
+  const bankAccounts = (workspace.bankAccounts || []).map((item) => item.id === accountId ? {
+    ...item,
+    reconciliationBalances: {
+      ...(item.reconciliationBalances || {}),
+      [period]: balanceSnapshot,
+    },
+    updatedAt: reconciledAt,
+  } : item);
+  const workspaceWithBalances = {
+    ...workspace,
+    bankAccounts,
+    accounts: bankAccounts,
+  };
+  const monthly = buildBankMonthlyReconciliation(workspaceWithBalances, { accountId, period });
+  const identity = reconciliationTaskIdentity(accountId, period);
+  const hadOpenException = (workspace.exceptionTasks || []).some((task) => (
+    task.identity === identity && task.status !== "resolved"
+  ));
+  const exceptionTasks = synchronizeBankReconciliationTask(
+    workspace.exceptionTasks,
+    monthly,
+    { accountId, period, importedAt: reconciledAt },
+    actor,
+  );
+  const workspaceWithTasks = { ...workspaceWithBalances, exceptionTasks };
+  const { accountSummary, stage } = bankReconciliationStageState(
+    workspaceWithTasks,
+    exceptionTasks,
+    period,
+    reconciledAt,
+  );
+  const exceptionAction = monthly.passed
+    ? hadOpenException ? "resolved" : "none"
+    : hadOpenException ? "updated" : "created";
+  return {
+    workspace: {
+      ...workspaceWithTasks,
+      stages: {
+        ...workspace.stages,
+        s3: stage,
+      },
+    },
+    reconciliation: monthly,
+    accountSummary,
+    exceptionAction,
+    reconciledAt,
   };
 }
 
@@ -1694,20 +1783,18 @@ export function applyBankImport(state, workspaceId, plan, options = {}) {
     };
     const importTasks = [...updatedExceptionTasks, ...exceptionTasks, ...relatedAliasTasks];
     const reconciledTasks = synchronizeBankReconciliationTask(importTasks, monthly, effectivePlan, actor);
-    const accountSummary = buildBankAccountReconciliationSummary(withFinalRecord, { period: effectivePlan.period });
-    const hasOpenImportTasks = reconciledTasks.some((task) => (
-      task.status !== "resolved"
-      && ["bankTransaction", "bankReconciliation"].includes(task.sourceType)
-    ));
+    const { stage } = bankReconciliationStageState(
+      { ...withFinalRecord, exceptionTasks: reconciledTasks },
+      reconciledTasks,
+      effectivePlan.period,
+      effectivePlan.importedAt,
+    );
     return {
       ...withFinalRecord,
       exceptionTasks: reconciledTasks,
       stages: {
         ...workspace.stages,
-        s3: {
-          status: accountSummary.passed && !hasOpenImportTasks ? "complete" : "needs_review",
-          updatedAt: effectivePlan.importedAt,
-        },
+        s3: stage,
       },
     };
   }, {

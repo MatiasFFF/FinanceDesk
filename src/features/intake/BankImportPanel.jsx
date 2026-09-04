@@ -15,6 +15,7 @@ import {
   preparePlatformSettlementImport,
   readBankFile,
   readPlatformSettlementFile,
+  reconcileBankAccountPeriod,
 } from "./bankStatementImport.js";
 import { hashLocalFile, removeLocalDocument, saveLocalDocument } from "./documentIntake.js";
 
@@ -57,6 +58,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
   const [counterpartyMappings, setCounterpartyMappings] = useState({});
   const [counterpartyMappingDirty, setCounterpartyMappingDirty] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [reconciling, setReconciling] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [settlementChannel, setSettlementChannel] = useState("wechat");
@@ -384,6 +386,59 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
     }
   }
 
+  function recheckMonthlyReconciliation() {
+    if (reconciling || !accountId || !period) return;
+    setReconciling(true);
+    setError("");
+    setNotice("");
+    try {
+      const latestState = store.getState();
+      const latestWorkspace = latestState.workspaces.find((workspace) => workspace.id === activeWorkspace.id);
+      if (!latestWorkspace) throw new Error("当前工作台已不存在，请重新选择工作台");
+      const latestAccount = latestWorkspace.bankAccounts.find((item) => item.id === accountId);
+      if (!latestAccount) throw new Error("当前银行账户已不存在，请重新选择账户");
+      const actor = latestWorkspace.users?.find((user) => (
+        user.id === latestState.activeUserId && user.status === "active"
+      ))?.name?.trim() || latestWorkspace.users?.find((user) => user.status === "active")?.name?.trim() || "本地用户";
+      const result = reconcileBankAccountPeriod(latestWorkspace, {
+        accountId,
+        period,
+        actor,
+      });
+      const exceptionText = result.exceptionAction === "resolved"
+        ? "对应月度勾稽异常已关闭"
+        : result.exceptionAction === "created"
+          ? "已创建月度勾稽异常"
+          : result.exceptionAction === "updated"
+            ? "已更新现有月度勾稽异常"
+            : "无需新增月度勾稽异常";
+      const stageText = result.workspace.stages?.s3?.status === "complete"
+        ? "银行勾稽阶段已完成"
+        : "银行勾稽阶段继续待复核";
+      actions.replaceWorkspace(latestWorkspace.id, result.workspace, {
+        actor,
+        timestamp: result.reconciledAt,
+        audit: {
+          action: "重新勾稽银行账户",
+          detail: `${latestAccount.name || latestAccount.id} · ${period}：${result.reconciliation.message}；按 ${result.reconciliation.batchCount} 个导入批次、${result.reconciliation.transactionCount} 笔现有流水重算；${exceptionText}；${stageText}`,
+          objectType: "bankReconciliation",
+          objectId: `${accountId}:${period}`,
+        },
+      });
+      const message = result.reconciliation.passed
+        ? `重新勾稽完成：${result.reconciliation.message}；${exceptionText}，${stageText}`
+        : `重新勾稽未通过：${result.reconciliation.message}；${exceptionText}，${stageText}`;
+      if (result.reconciliation.passed) setNotice(message);
+      else setError(message);
+      onToast?.(message);
+    } catch (caught) {
+      setNotice("");
+      setError(`重新勾稽失败：${caught.message || "无法完成月度勾稽"}`);
+    } finally {
+      setReconciling(false);
+    }
+  }
+
   async function chooseSettlementFile(event) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -609,8 +664,8 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
 
       {account && period && (
         <div className="bank-import-workspace">
-          <div className="bank-file-summary"><span><strong>{displayAccountIdentity(account)} · {period} 月度勾稽</strong><small>{monthlyReconciliation.batchCount} 个导入批次 · {monthlyReconciliation.transactionCount} 笔账户流水{monthlyReconciliation.dateFrom ? ` · ${monthlyReconciliation.dateFrom} 至 ${monthlyReconciliation.dateTo}` : ""}</small></span><span className={monthlyReconciliation.passed ? "mapping-badge" : "mapping-badge warning"}>{monthlyReconciliation.passed ? "已完成" : "未完成"}</span></div>
-          <div className={`import-report ${monthlyReconciliation.passed ? "passed" : "warning"}`}><span>{monthlyReconciliation.passed ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} />}</span><div><strong>{monthlyReconciliation.message}</strong><p>期初 {displayMoney(monthlyReconciliation.openingBalance)} ＋ 收入 {displayMoney(monthlyReconciliation.income)} − 支出 {displayMoney(monthlyReconciliation.expense)} ＝ 计算期末 {displayMoney(monthlyReconciliation.calculatedClosing)}；对账单期末 {displayMoney(monthlyReconciliation.statementClosing)}；差额 {displayMoney(monthlyReconciliation.difference)}</p></div></div>
+          <div className="bank-file-summary"><span><strong>{displayAccountIdentity(account)} · {period} 月度勾稽</strong><small>{monthlyReconciliation.batchCount} 个导入批次 · {monthlyReconciliation.transactionCount} 笔账户流水{monthlyReconciliation.dateFrom ? ` · ${monthlyReconciliation.dateFrom} 至 ${monthlyReconciliation.dateTo}` : ""}</small></span><div className="foundation-inline-actions"><span className={monthlyReconciliation.passed ? "mapping-badge" : "mapping-badge warning"}>{monthlyReconciliation.passed ? "已完成" : "未完成"}</span><button className="secondary-button" disabled={busy || reconciling} type="button" onClick={recheckMonthlyReconciliation}>{reconciling ? "正在重新勾稽…" : "重新勾稽"}</button></div></div>
+          <div className={`import-report ${monthlyReconciliation.passed ? "passed" : "warning"}`}><span>{monthlyReconciliation.passed ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} />}</span><div><strong>{monthlyReconciliation.message}</strong><p>期初 {displayMoney(monthlyReconciliation.openingBalance)} ＋ 收入 {displayMoney(monthlyReconciliation.income)} − 支出 {displayMoney(monthlyReconciliation.expense)} ＝ 计算期末 {displayMoney(monthlyReconciliation.calculatedClosing)}；对账单期末 {displayMoney(monthlyReconciliation.statementClosing)}；差额 {displayMoney(monthlyReconciliation.difference)}</p>{monthlyReconciliation.balanceSource === "account_recheck" && <small>余额口径：基础资料中的账户余额；最后重新勾稽 {displayDateTime(monthlyReconciliation.balanceReviewedAt)}{monthlyReconciliation.balanceReviewedBy ? ` · ${monthlyReconciliation.balanceReviewedBy}` : ""}</small>}</div></div>
           {monthlyReconciliation.imports.length > 0 && <div className="bank-preview-scroll"><table><thead><tr><th>导入文件</th><th>数据起止日期</th><th>导入时间</th><th>操作者</th><th>新增</th><th>重复</th><th>流水异常</th><th>导入时勾稽</th></tr></thead><tbody>{monthlyReconciliation.imports.map((record) => <tr key={record.id}><td>{record.fileName}</td><td>{record.dateFrom || "—"} 至 {record.dateTo || "—"}</td><td>{displayDateTime(record.importedAt)}</td><td>{record.actor}</td><td>{record.importableRowCount} 笔</td><td>{record.duplicateCount} 笔</td><td>{record.anomalousRowCount} 笔</td><td>{record.reconciliation?.passed ? "已通过" : record.reconciliation?.message || "未完成"}</td></tr>)}</tbody></table></div>}
         </div>
       )}
