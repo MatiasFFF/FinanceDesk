@@ -188,19 +188,42 @@ function WorkspaceMenu({ state, activeWorkspace, onSwitch, onOpenDialog, onClose
   );
 }
 
-function Sidebar({ state, workspace, page, onPage, onSwitchWorkspace, onOpenWorkspaceDialog }) {
+function Sidebar({ state, workspace, page, onPage, onSwitchWorkspace, onSwitchUser, onOpenWorkspaceDialog }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const accountSwitcherRef = useRef(null);
+  const accountTriggerRef = useRef(null);
   const navigation = primaryNavigationForWorkspace(workspace);
-  const operator = workspace?.users?.find((user) => user.id === state.activeUserId && user.status === "active")
-    || workspace?.users?.find((user) => user.status === "active")
+  const activeUsers = (workspace?.users || []).filter((user) => user.status === "active");
+  const operator = activeUsers.find((user) => user.id === state.activeUserId)
+    || activeUsers[0]
     || null;
+  const roleName = (user) => workspace.roles?.find((role) => role.id === user?.roleId || role.name === user?.role)?.name || user?.role || "未设置角色";
   const operatorRole = operator
-    ? workspace.roles?.find((role) => role.id === operator.roleId || role.name === operator.role)?.name || operator.role || "未设置角色"
+    ? roleName(operator)
     : "可在基础资料中设置";
+  useEffect(() => { setAccountOpen(false); }, [workspace?.id]);
+  useEffect(() => {
+    if (!accountOpen) return undefined;
+    function closeOnOutsidePointer(event) {
+      if (!accountSwitcherRef.current?.contains(event.target)) setAccountOpen(false);
+    }
+    function closeOnEscape(event) {
+      if (event.key !== "Escape") return;
+      setAccountOpen(false);
+      accountTriggerRef.current?.focus();
+    }
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [accountOpen]);
   return (
     <aside className="sidebar">
       <div className="sidebar-brand-wrap">
-        <button className="brand" onClick={() => setMenuOpen((value) => !value)} type="button">
+        <button className="brand" onClick={() => { setAccountOpen(false); setMenuOpen((value) => !value); }} type="button">
           <span className="brand-copy"><strong>{PRODUCT_NAME}</strong><small>{workspace?.name || "还没有工作台"}</small></span>
           <CaretDown size={14} />
         </button>
@@ -223,7 +246,21 @@ function Sidebar({ state, workspace, page, onPage, onSwitchWorkspace, onOpenWork
 
       <div className="sidebar-bottom">
         {workspace && <div className="period-card"><CalendarBlank size={18} /><div><small>当前账期</small><strong>{formatPeriod(workspace.currentPeriod)}</strong></div></div>}
-        <div className="account-card"><span className="avatar">{operator?.name?.trim()?.slice(0, 1) || "—"}</span><div><strong>{operator?.name || "未设置操作人员"}</strong><small>{operatorRole}</small></div></div>
+        <div className="account-switcher" ref={accountSwitcherRef}>
+          <button ref={accountTriggerRef} className="account-card account-switcher-trigger" aria-expanded={accountOpen} aria-haspopup="menu" aria-label="切换本地操作人员" onClick={() => { setMenuOpen(false); setAccountOpen((value) => !value); }} type="button"><span className="avatar">{operator?.name?.trim()?.slice(0, 1) || "—"}</span><div><strong>{operator?.name || "未设置操作人员"}</strong><small>{operatorRole}</small></div><CaretDown size={14} /></button>
+          {accountOpen && (
+            <div className="account-switcher-menu" role="menu">
+              {activeUsers.length ? (
+                <>
+                  {activeUsers.map((user) => <button className={user.id === operator?.id ? "active" : ""} disabled={user.id === operator?.id} key={user.id} onClick={() => { onSwitchUser(user.id); setAccountOpen(false); }} role="menuitem" type="button"><span className="avatar">{user.name?.trim()?.slice(0, 1) || "—"}</span><span><strong>{user.name}</strong><small>{roleName(user)}</small></span>{user.id === operator?.id && <Check size={16} weight="bold" />}</button>)}
+                  <button className="account-switcher-manage" onClick={() => { onPage("setup"); setAccountOpen(false); }} role="menuitem" type="button"><GearSix size={16} /><span><strong>管理人员与角色</strong><small>前往基础资料</small></span></button>
+                </>
+              ) : (
+                <button className="account-switcher-empty" onClick={() => { onPage("setup"); setAccountOpen(false); }} role="menuitem" type="button"><Plus size={16} /><span><strong>去基础资料添加人员</strong><small>不创建虚构登录身份</small></span></button>
+              )}
+            </div>
+          )}
+        </div>
         <BoundaryNote compact />
       </div>
     </aside>
@@ -906,7 +943,7 @@ function WorkspaceDialog({ mode, workspace, onClose, onSubmit }) {
     }));
   }
   return (
-    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><form className="modal-card workspace-dialog" onSubmit={submit}><div className="modal-heading"><div><p className="eyebrow">{PRODUCT_NAME}</p><h2>{title}</h2></div><button className="icon-button compact" onClick={onClose} type="button" aria-label="关闭"><X size={19} /></button></div>{mode === "create" && <><p className="modal-intro">默认从不带样例数据的空白工作台开始；“山岚健身工作室”仅作为可选本地示例模板。</p><div className="choice-cards"><label className={form.mode === "blank" ? "active" : ""}><input type="radio" name="mode" value="blank" checked={form.mode === "blank"} onChange={(event) => selectMode(event.target.value)} /><span><strong>创建空白工作台</strong><small>不带会员、人员或行业样例数据</small></span></label><label className={form.mode === "template" ? "active" : ""}><input type="radio" name="mode" value="template" checked={form.mode === "template"} onChange={(event) => selectMode(event.target.value)} /><span><strong>复制健身示例模板</strong><small>复制山岚样例数据，用于体验完整流程</small></span></label></div><div className="form-grid"><label><span>工作台名称 *</span><input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：微光设计事务所" /></label><label><span>企业法定名称</span><input value={form.legalName} onChange={(event) => setForm({ ...form, legalName: event.target.value })} placeholder="可稍后补充" /></label><label><span>行业</span><input value={form.industry} onChange={(event) => setForm({ ...form, industry: event.target.value })} /></label><label><span>纳税人类型</span><select value={form.taxpayerType} onChange={(event) => setForm({ ...form, taxpayerType: event.target.value })}><option>小规模纳税人</option><option>一般纳税人</option></select></label></div><div className="choice-cards">{WORKSPACE_MODULE_OPTIONS.map((module) => <label className={form.modules[module.id] ? "active" : ""} key={module.id}><input type="checkbox" checked={Boolean(form.modules[module.id])} onChange={(event) => setForm((current) => ({ ...current, modules: { ...current.modules, [module.id]: event.target.checked } }))} /><span><strong>{module.label}</strong><small>{module.description}</small></span></label>)}</div><p className="modal-intro">月结总览、报表中心、资料归档和基础资料始终保留。</p></>}{mode === "rename" && <label className="field-label"><span>新的工作台名称</span><input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>}{mode === "delete" && <div className="delete-warning"><WarningCircle size={24} /><div><strong>确认删除“{workspace?.name}”？</strong><p>这会移除当前浏览器中的本地工作台数据，无法从本页面恢复。其他工作台不会受影响。</p></div></div>}<div className="modal-actions"><button className="secondary-button" onClick={onClose} type="button">取消</button><button className={mode === "delete" ? "danger-button" : "primary-button"} type="submit">{mode === "create" ? "创建并进入" : mode === "rename" ? "保存名称" : "确认删除"}</button></div></form></div>
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><form className="modal-card workspace-dialog" onSubmit={submit}><div className="modal-heading"><div><p className="eyebrow">{PRODUCT_NAME}</p><h2>{title}</h2></div><button className="icon-button compact" onClick={onClose} type="button" aria-label="关闭"><X size={19} /></button></div>{mode === "create" && <><p className="modal-intro">默认从不带样例数据的空白工作台开始；“山岚健身工作室”仅作为可选本地示例模板。</p><div className="choice-cards workspace-mode-cards"><label className={form.mode === "blank" ? "active" : ""}><input type="radio" name="mode" value="blank" checked={form.mode === "blank"} onChange={(event) => selectMode(event.target.value)} /><span><strong>创建空白工作台</strong><small>不带会员、人员或行业样例数据</small></span></label><label className={form.mode === "template" ? "active" : ""}><input type="radio" name="mode" value="template" checked={form.mode === "template"} onChange={(event) => selectMode(event.target.value)} /><span><strong>复制健身示例模板</strong><small>复制山岚样例数据，用于体验完整流程</small></span></label></div><div className="form-grid"><label><span>工作台名称 *</span><input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：微光设计事务所" /></label><label><span>企业法定名称</span><input value={form.legalName} onChange={(event) => setForm({ ...form, legalName: event.target.value })} placeholder="可稍后补充" /></label><label><span>行业</span><input value={form.industry} onChange={(event) => setForm({ ...form, industry: event.target.value })} /></label><label><span>纳税人类型</span><select value={form.taxpayerType} onChange={(event) => setForm({ ...form, taxpayerType: event.target.value })}><option>小规模纳税人</option><option>一般纳税人</option></select></label></div><div className="workspace-module-grid">{WORKSPACE_MODULE_OPTIONS.map((module) => <label className={form.modules[module.id] ? "active" : ""} key={module.id}><input type="checkbox" checked={Boolean(form.modules[module.id])} onChange={(event) => setForm((current) => ({ ...current, modules: { ...current.modules, [module.id]: event.target.checked } }))} /><span><strong>{module.label}</strong><small>{module.description}</small></span></label>)}</div><p className="modal-intro">月结总览、报表中心、资料归档和基础资料始终保留。</p></>}{mode === "rename" && <label className="field-label"><span>新的工作台名称</span><input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>}{mode === "delete" && <div className="delete-warning"><WarningCircle size={24} /><div><strong>确认删除“{workspace?.name}”？</strong><p>这会移除当前浏览器中的本地工作台数据，无法从本页面恢复。其他工作台不会受影响。</p></div></div>}<div className="modal-actions"><button className="secondary-button" onClick={onClose} type="button">取消</button><button className={mode === "delete" ? "danger-button" : "primary-button"} type="submit">{mode === "create" ? "创建并进入" : mode === "rename" ? "保存名称" : "确认删除"}</button></div></form></div>
   );
 }
 
@@ -960,7 +997,7 @@ function LocalBankImportDialog({ open, onClose, onToast, onComplete }) {
   if (!open) return null;
   return (
     <div className="modal-backdrop foundation-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="modal-card foundation-manager" role="dialog" aria-modal="true" aria-labelledby="bank-import-title">
+      <section className="modal-card foundation-manager bank-import-dialog" role="dialog" aria-modal="true" aria-labelledby="bank-import-title">
         <div className="modal-heading">
           <div><p className="eyebrow">浏览器本地处理</p><h2 id="bank-import-title">导入银行流水</h2></div>
           <button className="icon-button compact" onClick={onClose} type="button" aria-label="关闭"><X size={19} /></button>
@@ -1012,6 +1049,18 @@ function App() {
       setToast({ tone: "success", message: "已切换到" + (state.workspaces.find((item) => item.id === id)?.name || "工作台") });
     } catch (error) {
       setToast({ tone: "danger", message: error.message || "工作台切换失败" });
+    }
+  }
+  function switchUser(userId) {
+    try {
+      const current = store.getActiveWorkspace();
+      const user = current?.users?.find((candidate) => candidate.id === userId && candidate.status === "active");
+      if (!current || !user) throw new Error("只能切换到当前工作台中的有效人员");
+      const role = current.roles?.find((candidate) => candidate.id === user.roleId || candidate.name === user.role)?.name || user.role || "未设置角色";
+      actions.switchUser(current.id, user.id);
+      setToast({ tone: "success", message: `已切换为 ${user.name} · ${role}` });
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "操作人员切换失败" });
     }
   }
   async function submitWorkspaceDialog(form) {
@@ -1587,7 +1636,7 @@ function App() {
   }
   return (
     <div className="app-shell">
-      <Sidebar state={state} workspace={workspace} page={activePage} onPage={navigateToPage} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={openWorkspaceDialog} />
+      <Sidebar state={state} workspace={workspace} page={activePage} onPage={navigateToPage} onSwitchWorkspace={switchWorkspace} onSwitchUser={switchUser} onOpenWorkspaceDialog={openWorkspaceDialog} />
       <div className="app-main">
         <Topbar state={state} workspace={workspace} page={activePage} onImport={() => setImportOpen(true)} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={openWorkspaceDialog} />
         {loadReport.recovered && <div className="danger-banner recovery-banner"><WarningCircle size={18} /><span><strong>{loadReport.source === "backup" ? "本地数据已从上一次有效副本恢复。" : "本地主副本与备用副本均无法读取，当前已加载初始模板。"}</strong>{loadReport.errors?.length ? ` 原因：${loadReport.errors.join("；")}` : " 请先核对数据并导出备份。"}</span></div>}

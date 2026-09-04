@@ -4846,3 +4846,225 @@ summary.forecast-week-row {
     overscroll-behavior-inline: contain;
   }
 }
+
+/* Purpose-sized dialogs and the sidebar account menu. */
+.modal-card.workspace-dialog {
+  width: min(740px, calc(100vw - 40px));
+  max-width: 100%;
+  max-height: min(860px, calc(100dvh - 40px));
+  overflow-y: auto;
+}
+
+.workspace-dialog > .modal-intro + .choice-cards,
+.workspace-dialog > .form-grid + .choice-cards,
+.workspace-dialog .workspace-mode-cards,
+.workspace-dialog .workspace-module-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.workspace-module-grid {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.workspace-module-grid > label {
+  display: flex;
+  min-width: 0;
+  min-height: 68px;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--paper);
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease;
+}
+
+.workspace-module-grid > label:hover {
+  border-color: #cfc4b5;
+  background: var(--canvas);
+  color: var(--espresso);
+}
+
+.workspace-module-grid > label.active {
+  border-color: rgba(217, 119, 87, 0.56);
+  background: var(--clay-soft);
+  color: var(--clay-dark);
+}
+
+.workspace-module-grid > label:focus-within {
+  outline: 2px solid rgba(217, 119, 87, 0.38);
+  outline-offset: 2px;
+}
+
+.workspace-module-grid input {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.workspace-module-grid > label > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.workspace-module-grid strong,
+.workspace-module-grid small {
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+
+.workspace-module-grid strong {
+  color: inherit;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.workspace-module-grid small {
+  color: var(--quiet);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.workspace-dialog > .workspace-module-grid {
+  margin-top: 14px;
+}
+
+.workspace-dialog .choice-cards > label,
+.workspace-dialog .choice-cards > label > span {
+  min-width: 0;
+  writing-mode: horizontal-tb;
+}
+
+.workspace-dialog .choice-cards strong,
+.workspace-dialog .choice-cards small {
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+
+.account-switcher {
+  position: relative;
+  min-width: 0;
+}
+
+.account-switcher-trigger {
+  transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease;
+}
+
+.account-switcher-trigger:hover,
+.account-switcher-trigger[aria-expanded="true"] {
+  border-color: #cfc4b5;
+  background: var(--sand);
+  color: var(--espresso);
+}
+
+.account-switcher-trigger:focus-visible,
+.account-switcher-menu button:focus-visible {
+  outline: 2px solid rgba(217, 119, 87, 0.48);
+  outline-offset: 2px;
+}
+
+.account-switcher-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 90;
+  width: min(300px, calc(100vw - 28px));
+  max-height: min(320px, 48vh);
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--paper-strong);
+  box-shadow: 0 16px 38px rgba(61, 50, 41, 0.18);
+}
+
+.account-switcher-menu button {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.account-switcher-menu button > span:nth-child(2),
+.account-switcher-menu .account-switcher-empty > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.account-switcher-menu button strong,
+.account-switcher-menu button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-switcher-menu button strong {
+  color: var(--espresso);
+  font-size: 12px;
+}
+
+.account-switcher-menu button small {
+  color: var(--quiet);
+  font-size: 10px;
+}
+
+.account-switcher-menu button:hover:not(:disabled) {
+  background: var(--sand);
+  color: var(--espresso);
+}
+
+.account-switcher-menu button.active,
+.account-switcher-menu button:disabled.active {
+  background: var(--sage-soft);
+  color: var(--sage);
+}
+
+.account-switcher-menu button:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.account-switcher-menu .account-switcher-empty {
+  grid-template-columns: 20px minmax(0, 1fr);
+}
+
+@media (max-width: 720px) {
+  .modal-card.workspace-dialog {
+    width: min(700px, calc(100vw - 24px));
+    max-height: calc(100dvh - 24px);
+  }
+}
+
+@media (max-width: 560px) {
+  .modal-backdrop {
+    padding: 10px;
+  }
+
+  .modal-card.workspace-dialog {
+    width: calc(100vw - 20px);
+    max-height: calc(100dvh - 20px);
+  }
+
+  .workspace-dialog > .modal-intro + .choice-cards,
+  .workspace-dialog > .form-grid + .choice-cards,
+  .workspace-dialog .workspace-mode-cards,
+  .workspace-dialog .workspace-module-grid {
+    grid-template-columns: 1fr;
+  }
+}

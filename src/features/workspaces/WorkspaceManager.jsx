@@ -254,8 +254,26 @@ export function WorkspaceManager({ open, onClose, onToast }) {
             {state.workspaces.length === 1 && <p className="foundation-hint">至少保留一个工作台；先创建新工作台后即可删除当前模板。</p>}
             <div className="foundation-divider" />
             <div className="foundation-section-heading"><div><small>当前配置</small><h3>启用模块</h3></div></div>
-            <div className="choice-cards">
-              {WORKSPACE_MODULE_OPTIONS.map((module) => <label className={activeWorkspace.modules?.[module.id] ? "active" : ""} key={module.id}><input type="checkbox" checked={Boolean(activeWorkspace.modules?.[module.id])} onChange={(event) => toggleActiveModule(module.id, event.target.checked)} /><span><strong>{module.label}</strong><small>{module.description}</small></span></label>)}
+            <div className="workspace-module-grid" role="group" aria-label="当前工作台启用模块">
+              {WORKSPACE_MODULE_OPTIONS.map((module) => {
+                const enabled = Boolean(activeWorkspace.modules?.[module.id]);
+                return (
+                  <label className={`workspace-module-card ${enabled ? "active" : ""}`} key={module.id}>
+                    <input
+                      className="workspace-module-card-input"
+                      type="checkbox"
+                      name="active-workspace-modules"
+                      value={module.id}
+                      checked={enabled}
+                      onChange={(event) => toggleActiveModule(module.id, event.target.checked)}
+                    />
+                    <span className="workspace-module-card-copy">
+                      <strong className="workspace-module-card-title">{module.label}</strong>
+                      <small className="workspace-module-card-description">{module.description}</small>
+                    </span>
+                  </label>
+                );
+              })}
             </div>
             <p className="foundation-hint">月结总览、报表中心、资料归档和基础资料始终保留。</p>
           </section>
@@ -266,8 +284,26 @@ export function WorkspaceManager({ open, onClose, onToast }) {
               <label className="foundation-field"><span>名称</span><input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="例如：静安门店" /></label>
               <label className="foundation-field"><span>创建方式</span><select value={createMode} onChange={(event) => setCreationMode(event.target.value)}><option value="blank">空白工作台</option><option value="copy">复制现有工作台</option></select></label>
               {createMode === "copy" && <label className="foundation-field"><span>复制来源</span><select value={sourceWorkspaceId} onChange={(event) => selectCopySource(event.target.value)}>{state.workspaces.map((workspace) => <option value={workspace.id} key={workspace.id}>{workspace.name}</option>)}</select></label>}
-              <div className="choice-cards">
-                {WORKSPACE_MODULE_OPTIONS.map((module) => <label className={newModules[module.id] ? "active" : ""} key={module.id}><input type="checkbox" checked={Boolean(newModules[module.id])} onChange={(event) => setNewModules((current) => ({ ...current, [module.id]: event.target.checked }))} /><span><strong>{module.label}</strong><small>{module.description}</small></span></label>)}
+              <div className="workspace-module-grid" role="group" aria-label="新工作台启用模块">
+                {WORKSPACE_MODULE_OPTIONS.map((module) => {
+                  const enabled = Boolean(newModules[module.id]);
+                  return (
+                    <label className={`workspace-module-card ${enabled ? "active" : ""}`} key={module.id}>
+                      <input
+                        className="workspace-module-card-input"
+                        type="checkbox"
+                        name="new-workspace-modules"
+                        value={module.id}
+                        checked={enabled}
+                        onChange={(event) => setNewModules((current) => ({ ...current, [module.id]: event.target.checked }))}
+                      />
+                      <span className="workspace-module-card-copy">
+                        <strong className="workspace-module-card-title">{module.label}</strong>
+                        <small className="workspace-module-card-description">{module.description}</small>
+                      </span>
+                    </label>
+                  );
+                })}
               </div>
               <button className="primary-button" type="submit"><Plus size={17} />创建并切换</button>
             </form>

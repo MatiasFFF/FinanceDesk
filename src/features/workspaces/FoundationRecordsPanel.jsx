@@ -37,12 +37,70 @@ const STAGES = [
 
 const STATUS_OPTIONS = [
   ["draft", "草稿"],
-  ["active", "有效"],
+  ["active", "已启用"],
   ["pending", "待处理"],
-  ["missing", "缺失"],
-  ["inactive", "停用"],
+  ["missing", "资料缺失"],
+  ["inactive", "已停用"],
   ["archived", "已归档"],
 ];
+
+const STATUS_LABELS = Object.freeze({
+  ...Object.fromEntries(STATUS_OPTIONS),
+  recorded: "已记录",
+  revoked: "已撤回",
+  not_connected: "未连接",
+  verified: "已核验",
+  verified_locally: "本地已核验",
+  confirmed: "已确认",
+  approved: "已批准",
+  rejected: "已拒绝",
+  complete: "已完成",
+  posted: "已入账",
+  open: "待处理",
+  partial: "部分完成",
+  paid: "已结清",
+  overdue: "已逾期",
+});
+
+function statusLabel(status) {
+  return STATUS_LABELS[status] || status || "未设置状态";
+}
+
+const RECORD_TYPE_LABELS = Object.freeze({
+  customer: "客户",
+  supplier: "供应商",
+  related_party: "关联方",
+  platform: "业务平台",
+  receivable: "客户应收",
+  payable: "供应商应付",
+  depositReceived: "客户预收",
+  prepaymentPaid: "供应商预付",
+  customerReceipt: "客户收款",
+  memberRecharge: "会员充值 / 预收",
+  memberConsumption: "会员耗课",
+  supplierSettlement: "供应商结算",
+  supplierPrepayment: "供应商预付",
+  purchaseExpense: "采购费用",
+  payroll: "工资社保",
+  rentAndProperty: "房租物业",
+  bankFee: "银行手续费",
+  loan: "借款还款",
+  loanBorrowing: "取得借款",
+  loanRepayment: "归还借款",
+  employeeAdvance: "员工代垫",
+  relatedParty: "关联方往来",
+  refund: "退款",
+  internalTransfer: "内部转账",
+  recharge: "会员充值",
+  consumption: "会员耗课",
+  commission: "教练提成",
+  commissionPayment: "提成付款",
+});
+
+function recordTypeLabel(item) {
+  const type = item.businessType || item.type || item.kind;
+  return item.businessTypeLabel || RECORD_TYPE_LABELS[type] || type || "";
+}
 
 const COLLECTION_CONFIG = {
   books: {
@@ -225,8 +283,41 @@ function Field({ field, value, onChange }) {
   return <input {...common} type={field.type === "number" ? "number" : field.type === "date" ? "date" : field.type === "month" ? "month" : "text"} step={field.type === "number" ? "0.01" : undefined} placeholder={field.placeholder || ""} />;
 }
 
-function displayName(item) {
-  return item.name || item.title || item.no || item.summary || item.id;
+function displayName(item, collection, fallbackLabel = "记录") {
+  if (collection === "businessEvents") {
+    const type = recordTypeLabel(item) || "业务事件";
+    const subject = item.summary || item.accountingLabel || item.memberName || item.counterparty || item.coach || "";
+    return subject && subject !== type ? `${type} · ${subject}` : type;
+  }
+  if (collection === "bills") {
+    return item.no || item.summary || [recordTypeLabel(item), item.counterparty].filter(Boolean).join(" · ") || "往来账单";
+  }
+  return item.name || item.title || item.no || item.summary || item.invoiceNumber || `未命名${fallbackLabel}`;
+}
+
+function recordDescription(item, collection, workspace) {
+  const parts = [];
+  if (collection === "users") {
+    parts.push(workspace.roles.find((role) => role.id === item.roleId)?.name || item.role || "未分配角色");
+  } else if (["counterparties", "bills", "businessEvents"].includes(collection)) {
+    parts.push(recordTypeLabel(item));
+    if (collection !== "counterparties") parts.push(item.counterparty || item.memberName || item.coach);
+  } else if (collection === "contracts") {
+    parts.push(item.counterpartyName);
+  } else if (collection === "bankAccounts") {
+    parts.push(item.accountNumber ? `尾号 ${item.accountNumber}` : "银行账户");
+  } else if (collection === "invoices") {
+    parts.push(item.seller || item.invoiceType || "发票资料");
+  } else if (collection === "approvals") {
+    parts.push(recordTypeLabel(item) || item.kind || "审批事项");
+  } else if (collection === "personnelRecords") {
+    parts.push(item.department, item.role);
+  } else {
+    parts.push(recordTypeLabel(item));
+  }
+  if (item.status) parts.push(statusLabel(item.status));
+  if (item.id) parts.push(`内部编号 ${item.id}`);
+  return parts.filter(Boolean).join(" · ") || "未设置摘要";
 }
 
 function EntityEditor({ collection, onToast }) {
@@ -255,12 +346,30 @@ function EntityEditor({ collection, onToast }) {
   const items = activeWorkspace[collection] || [];
   const [draft, setDraft] = useState(() => emptyDraft(config));
   const [error, setError] = useState("");
+  const [editorOpen, setEditorOpen] = useState(false);
 
-  useEffect(() => setDraft(emptyDraft(config)), [activeWorkspace.id, collection, config]);
+  useEffect(() => {
+    setDraft(emptyDraft(config));
+    setError("");
+    setEditorOpen(false);
+  }, [activeWorkspace.id, collection, config]);
+
+  function create() {
+    setDraft(emptyDraft(config));
+    setError("");
+    setEditorOpen(true);
+  }
 
   function edit(item) {
     setDraft(config.toDraft ? config.toDraft(item) : { ...item });
     setError("");
+    setEditorOpen(true);
+  }
+
+  function cancel() {
+    setDraft(emptyDraft(config));
+    setError("");
+    setEditorOpen(false);
   }
 
   function save(event) {
@@ -279,6 +388,7 @@ function EntityEditor({ collection, onToast }) {
       }
       actions.upsertEntity(activeWorkspace.id, collection, values, { label: config.title });
       setDraft(emptyDraft(config));
+      setEditorOpen(false);
       onToast?.(`${config.title}已保存`);
     } catch (caught) {
       setError(caught.message || "保存失败");
@@ -286,10 +396,10 @@ function EntityEditor({ collection, onToast }) {
   }
 
   function remove(item) {
-    if (!window.confirm(`确定删除「${displayName(item)}」吗？`)) return;
+    if (!window.confirm(`确定删除「${displayName(item, collection, config.title)}」吗？`)) return;
     try {
       actions.removeEntity(activeWorkspace.id, collection, item.id, { label: config.title });
-      if (draft.id === item.id) setDraft(emptyDraft(config));
+      if (draft.id === item.id) cancel();
       onToast?.(`${config.title}已删除`);
     } catch (caught) {
       setError(caught.message || "删除失败");
@@ -298,21 +408,27 @@ function EntityEditor({ collection, onToast }) {
 
   return (
     <section className="foundation-section entity-editor">
-      <div className="foundation-section-heading"><div><small>本地资料</small><h3><Icon size={18} />{config.title}</h3></div><span>{items.length} 条</span></div>
+      <div className="foundation-section-heading"><div><small>{collection === "users" ? "可新增、改名、调整角色、停用或删除" : "本地资料"}</small><h3><Icon size={18} />{config.title}</h3></div><span>{items.length} 条</span></div>
+      {collection === "users" && items.some((item) => ["周会计", "林岚"].includes(item.name)) && <p className="foundation-hint">周会计、林岚只是当前模板的示例人员，可直接修改或删除；左下身份切换器会即时读取这里的有效人员。</p>}
       <div className="foundation-record-list">
         {items.map((item) => (
           <article className="foundation-record" key={item.id}>
-            <div><strong>{displayName(item)}</strong><small>{collection === "users" ? `${activeWorkspace.roles.find((role) => role.id === item.roleId)?.name || item.role || "未分配角色"} · ${item.status || "未设置状态"}` : item.status || item.kind || "未设置状态"}</small></div>
+            <div><strong>{displayName(item, collection, config.title)}</strong><small>{recordDescription(item, collection, activeWorkspace)}</small></div>
             <span className="foundation-record-actions"><button type="button" aria-label="编辑" onClick={() => edit(item)}><PencilSimple size={15} /></button><button type="button" aria-label="删除" onClick={() => remove(item)}><Trash size={15} /></button></span>
           </article>
         ))}
         {!items.length && <p className="foundation-empty">还没有记录。</p>}
       </div>
-      <form className="entity-form" onSubmit={save}>
-        {config.fields.map((field) => <label className="foundation-field" key={field.key}><span>{field.label}</span><Field field={field} value={draft[field.key]} onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))} /></label>)}
-        <div className="foundation-inline-actions"><button className="primary-button" type="submit"><Plus size={16} />{draft.id ? "保存修改" : "新增记录"}</button>{draft.id && <button className="secondary-button" type="button" onClick={() => setDraft(emptyDraft(config))}>取消编辑</button>}</div>
-        {error && <p className="entity-error">{error}</p>}
-      </form>
+      <button className="foundation-editor-toggle secondary-button" type="button" aria-expanded={editorOpen} aria-controls={`${collection}-editor`} onClick={create}><Plus size={16} />新增{config.title}</button>
+      {editorOpen && <div className="foundation-editor-panel" id={`${collection}-editor`}>
+        <div className="foundation-section-heading"><div><small>{draft.id ? "编辑现有记录" : "新增本地记录"}</small><h4>{draft.id ? `编辑「${displayName(draft, collection, config.title)}」` : `新增${config.title}`}</h4></div></div>
+        <form className="entity-form" onSubmit={save}>
+          {config.fields.map((field) => <label className="foundation-field" key={field.key}><span>{field.label}</span><Field field={field} value={draft[field.key]} onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))} /></label>)}
+          <div className="foundation-inline-actions"><button className="primary-button" type="submit"><Plus size={16} />{draft.id ? "保存修改" : "新增记录"}</button><button className="secondary-button" type="button" onClick={cancel}>取消</button></div>
+          {error && <p className="entity-error">{error}</p>}
+        </form>
+      </div>}
+      {error && !editorOpen && <p className="entity-error">{error}</p>}
     </section>
   );
 }
@@ -330,11 +446,19 @@ function AccountCatalogEditor({ onToast }) {
   const accounts = useMemo(() => workspaceAccountDefinitions(activeWorkspace), [activeWorkspace]);
   const [draft, setDraft] = useState(emptyAccountDraft);
   const [error, setError] = useState("");
+  const [editorOpen, setEditorOpen] = useState(false);
 
   useEffect(() => {
     setDraft(emptyAccountDraft());
     setError("");
+    setEditorOpen(false);
   }, [activeWorkspace.id]);
+
+  function create() {
+    setDraft(emptyAccountDraft());
+    setError("");
+    setEditorOpen(true);
+  }
 
   function edit(account) {
     setDraft({
@@ -345,6 +469,13 @@ function AccountCatalogEditor({ onToast }) {
       cash: Boolean(account.cash),
     });
     setError("");
+    setEditorOpen(true);
+  }
+
+  function cancel() {
+    setDraft(emptyAccountDraft());
+    setError("");
+    setEditorOpen(false);
   }
 
   function save(event) {
@@ -357,6 +488,7 @@ function AccountCatalogEditor({ onToast }) {
       });
       actions.replaceWorkspace(activeWorkspace.id, next);
       setDraft(emptyAccountDraft());
+      setEditorOpen(false);
       onToast?.(draft.id ? "科目修改已保存，并立即用于凭证、账簿和报表" : "新科目已保存到当前工作台");
     } catch (caught) {
       setError(caught.message || "科目保存失败");
@@ -372,7 +504,7 @@ function AccountCatalogEditor({ onToast }) {
         mode: "manual",
       });
       actions.replaceWorkspace(activeWorkspace.id, next);
-      if (draft.id === account.id) setDraft(emptyAccountDraft());
+      if (draft.id === account.id) cancel();
       onToast?.(`科目已${status === "inactive" ? "停用" : "启用"}；历史凭证仍保留当前名称`);
     } catch (caught) {
       setError(caught.message || "科目状态更新失败");
@@ -381,27 +513,40 @@ function AccountCatalogEditor({ onToast }) {
 
   return (
     <section className="foundation-section entity-editor">
-      <div className="foundation-section-heading"><div><small>当前工作台科目表</small><h3><FileText size={18} />会计科目</h3></div><span>{accounts.filter((account) => account.status !== "inactive").length} 个有效</span></div>
+      <div className="foundation-section-heading"><div><small>当前工作台科目表</small><h3><FileText size={18} />会计科目</h3></div><span>{accounts.filter((account) => account.status !== "inactive").length} 个已启用</span></div>
       <div className="foundation-record-list">
-        {accounts.map((account) => (
+        {accounts.map((account) => {
+          const categoryLabel = ACCOUNT_CATEGORIES.find((item) => item.id === account.category)?.label || "其他";
+          return (
           <article className="foundation-record" key={account.id}>
-            <div><strong>{account.label}</strong><small>{account.id} · {ACCOUNT_CATEGORIES.find((item) => item.id === account.category)?.label || account.category} · {account.normalSide === "credit" ? "贷方" : "借方"}{account.cash ? " · 现金类" : ""} · {account.status === "inactive" ? "已停用" : "有效"}</small></div>
+            <div className="foundation-record-main">
+              <strong>{account.label}</strong>
+              <div className="foundation-record-business-meta"><span>{categoryLabel}</span><span>{account.normalSide === "credit" ? "贷方余额" : "借方余额"}</span><span>{account.cash ? "现金类科目" : "非现金类科目"}</span></div>
+            </div>
             <span className="foundation-record-actions">
+              <small className="foundation-record-status">{statusLabel(account.status)}</small>
               <button type="button" aria-label={`编辑${account.label}`} onClick={() => edit(account)}><PencilSimple size={15} /></button>
               <button type="button" aria-label={`${account.status === "inactive" ? "启用" : "停用"}${account.label}`} title={account.status === "inactive" ? "启用科目" : "停用科目"} onClick={() => toggleStatus(account)}><Power size={15} /></button>
             </span>
           </article>
-        ))}
+          );
+        })}
+        {!accounts.length && <p className="foundation-empty">还没有会计科目。</p>}
       </div>
-      <form className="entity-form" onSubmit={save}>
-        {draft.id && <label className="foundation-field"><span>科目编码</span><input value={draft.id} readOnly /></label>}
-        <label className="foundation-field"><span>科目名称</span><input required value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} placeholder="例如：主营业务收入" /></label>
-        <label className="foundation-field"><span>科目类别</span><select value={draft.category} onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value }))}>{ACCOUNT_CATEGORIES.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
-        <label className="foundation-field"><span>余额方向</span><select value={draft.normalSide} onChange={(event) => setDraft((current) => ({ ...current, normalSide: event.target.value }))}><option value="debit">借方</option><option value="credit">贷方</option></select></label>
-        <label className="foundation-field"><span>现金类科目</span><select value={String(draft.cash)} onChange={(event) => setDraft((current) => ({ ...current, cash: event.target.value === "true" }))}><option value="false">否</option><option value="true">是</option></select></label>
-        <div className="foundation-inline-actions"><button className="primary-button" type="submit"><Plus size={16} />{draft.id ? "保存科目修改" : "新增科目"}</button>{draft.id && <button className="secondary-button" type="button" onClick={() => setDraft(emptyAccountDraft())}>取消编辑</button>}</div>
-        {error && <p className="entity-error">{error}</p>}
-      </form>
+      <button className="foundation-editor-toggle secondary-button" type="button" aria-expanded={editorOpen} aria-controls="account-catalog-editor" onClick={create}><Plus size={16} />新增科目</button>
+      {editorOpen && <div className="foundation-editor-panel" id="account-catalog-editor">
+        <div className="foundation-section-heading"><div><small>{draft.id ? "编辑现有科目" : "新增会计科目"}</small><h4>{draft.id ? `编辑「${draft.name}」` : "新增科目"}</h4></div></div>
+        <form className="entity-form" onSubmit={save}>
+          {draft.id && <label className="foundation-field"><span>科目编码</span><input value={draft.id} readOnly /></label>}
+          <label className="foundation-field"><span>科目名称</span><input required value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} placeholder="例如：主营业务收入" /></label>
+          <label className="foundation-field"><span>科目类别</span><select value={draft.category} onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value }))}>{ACCOUNT_CATEGORIES.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+          <label className="foundation-field"><span>余额方向</span><select value={draft.normalSide} onChange={(event) => setDraft((current) => ({ ...current, normalSide: event.target.value }))}><option value="debit">借方</option><option value="credit">贷方</option></select></label>
+          <label className="foundation-field"><span>现金类科目</span><select value={String(draft.cash)} onChange={(event) => setDraft((current) => ({ ...current, cash: event.target.value === "true" }))}><option value="false">否</option><option value="true">是</option></select></label>
+          <div className="foundation-inline-actions"><button className="primary-button" type="submit"><Plus size={16} />{draft.id ? "保存科目修改" : "新增科目"}</button><button className="secondary-button" type="button" onClick={cancel}>取消</button></div>
+          {error && <p className="entity-error">{error}</p>}
+        </form>
+      </div>}
+      {error && !editorOpen && <p className="entity-error">{error}</p>}
     </section>
   );
 }
@@ -422,13 +567,28 @@ function ruleDraft(workspace) {
 function AccountingRuleEditor({ onToast }) {
   const { state, activeWorkspace, actions } = useFinanceDesk();
   const active = activeAccountingRuleSet(activeWorkspace);
+  const effective = accountingRules(activeWorkspace);
   const [draft, setDraft] = useState(() => ruleDraft(activeWorkspace));
   const [error, setError] = useState("");
+  const [editorOpen, setEditorOpen] = useState(false);
 
   useEffect(() => {
     setDraft(ruleDraft(activeWorkspace));
     setError("");
+    setEditorOpen(false);
   }, [activeWorkspace.id, active?.updatedAt]);
+
+  function edit() {
+    setDraft(ruleDraft(activeWorkspace));
+    setError("");
+    setEditorOpen(true);
+  }
+
+  function cancel() {
+    setDraft(ruleDraft(activeWorkspace));
+    setError("");
+    setEditorOpen(false);
+  }
 
   function save(event) {
     event.preventDefault();
@@ -439,6 +599,7 @@ function AccountingRuleEditor({ onToast }) {
         mode: "manual",
       });
       actions.replaceWorkspace(activeWorkspace.id, next);
+      setEditorOpen(false);
       onToast?.("当前有效账务规则已保存并立即生效");
     } catch (caught) {
       setError(caught.message || "账务规则保存失败");
@@ -448,17 +609,26 @@ function AccountingRuleEditor({ onToast }) {
   return (
     <section className="foundation-section entity-editor">
       <div className="foundation-section-heading"><div><small>当前有效规则集</small><h3><ShieldCheck size={18} />账务规则</h3></div><span>{active?.name || "使用默认值"}</span></div>
+      <div className="foundation-summary-grid">
+        <article className="foundation-summary-card"><small>判断阈值</small><h4>人工复核 {effective.confidenceThreshold}</h4><p>自动建议 {effective.automaticPostingThreshold}</p></article>
+        <article className="foundation-summary-card"><small>金额控制</small><h4>容差 ¥{effective.amountTolerance}</h4><p>超额核销：{effective.allowOverAllocation ? "允许" : "禁止"}</p></article>
+        <article className="foundation-summary-card"><small>费用凭证要求</small><h4>{effective.requireEvidenceForExpenses ? "必须提供证据" : "不强制提供证据"}</h4><p>规则保存后立即用于当前工作台</p></article>
+      </div>
       <div className="foundation-notice"><WarningCircle size={17} />自动建议阈值只决定是否形成自动处理建议；系统仍遵守现有复核与入账门槛，不会自动入账。</div>
-      <form className="entity-form" onSubmit={save}>
-        <label className="foundation-field"><span>规则名称</span><input required value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} /></label>
-        <label className="foundation-field"><span>人工复核阈值（0–100）</span><input required type="number" min="0" max="100" step="1" value={draft.confidenceThreshold} onChange={(event) => setDraft((current) => ({ ...current, confidenceThreshold: event.target.value }))} /></label>
-        <label className="foundation-field"><span>自动建议阈值（0–100）</span><input required type="number" min="0" max="100" step="1" value={draft.automaticPostingThreshold} onChange={(event) => setDraft((current) => ({ ...current, automaticPostingThreshold: event.target.value }))} /></label>
-        <label className="foundation-field"><span>金额容差</span><input required type="number" min="0" step="0.01" value={draft.amountTolerance} onChange={(event) => setDraft((current) => ({ ...current, amountTolerance: event.target.value }))} /></label>
-        <label className="foundation-field"><span>费用必须有证据</span><select value={String(draft.requireEvidenceForExpenses)} onChange={(event) => setDraft((current) => ({ ...current, requireEvidenceForExpenses: event.target.value === "true" }))}><option value="true">是</option><option value="false">否</option></select></label>
-        <label className="foundation-field"><span>允许超额核销</span><select value={String(draft.allowOverAllocation)} onChange={(event) => setDraft((current) => ({ ...current, allowOverAllocation: event.target.value === "true" }))}><option value="false">禁止</option><option value="true">允许</option></select></label>
-        <button className="primary-button" type="submit">保存并启用规则</button>
-        {error && <p className="entity-error">{error}</p>}
-      </form>
+      <button className="foundation-editor-toggle secondary-button" type="button" aria-expanded={editorOpen} aria-controls="accounting-rule-editor" onClick={edit}><PencilSimple size={16} />编辑规则</button>
+      {editorOpen && <div className="foundation-editor-panel" id="accounting-rule-editor">
+        <div className="foundation-section-heading"><div><small>编辑当前有效规则集</small><h4>{draft.name}</h4></div></div>
+        <form className="entity-form" onSubmit={save}>
+          <label className="foundation-field"><span>规则名称</span><input required value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} /></label>
+          <label className="foundation-field"><span>人工复核阈值（0–100）</span><input required type="number" min="0" max="100" step="1" value={draft.confidenceThreshold} onChange={(event) => setDraft((current) => ({ ...current, confidenceThreshold: event.target.value }))} /></label>
+          <label className="foundation-field"><span>自动建议阈值（0–100）</span><input required type="number" min="0" max="100" step="1" value={draft.automaticPostingThreshold} onChange={(event) => setDraft((current) => ({ ...current, automaticPostingThreshold: event.target.value }))} /></label>
+          <label className="foundation-field"><span>金额容差</span><input required type="number" min="0" step="0.01" value={draft.amountTolerance} onChange={(event) => setDraft((current) => ({ ...current, amountTolerance: event.target.value }))} /></label>
+          <label className="foundation-field"><span>费用必须有证据</span><select value={String(draft.requireEvidenceForExpenses)} onChange={(event) => setDraft((current) => ({ ...current, requireEvidenceForExpenses: event.target.value === "true" }))}><option value="true">是</option><option value="false">否</option></select></label>
+          <label className="foundation-field"><span>允许超额核销</span><select value={String(draft.allowOverAllocation)} onChange={(event) => setDraft((current) => ({ ...current, allowOverAllocation: event.target.value === "true" }))}><option value="false">禁止</option><option value="true">允许</option></select></label>
+          <div className="foundation-inline-actions"><button className="primary-button" type="submit">保存并启用规则</button><button className="secondary-button" type="button" onClick={cancel}>取消</button></div>
+          {error && <p className="entity-error">{error}</p>}
+        </form>
+      </div>}
     </section>
   );
 }
@@ -506,12 +676,31 @@ function CompanyProfile({ onToast }) {
   const { activeWorkspace, actions } = useFinanceDesk();
   const [draft, setDraft] = useState(activeWorkspace.company);
   const [error, setError] = useState("");
-  useEffect(() => setDraft(activeWorkspace.company), [activeWorkspace.id, activeWorkspace.company]);
+  const [editorOpen, setEditorOpen] = useState(false);
+  useEffect(() => {
+    setDraft(activeWorkspace.company);
+    setError("");
+    setEditorOpen(false);
+  }, [activeWorkspace.id]);
+
+  function edit() {
+    setDraft(activeWorkspace.company);
+    setError("");
+    setEditorOpen(true);
+  }
+
+  function cancel() {
+    setDraft(activeWorkspace.company);
+    setError("");
+    setEditorOpen(false);
+  }
+
   function save(event) {
     event.preventDefault();
     setError("");
     try {
       actions.updateCompanyProfile(activeWorkspace.id, draft);
+      setEditorOpen(false);
       onToast?.("企业资料已保存在当前浏览器");
     } catch (caught) {
       setError(caught.message || "企业资料保存失败");
@@ -519,28 +708,62 @@ function CompanyProfile({ onToast }) {
   }
   return (
     <section className="foundation-section company-profile">
-      <div className="foundation-section-heading"><div><small>企业初始化</small><h3><Buildings size={18} />企业主体</h3></div><span>{draft.verificationStatus === "verified" ? "已核验" : "本地录入"}</span></div>
-      <form className="entity-form company-form" onSubmit={save}>
-        {[
-          ["legalName", "企业 / 个体户全称"], ["taxId", "统一社会信用代码"], ["ownerName", "法定代表人 / 经营者"], ["financeContact", "财务负责人"], ["industry", "行业"], ["taxpayerType", "纳税人类型"],
-        ].map(([key, label]) => <label className="foundation-field" key={key}><span>{label}</span><input value={draft[key] || ""} onChange={(event) => setDraft((current) => ({ ...current, [key]: event.target.value }))} /></label>)}
-        <button className="primary-button" type="submit">保存企业资料</button>
-        {error && <p className="entity-error">{error}</p>}
-      </form>
+      <div className="foundation-section-heading"><div><small>企业初始化</small><h3><Buildings size={18} />企业主体</h3></div><span>{activeWorkspace.company.verificationStatus === "verified" ? "已核验" : "本地录入"}</span></div>
+      <div className="foundation-summary-grid">
+        <article className="foundation-summary-card"><small>企业身份</small><h4>{activeWorkspace.company.legalName || "未填写主体名称"}</h4><p>统一社会信用代码：{activeWorkspace.company.taxId || "未填写"}</p></article>
+        <article className="foundation-summary-card"><small>负责人</small><h4>{activeWorkspace.company.ownerName || "未填写经营者"}</h4><p>财务负责人：{activeWorkspace.company.financeContact || "未填写"}</p></article>
+        <article className="foundation-summary-card"><small>企业属性</small><h4>{activeWorkspace.company.industry || "未填写行业"}</h4><p>纳税人类型：{activeWorkspace.company.taxpayerType || "未填写"}</p></article>
+      </div>
+      <button className="foundation-editor-toggle secondary-button" type="button" aria-expanded={editorOpen} aria-controls="company-profile-editor" onClick={edit}><PencilSimple size={16} />编辑企业资料</button>
+      {editorOpen && <div className="foundation-editor-panel" id="company-profile-editor">
+        <div className="foundation-section-heading"><div><small>编辑企业主体</small><h4>{draft.legalName || "企业资料"}</h4></div></div>
+        <form className="entity-form company-form" onSubmit={save}>
+          {[
+            ["legalName", "企业 / 个体户全称"], ["taxId", "统一社会信用代码"], ["ownerName", "法定代表人 / 经营者"], ["financeContact", "财务负责人"], ["industry", "行业"], ["taxpayerType", "纳税人类型"],
+          ].map(([key, label]) => <label className="foundation-field" key={key}><span>{label}</span><input value={draft[key] || ""} onChange={(event) => setDraft((current) => ({ ...current, [key]: event.target.value }))} /></label>)}
+          <div className="foundation-inline-actions"><button className="primary-button" type="submit">保存企业资料</button><button className="secondary-button" type="button" onClick={cancel}>取消</button></div>
+          {error && <p className="entity-error">{error}</p>}
+        </form>
+      </div>}
     </section>
   );
 }
 
+function emptyAuthorizationDraft() {
+  return { system: "bank", label: "银行数据", scope: "本地文件导入", status: "recorded", grantedBy: "", expiresAt: "", proofDocumentId: "", note: "" };
+}
+
 function AuthorizationEditor({ onToast }) {
   const { activeWorkspace, actions } = useFinanceDesk();
-  const [draft, setDraft] = useState({ system: "bank", label: "银行数据", scope: "本地文件导入", status: "recorded", grantedBy: "", expiresAt: "", proofDocumentId: "", note: "" });
+  const [draft, setDraft] = useState(emptyAuthorizationDraft);
   const [error, setError] = useState("");
+  const [editorOpen, setEditorOpen] = useState(false);
+
+  useEffect(() => {
+    setDraft(emptyAuthorizationDraft());
+    setError("");
+    setEditorOpen(false);
+  }, [activeWorkspace.id]);
+
+  function create() {
+    setDraft(emptyAuthorizationDraft());
+    setError("");
+    setEditorOpen(true);
+  }
+
+  function cancel() {
+    setDraft(emptyAuthorizationDraft());
+    setError("");
+    setEditorOpen(false);
+  }
+
   function save(event) {
     event.preventDefault();
     setError("");
     try {
       actions.recordAuthorization(activeWorkspace.id, draft, { label: "本地授权记录" });
-      setDraft((current) => ({ ...current, note: "", proofDocumentId: "" }));
+      setDraft(emptyAuthorizationDraft());
+      setEditorOpen(false);
       onToast?.("授权范围、期限和凭证索引已保存；未建立任何外部连接");
     } catch (caught) {
       setError(caught.message || "授权记录保存失败");
@@ -557,18 +780,25 @@ function AuthorizationEditor({ onToast }) {
     <section className="foundation-section">
       <div className="foundation-section-heading"><div><small>不连接外部系统</small><h3><ShieldCheck size={18} />本地授权记录</h3></div><span>{activeWorkspace.authorizations.length} 条</span></div>
       <div className="foundation-notice"><WarningCircle size={17} />此处只记录客户允许处理的范围，不会保存银行或税务密码，也不会连接银行、税务、AI 或 OCR。</div>
-      <div className="foundation-record-list authorization-list">{activeWorkspace.authorizations.map((authorization) => <article className="foundation-record" key={authorization.id}><div><strong>{authorization.label || authorization.system}</strong><small>{effectiveStatus(authorization)} · {authorization.scope || "未填写范围"}{authorization.expiresAt ? ` · 至 ${String(authorization.expiresAt).slice(0, 10)}` : ""}</small></div></article>)}</div>
-      <form className="entity-form" onSubmit={save}>
-        <label className="foundation-field"><span>数据源</span><select value={draft.system} onChange={(event) => setDraft((current) => ({ ...current, system: event.target.value, label: event.target.selectedOptions[0].text }))}><option value="bank">银行数据</option><option value="tax">税务资料</option><option value="business">经营系统文件</option><option value="finance">现有财务软件文件</option></select></label>
-        <label className="foundation-field"><span>允许范围</span><input value={draft.scope} onChange={(event) => setDraft((current) => ({ ...current, scope: event.target.value }))} /></label>
-        <label className="foundation-field"><span>授权人</span><input value={draft.grantedBy} onChange={(event) => setDraft((current) => ({ ...current, grantedBy: event.target.value }))} placeholder="法定代表人 / 负责人" /></label>
-        <label className="foundation-field"><span>有效期至（可选）</span><input type="date" value={draft.expiresAt} onChange={(event) => setDraft((current) => ({ ...current, expiresAt: event.target.value }))} /></label>
-        <label className="foundation-field"><span>授权凭证（可选）</span><select value={draft.proofDocumentId} onChange={(event) => setDraft((current) => ({ ...current, proofDocumentId: event.target.value }))}><option value="">暂不关联</option>{activeWorkspace.documents.map((document) => <option value={document.id} key={document.id}>{document.name}</option>)}</select></label>
-        <label className="foundation-field"><span>授权状态</span><select value={draft.status} onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value }))}><option value="recorded">有效记录</option><option value="revoked">已撤回</option></select></label>
-        <label className="foundation-field"><span>授权说明</span><input value={draft.note} onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))} placeholder="谁在何时允许处理哪些本地文件" /></label>
-        <button className="primary-button" type="submit">记录本地授权</button>
-        {error && <p className="entity-error">{error}</p>}
-      </form>
+      <div className="foundation-record-list authorization-list">
+        {activeWorkspace.authorizations.map((authorization) => <article className="foundation-record" key={authorization.id}><div><strong>{authorization.label || authorization.system}</strong><small>{effectiveStatus(authorization)} · {authorization.scope || "未填写范围"}{authorization.expiresAt ? ` · 至 ${String(authorization.expiresAt).slice(0, 10)}` : ""}</small></div></article>)}
+        {!activeWorkspace.authorizations.length && <p className="foundation-empty">还没有本地授权记录。</p>}
+      </div>
+      <button className="foundation-editor-toggle secondary-button" type="button" aria-expanded={editorOpen} aria-controls="authorization-editor" onClick={create}><Plus size={16} />新增授权记录</button>
+      {editorOpen && <div className="foundation-editor-panel" id="authorization-editor">
+        <div className="foundation-section-heading"><div><small>新增本地授权</small><h4>记录可处理的数据范围</h4></div></div>
+        <form className="entity-form" onSubmit={save}>
+          <label className="foundation-field"><span>数据源</span><select value={draft.system} onChange={(event) => setDraft((current) => ({ ...current, system: event.target.value, label: event.target.selectedOptions[0].text }))}><option value="bank">银行数据</option><option value="tax">税务资料</option><option value="business">经营系统文件</option><option value="finance">现有财务软件文件</option></select></label>
+          <label className="foundation-field"><span>允许范围</span><input value={draft.scope} onChange={(event) => setDraft((current) => ({ ...current, scope: event.target.value }))} /></label>
+          <label className="foundation-field"><span>授权人</span><input value={draft.grantedBy} onChange={(event) => setDraft((current) => ({ ...current, grantedBy: event.target.value }))} placeholder="法定代表人 / 负责人" /></label>
+          <label className="foundation-field"><span>有效期至（可选）</span><input type="date" value={draft.expiresAt} onChange={(event) => setDraft((current) => ({ ...current, expiresAt: event.target.value }))} /></label>
+          <label className="foundation-field"><span>授权凭证（可选）</span><select value={draft.proofDocumentId} onChange={(event) => setDraft((current) => ({ ...current, proofDocumentId: event.target.value }))}><option value="">暂不关联</option>{activeWorkspace.documents.map((document) => <option value={document.id} key={document.id}>{document.name}</option>)}</select></label>
+          <label className="foundation-field"><span>授权状态</span><select value={draft.status} onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value }))}><option value="recorded">有效记录</option><option value="revoked">已撤回</option></select></label>
+          <label className="foundation-field"><span>授权说明</span><input value={draft.note} onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))} placeholder="谁在何时允许处理哪些本地文件" /></label>
+          <div className="foundation-inline-actions"><button className="primary-button" type="submit">记录本地授权</button><button className="secondary-button" type="button" onClick={cancel}>取消</button></div>
+          {error && <p className="entity-error">{error}</p>}
+        </form>
+      </div>}
     </section>
   );
 }

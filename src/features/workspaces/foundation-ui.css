@@ -292,8 +292,26 @@
 
 .foundation-section-heading h3 {
   display: inline-flex;
+  min-width: 0;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
+  line-height: 1.35;
+}
+
+.foundation-section-heading h3 svg {
+  flex: 0 0 auto;
+}
+
+.foundation-section-heading > div {
+  min-width: 0;
+}
+
+.foundation-section-heading > span {
+  min-width: 0;
+  max-width: 52%;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .foundation-record-list {
@@ -655,8 +673,7 @@
 }
 
 .foundation-section {
-  display: flex;
-  flex-direction: column;
+  display: block;
   border-color: var(--line);
   border-radius: var(--radius-panel, 12px);
 }
@@ -666,16 +683,11 @@
 }
 
 .foundation-grid {
-  align-items: stretch;
+  align-items: start;
 }
 
 .foundation-grid > :only-child {
   grid-column: 1 / -1;
-}
-
-.foundation-section > .entity-form,
-.foundation-section > .company-form {
-  margin-top: auto;
 }
 
 .company-form {
@@ -751,5 +763,228 @@
 
   .company-form > .primary-button {
     grid-column: auto;
+  }
+}
+
+/* Dialog sizing and natural-height foundation cards. */
+.modal-card.foundation-manager {
+  width: min(1020px, calc(100vw - 40px));
+  max-width: 100%;
+  max-height: min(880px, calc(100dvh - 40px));
+  overflow-y: auto;
+}
+
+.modal-card.foundation-manager[aria-labelledby="bank-import-title"],
+.modal-card.bank-import-dialog {
+  width: min(980px, calc(100vw - 40px));
+}
+
+.foundation-manager-grid {
+  align-items: start;
+  gap: 16px;
+}
+
+.foundation-manager .choice-cards,
+.foundation-manager .choice-cards > label,
+.foundation-manager .choice-cards > label > span {
+  min-width: 0;
+  writing-mode: horizontal-tb;
+}
+
+.foundation-manager .choice-cards strong,
+.foundation-manager .choice-cards small {
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+
+.foundation-editor-toggle {
+  width: 100%;
+}
+
+.foundation-editor-panel {
+  margin-top: 12px;
+  padding: 12px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--canvas);
+}
+
+.foundation-editor-panel > .foundation-section-heading {
+  margin-bottom: 10px;
+}
+
+.foundation-editor-panel h4 {
+  margin: 2px 0 0;
+  color: var(--espresso);
+  font-family: ui-serif, "Songti SC", "STSong", serif;
+  font-size: 15px;
+}
+
+.foundation-editor-panel > .entity-form {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.foundation-summary-grid {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.foundation-summary-grid > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: var(--canvas);
+}
+
+.foundation-summary-grid small {
+  color: var(--quiet);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.foundation-summary-grid strong {
+  min-width: 0;
+  color: var(--espresso);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.modal-card.foundation-manager[aria-labelledby="bank-import-title"] > .bank-import-panel,
+.modal-card.bank-import-dialog > .bank-import-panel {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-import-workspace,
+.modal-card.bank-import-dialog .bank-import-workspace {
+  margin-top: 14px;
+  padding: 14px;
+  border-top: 0;
+  border-radius: 10px;
+  background: var(--canvas);
+}
+
+.modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-import-panel > .bank-import-start,
+.modal-card.bank-import-dialog .bank-import-panel > .bank-import-start {
+  grid-template-columns: minmax(220px, 1fr) minmax(160px, 0.55fr) auto;
+}
+
+.modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-import-workspace > .bank-import-start,
+.modal-card.bank-import-dialog .bank-import-workspace > .bank-import-start {
+  grid-template-columns: minmax(220px, 1fr) auto;
+}
+
+.modal-card.foundation-manager[aria-labelledby="bank-import-title"] .mapping-grid,
+.modal-card.bank-import-dialog .mapping-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-preview-scroll,
+.modal-card.bank-import-dialog .bank-preview-scroll {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-preview-scroll table,
+.modal-card.bank-import-dialog .bank-preview-scroll table {
+  min-width: 720px;
+}
+
+@media (max-width: 900px) {
+  .modal-card.foundation-manager,
+  .modal-card.foundation-manager[aria-labelledby="bank-import-title"],
+  .modal-card.bank-import-dialog {
+    width: calc(100vw - 32px);
+    max-height: calc(100dvh - 32px);
+  }
+
+  .modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-import-panel > .bank-import-start,
+  .modal-card.bank-import-dialog .bank-import-panel > .bank-import-start {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-import-panel > .bank-import-start > .secondary-button,
+  .modal-card.bank-import-dialog .bank-import-panel > .bank-import-start > .secondary-button {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .foundation-manager .workspace-module-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .modal-card.foundation-manager,
+  .modal-card.foundation-manager[aria-labelledby="bank-import-title"],
+  .modal-card.bank-import-dialog {
+    width: calc(100vw - 24px);
+    max-height: calc(100dvh - 24px);
+  }
+
+  .foundation-manager-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-import-start,
+  .modal-card.bank-import-dialog .bank-import-start {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-import-start > .secondary-button,
+  .modal-card.bank-import-dialog .bank-import-start > .secondary-button {
+    grid-column: auto;
+    width: 100%;
+    justify-self: stretch;
+  }
+
+}
+
+@media (max-width: 560px) {
+  .modal-card.foundation-manager,
+  .modal-card.foundation-manager[aria-labelledby="bank-import-title"],
+  .modal-card.bank-import-dialog {
+    width: calc(100vw - 20px);
+    max-height: calc(100dvh - 20px);
+  }
+
+  .modal-card.foundation-manager[aria-labelledby="bank-import-title"] .mapping-grid,
+  .modal-card.bank-import-dialog .mapping-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-import-workspace,
+  .modal-card.bank-import-dialog .bank-import-workspace,
+  .foundation-editor-panel {
+    padding: 10px;
+  }
+
+  .bank-file-summary {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .workspace-module-grid,
+  .foundation-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .foundation-section-heading {
+    align-items: flex-start;
+  }
+
+  .foundation-section-heading > span {
+    max-width: 46%;
   }
 }
