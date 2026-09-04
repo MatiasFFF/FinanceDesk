@@ -2123,3 +2123,58 @@
     width: 100%;
   }
 }
+
+.foundation-terminology-editor {
+  grid-column: 1 / -1;
+}
+
+.foundation-terminology-form,
+.foundation-terminology-grid {
+  display: grid;
+  min-width: 0;
+}
+
+.foundation-terminology-form {
+  gap: 11px;
+}
+
+.foundation-terminology-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+
+.foundation-terminology-field {
+  min-width: 0;
+  grid-template-rows: auto 40px;
+}
+
+.foundation-terminology-field > input {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.foundation-terminology-form > .foundation-hint {
+  margin: 0;
+}
+
+.foundation-terminology-actions {
+  justify-content: flex-end;
+  margin-top: 0;
+}
+
+@media (max-width: 900px) {
+  .foundation-terminology-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .foundation-terminology-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foundation-terminology-actions > button {
+    width: 100%;
+  }
+}

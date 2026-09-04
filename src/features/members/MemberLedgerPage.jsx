@@ -50,6 +50,30 @@ const EVENT_STATUS_TONES = {
   void: "neutral",
 };
 
+const DEFAULT_TERMINOLOGY = Object.freeze({
+  customer: "客户",
+  supplier: "供应商",
+  personnel: "员工",
+  location: "门店",
+  member: "会员",
+  coach: "教练",
+  service: "服务",
+});
+
+function workspaceTerminology(workspace) {
+  return Object.fromEntries(Object.entries(DEFAULT_TERMINOLOGY).map(([key, fallback]) => [
+    key,
+    String(workspace?.terminology?.[key] || "").trim() || fallback,
+  ]));
+}
+
+function memberRoleCopy(value, terminology) {
+  return String(value || "")
+    .replaceAll("会员", terminology.member)
+    .replaceAll("教练", terminology.coach)
+    .replaceAll("门店", terminology.location);
+}
+
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -92,6 +116,7 @@ function membershipPackageDiscountLabel(packageRule) {
 
 function MembershipPackagesPanel({ workspace }) {
   const { actions, state, store } = useFinanceDesk();
+  const terminology = workspaceTerminology(workspace);
   const [form, setForm] = useState(emptyMembershipPackage);
   const [feedback, setFeedback] = useState(null);
   const packages = workspace.membershipPackages || [];
@@ -112,7 +137,7 @@ function MembershipPackagesPanel({ workspace }) {
       setFeedback({ tone: "success", message: successMessage });
       return true;
     } catch (error) {
-      setFeedback({ tone: "danger", message: error.message || "会员套餐处理失败" });
+      setFeedback({ tone: "danger", message: memberRoleCopy(error.message || `${terminology.member}套餐处理失败`, terminology) });
       return false;
     }
   }
@@ -121,7 +146,7 @@ function MembershipPackagesPanel({ workspace }) {
     event.preventDefault();
     if (run(
       (current) => saveMembershipPackage(current, form, { actor }),
-      form.id ? "会员套餐已更新；既往充值仍保留原套餐快照" : "会员套餐已保存到当前工作台",
+      form.id ? `${terminology.member}套餐已更新；既往充值仍保留原套餐快照` : `${terminology.member}套餐已保存到当前工作台`,
     )) setForm(emptyMembershipPackage());
   }
 
@@ -144,13 +169,13 @@ function MembershipPackagesPanel({ workspace }) {
         ...packageRule,
         enabled: packageRule.enabled === false,
       }, { actor }),
-      packageRule.enabled === false ? "会员套餐已启用" : "会员套餐已停用",
+      packageRule.enabled === false ? `${terminology.member}套餐已启用` : `${terminology.member}套餐已停用`,
     );
   }
 
   return (
     <section className="panel membership-packages-panel">
-      <div className="panel-heading"><div><p className="eyebrow">会员套餐与价格</p><h2>建立可复用的充值规则</h2><p>套餐修改只影响以后充值；每笔会员充值都会保留当时的价格、课时、折扣和有效期快照。</p></div><span>{packages.length} 个套餐</span></div>
+      <div className="panel-heading"><div><p className="eyebrow">{terminology.member}套餐与价格</p><h2>建立可复用的充值规则</h2><p>套餐修改只影响以后充值；每笔{terminology.member}充值都会保留当时的价格、课时、折扣和有效期快照。</p></div><span>{packages.length} 个套餐</span></div>
       <form className="member-entry-form membership-package-form" onSubmit={submitPackage}>
         <label><span>套餐名称</span><input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required placeholder="例如：私教 10 节包" /></label>
         <label><span>挂牌售价</span><input type="number" min="0.01" step="0.01" value={form.listPrice} onChange={(event) => setForm((current) => ({ ...current, listPrice: event.target.value }))} required /></label>
@@ -162,7 +187,7 @@ function MembershipPackagesPanel({ workspace }) {
         <div className="commission-rule-form-actions"><button className="primary-button" type="submit">{form.id ? "保存套餐修改" : "保存套餐"}</button>{form.id && <button className="soft-button" type="button" onClick={() => setForm(emptyMembershipPackage())}>取消编辑</button>}</div>
       </form>
       <div className="membership-package-rule-list">
-        {packages.length ? packages.map((packageRule) => <article className={packageRule.enabled === false ? "disabled" : ""} key={packageRule.id}><div><span>{packageRule.enabled === false ? "已停用" : "可充值"}</span><strong>{packageRule.name}</strong><small>{membershipPackageDiscountLabel(packageRule)} · 有效 {packageRule.validityDays} 天</small></div><div><span><small>挂牌售价</small><strong>{formatCurrency(packageRule.listPrice)}</strong></span><span><small>实际售价</small><strong>{formatCurrency(packageRule.salePrice)}</strong></span><span><small>总课时</small><strong>{packageRule.totalSessions} 节</strong></span></div><footer><button className="soft-button" type="button" onClick={() => editPackage(packageRule)}>编辑</button><button className="soft-button" type="button" onClick={() => togglePackage(packageRule)}>{packageRule.enabled === false ? "启用" : "停用"}</button></footer></article>) : <p className="membership-package-empty">还没有会员套餐。先保存套餐，才能新增会员充值。</p>}
+        {packages.length ? packages.map((packageRule) => <article className={packageRule.enabled === false ? "disabled" : ""} key={packageRule.id}><div><span>{packageRule.enabled === false ? "已停用" : "可充值"}</span><strong>{packageRule.name}</strong><small>{membershipPackageDiscountLabel(packageRule)} · 有效 {packageRule.validityDays} 天</small></div><div><span><small>挂牌售价</small><strong>{formatCurrency(packageRule.listPrice)}</strong></span><span><small>实际售价</small><strong>{formatCurrency(packageRule.salePrice)}</strong></span><span><small>总课时</small><strong>{packageRule.totalSessions} 节</strong></span></div><footer><button className="soft-button" type="button" onClick={() => editPackage(packageRule)}>编辑</button><button className="soft-button" type="button" onClick={() => togglePackage(packageRule)}>{packageRule.enabled === false ? "启用" : "停用"}</button></footer></article>) : <p className="membership-package-empty">还没有{terminology.member}套餐。先保存套餐，才能新增{terminology.member}充值。</p>}
       </div>
       {feedback && <p className={"commission-rule-feedback " + feedback.tone}>{feedback.message}</p>}
     </section>
@@ -196,6 +221,7 @@ function commissionLineFormula(rule, line) {
 
 function CommissionRulesPanel({ workspace }) {
   const { actions, state, store } = useFinanceDesk();
+  const terminology = workspaceTerminology(workspace);
   const coaches = useMemo(() => [...new Set([
     ...(workspace.members || []).map((member) => member.coach),
     ...(workspace.commissionRules || []).map((rule) => rule.coach),
@@ -223,7 +249,7 @@ function CommissionRulesPanel({ workspace }) {
       setFeedback({ tone: "success", message: successMessage });
       return true;
     } catch (error) {
-      setFeedback({ tone: "danger", message: error.message || "提成规则处理失败" });
+      setFeedback({ tone: "danger", message: memberRoleCopy(error.message || "提成规则处理失败", terminology) });
       return false;
     }
   }
@@ -268,10 +294,10 @@ function CommissionRulesPanel({ workspace }) {
 
   return (
     <section className="panel commission-rules-panel">
-      <div className="panel-heading"><div><p className="eyebrow">教练提成规则</p><h2>按真实业务来源计算本期应计</h2><p>规则和计提结果保存在当前工作台；同一来源一经确认，不会再次进入待计提金额。</p></div><span>{workspace.currentPeriod}</span></div>
+      <div className="panel-heading"><div><p className="eyebrow">{terminology.coach}提成规则</p><h2>按真实业务来源计算本期应计</h2><p>规则和计提结果保存在当前工作台；同一来源一经确认，不会再次进入待计提金额。</p></div><span>{workspace.currentPeriod}</span></div>
       <div className="commission-rule-layout">
         <form className="member-entry-form commission-rule-form" onSubmit={submitRule}>
-          <label><span>教练</span><input list="commission-coaches" value={form.coach} onChange={(event) => setForm((current) => ({ ...current, coach: event.target.value }))} required placeholder="例如：陈教练" /><datalist id="commission-coaches">{coaches.map((coach) => <option value={coach} key={coach} />)}</datalist></label>
+          <label><span>{terminology.coach}</span><input list="commission-coaches" value={form.coach} onChange={(event) => setForm((current) => ({ ...current, coach: event.target.value }))} required placeholder={`例如：陈${terminology.coach}`} /><datalist id="commission-coaches">{coaches.map((coach) => <option value={coach} key={coach} />)}</datalist></label>
           <label><span>计提口径</span><select value={form.basis} onChange={(event) => setForm((current) => ({ ...current, basis: event.target.value }))}>{Object.entries(COMMISSION_RULE_BASE_DEFINITIONS).map(([value, definition]) => <option value={value} key={value}>{definition.label}</option>)}</select></label>
           <label><span>计算方式</span><select value={form.method} onChange={(event) => setForm((current) => ({ ...current, method: event.target.value }))}><option value={COMMISSION_RULE_METHODS.PERCENTAGE}>按金额比例</option><option value={COMMISSION_RULE_METHODS.FIXED}>固定金额</option></select></label>
           {form.method === COMMISSION_RULE_METHODS.PERCENTAGE
@@ -290,11 +316,11 @@ function CommissionRulesPanel({ workspace }) {
               <div className="commission-rule-metrics"><span><small>待计提来源</small><strong>{calculation.sourceCount} 项</strong></span><span><small>计提基数</small><strong>{formatCurrency(calculation.baseAmount)}</strong></span><span><small>本期应计</small><strong>{formatCurrency(calculation.commissionAmount)}</strong></span><span><small>本期已计提</small><strong>{formatCurrency(calculation.accruedAmount)}</strong></span></div>
               <details open={calculation.pendingLines.length > 0}>
                 <summary>查看本期计算明细 · {calculation.lines.length} 项</summary>
-                <div className="commission-calculation-list">{calculation.lines.length ? calculation.lines.map((line) => <div key={line.sourceId}><span><strong>{line.date} · {line.label}</strong><small>{commissionLineFormula(rule, line)}</small></span><span><strong>{formatCurrency(line.commissionAmount)}</strong><small>{line.alreadyAccrued ? "已计提" : "待确认"}</small></span></div>) : <p>本期暂无可归属到该教练的真实来源。</p>}</div>
+                <div className="commission-calculation-list">{calculation.lines.length ? calculation.lines.map((line) => <div key={line.sourceId}><span><strong>{line.date} · {memberRoleCopy(line.label, terminology)}</strong><small>{commissionLineFormula(rule, line)}</small></span><span><strong>{formatCurrency(line.commissionAmount)}</strong><small>{line.alreadyAccrued ? "已计提" : "待确认"}</small></span></div>) : <p>本期暂无可归属到该{terminology.coach}的真实来源。</p>}</div>
               </details>
               <button className="primary-button wide" type="button" disabled={rule.enabled === false || !calculation.pendingLines.length} onClick={() => accrueRule(rule, calculation)}>确认计提 {formatCurrency(calculation.commissionAmount)}</button>
             </article>;
-          }) : <div className="member-empty"><CurrencyCircleDollar size={26} /><strong>还没有提成规则</strong><span>先设置教练、计提口径与比例或固定金额。</span></div>}
+          }) : <div className="member-empty"><CurrencyCircleDollar size={26} /><strong>还没有提成规则</strong><span>先设置{terminology.coach}、计提口径与比例或固定金额。</span></div>}
         </div>
       </div>
       {feedback && <p className={`commission-rule-feedback ${feedback.tone}`}>{feedback.message}</p>}
@@ -302,31 +328,31 @@ function CommissionRulesPanel({ workspace }) {
   );
 }
 
-function MemberServiceReconciliationPanel({ reconciliation }) {
+function MemberServiceReconciliationPanel({ reconciliation, terminology }) {
   const statusLabel = !reconciliation.applicable
     ? "不适用"
     : reconciliation.passed ? "勾稽通过" : "存在差额";
   return (
     <section className="panel member-reconciliation-panel">
-      <div className="panel-heading"><div><p className="eyebrow">会员未履约服务勾稽</p><h2>会员台账与合同负债</h2><p>结果完全由会员业务和已入账凭证计算；异常项不能手工改成通过。</p></div><span className={`tone-pill ${reconciliation.passed ? "success" : "warning"}`}>{statusLabel}</span></div>
+      <div className="panel-heading"><div><p className="eyebrow">{terminology.member}未履约{terminology.service}勾稽</p><h2>{terminology.member}台账与合同负债</h2><p>结果完全由{terminology.member}业务和已入账凭证计算；异常项不能手工改成通过。</p></div><span className={`tone-pill ${reconciliation.passed ? "success" : "warning"}`}>{statusLabel}</span></div>
       <div className="member-reconciliation-metrics">
-        <span><small>会员未履约余额</small><strong>{formatCurrency(reconciliation.memberBalance)}</strong></span>
+        <span><small>{terminology.member}未履约余额</small><strong>{formatCurrency(reconciliation.memberBalance)}</strong></span>
         <span><small>已入账合同负债</small><strong>{formatCurrency(reconciliation.contractLiabilityBalance)}</strong></span>
         <span><small>勾稽差额</small><strong>{formatCurrency(reconciliation.difference)}</strong></span>
         <span><small>系统结果</small><strong>{statusLabel}</strong></span>
       </div>
       <div className={`member-reconciliation-result ${reconciliation.passed ? "success" : "danger"}`}>
         {reconciliation.passed ? <CheckCircle size={18} weight="fill" /> : <WarningCircle size={18} weight="fill" />}
-        <span><strong>{reconciliation.message}</strong><small>{reconciliation.passed ? "来源或凭证变化后会自动重新计算。" : "已生成系统派生异常；补做或修订凭证并入账后，差额归零才会自动恢复通过。"}</small></span>
+        <span><strong>{memberRoleCopy(reconciliation.message, terminology)}</strong><small>{reconciliation.passed ? "来源或凭证变化后会自动重新计算。" : "已生成系统派生异常；补做或修订凭证并入账后，差额归零才会自动恢复通过。"}</small></span>
       </div>
       <div className="member-reconciliation-table">
-        <div className="member-reconciliation-row heading"><span>会员</span><span>累计充值</span><span>已确认收入</span><span>已退款</span><span>剩余课时</span><span>未履约余额</span></div>
-        {reconciliation.members.length ? reconciliation.members.map((member) => <div className="member-reconciliation-row" key={member.id}><span><strong>{member.name}</strong><small>{member.sourceIds.length} 项已确认来源</small></span><span>{formatCurrency(member.recharged)}</span><span>{formatCurrency(member.recognizedRevenue)}</span><span>{formatCurrency(member.refunded)}</span><span>{member.remainingSessions} 节</span><span><strong>{formatCurrency(member.unfulfilledBalance)}</strong></span></div>) : <p className="member-reconciliation-empty">当前没有会员台账数据。</p>}
+        <div className="member-reconciliation-row heading"><span>{terminology.member}</span><span>累计充值</span><span>已确认收入</span><span>已退款</span><span>剩余课时</span><span>未履约余额</span></div>
+        {reconciliation.members.length ? reconciliation.members.map((member) => <div className="member-reconciliation-row" key={member.id}><span><strong>{member.name}</strong><small>{member.sourceIds.length} 项已确认来源</small></span><span>{formatCurrency(member.recharged)}</span><span>{formatCurrency(member.recognizedRevenue)}</span><span>{formatCurrency(member.refunded)}</span><span>{member.remainingSessions} 节</span><span><strong>{formatCurrency(member.unfulfilledBalance)}</strong></span></div>) : <p className="member-reconciliation-empty">当前没有{terminology.member}台账数据。</p>}
       </div>
       <details open={!reconciliation.passed} className="member-reconciliation-sources">
-        <summary>查看两侧来源明细 · 会员 {reconciliation.memberSources.length} 项 / 凭证 {reconciliation.accountingSources.length} 项</summary>
+        <summary>查看两侧来源明细 · {terminology.member} {reconciliation.memberSources.length} 项 / 凭证 {reconciliation.accountingSources.length} 项</summary>
         <div>
-          <section><h3>会员业务来源</h3>{reconciliation.memberSources.length ? reconciliation.memberSources.map((source) => <div key={source.id}><span><strong>{source.date} · {source.memberName}</strong><small>{source.label} · {source.id}</small></span><strong>{source.balanceEffect >= 0 ? "+" : ""}{formatCurrency(source.balanceEffect)}</strong></div>) : <p>暂无已确认的充值、耗课或退款。</p>}</section>
+          <section><h3>{terminology.member}业务来源</h3>{reconciliation.memberSources.length ? reconciliation.memberSources.map((source) => <div key={source.id}><span><strong>{source.date} · {source.memberName}</strong><small>{memberRoleCopy(source.label, terminology)} · {source.id}</small></span><strong>{source.balanceEffect >= 0 ? "+" : ""}{formatCurrency(source.balanceEffect)}</strong></div>) : <p>暂无已确认的充值、耗课或退款。</p>}</section>
           <section><h3>合同负债来源</h3>{reconciliation.accountingSources.length ? reconciliation.accountingSources.map((source) => <div key={source.id}><span><strong>{source.date || "期初"} · {source.label}</strong><small>{source.reference}</small></span><strong>{source.balanceEffect >= 0 ? "+" : ""}{formatCurrency(source.balanceEffect)}</strong></div>) : <p>暂无已入账合同负债来源。</p>}</section>
         </div>
       </details>
@@ -334,12 +360,12 @@ function MemberServiceReconciliationPanel({ reconciliation }) {
   );
 }
 
-function MemberPackageBalancesPanel({ packageBalances }) {
+function MemberPackageBalancesPanel({ packageBalances, terminology }) {
   return (
     <section className="panel member-package-balances-panel">
-      <div className="panel-heading"><div><p className="eyebrow">会员已购套餐</p><h2>逐笔查看课时、有效期与未履约余额</h2></div><span>{packageBalances.length} 个</span></div>
+      <div className="panel-heading"><div><p className="eyebrow">{terminology.member}已购套餐</p><h2>逐笔查看课时、有效期与未履约余额</h2></div><span>{packageBalances.length} 个</span></div>
       {packageBalances.length ? <div className="member-package-balance-table">
-        <div className="member-package-balance-row heading"><span>会员 / 套餐</span><span>原始课时</span><span>已耗</span><span>剩余</span><span>到期日</span><span>未履约余额</span></div>
+        <div className="member-package-balance-row heading"><span>{terminology.member} / 套餐</span><span>原始课时</span><span>已耗</span><span>剩余</span><span>到期日</span><span>未履约余额</span></div>
         {packageBalances.map((packageBalance) => <div className="member-package-balance-row" key={packageBalance.rechargeEventId}>
           <span><strong>{packageBalance.memberName} · {packageBalance.packageName}</strong><small>{packageBalance.purchasedAt} 充值 · {packageBalance.rechargeEventId}</small></span>
           <span>{packageBalance.originalSessions} 节</span>
@@ -348,12 +374,13 @@ function MemberPackageBalancesPanel({ packageBalances }) {
           <span><strong>{packageBalance.expiresAt}</strong><small>{packageBalance.expired ? "已过期，不可耗课" : "有效"}</small></span>
           <span><strong>{formatCurrency(packageBalance.unfulfilledBalance)}</strong></span>
         </div>)}
-      </div> : <div className="member-empty"><Clock size={26} /><strong>还没有已确认的套餐充值</strong><span>会员充值确认后会在这里形成独立套餐余额。</span></div>}
+      </div> : <div className="member-empty"><Clock size={26} /><strong>还没有已确认的套餐充值</strong><span>{terminology.member}充值确认后会在这里形成独立套餐余额。</span></div>}
     </section>
   );
 }
 
 function EventForm({ workspace, members, onSubmit }) {
+  const terminology = workspaceTerminology(workspace);
   const [form, setForm] = useState({ kind: MEMBER_EVENT_KINDS.RECHARGE, memberId: members[0]?.id || "", packageId: "", packageRechargeId: "", originalRechargeId: "", date: today(), amount: "", quantity: "", ...defaultDimensions(workspace, members[0]), note: "" });
   const definition = MEMBER_EVENT_DEFINITIONS[form.kind];
   const needsMember = form.kind !== MEMBER_EVENT_KINDS.COMMISSION;
@@ -393,18 +420,18 @@ function EventForm({ workspace, members, onSubmit }) {
 
   return (
     <section className="panel member-entry-panel">
-      <div className="panel-heading"><div><p className="eyebrow">新增业务</p><h2>记录会员动作</h2></div><Plus size={21} /></div>
+      <div className="panel-heading"><div><p className="eyebrow">新增业务</p><h2>记录{terminology.member}动作</h2></div><Plus size={21} /></div>
       <form className="member-entry-form" onSubmit={submit}>
-        <label><span>业务类型</span><select value={form.kind} onChange={(event) => changeKind(event.target.value)}>{Object.entries(MEMBER_EVENT_DEFINITIONS).filter(([, item]) => item.creatable !== false).map(([value, item]) => <option value={value} key={value}>{item.label}</option>)}</select></label>
-        {needsMember && <label><span>会员</span><select value={form.memberId} onChange={(event) => changeMember(event.target.value)} required><option value="">请选择会员</option>{members.map((member) => <option value={member.id} key={member.id}>{member.name}</option>)}</select></label>}
+        <label><span>业务类型</span><select value={form.kind} onChange={(event) => changeKind(event.target.value)}>{Object.entries(MEMBER_EVENT_DEFINITIONS).filter(([, item]) => item.creatable !== false).map(([value, item]) => <option value={value} key={value}>{memberRoleCopy(item.label, terminology)}</option>)}</select></label>
+        {needsMember && <label><span>{terminology.member}</span><select value={form.memberId} onChange={(event) => changeMember(event.target.value)} required><option value="">请选择{terminology.member}</option>{members.map((member) => <option value={member.id} key={member.id}>{member.name}</option>)}</select></label>}
         {form.kind === MEMBER_EVENT_KINDS.RECHARGE && (
           <label className="full">
             <span>充值套餐</span>
             <select value={form.packageId} onChange={(event) => setForm((current) => ({ ...current, packageId: event.target.value }))} required>
-              <option value="">请选择会员套餐</option>
+              <option value="">请选择{terminology.member}套餐</option>
               {enabledPackages.map((packageRule) => <option value={packageRule.id} key={packageRule.id}>{packageRule.name} · {packageRule.totalSessions} 节 · {formatCurrency(packageRule.salePrice)} · {packageRule.validityDays} 天</option>)}
             </select>
-            {!enabledPackages.length && <small>请先在上方建立并启用会员套餐。</small>}
+            {!enabledPackages.length && <small>请先在上方建立并启用{terminology.member}套餐。</small>}
           </label>
         )}
         {form.kind === MEMBER_EVENT_KINDS.CONSUMPTION && (
@@ -415,28 +442,29 @@ function EventForm({ workspace, members, onSubmit }) {
               {availableMemberPackages.map((packageBalance) => <option value={packageBalance.rechargeEventId} key={packageBalance.rechargeEventId}>{packageBalance.packageName} · 剩余 {packageBalance.remainingSessions} 节 / {formatCurrency(packageBalance.unfulfilledBalance)} · {packageBalance.expiresAt} 到期</option>)}
             </select>
             {selectedMemberPackage && <small>本次收入按该套餐当前未履约余额与剩余课时同比计算。</small>}
-            {!availableMemberPackages.length && <small>该会员在所选日期没有可用且未过期的套餐。</small>}
+            {!availableMemberPackages.length && <small>该{terminology.member}在所选日期没有可用且未过期的套餐。</small>}
           </label>
         )}
-        {form.kind === MEMBER_EVENT_KINDS.REFUND && <label className="full"><span>原充值</span><select value={form.originalRechargeId} onChange={(event) => setForm((current) => ({ ...current, originalRechargeId: event.target.value }))} required><option value="">请选择本次退款对应的原充值</option>{refundOptions.map((option) => <option value={option.rechargeId} key={option.rechargeId}>{option.date} · 原充值 {formatCurrency(option.amount)} / {option.sessions} 节 · 可退 {formatCurrency(option.refundableAmount)} / {option.refundableSessions} 节</option>)}</select>{selectedRecharge && <small>按充值日期先进先出分摊已耗课；本笔最多可退 {formatCurrency(selectedRecharge.refundableAmount)}、{selectedRecharge.refundableSessions} 节。</small>}{!refundOptions.length && <small>该会员暂无同时具备可退金额和课时的已确认充值。</small>}</label>}
+        {form.kind === MEMBER_EVENT_KINDS.REFUND && <label className="full"><span>原充值</span><select value={form.originalRechargeId} onChange={(event) => setForm((current) => ({ ...current, originalRechargeId: event.target.value }))} required><option value="">请选择本次退款对应的原充值</option>{refundOptions.map((option) => <option value={option.rechargeId} key={option.rechargeId}>{option.date} · 原充值 {formatCurrency(option.amount)} / {option.sessions} 节 · 可退 {formatCurrency(option.refundableAmount)} / {option.refundableSessions} 节</option>)}</select>{selectedRecharge && <small>按充值日期先进先出分摊已耗课；本笔最多可退 {formatCurrency(selectedRecharge.refundableAmount)}、{selectedRecharge.refundableSessions} 节。</small>}{!refundOptions.length && <small>该{terminology.member}暂无同时具备可退金额和课时的已确认充值。</small>}</label>}
         <label><span>业务日期</span><input type="date" value={form.date} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value }))} required /></label>
         <label><span>{form.kind === MEMBER_EVENT_KINDS.COMMISSION ? "涉及耗课数（选填）" : form.kind === MEMBER_EVENT_KINDS.RECHARGE ? "套餐课时" : "课时"}</span><input type="number" min={form.kind === MEMBER_EVENT_KINDS.COMMISSION ? "0" : "0.01"} max={form.kind === MEMBER_EVENT_KINDS.REFUND ? selectedRecharge?.refundableSessions : form.kind === MEMBER_EVENT_KINDS.CONSUMPTION ? selectedMemberPackage?.remainingSessions : undefined} step="0.01" value={form.kind === MEMBER_EVENT_KINDS.RECHARGE ? selectedPackage?.totalSessions || "" : form.quantity} onChange={(event) => setForm((current) => ({ ...current, quantity: event.target.value }))} readOnly={form.kind === MEMBER_EVENT_KINDS.RECHARGE} required={form.kind !== MEMBER_EVENT_KINDS.COMMISSION} /></label>
         <label><span>{form.kind === MEMBER_EVENT_KINDS.COMMISSION ? "提成金额" : form.kind === MEMBER_EVENT_KINDS.RECHARGE ? "套餐售价" : form.kind === MEMBER_EVENT_KINDS.CONSUMPTION ? "本次确认收入" : "金额"}</span><input type="number" min="0.01" max={form.kind === MEMBER_EVENT_KINDS.REFUND ? selectedRecharge?.refundableAmount : undefined} step="0.01" value={form.kind === MEMBER_EVENT_KINDS.RECHARGE ? selectedPackage?.salePrice || "" : form.kind === MEMBER_EVENT_KINDS.CONSUMPTION ? consumptionPreviewAmount || "" : form.amount} onChange={(event) => setForm((current) => ({ ...current, amount: event.target.value }))} readOnly={[MEMBER_EVENT_KINDS.RECHARGE, MEMBER_EVENT_KINDS.CONSUMPTION].includes(form.kind)} required /></label>
-        <label><span>教练</span><input value={form.coach} onChange={(event) => setForm((current) => ({ ...current, coach: event.target.value }))} required={form.kind === MEMBER_EVENT_KINDS.COMMISSION} placeholder="例如：陈教练" /></label>
-        <label><span>归属门店</span><select value={form.storeId} onChange={(event) => setForm((current) => ({ ...current, storeId: event.target.value }))}><option value="">未归属门店</option>{(workspace.stores || []).map((store) => <option value={store.id} key={store.id}>{store.name}</option>)}</select></label>
-        <label><span>部门</span><input value={form.department} onChange={(event) => setForm((current) => ({ ...current, department: event.target.value }))} placeholder="例如：教练部" /></label>
+        <label><span>{terminology.coach}</span><input value={form.coach} onChange={(event) => setForm((current) => ({ ...current, coach: event.target.value }))} required={form.kind === MEMBER_EVENT_KINDS.COMMISSION} placeholder={`例如：陈${terminology.coach}`} /></label>
+        <label><span>归属{terminology.location}</span><select value={form.storeId} onChange={(event) => setForm((current) => ({ ...current, storeId: event.target.value }))}><option value="">未归属{terminology.location}</option>{(workspace.stores || []).map((store) => <option value={store.id} key={store.id}>{store.name}</option>)}</select></label>
+        <label><span>部门</span><input value={form.department} onChange={(event) => setForm((current) => ({ ...current, department: event.target.value }))} placeholder={`例如：${terminology.coach}部`} /></label>
         <label><span>项目</span><input value={form.project} onChange={(event) => setForm((current) => ({ ...current, project: event.target.value }))} placeholder="例如：私教课" /></label>
-        <p className="form-help dimension-help">门店、教练、部门和项目默认带入会员资料，本笔业务可单独调整并随事件保存。</p>
-        <label className="full"><span>备注</span><textarea value={form.note} onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))} placeholder={definition.suggestedEntry} /></label>
-        <div className="member-accounting-hint"><CurrencyCircleDollar size={18} /><span><strong>{definition.accountingLabel}</strong><small>{definition.suggestedEntry}；确认业务后进入待会计处理状态。</small></span></div>
+        <p className="form-help dimension-help">{terminology.location}、{terminology.coach}、部门和项目默认带入{terminology.member}资料，本笔业务可单独调整并随事件保存。</p>
+        <label className="full"><span>备注</span><textarea value={form.note} onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))} placeholder={memberRoleCopy(definition.suggestedEntry, terminology)} /></label>
+        <div className="member-accounting-hint"><CurrencyCircleDollar size={18} /><span><strong>{memberRoleCopy(definition.accountingLabel, terminology)}</strong><small>{memberRoleCopy(definition.suggestedEntry, terminology)}；确认业务后进入待会计处理状态。</small></span></div>
         <button className="primary-button wide" type="submit" disabled={(needsMember && members.length === 0) || (form.kind === MEMBER_EVENT_KINDS.RECHARGE && !selectedPackage) || (form.kind === MEMBER_EVENT_KINDS.CONSUMPTION && !selectedMemberPackage)}>新增待确认记录<ArrowRight size={16} /></button>
-        {needsMember && members.length === 0 && <p className="form-help">请先在右侧新增会员。</p>}
+        {needsMember && members.length === 0 && <p className="form-help">请先在右侧新增{terminology.member}。</p>}
       </form>
     </section>
   );
 }
 
 function MemberForm({ workspace, onSubmit }) {
+  const terminology = workspaceTerminology(workspace);
   const [form, setForm] = useState({ name: "", phone: "", ...defaultDimensions(workspace) });
   useEffect(() => {
     setForm({ name: "", phone: "", ...defaultDimensions(workspace) });
@@ -449,15 +477,15 @@ function MemberForm({ workspace, onSubmit }) {
   }
   return (
     <section className="panel member-create-panel">
-      <div className="panel-heading"><div><p className="eyebrow">会员资料</p><h2>新增会员</h2></div><UserPlus size={21} /></div>
+      <div className="panel-heading"><div><p className="eyebrow">{terminology.member}资料</p><h2>新增{terminology.member}</h2></div><UserPlus size={21} /></div>
       <form className="member-entry-form compact" onSubmit={submit}>
-        <label><span>会员姓名</span><input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required placeholder="例如：李女士" /></label>
+        <label><span>{terminology.member}姓名</span><input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required placeholder="例如：李女士" /></label>
         <label><span>手机 / 联系方式</span><input value={form.phone} onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))} placeholder="选填" /></label>
-        <label><span>负责教练</span><input value={form.coach} onChange={(event) => setForm((current) => ({ ...current, coach: event.target.value }))} placeholder="选填" /></label>
-        <label><span>默认门店</span><select value={form.storeId} onChange={(event) => setForm((current) => ({ ...current, storeId: event.target.value }))}><option value="">未归属门店</option>{(workspace.stores || []).map((store) => <option value={store.id} key={store.id}>{store.name}</option>)}</select></label>
-        <label><span>默认部门</span><input value={form.department} onChange={(event) => setForm((current) => ({ ...current, department: event.target.value }))} placeholder="例如：教练部" /></label>
+        <label><span>负责{terminology.coach}</span><input value={form.coach} onChange={(event) => setForm((current) => ({ ...current, coach: event.target.value }))} placeholder="选填" /></label>
+        <label><span>默认{terminology.location}</span><select value={form.storeId} onChange={(event) => setForm((current) => ({ ...current, storeId: event.target.value }))}><option value="">未归属{terminology.location}</option>{(workspace.stores || []).map((store) => <option value={store.id} key={store.id}>{store.name}</option>)}</select></label>
+        <label><span>默认部门</span><input value={form.department} onChange={(event) => setForm((current) => ({ ...current, department: event.target.value }))} placeholder={`例如：${terminology.coach}部`} /></label>
         <label><span>默认项目</span><input value={form.project} onChange={(event) => setForm((current) => ({ ...current, project: event.target.value }))} placeholder="例如：私教课" /></label>
-        <button className="secondary-button wide" type="submit"><UserPlus size={16} />保存会员</button>
+        <button className="secondary-button wide" type="submit"><UserPlus size={16} />保存{terminology.member}</button>
       </form>
     </section>
   );
@@ -465,6 +493,7 @@ function MemberForm({ workspace, onSubmit }) {
 
 export function MemberLedgerPage({ workspace, onAddMember, onMemberStatus, onAddEvent, onEventStatus }) {
   const { actions, store } = useFinanceDesk();
+  const terminology = workspaceTerminology(workspace);
   const ledger = useMemo(() => buildMemberLedger(workspace, { period: workspace.currentPeriod }), [workspace]);
   const packageBalances = useMemo(() => buildMemberPackageBalances(workspace, null, {
     asOfDate: today(),
@@ -481,14 +510,14 @@ export function MemberLedgerPage({ workspace, onAddMember, onMemberStatus, onAdd
   return (
     <div className="page-content member-ledger-page">
       <section className="member-ledger-hero">
-        <div><p className="eyebrow">本地会员业务台账</p><h2>从充值到耗课、退款与提成</h2><p>先记录业务，再确认状态。确认后的记录会更新课时与未履约余额，并成为待处理会计业务事件。</p></div>
+        <div><p className="eyebrow">本地{terminology.member}业务台账</p><h2>从充值到耗课、退款与提成</h2><p>先记录业务，再确认状态。确认后的记录会更新课时与未履约余额，并成为待处理会计业务事件。</p></div>
         <span><CheckCircle size={22} weight="fill" />数据保存在当前工作台</span>
       </section>
 
       <section className="member-metric-grid">
-        <Metric label="在籍会员" value={`${ledger.totals.activeMembers} 人`} note={`共 ${ledger.members.length} 名会员`} icon={UsersThree} />
+        <Metric label={`在籍${terminology.member}`} value={`${ledger.totals.activeMembers} 人`} note={`共 ${ledger.members.length} 名${terminology.member}`} icon={UsersThree} />
         <Metric label="剩余课时" value={`${ledger.totals.remainingSessions} 节`} note="已确认充值 − 耗课 − 退款" icon={Clock} />
-        <Metric label="未履约余额" value={formatCurrency(ledger.totals.unfulfilledBalance)} note="会员维度实时汇总" icon={CurrencyCircleDollar} />
+        <Metric label="未履约余额" value={formatCurrency(ledger.totals.unfulfilledBalance)} note={`${terminology.member}维度实时汇总`} icon={CurrencyCircleDollar} />
         <Metric label="待确认 / 待付提成" value={`${ledger.totals.pendingEvents} 笔`} note={`提成 ${formatCurrency(ledger.totals.commissionPayable)}`} icon={CheckCircle} />
       </section>
 
@@ -502,29 +531,29 @@ export function MemberLedgerPage({ workspace, onAddMember, onMemberStatus, onAdd
       </div>
 
       <section className="panel member-balance-panel">
-        <div className="panel-heading"><div><p className="eyebrow">会员余额</p><h2>剩余课时与未履约金额</h2></div><span>{ledger.members.length} 名</span></div>
+        <div className="panel-heading"><div><p className="eyebrow">{terminology.member}余额</p><h2>剩余课时与未履约金额</h2></div><span>{ledger.members.length} 名</span></div>
         {ledger.members.length ? <div className="member-card-grid">{ledger.members.map((member) => <article className="member-balance-card" key={member.id}>
-          <div className="member-card-head"><span className="member-avatar">{member.name.slice(0, 1)}</span><div><strong>{member.name}</strong><small>{member.phone || "未留联系方式"} · {member.storeName || workspace.stores?.find((store) => store.id === member.storeId)?.name || "未归属门店"} · {member.coach || "未分配教练"}</small><small>{[member.department, member.project].filter(Boolean).join(" · ") || "未设置部门 / 项目"}</small></div></div>
+          <div className="member-card-head"><span className="member-avatar">{member.name.slice(0, 1)}</span><div><strong>{member.name}</strong><small>{member.phone || "未留联系方式"} · {member.storeName || workspace.stores?.find((store) => store.id === member.storeId)?.name || `未归属${terminology.location}`} · {member.coach || `未分配${terminology.coach}`}</small><small>{[member.department, member.project].filter(Boolean).join(" · ") || "未设置部门 / 项目"}</small></div></div>
           <div className="member-balance-values"><span><small>累计充值</small><strong>{formatCurrency(member.recharged)}</strong></span><span><small>已确认收入</small><strong>{formatCurrency(member.recognizedRevenue)}</strong></span><span><small>已退款</small><strong>{formatCurrency(member.refunded)}</strong></span><span><small>剩余课时</small><strong>{member.remainingSessions} 节</strong></span><span className="primary"><small>未履约余额</small><strong>{formatCurrency(member.unfulfilledBalance)}</strong></span></div>
           <div className="member-card-foot"><span>已耗 {member.consumedSessions} 节 · 已退 {formatCurrency(member.refunded)}</span><label><span>状态</span><select value={normalizedMemberStatus(member.status)} onChange={(event) => onMemberStatus(member.id, event.target.value)}>{MEMBER_STATUS_OPTIONS.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label></div>
-        </article>)}</div> : <div className="member-empty"><UsersThree size={26} /><strong>还没有会员</strong><span>先新增会员，再记录充值或耗课。</span></div>}
+        </article>)}</div> : <div className="member-empty"><UsersThree size={26} /><strong>还没有{terminology.member}</strong><span>先新增{terminology.member}，再记录充值或耗课。</span></div>}
       </section>
 
-      <MemberPackageBalancesPanel packageBalances={packageBalances} />
+      <MemberPackageBalancesPanel packageBalances={packageBalances} terminology={terminology} />
 
-      <MemberServiceReconciliationPanel reconciliation={reconciliation} />
+      <MemberServiceReconciliationPanel reconciliation={reconciliation} terminology={terminology} />
 
       <section className="panel member-events-panel">
-        <div className="panel-heading"><div><p className="eyebrow">业务流水</p><h2>会员与教练事件</h2></div><span>{ledger.events.length} 笔</span></div>
+        <div className="panel-heading"><div><p className="eyebrow">业务流水</p><h2>{terminology.member}与{terminology.coach}事件</h2></div><span>{ledger.events.length} 笔</span></div>
         {ledger.events.length ? <div className="member-event-list">{ledger.events.map((event) => {
           const kind = memberEventKind(event);
           const definition = MEMBER_EVENT_DEFINITIONS[kind];
           const status = normalizedEventStatus(event);
           return <article className={status === "void" ? "void" : ""} key={event.id}>
-            <div className="member-event-main"><span className={`member-event-mark ${kind}`} /><span><strong>{definition.label} · {event.memberName || event.coach}</strong><small>{event.date} · {event.storeName || workspace.stores?.find((store) => store.id === event.storeId)?.name || "未归属门店"} · {event.coach || "未记录教练"}</small><small>{[event.department, event.project, event.note].filter(Boolean).join(" · ") || "未记录部门 / 项目"}</small></span></div>
+            <div className="member-event-main"><span className={`member-event-mark ${kind}`} /><span><strong>{memberRoleCopy(definition.label, terminology)} · {event.memberName || event.coach}</strong><small>{event.date} · {event.storeName || workspace.stores?.find((store) => store.id === event.storeId)?.name || `未归属${terminology.location}`} · {event.coach || `未记录${terminology.coach}`}</small><small>{[event.department, event.project, event.note].filter(Boolean).join(" · ") || "未记录部门 / 项目"}</small></span></div>
             <span className="member-event-quantity"><small>课时</small><strong>{Number(event.quantity || 0)} 节</strong></span>
             <span className="member-event-amount"><small>金额</small><strong>{formatCurrency(event.amount)}</strong></span>
-            <span className="member-event-accounting"><small>会计事件</small><strong>{event.accountingLabel || definition.accountingLabel}</strong><em>{event.accountingStatus === "ready" ? "待会计处理" : event.accountingStatus === "void" ? "已作废" : "随业务状态生成"}</em></span>
+            <span className="member-event-accounting"><small>会计事件</small><strong>{memberRoleCopy(event.accountingLabel || definition.accountingLabel, terminology)}</strong><em>{event.accountingStatus === "ready" ? "待会计处理" : event.accountingStatus === "void" ? "已作废" : "随业务状态生成"}</em></span>
             <div className="member-event-status"><span className={`tone-pill ${EVENT_STATUS_TONES[status] || "neutral"}`}>{memberEventStatusLabel(event)}</span><div>{memberEventActions(event).map((action) => <button className={action.status === "void" ? "soft-button" : "secondary-button"} type="button" key={action.status} onClick={() => onEventStatus(event.id, action.status)}>{action.label}</button>)}</div></div>
           </article>;
         })}</div> : <div className="member-empty"><Clock size={26} /><strong>还没有业务记录</strong><span>新增的业务先进入待确认状态。</span></div>}

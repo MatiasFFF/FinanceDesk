@@ -95,13 +95,52 @@ const PAGE_ICONS = {
 
 const PAGE_HEADINGS = {
   overview: ["月结总览", "一眼看清本期进度、风险和下一步。"],
-  members: ["会员业务台账", "真实记录充值、耗课、退款、余额与教练提成。"],
   reconcile: ["批量核销", "先处理整月流水，再深入单笔证据。"],
   reports: ["报表中心", "三大报表、老板视角、版本冻结与差异都在这里。"],
   tax: ["确认与申报", "本地准备底稿、两次确认和申报包，不伪装连接税务局。"],
   archive: ["资料归档", "把真实回执、报表版本、确认记录和操作日志收拢归档。"],
-  setup: ["基础资料", "维护企业、规则、合同、账户、发票、人员与本地资料。"],
 };
+
+const DEFAULT_TERMINOLOGY = Object.freeze({
+  customer: "客户",
+  supplier: "供应商",
+  personnel: "员工",
+  location: "门店",
+  member: "会员",
+  coach: "教练",
+  service: "服务",
+});
+
+function workspaceTerminology(workspace) {
+  return Object.fromEntries(Object.entries(DEFAULT_TERMINOLOGY).map(([key, fallback]) => [
+    key,
+    String(workspace?.terminology?.[key] || "").trim() || fallback,
+  ]));
+}
+
+function memberRoleCopy(value, terminology) {
+  return String(value || "")
+    .replaceAll("会员", terminology.member)
+    .replaceAll("教练", terminology.coach)
+    .replaceAll("门店", terminology.location);
+}
+
+function pageHeading(page, workspace) {
+  const terminology = workspaceTerminology(workspace);
+  if (page === "members") {
+    return [`${terminology.member}业务台账`, `真实记录充值、耗课、退款、余额与${terminology.coach}提成。`];
+  }
+  if (page === "setup") {
+    return ["基础资料", `维护企业、规则、合同、账户、发票、${terminology.personnel}与本地资料。`];
+  }
+  return PAGE_HEADINGS[page] || PAGE_HEADINGS.overview;
+}
+
+function navigationItemLabel(item, workspace, short = false) {
+  if (item.id !== "members") return short ? item.shortLabel : item.label;
+  const { member } = workspaceTerminology(workspace);
+  return short ? member : `${member}台账`;
+}
 
 const FILTERS = [
   { id: "all", label: "全部" },
@@ -260,7 +299,7 @@ function Sidebar({ state, workspace, page, onPage, onSwitchWorkspace, onSwitchUs
           return (
             <button className={page === item.id ? "active" : ""} key={item.id} onClick={() => onPage(item.id)} type="button">
               <Icon size={19} weight={page === item.id ? "fill" : "regular"} />
-              <span>{item.label}</span>
+              <span>{navigationItemLabel(item, workspace)}</span>
             </button>
           );
         })}
@@ -294,7 +333,7 @@ function BottomNav({ workspace, page, onPage }) {
     <nav className="bottom-nav" aria-label="移动端导航">
       {primaryNavigationForWorkspace(workspace).map((item) => {
         const Icon = PAGE_ICONS[item.id];
-        return <button className={page === item.id ? "active" : ""} key={item.id} onClick={() => onPage(item.id)} type="button"><Icon size={19} weight={page === item.id ? "fill" : "regular"} /><span>{item.shortLabel}</span></button>;
+        return <button className={page === item.id ? "active" : ""} key={item.id} onClick={() => onPage(item.id)} type="button"><Icon size={19} weight={page === item.id ? "fill" : "regular"} /><span>{navigationItemLabel(item, workspace, true)}</span></button>;
       })}
     </nav>
   );
@@ -307,7 +346,7 @@ function Topbar({ state, workspace, page, workspaceOverlayOpen, onImport, onSwit
   const workspaceTriggerRef = useRef(null);
   const moreMenuRef = useRef(null);
   const moreTriggerRef = useRef(null);
-  const [title, subtitle] = PAGE_HEADINGS[page];
+  const [title, subtitle] = pageHeading(page, workspace);
   useEffect(() => {
     setWorkspaceOpen(false);
     setMoreOpen(false);
@@ -403,6 +442,7 @@ function MetricCard({ label, value, note, icon: Icon, tone = "plain", onClick })
 }
 
 function OverviewPage({ workspace, onPage, onResolveNotice }) {
+  const terminology = workspaceTerminology(workspace);
   const flow = workflowChecks(workspace);
   const reconciliationEnabled = workspaceModuleEnabled(workspace, "reconcile");
   const taxEnabled = workspaceModuleEnabled(workspace, "tax");
@@ -425,7 +465,7 @@ function OverviewPage({ workspace, onPage, onResolveNotice }) {
     : !flow.version
       ? { title: "冻结本期第一版报表", body: "冻结后会保留不可覆盖的版本快照和后续差异。", page: "reports", action: "查看报表" }
       : taxEnabled && !workspace.tax.financeConfirmedAt
-        ? { title: "请客户完成首次数据确认", body: "财务数据与工资社保会分别留下确认记录。", page: "tax", action: "开始确认" }
+        ? { title: `请${terminology.customer}完成首次数据确认`, body: "财务数据与工资社保会分别留下确认记录。", page: "tax", action: "开始确认" }
         : taxEnabled && !workspace.tax.ownerConfirmedAt
           ? { title: "完成提交前最终确认", body: "最终确认后才能导出本地申报包。", page: "tax", action: "继续确认" }
           : taxEnabled && !workspace.delivery.filing.receipt
@@ -439,7 +479,7 @@ function OverviewPage({ workspace, onPage, onResolveNotice }) {
     { label: "处理上期结转事项", meta: openNotices.length ? `${openNotices.length} 项待处理` : "已完成", done: openNotices.length === 0, page: "overview" },
     ...(reconciliationEnabled ? [{ label: "完成异常与低置信度复核", meta: flow.unresolved.length ? `${flow.unresolved.length} 笔待处理` : "已完成", done: flow.unresolved.length === 0, page: "reconcile" }] : []),
     { label: "冻结月度报表版本", meta: flow.version ? `${flow.version.label} · ${formatDateTime(flow.version.createdAt)}` : "尚未冻结", done: Boolean(flow.version), page: "reports" },
-    ...(taxEnabled ? [{ label: "客户首次确认财务与工资社保", meta: workspace.tax.financeConfirmedAt && workspace.tax.payrollConfirmedAt ? formatDateTime(workspace.tax.financeConfirmedAt) : "等待确认", done: Boolean(workspace.tax.financeConfirmedAt && workspace.tax.payrollConfirmedAt), page: "tax" }] : []),
+    ...(taxEnabled ? [{ label: `${terminology.customer}首次确认财务与工资社保`, meta: workspace.tax.financeConfirmedAt && workspace.tax.payrollConfirmedAt ? formatDateTime(workspace.tax.financeConfirmedAt) : "等待确认", done: Boolean(workspace.tax.financeConfirmedAt && workspace.tax.payrollConfirmedAt), page: "tax" }] : []),
     { label: "最终确认、回执与归档", meta: workspace.delivery.filing.archivedAt ? formatDateTime(workspace.delivery.filing.archivedAt) : "尚未归档", done: Boolean(workspace.delivery.filing.archivedAt), page: "archive" },
   ];
   return (
@@ -486,6 +526,7 @@ function TransactionList({ items, selectedIds, focusedId, onToggle, onToggleAll,
 }
 
 function TransactionDetail({ workspace, transaction, onClose, onStatus, onEvidence, onLinkEvidence, onToast }) {
+  const terminology = workspaceTerminology(workspace);
   const evidenceInput = useRef(null);
   const [evidenceCategory, setEvidenceCategory] = useState("发票");
   const [existingEvidenceId, setExistingEvidenceId] = useState("");
@@ -507,7 +548,7 @@ function TransactionDetail({ workspace, transaction, onClose, onStatus, onEviden
           <div className="detail-section-title"><i className="section-mark sage" />本地证据</div>
           {linkedDocuments.length ? <div className="evidence-file-list">{linkedDocuments.map((document) => <div key={document.id}><FileText size={18} /><span><strong>{document.name}</strong><small>{document.type || document.category || "本地资料"} · {fileSize(document.size)}</small></span><CheckCircle size={17} weight="fill" /></div>)}</div> : <div className="missing-evidence"><WarningCircle size={20} /><span><strong>还没有关联证据</strong><small>{transaction.exceptionReason || "请选择本地文件补充证据。"}</small></span></div>}
           {availableDocuments.length > 0 && <div className="existing-evidence-link"><label className="field-label"><span>关联资料库中的已有文件</span><select value={existingEvidenceId} onChange={(event) => setExistingEvidenceId(event.target.value)}><option value="">请选择已有资料</option>{availableDocuments.map((document) => <option value={document.id} key={document.id}>{document.name} · {document.category || document.type || "本地资料"}</option>)}</select></label><button className="secondary-button wide" disabled={!existingEvidenceId} onClick={() => { if (onLinkEvidence(transaction.id, existingEvidenceId)) setExistingEvidenceId(""); }} type="button"><FileText size={17} />关联已有资料</button></div>}
-          <label className="field-label"><span>上传新证据的类别</span><select value={evidenceCategory} onChange={(event) => setEvidenceCategory(event.target.value)}><option>发票</option><option>合同</option><option>审批单</option><option>采购单</option><option>结算单</option>{workspaceModuleEnabled(workspace, "members") && <><option>会员协议</option><option>签到记录</option></>}<option>工资表</option><option>社保数据</option><option>退款申请</option><option>内部转账回单</option><option>其他资料</option></select></label>
+          <label className="field-label"><span>上传新证据的类别</span><select value={evidenceCategory} onChange={(event) => setEvidenceCategory(event.target.value)}><option>发票</option><option>合同</option><option>审批单</option><option>采购单</option><option>结算单</option>{workspaceModuleEnabled(workspace, "members") && <><option>{terminology.member}协议</option><option>签到记录</option></>}<option>工资表</option><option>社保数据</option><option>退款申请</option><option>内部转账回单</option><option>其他资料</option></select></label>
           <input ref={evidenceInput} hidden type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) onEvidence(transaction.id, file, evidenceCategory); event.target.value = ""; }} />
           <button className="secondary-button wide" onClick={() => evidenceInput.current?.click()} type="button"><FileArrowUp size={17} />上传新的本地证据</button>
         </section>
@@ -519,6 +560,7 @@ function TransactionDetail({ workspace, transaction, onClose, onStatus, onEviden
 }
 
 function ReconcilePage({ workspace, onPage, onStatus, onReview, onEvidence, onLinkEvidence, onExportSelected, onResolveException, onToast }) {
+  const terminology = workspaceTerminology(workspace);
   const [filter, setFilter] = useState("unresolved");
   const [query, setQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
@@ -541,7 +583,7 @@ function ReconcilePage({ workspace, onPage, onStatus, onReview, onEvidence, onLi
     <div className="reconcile-page">
       <div className="reconcile-main">
         <StageRail workspace={workspace} onPage={onPage} />
-        {customerDisputes.length > 0 && <section className="panel dispute-review-panel"><div><p className="eyebrow">S7 · 客户异议退回</p><h2>先处理客户提出的差异</h2></div>{customerDisputes.map((task) => <article key={task.id}><span><strong>{task.message}</strong><small>{task.sourceId} · {formatDateTime(task.createdAt)}</small></span><button className="secondary-button" type="button" onClick={() => onResolveException(task.id)}>已处理，关闭异议</button></article>)}</section>}
+        {customerDisputes.length > 0 && <section className="panel dispute-review-panel"><div><p className="eyebrow">S7 · {terminology.customer}异议退回</p><h2>先处理{terminology.customer}提出的差异</h2></div>{customerDisputes.map((task) => <article key={task.id}><span><strong>{task.message}</strong><small>{task.sourceId} · {formatDateTime(task.createdAt)}</small></span><button className="secondary-button" type="button" onClick={() => onResolveException(task.id)}>已处理，关闭异议</button></article>)}</section>}
         <ReceivablesPayablesPanel showMemberBusiness={workspaceModuleEnabled(workspace, "members")} onToast={onToast} />
         <section className="workspace-toolbar"><div className="filter-tabs" role="tablist" aria-label="流水状态筛选">{FILTERS.map((item) => <button className={filter === item.id ? "active" : ""} key={item.id} onClick={() => setFilter(item.id)} role="tab" type="button">{item.label}<span>{counts[item.id]}</span></button>)}</div><label className="search-field"><MagnifyingGlass size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索对方、摘要或流水号" /><button className={query ? "visible" : ""} onClick={() => setQuery("")} type="button" aria-label="清空搜索"><X size={15} /></button></label></section>
         {selection.length > 0 && <div className="batch-bar"><span><strong>已选择 {selection.length} 笔</strong><small>批量动作只作用于当前选择</small></span><div><button className="soft-button" onClick={() => onExportSelected(selection)} type="button"><DownloadSimple size={16} />导出所选</button><button className="secondary-button" onClick={() => onStatus([...selectedIds], "ignored")} type="button">暂不处理</button><button className="primary-button" onClick={() => onReview([...selectedIds])} type="button">运行规则复核</button><button className="icon-button compact" onClick={() => setSelectedIds(new Set())} type="button" aria-label="清除选择"><X size={17} /></button></div></div>}
@@ -571,36 +613,39 @@ function DrilldownPanel({ row, sectionLabel, onClose }) {
   return <div className="report-detail-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside aria-label={`${sectionLabel} · ${row.label}数字追溯`} aria-modal="true" className="detail-panel report-detail" role="dialog"><div className="detail-heading"><div><p className="eyebrow">{sectionLabel} · 数字追溯</p><h2>{row.label}</h2></div><button className="icon-button compact" onClick={onClose} type="button" aria-label="关闭下钻"><X size={19} /></button></div><div className="detail-scroll"><div className="drill-total"><span>报表金额</span><strong>{formatCurrency(row.value)}</strong></div>{row.formula && <div className="drill-formula"><small>计算口径</small><strong>{row.formula}</strong></div>}{row.details?.length ? <div className="drill-list">{row.details.map((item) => <div key={item.id}><span><strong>{item.title}</strong><small>{item.date || "—"} · {item.reference || "本地记录"}</small>{item.description && <small>{item.description}</small>}{(item.sourceIds?.length || item.evidenceIds?.length) && <small>{item.sourceIds?.length || 0} 个业务来源 · {item.evidenceIds?.length || 0} 份凭证附件</small>}</span><b>{formatCurrency(item.amount, { sign: true })}</b></div>)}</div> : <EmptyState title="当前数字来自明确计算口径" description={row.formula || "没有额外的单笔来源。"} />}</div></aside></div>;
 }
 
-const STORE_REPORT_METRICS = [
-  { id: "collections", label: "本期收款" },
-  { id: "recognizedRevenue", label: "确认收入" },
-  { id: "refunds", label: "退款" },
-  { id: "coachCommission", label: "教练提成" },
-  { id: "grossProfit", label: "毛利" },
-  { id: "unfulfilledBalance", label: "预收 / 未履约" },
-];
+function storeReportMetrics(terminology) {
+  return [
+    { id: "collections", label: "本期收款" },
+    { id: "recognizedRevenue", label: "确认收入" },
+    { id: "refunds", label: "退款" },
+    { id: "coachCommission", label: `${terminology.coach}提成` },
+    { id: "grossProfit", label: "毛利" },
+    { id: "unfulfilledBalance", label: "预收 / 未履约" },
+  ];
+}
 
-function StoreManagementReport({ report }) {
+function StoreManagementReport({ report, terminology }) {
+  const metrics = storeReportMetrics(terminology);
   return (
     <section className="panel store-management-report">
-      <div className="panel-heading"><div><p className="eyebrow">老板报表 · 门店经营</p><h2>按门店查看收款、收入与履约余额</h2><p>实时读取已入账会员业务；毛利口径为确认收入减教练提成。展开门店可追溯到会员、业务事件和凭证。</p></div><span>{report.stores.length} 家门店</span></div>
-      {report.postingCoverage.unpostedEventCount > 0 && <div className="store-report-notice"><WarningCircle size={16} /><span>本期另有 {report.postingCoverage.unpostedEventCount} 笔已确认业务尚未入账，暂不进入门店报表。</span></div>}
+      <div className="panel-heading"><div><p className="eyebrow">老板报表 · {terminology.location}经营</p><h2>按{terminology.location}查看收款、收入与履约余额</h2><p>实时读取已入账{terminology.member}业务；毛利口径为确认收入减{terminology.coach}提成。展开{terminology.location}可追溯到{terminology.member}、业务事件和凭证。</p></div><span>{report.stores.length} 家{terminology.location}</span></div>
+      {report.postingCoverage.unpostedEventCount > 0 && <div className="store-report-notice"><WarningCircle size={16} /><span>本期另有 {report.postingCoverage.unpostedEventCount} 笔已确认业务尚未入账，暂不进入{terminology.location}报表。</span></div>}
       <div className="store-report-table">
-        <div className="store-report-row heading"><span>门店</span>{STORE_REPORT_METRICS.map((metric) => <span key={metric.id}>{metric.label}</span>)}</div>
+        <div className="store-report-row heading"><span>{terminology.location}</span>{metrics.map((metric) => <span key={metric.id}>{metric.label}</span>)}</div>
         {report.stores.map((store) => (
           <details className="store-report-store" key={store.id}>
-            <summary className="store-report-row"><span><strong>{store.name}</strong><small>{store.sources.length} 条来源 · {store.voucherIds.length} 张凭证</small></span>{STORE_REPORT_METRICS.map((metric) => <strong key={metric.id}>{formatCurrency(store.metrics[metric.id])}</strong>)}</summary>
+            <summary className="store-report-row"><span><strong>{store.name}</strong><small>{store.sources.length} 条来源 · {store.voucherIds.length} 张凭证</small></span>{metrics.map((metric) => <strong key={metric.id}>{formatCurrency(store.metrics[metric.id])}</strong>)}</summary>
             <div className="store-report-drilldown">
               <section>
-                <div className="subheading"><strong>会员明细</strong><span>{store.members.length} 名</span></div>
-                {store.members.length ? <div className="store-member-list">{store.members.map((member) => <article key={member.id}><span><strong>{member.name}</strong><small>{[member.coach, member.department, member.project].filter(Boolean).join(" · ") || "未记录教练 / 部门 / 项目"}</small></span><span><small>收款 / 收入</small><strong>{formatCurrency(member.metrics.collections)} / {formatCurrency(member.metrics.recognizedRevenue)}</strong></span><span><small>退款 / 提成</small><strong>{formatCurrency(member.metrics.refunds)} / {formatCurrency(member.metrics.coachCommission)}</strong></span><span><small>未履约</small><strong>{formatCurrency(member.metrics.unfulfilledBalance)}</strong></span></article>)}</div> : <p className="quiet-copy">当前门店没有会员维度来源。</p>}
+                <div className="subheading"><strong>{terminology.member}明细</strong><span>{store.members.length} 名</span></div>
+                {store.members.length ? <div className="store-member-list">{store.members.map((member) => <article key={member.id}><span><strong>{member.name}</strong><small>{[member.coach, member.department, member.project].filter(Boolean).join(" · ") || `未记录${terminology.coach} / 部门 / 项目`}</small></span><span><small>收款 / 收入</small><strong>{formatCurrency(member.metrics.collections)} / {formatCurrency(member.metrics.recognizedRevenue)}</strong></span><span><small>退款 / 提成</small><strong>{formatCurrency(member.metrics.refunds)} / {formatCurrency(member.metrics.coachCommission)}</strong></span><span><small>未履约</small><strong>{formatCurrency(member.metrics.unfulfilledBalance)}</strong></span></article>)}</div> : <p className="quiet-copy">当前{terminology.location}没有{terminology.member}维度来源。</p>}
               </section>
               <section>
                 <div className="subheading"><strong>业务与凭证来源</strong><span>{store.sources.length} 条</span></div>
                 {store.sources.length ? <div className="store-source-list">{store.sources.map((source) => {
-                  const impacts = STORE_REPORT_METRICS.filter((metric) => Number(source.impacts?.[metric.id] || 0) !== 0);
-                  return <article key={source.id}><span><strong>{source.label}{source.memberName ? " · " + source.memberName : ""}</strong><small>{source.date || "期初"} · {[source.coach, source.department, source.project].filter(Boolean).join(" · ") || "未记录教练 / 部门 / 项目"}</small><small>{source.voucherIds.length ? "凭证 " + source.voucherIds.join("、") : "会员期初来源"} · 事件 {source.eventId || source.id}</small></span><span>{impacts.map((metric) => <small key={metric.id}>{metric.label} {formatCurrency(source.impacts[metric.id], { sign: true })}</small>)}</span></article>;
-                })}</div> : <p className="quiet-copy">尚无已入账会员业务来源。</p>}
+                  const impacts = metrics.filter((metric) => Number(source.impacts?.[metric.id] || 0) !== 0);
+                  return <article key={source.id}><span><strong>{source.label}{source.memberName ? " · " + source.memberName : ""}</strong><small>{source.date || "期初"} · {[source.coach, source.department, source.project].filter(Boolean).join(" · ") || `未记录${terminology.coach} / 部门 / 项目`}</small><small>{source.voucherIds.length ? "凭证 " + source.voucherIds.join("、") : `${terminology.member}期初来源`} · 事件 {source.eventId || source.id}</small></span><span>{impacts.map((metric) => <small key={metric.id}>{metric.label} {formatCurrency(source.impacts[metric.id], { sign: true })}</small>)}</span></article>;
+                })}</div> : <p className="quiet-copy">尚无已入账{terminology.member}业务来源。</p>}
               </section>
             </div>
           </details>
@@ -625,7 +670,7 @@ function ForecastEventRows({ events }) {
   return events.length ? <div className="owner-source-rows">{events.map((event) => <article key={event.id}><span><strong>{event.label}</strong><small>{event.dueDate ? "原到期日 " + event.dueDate + (event.overdueAtStart ? " · 已逾期，列入预测首日" : "") : "缺少明确支付 / 回款日期"}{event.basis ? " · " + event.basis : ""}</small><small>{event.reference || "本地记录"} · 来源 {event.sourceIds?.join("、") || "—"}</small></span><strong>{formatCurrency(event.cashEffect ?? (event.type === "receivable" ? event.amount : -event.amount), { sign: true })}</strong></article>)}</div> : <p className="quiet-copy">当前没有对应来源。</p>;
 }
 
-function OwnerLiquidityReport({ management }) {
+function OwnerLiquidityReport({ management, terminology }) {
   const ageing = management.ageing;
   const forecast = management.cashForecast;
   const forecastTotals = [
@@ -651,8 +696,8 @@ function OwnerLiquidityReport({ management }) {
           </details>
           <div className="advance-exclusion">
             <div><strong>预收 / 预付单独管理</strong><small>{ageing.excludedAdvances.reason}</small></div>
-            <details><summary>客户预收 <strong>{formatCurrency(ageing.excludedAdvances.customerDeposits.value)}</strong></summary><BillSourceRows rows={ageing.excludedAdvances.customerDeposits.rows} /></details>
-            <details><summary>供应商预付 <strong>{formatCurrency(ageing.excludedAdvances.supplierPrepayments.value)}</strong></summary><BillSourceRows rows={ageing.excludedAdvances.supplierPrepayments.rows} /></details>
+            <details><summary>{terminology.customer}预收 <strong>{formatCurrency(ageing.excludedAdvances.customerDeposits.value)}</strong></summary><BillSourceRows rows={ageing.excludedAdvances.customerDeposits.rows} /></details>
+            <details><summary>{terminology.supplier}预付 <strong>{formatCurrency(ageing.excludedAdvances.supplierPrepayments.value)}</strong></summary><BillSourceRows rows={ageing.excludedAdvances.supplierPrepayments.rows} /></details>
           </div>
         </section>
 
@@ -687,6 +732,7 @@ const REPORT_RECONCILIATION_COPY = {
 };
 
 function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
+  const terminology = workspaceTerminology(workspace);
   const [sectionId, setSectionId] = useState("balance");
   const [versionId, setVersionId] = useState("live");
   const [drill, setDrill] = useState(null);
@@ -756,7 +802,7 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
         <section className="panel statement-panel"><div className="report-tabs" role="tablist">{Object.entries(snapshot.sections).map(([id, value]) => <button aria-selected={sectionId === id} className={sectionId === id ? "active" : ""} key={id} onClick={() => { setSectionId(id); setDrill(null); }} role="tab" type="button">{value.label}</button>)}</div><div className="statement-heading"><span>项目</span><span>本期金额</span></div><div className="statement-rows">{section.rows.map((row) => <button aria-expanded={drill?.id === row.id} className={`${/(合计|利润|净增加|期末|缺口)/.test(row.label) ? "total" : ""} ${drill?.id === row.id ? "active" : ""}`} key={row.id} onClick={() => setDrill(row)} type="button"><span>{row.label}<small>{row.details?.length ? `${row.details.length} 条来源` : "查看口径"}</small></span><strong>{formatCurrency(row.value)}</strong><ArrowRight size={15} /></button>)}</div><div className="statement-foot"><span>{formatPeriod(snapshot.period)}</span><span>{selectedVersion ? `${selectedVersion.label} · 已冻结` : "实时草稿 · 未冻结"}</span></div></section>
         <aside className="panel version-panel"><div className="panel-heading"><div><p className="eyebrow">版本与差异</p><h2>不可覆盖的报表记录</h2></div><Clock size={21} /></div>{versions.length ? <div className="version-list">{versions.map((version, index) => <button className={version.id === versionId ? "active" : ""} key={version.id} onClick={() => setVersionId(version.id)} type="button"><span><strong>{version.label}</strong><small>{formatDateTime(version.createdAt)} · {version.actor}</small></span><TonePill tone="success">已冻结</TonePill>{index === 0 && <em>当前</em>}</button>)}</div> : <EmptyState title="还没有冻结版本" description="勾稽通过后冻结 V1，后续修改会形成 V2、V3，而不是覆盖旧数字。" />}<div className="version-diff"><div className="subheading"><strong>{previous ? `${latest.label} 对比 ${previous.label}` : "版本差异"}</strong><span>{differences.length} 项变化</span></div>{previous ? (differences.length ? differences.slice(0, 8).map((item) => <div key={item.id}><span><small>{item.section}</small><strong>{item.label}</strong></span><b className={item.delta > 0 ? "income" : "expense"}>{formatCurrency(item.delta, { sign: true })}</b></div>) : <p className="quiet-copy">最新两个版本的报表数字一致，时间与确认记录仍分别保留。</p>) : <p className="quiet-copy">冻结第二个版本后，这里会逐项显示与上一版本的差异。</p>}</div><div className="report-export-history"><div className="subheading"><strong>Excel 本地导出</strong><span>{reportExports.length} 次</span></div>{reportExports.length ? reportExports.slice(0, 3).map((item) => <article key={item.id}><DownloadSimple size={17} /><span><strong>{item.reportVersionLabel} · {item.fileName}</strong><small>{formatDateTime(item.exportedAt)} · {fileSize(item.size)} · 仅本地，未上传</small></span></article>) : <p className="quiet-copy">当前期间还没有 Excel 导出记录。</p>}</div>{taxEnabled && <button className="secondary-button wide" onClick={() => onPage("tax")} type="button">进入确认与申报<ArrowRight size={16} /></button>}</aside>
       </div>
-      {sectionId === "owner" && <>{memberBusinessEnabled && <StoreManagementReport report={storeReport} />}<OwnerLiquidityReport management={management} /></>}
+      {sectionId === "owner" && <>{memberBusinessEnabled && <StoreManagementReport report={storeReport} terminology={terminology} />}<OwnerLiquidityReport management={management} terminology={terminology} /></>}
       <BoundaryNote />
       <DrilldownPanel row={drill} sectionLabel={section.label} onClose={() => setDrill(null)} />
     </div>
@@ -847,6 +893,7 @@ function buildFinalConfirmationSnapshot(workspace, existingFlow = workflowChecks
 }
 
 function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecision, onPrepareDraft, onFinalConfirm, onExport, onReceipt }) {
+  const terminology = workspaceTerminology(workspace);
   const flow = workflowChecks(workspace);
   const version = flow.version;
   const snapshot = version?.snapshot || flow.snapshot;
@@ -946,9 +993,9 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
         <div className="tax-main-column">
           <section className="panel workpaper-panel"><div className="panel-heading"><div><p className="eyebrow">S10–S11 · 申报底稿</p><h2>{formatPeriod(workspace.currentPeriod)} 本地复核稿</h2></div>{version ? <TonePill tone="success">基于 {version.label}</TonePill> : <TonePill tone="warning">尚未冻结报表</TonePill>}</div><div className="workpaper-grid">{snapshot.taxWorkpaper.rows.map((row) => <div key={row.id}><span>{row.label}</span><strong>{formatCurrency(row.value)}</strong></div>)}</div><p className="workpaper-disclaimer"><WarningCircle size={16} />{snapshot.taxWorkpaper.disclaimer}</p><div className="tax-input-grid"><label><span>增值税计税基础调整</span><input type="number" step="0.01" value={workspace.tax.adjustments} onChange={(event) => onTaxChange("adjustments", Number(event.target.value))} onBlur={() => onTaxCommit("adjustments")} /></label><label><span>工资薪金</span><input type="number" step="0.01" value={workspace.tax.payroll} onChange={(event) => onTaxChange("payroll", Number(event.target.value))} onBlur={() => onTaxCommit("payroll")} /></label><label><span>社保数据</span><input type="number" step="0.01" value={workspace.tax.socialSecurity} onChange={(event) => onTaxChange("socialSecurity", Number(event.target.value))} onBlur={() => onTaxCommit("socialSecurity")} /></label><label className="full"><span>复核备注</span><textarea value={workspace.tax.note} onChange={(event) => onTaxChange("note", event.target.value)} onBlur={() => onTaxCommit("note")} placeholder="记录本期特殊口径或待说明事项" /></label></div><p className="edit-warning">修改底稿会撤销后续确认与导出状态；请重新冻结报表版本后再继续。</p></section>
           <section className="panel confirmation-panel">
-            <div className="panel-heading"><div><p className="eyebrow">第一次客户确认</p><h2>八项数据逐项确认</h2></div><TonePill tone={initialDone ? "success" : activeConfirmation?.status === "disputed" ? "danger" : "warning"}>{initialDone ? "8 / 8 已确认" : `${approvedCount} / ${confirmationItems.length}`}</TonePill></div>
+            <div className="panel-heading"><div><p className="eyebrow">第一次{terminology.customer}确认</p><h2>八项数据逐项确认</h2></div><TonePill tone={initialDone ? "success" : activeConfirmation?.status === "disputed" ? "danger" : "warning"}>{initialDone ? "8 / 8 已确认" : `${approvedCount} / ${confirmationItems.length}`}</TonePill></div>
             <CheckRows items={prerequisiteChecks} onNavigate={onPage} />
-            {!canConfirmSections && <p className="confirmation-gate"><WarningCircle size={16} />先完成上方五项前置条件，才能保存每一项客户结论。</p>}
+            {!canConfirmSections && <p className="confirmation-gate"><WarningCircle size={16} />先完成上方五项前置条件，才能保存每一项{terminology.customer}结论。</p>}
             <div className="confirmation-list">{confirmationItems.map((item) => {
               const savedSection = activeConfirmation?.sections?.[item.id];
               const savedDecision = [...(activeConfirmation?.decisions || [])].reverse().find((decision) => decision.section === item.id);
@@ -967,7 +1014,7 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
                   <button aria-expanded={expanded} className="confirmation-item-heading confirmation-item-toggle" onClick={() => setExpandedConfirmationId((current) => current === item.id ? null : item.id)} type="button"><div><span>{item.label}</span><strong>{item.amount}</strong></div><span className="confirmation-heading-actions"><TonePill tone={status === "approved" ? "success" : status === "rejected" ? "danger" : "neutral"}>{status === "approved" ? "已确认" : status === "rejected" ? "有异议" : "待确认"}</TonePill><CaretDown className="confirmation-caret" size={15} /></span></button>
                   {expanded && <div className="confirmation-item-body"><p className="confirmation-source"><FileText size={15} /><span><strong>来源摘要</strong>{item.sourceSummary}</span></p>
                   {locked ? (
-                    <div className={`confirmation-record ${status}`}><span>{status === "approved" ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} weight="fill" />}</span><div><strong>{status === "approved" ? "本项已单独确认" : "本项异议已转入 S7"}</strong><small>{savedSection.confirmedBy || savedDecision?.actor || "客户负责人"} · {formatDateTime(savedSection.confirmedAt || savedDecision?.at)}</small><p>{savedDecision?.note || "已记录到本地确认链"}</p></div></div>
+                    <div className={`confirmation-record ${status}`}><span>{status === "approved" ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} weight="fill" />}</span><div><strong>{status === "approved" ? "本项已单独确认" : "本项异议已转入 S7"}</strong><small>{savedSection.confirmedBy || savedDecision?.actor || `${terminology.customer}负责人`} · {formatDateTime(savedSection.confirmedAt || savedDecision?.at)}</small><p>{savedDecision?.note || "已记录到本地确认链"}</p></div></div>
                   ) : (
                     <div className="confirmation-form">
                       <fieldset className="confirmation-decisions"><legend>本项结论</legend><label><input checked={decision === "approve"} disabled={!canConfirmSections} name={`confirmation-${item.id}`} onChange={() => updateDraft({ decision: "approve" })} type="radio" /><span>确认</span></label><label><input checked={decision === "reject"} disabled={!canConfirmSections} name={`confirmation-${item.id}`} onChange={() => updateDraft({ decision: "reject" })} type="radio" /><span>有异议</span></label></fieldset>
@@ -988,13 +1035,13 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
           </section>
         </div>
         <aside className="tax-side-column">
-          <section className="panel filing-steps-panel"><div className="panel-heading"><div><p className="eyebrow">S11–S12 · 提交前流程</p><h2>本地申报包</h2></div><ShieldCheck size={22} /></div><ol className="filing-timeline"><li className={initialDone ? "done" : "active"}><span>{initialDone ? <Check size={13} weight="bold" /> : 1}</span><div><strong>第一次客户确认</strong><small>{formatDateTime(workspace.tax.financeConfirmedAt)}</small></div></li><li className={filing.draftCreatedAt ? "done" : initialDone ? "active" : ""}><span>{filing.draftCreatedAt ? <Check size={13} weight="bold" /> : 2}</span><div><strong>生成本地申报底稿</strong><small>{formatDateTime(filing.draftCreatedAt)}</small></div></li><li className={finalConfirmationCurrent ? "done" : filing.draftCreatedAt ? "active" : ""}><span>{finalConfirmationCurrent ? <Check size={13} weight="bold" /> : 3}</span><div><strong>第二次最终确认</strong><small>{finalConfirmationCurrent ? formatDateTime(storedFinalConfirmation.confirmedAt) : "等待逐项确认"}</small></div></li><li className={filing.exportedAt ? "done" : finalConfirmationCurrent ? "active" : ""}><span>{filing.exportedAt ? <Check size={13} weight="bold" /> : 4}</span><div><strong>导出本地申报包</strong><small>{formatDateTime(filing.exportedAt)}</small></div></li><li className={filing.receipt ? "done" : filing.exportedAt ? "active" : ""}><span>{filing.receipt ? <Check size={13} weight="bold" /> : 5}</span><div><strong>导回真实办理回执</strong><small>{filing.receipt?.name || "等待外部办理"}</small></div></li></ol><button className="secondary-button wide" disabled={!initialDone || Boolean(filing.draftCreatedAt)} onClick={onPrepareDraft} type="button">{filing.draftCreatedAt ? "底稿已生成" : "生成本地申报底稿"}</button></section>
+          <section className="panel filing-steps-panel"><div className="panel-heading"><div><p className="eyebrow">S11–S12 · 提交前流程</p><h2>本地申报包</h2></div><ShieldCheck size={22} /></div><ol className="filing-timeline"><li className={initialDone ? "done" : "active"}><span>{initialDone ? <Check size={13} weight="bold" /> : 1}</span><div><strong>第一次{terminology.customer}确认</strong><small>{formatDateTime(workspace.tax.financeConfirmedAt)}</small></div></li><li className={filing.draftCreatedAt ? "done" : initialDone ? "active" : ""}><span>{filing.draftCreatedAt ? <Check size={13} weight="bold" /> : 2}</span><div><strong>生成本地申报底稿</strong><small>{formatDateTime(filing.draftCreatedAt)}</small></div></li><li className={finalConfirmationCurrent ? "done" : filing.draftCreatedAt ? "active" : ""}><span>{finalConfirmationCurrent ? <Check size={13} weight="bold" /> : 3}</span><div><strong>第二次最终确认</strong><small>{finalConfirmationCurrent ? formatDateTime(storedFinalConfirmation.confirmedAt) : "等待逐项确认"}</small></div></li><li className={filing.exportedAt ? "done" : finalConfirmationCurrent ? "active" : ""}><span>{filing.exportedAt ? <Check size={13} weight="bold" /> : 4}</span><div><strong>导出本地申报包</strong><small>{formatDateTime(filing.exportedAt)}</small></div></li><li className={filing.receipt ? "done" : filing.exportedAt ? "active" : ""}><span>{filing.receipt ? <Check size={13} weight="bold" /> : 5}</span><div><strong>导回真实办理回执</strong><small>{filing.receipt?.name || "等待外部办理"}</small></div></li></ol><button className="secondary-button wide" disabled={!initialDone || Boolean(filing.draftCreatedAt)} onClick={onPrepareDraft} type="button">{filing.draftCreatedAt ? "底稿已生成" : "生成本地申报底稿"}</button></section>
           <section className="panel package-panel"><div className="panel-heading"><div><p className="eyebrow">文件交付</p><h2>导出与回执</h2></div><DownloadSimple size={21} /></div><CheckRows items={flow.export} onNavigate={onPage} /><button className="primary-button wide" disabled={!exportReady} onClick={onExport} type="button"><DownloadSimple size={17} />{filing.exportedAt ? "重新导出本地申报包" : "导出本地申报包"}</button><input ref={receiptInput} hidden type="file" accept=".pdf,.json,.xml,.txt,.csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) onReceipt(file); event.target.value = ""; }} /><button className="secondary-button wide" disabled={!filing.exportedAt} onClick={() => receiptInput.current?.click()} type="button"><UploadSimple size={17} />{filing.receipt ? "替换本地回执" : "导入真实外部回执"}</button>{filing.receipt && <div className="receipt-card"><Receipt size={21} /><span><strong>{filing.receipt.name}</strong><small>{fileSize(filing.receipt.size)} · SHA-256 {filing.receipt.hash.slice(0, 10)}…</small></span><CheckCircle size={18} weight="fill" /></div>}</section>
         </aside>
       </div>
       <section className="panel final-confirm-panel final-confirm-workspace">
-        <div className="panel-heading"><div><p className="eyebrow">S12 · 第二次客户确认</p><h2>提交前最终责任确认</h2></div><TonePill tone={finalConfirmationCurrent ? "success" : storedFinalConfirmation ? "warning" : "neutral"}>{finalConfirmationCurrent ? "已记录 · 未提交" : storedFinalConfirmation ? "上次确认已失效" : "等待确认"}</TonePill></div>
-        <p className="final-boundary-copy">这里保存客户对当前冻结数字、风险和外部扣款选择的最终确认，只生成本地申报包；不会提交税务局，也不会自动扣款或缴税。</p>
+        <div className="panel-heading"><div><p className="eyebrow">S12 · 第二次{terminology.customer}确认</p><h2>提交前最终责任确认</h2></div><TonePill tone={finalConfirmationCurrent ? "success" : storedFinalConfirmation ? "warning" : "neutral"}>{finalConfirmationCurrent ? "已记录 · 未提交" : storedFinalConfirmation ? "上次确认已失效" : "等待确认"}</TonePill></div>
+        <p className="final-boundary-copy">这里保存{terminology.customer}对当前冻结数字、风险和外部扣款选择的最终确认，只生成本地申报包；不会提交税务局，也不会自动扣款或缴税。</p>
         {storedFinalConfirmation && !finalConfirmationCurrent && <p className="final-invalid-banner"><WarningCircle size={17} />上一次最终确认对应的报表版本、底稿或数据已变化，必须按当前数字重新完成全部确认。</p>}
         {!canStartFinalConfirmation && !finalConfirmationCurrent && <p className="confirmation-gate"><WarningCircle size={16} />先完成八项第一次确认并生成当前冻结版本的本地申报底稿。</p>}
         <div className="final-context-strip"><div><span>申报所属期</span><strong>{formatPeriod(displayedFinalSnapshot.period)}</strong></div><div><span>冻结报表</span><strong>{displayedFinalSnapshot.reportVersionLabel || "尚未冻结"}</strong></div><div><span>本地底稿</span><strong>{displayedFinalSnapshot.filingDraftCreatedAt ? formatDateTime(displayedFinalSnapshot.filingDraftCreatedAt) : "尚未生成"}</strong></div><div><span>税务局状态</span><strong>尚未提交</strong></div></div>
@@ -1026,6 +1073,7 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
 }
 
 function ArchivePage({ workspace, onPage, onDocuments, onReceipt, onArchive, onNextPeriod, onExportIndex }) {
+  const terminology = workspaceTerminology(workspace);
   const [tab, setTab] = useState("documents");
   const [query, setQuery] = useState("");
   const docsInput = useRef(null);
@@ -1057,9 +1105,9 @@ function ArchivePage({ workspace, onPage, onDocuments, onReceipt, onArchive, onN
     <div className="page-content archive-page">
       <StageRail workspace={workspace} onPage={onPage} />
       <section className="archive-hero"><div><p className="eyebrow">S13 · {taxEnabled ? "回执、归档与下一期" : "归档与下一期"}</p><h2>{archived ? `${formatPeriod(workspace.currentPeriod)} 已归档` : "让本期交付真正闭环"}</h2><p>{archived ? `归档于 ${formatDateTime(archived.archivedAt)}，${taxEnabled ? "报表、确认、回执" : "报表、资料、操作记录"}与期末余额已经建立索引。` : taxEnabled ? "必须先导入真实外部办理回执，再把本地申报包、确认记录和操作日志一起归档。" : "把当前冻结报表、本期资料和操作记录建立本地归档索引。"}</p></div><div className="archive-hero-actions"><button className="secondary-button" onClick={onExportIndex} type="button"><DownloadSimple size={17} />导出归档索引</button>{archived ? <button className="primary-button" onClick={onNextPeriod} type="button">进入下一期<ArrowRight size={17} /></button> : <button className="primary-button" disabled={!archiveReady} onClick={onArchive} type="button"><Archive size={17} />完成本期归档</button>}</div></section>
-      <section className="metric-grid four archive-status-grid"><MetricCard label="冻结报表" value={flow.version?.label || "未完成"} note={flow.version ? formatDateTime(flow.version.createdAt) : "先去报表中心"} icon={ChartBar} tone={flow.version ? "sage" : "clay"} onClick={() => onPage("reports")} />{taxEnabled ? <><MetricCard label="两次确认" value={workspace.tax.ownerConfirmedAt ? "已完成" : "未完成"} note={workspace.tax.confirmedBy || "等待客户"} icon={ShieldCheck} tone={workspace.tax.ownerConfirmedAt ? "sage" : "clay"} onClick={() => onPage("tax")} /><MetricCard label="本地申报包" value={filing.exportedAt ? "已导出" : "未导出"} note={formatDateTime(filing.exportedAt)} icon={DownloadSimple} tone={filing.exportedAt ? "sage" : "clay"} onClick={() => onPage("tax")} /><MetricCard label="真实回执" value={filing.receipt ? "已导入" : "待导入"} note={filing.receipt?.name || "来自外部办理"} icon={Receipt} tone={filing.receipt ? "sage" : "clay"} onClick={openReceiptStatus} /></> : <><MetricCard label="本期资料" value={`${workspace.documents.length} 份`} note="浏览器本地记录" icon={FileText} onClick={() => showArchiveTab("documents")} /><MetricCard label="操作记录" value={`${workspace.auditLog.length} 条`} note="当前工作台" icon={Clock} onClick={() => showArchiveTab("logs")} /></>}</section>
+      <section className="metric-grid four archive-status-grid"><MetricCard label="冻结报表" value={flow.version?.label || "未完成"} note={flow.version ? formatDateTime(flow.version.createdAt) : "先去报表中心"} icon={ChartBar} tone={flow.version ? "sage" : "clay"} onClick={() => onPage("reports")} />{taxEnabled ? <><MetricCard label="两次确认" value={workspace.tax.ownerConfirmedAt ? "已完成" : "未完成"} note={workspace.tax.confirmedBy || `等待${terminology.customer}`} icon={ShieldCheck} tone={workspace.tax.ownerConfirmedAt ? "sage" : "clay"} onClick={() => onPage("tax")} /><MetricCard label="本地申报包" value={filing.exportedAt ? "已导出" : "未导出"} note={formatDateTime(filing.exportedAt)} icon={DownloadSimple} tone={filing.exportedAt ? "sage" : "clay"} onClick={() => onPage("tax")} /><MetricCard label="真实回执" value={filing.receipt ? "已导入" : "待导入"} note={filing.receipt?.name || "来自外部办理"} icon={Receipt} tone={filing.receipt ? "sage" : "clay"} onClick={openReceiptStatus} /></> : <><MetricCard label="本期资料" value={`${workspace.documents.length} 份`} note="浏览器本地记录" icon={FileText} onClick={() => showArchiveTab("documents")} /><MetricCard label="操作记录" value={`${workspace.auditLog.length} 条`} note="当前工作台" icon={Clock} onClick={() => showArchiveTab("logs")} /></>}</section>
       {taxEnabled && !filing.receipt && <section className="receipt-upload-card"><span><Receipt size={25} /></span><div><strong>导入真实外部办理回执</strong><p>选择在电子税务局或本地安全执行器中取得的 PDF、XML、JSON 或文本回执。文件只在本地读取并记录哈希。</p></div><input ref={receiptInput} hidden type="file" accept=".pdf,.json,.xml,.txt,.csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) onReceipt(file); event.target.value = ""; }} /><button className="primary-button" disabled={!filing.exportedAt} onClick={() => receiptInput.current?.click()} type="button"><UploadSimple size={17} />选择回执</button></section>}
-      <section className="panel archive-content-panel"><div className="archive-toolbar"><div className="report-tabs" role="tablist"><button aria-selected={tab === "documents"} className={tab === "documents" ? "active" : ""} onClick={() => showArchiveTab("documents")} role="tab" type="button">本地资料</button><button aria-selected={tab === "logs"} className={tab === "logs" ? "active" : ""} onClick={() => showArchiveTab("logs")} role="tab" type="button">操作日志</button><button aria-selected={tab === "periods"} className={tab === "periods" ? "active" : ""} onClick={() => showArchiveTab("periods")} role="tab" type="button">历史归档</button></div>{tab === "documents" && <div className="archive-tools"><label className="search-field"><MagnifyingGlass size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件" /><button aria-label="清空资料搜索" className={query ? "visible" : ""} onClick={() => setQuery("")} type="button"><X size={15} /></button></label><input ref={docsInput} hidden type="file" multiple onChange={(event) => { onDocuments(Array.from(event.target.files || [])); event.target.value = ""; }} /><button className="secondary-button" onClick={() => docsInput.current?.click()} type="button"><FileArrowUp size={17} />添加本地资料</button></div>}</div>{tab === "documents" && (documents.length ? <div className="document-grid">{documents.map((document) => <article className="document-card" key={document.id}><span className="document-icon"><FileText size={22} /></span><div><small>{document.type || document.category || "本地资料"} · {document.period || "未分期"}</small><strong>{document.name}</strong><p>{fileSize(document.size)} · {document.hash ? "已记录校验标识" : "本地元数据"}</p></div><TonePill tone={document.status?.includes("待") ? "warning" : "success"}>{document.status || "已获取"}</TonePill></article>)}</div> : <EmptyState title="没有符合条件的资料" description="添加本地文件或清空搜索条件。" />)}{tab === "logs" && (workspace.auditLog.length ? <div className="audit-list">{workspace.auditLog.map((item) => <div key={item.id}><span className="audit-dot" /><span><strong>{item.action}</strong><small>{item.detail}</small></span><span><strong>{item.actor}</strong><small>{formatDateTime(item.at)}</small></span></div>)}</div> : <EmptyState title="还没有操作日志" description="确认、导出、导入和归档动作都会记录在这里。" />)}{tab === "periods" && (workspace.delivery.archives.length ? <div className="period-archive-list">{workspace.delivery.archives.map((item) => <article key={item.id}><span className="archive-badge"><Archive size={20} /></span><div><strong>{formatPeriod(item.period)}</strong><small>{item.reportVersionLabel} · {item.confirmations.confirmedBy || "客户"} · {formatDateTime(item.archivedAt)}</small></div><span><strong>{formatCurrency(item.summary.profit)}</strong><small>本期利润</small></span><TonePill tone="success">已归档</TonePill></article>)}</div> : <EmptyState title="还没有历史归档" description={taxEnabled ? "本期回执导入并通过校验后，可以形成第一条归档记录。" : "冻结报表和本地资料通过校验后，可以形成第一条归档记录。"} />)}</section>
+      <section className="panel archive-content-panel"><div className="archive-toolbar"><div className="report-tabs" role="tablist"><button aria-selected={tab === "documents"} className={tab === "documents" ? "active" : ""} onClick={() => showArchiveTab("documents")} role="tab" type="button">本地资料</button><button aria-selected={tab === "logs"} className={tab === "logs" ? "active" : ""} onClick={() => showArchiveTab("logs")} role="tab" type="button">操作日志</button><button aria-selected={tab === "periods"} className={tab === "periods" ? "active" : ""} onClick={() => showArchiveTab("periods")} role="tab" type="button">历史归档</button></div>{tab === "documents" && <div className="archive-tools"><label className="search-field"><MagnifyingGlass size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件" /><button aria-label="清空资料搜索" className={query ? "visible" : ""} onClick={() => setQuery("")} type="button"><X size={15} /></button></label><input ref={docsInput} hidden type="file" multiple onChange={(event) => { onDocuments(Array.from(event.target.files || [])); event.target.value = ""; }} /><button className="secondary-button" onClick={() => docsInput.current?.click()} type="button"><FileArrowUp size={17} />添加本地资料</button></div>}</div>{tab === "documents" && (documents.length ? <div className="document-grid">{documents.map((document) => <article className="document-card" key={document.id}><span className="document-icon"><FileText size={22} /></span><div><small>{document.type || document.category || "本地资料"} · {document.period || "未分期"}</small><strong>{document.name}</strong><p>{fileSize(document.size)} · {document.hash ? "已记录校验标识" : "本地元数据"}</p></div><TonePill tone={document.status?.includes("待") ? "warning" : "success"}>{document.status || "已获取"}</TonePill></article>)}</div> : <EmptyState title="没有符合条件的资料" description="添加本地文件或清空搜索条件。" />)}{tab === "logs" && (workspace.auditLog.length ? <div className="audit-list">{workspace.auditLog.map((item) => <div key={item.id}><span className="audit-dot" /><span><strong>{item.action}</strong><small>{item.detail}</small></span><span><strong>{item.actor}</strong><small>{formatDateTime(item.at)}</small></span></div>)}</div> : <EmptyState title="还没有操作日志" description="确认、导出、导入和归档动作都会记录在这里。" />)}{tab === "periods" && (workspace.delivery.archives.length ? <div className="period-archive-list">{workspace.delivery.archives.map((item) => <article key={item.id}><span className="archive-badge"><Archive size={20} /></span><div><strong>{formatPeriod(item.period)}</strong><small>{item.reportVersionLabel} · {item.confirmations.confirmedBy || terminology.customer} · {formatDateTime(item.archivedAt)}</small></div><span><strong>{formatCurrency(item.summary.profit)}</strong><small>本期利润</small></span><TonePill tone="success">已归档</TonePill></article>)}</div> : <EmptyState title="还没有历史归档" description={taxEnabled ? "本期回执导入并通过校验后，可以形成第一条归档记录。" : "冻结报表和本地资料通过校验后，可以形成第一条归档记录。"} />)}</section>
       {!archived && <div className="archive-check-panel panel"><div className="panel-heading"><div><p className="eyebrow">归档校验</p><h2>{archiveReady ? "全部条件已满足" : "还不能完成归档"}</h2></div><TonePill tone={archiveReady ? "success" : "warning"}>{flow.archive.filter((item) => item.ok).length} / {flow.archive.length}</TonePill></div><CheckRows items={flow.archive} onNavigate={onPage} /></div>}
       <BoundaryNote />
     </div>
@@ -1078,6 +1126,7 @@ function blankWorkspaceForm() {
 }
 
 function WorkspaceDialog({ mode, workspace, onClose, onSubmit }) {
+  const terminology = workspaceTerminology(workspace);
   const [form, setForm] = useState(blankWorkspaceForm);
   useEffect(() => {
     if (mode === "rename") setForm((current) => ({ ...current, name: workspace?.name || "" }));
@@ -1105,7 +1154,7 @@ function WorkspaceDialog({ mode, workspace, onClose, onSubmit }) {
     }));
   }
   return (
-    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><form className="modal-card workspace-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-dialog-title" onSubmit={submit}><div className="modal-heading"><div><p className="eyebrow">{PRODUCT_NAME}</p><h2 id="workspace-dialog-title">{title}</h2></div><button className="icon-button compact" onClick={onClose} type="button" aria-label="关闭"><X size={19} /></button></div>{mode === "create" && <><p className="modal-intro">默认从不带样例数据的空白工作台开始；“山岚健身工作室”仅作为可选本地示例模板。</p><div className="choice-cards workspace-mode-cards"><label className={form.mode === "blank" ? "active" : ""}><input type="radio" name="mode" value="blank" checked={form.mode === "blank"} onChange={(event) => selectMode(event.target.value)} /><span><strong>创建空白工作台</strong><small>不带会员、人员或行业样例数据</small></span></label><label className={form.mode === "template" ? "active" : ""}><input type="radio" name="mode" value="template" checked={form.mode === "template"} onChange={(event) => selectMode(event.target.value)} /><span><strong>复制健身示例模板</strong><small>复制山岚样例数据，用于体验完整流程</small></span></label></div><div className="form-grid"><label><span>工作台名称 *</span><input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：微光设计事务所" /></label><label><span>企业法定名称</span><input value={form.legalName} onChange={(event) => setForm({ ...form, legalName: event.target.value })} placeholder="可稍后补充" /></label><label><span>行业</span><input value={form.industry} onChange={(event) => setForm({ ...form, industry: event.target.value })} /></label><label><span>纳税人类型</span><select value={form.taxpayerType} onChange={(event) => setForm({ ...form, taxpayerType: event.target.value })}><option>小规模纳税人</option><option>一般纳税人</option></select></label></div><div className="workspace-module-grid">{WORKSPACE_MODULE_OPTIONS.map((module) => <label className={form.modules[module.id] ? "active" : ""} key={module.id}><input type="checkbox" checked={Boolean(form.modules[module.id])} onChange={(event) => setForm((current) => ({ ...current, modules: { ...current.modules, [module.id]: event.target.checked } }))} /><span><strong>{module.label}</strong><small>{module.description}</small></span></label>)}</div><p className="modal-intro">月结总览、报表中心、资料归档和基础资料始终保留。</p></>}{mode === "rename" && <label className="field-label"><span>新的工作台名称</span><input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>}{mode === "delete" && <div className="delete-warning"><WarningCircle size={24} /><div><strong>确认删除“{workspace?.name}”？</strong><p>这会移除当前浏览器中的本地工作台数据，无法从本页面恢复。其他工作台不会受影响。</p></div></div>}<div className="modal-actions"><button className="secondary-button" onClick={onClose} type="button">取消</button><button className={mode === "delete" ? "danger-button" : "primary-button"} type="submit">{mode === "create" ? "创建并进入" : mode === "rename" ? "保存名称" : "确认删除"}</button></div></form></div>
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><form className="modal-card workspace-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-dialog-title" onSubmit={submit}><div className="modal-heading"><div><p className="eyebrow">{PRODUCT_NAME}</p><h2 id="workspace-dialog-title">{title}</h2></div><button className="icon-button compact" onClick={onClose} type="button" aria-label="关闭"><X size={19} /></button></div>{mode === "create" && <><p className="modal-intro">默认从不带样例数据的空白工作台开始；“山岚健身工作室”仅作为可选本地示例模板。</p><div className="choice-cards workspace-mode-cards"><label className={form.mode === "blank" ? "active" : ""}><input type="radio" name="mode" value="blank" checked={form.mode === "blank"} onChange={(event) => selectMode(event.target.value)} /><span><strong>创建空白工作台</strong><small>不带{terminology.member}、{terminology.personnel}或行业样例数据</small></span></label><label className={form.mode === "template" ? "active" : ""}><input type="radio" name="mode" value="template" checked={form.mode === "template"} onChange={(event) => selectMode(event.target.value)} /><span><strong>复制健身示例模板</strong><small>复制山岚样例数据，用于体验完整流程</small></span></label></div><div className="form-grid"><label><span>工作台名称 *</span><input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：微光设计事务所" /></label><label><span>企业法定名称</span><input value={form.legalName} onChange={(event) => setForm({ ...form, legalName: event.target.value })} placeholder="可稍后补充" /></label><label><span>行业</span><input value={form.industry} onChange={(event) => setForm({ ...form, industry: event.target.value })} /></label><label><span>纳税人类型</span><select value={form.taxpayerType} onChange={(event) => setForm({ ...form, taxpayerType: event.target.value })}><option>小规模纳税人</option><option>一般纳税人</option></select></label></div><div className="workspace-module-grid">{WORKSPACE_MODULE_OPTIONS.map((module) => <label className={form.modules[module.id] ? "active" : ""} key={module.id}><input type="checkbox" checked={Boolean(form.modules[module.id])} onChange={(event) => setForm((current) => ({ ...current, modules: { ...current.modules, [module.id]: event.target.checked } }))} /><span><strong>{module.label}</strong><small>{module.description}</small></span></label>)}</div><p className="modal-intro">月结总览、报表中心、资料归档和基础资料始终保留。</p></>}{mode === "rename" && <label className="field-label"><span>新的工作台名称</span><input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>}{mode === "delete" && <div className="delete-warning"><WarningCircle size={24} /><div><strong>确认删除“{workspace?.name}”？</strong><p>这会移除当前浏览器中的本地工作台数据，无法从本页面恢复。其他工作台不会受影响。</p></div></div>}<div className="modal-actions"><button className="secondary-button" onClick={onClose} type="button">取消</button><button className={mode === "delete" ? "danger-button" : "primary-button"} type="submit">{mode === "create" ? "创建并进入" : mode === "rename" ? "保存名称" : "确认删除"}</button></div></form></div>
   );
 }
 
@@ -1192,6 +1241,7 @@ function App() {
   const [importOpen, setImportOpen] = useState(false);
   const [toast, setToast] = useState(null);
   const workspace = activeWorkspace ? ensureWorkspace(activeWorkspace) : null;
+  const terminology = workspaceTerminology(workspace);
   const navigation = workspace ? primaryNavigationForWorkspace(workspace) : [];
   const enabledPageIds = new Set(navigation.map((item) => item.id));
   const activePage = enabledPageIds.has(page) ? page : "overview";
@@ -1377,14 +1427,14 @@ function App() {
     try {
       mutateActive((current) => audit(
         addMember(current, values, { actor: actorName }),
-        "新增会员",
-        `${values.name} · ${values.coach || "未分配教练"}`,
+        `新增${terminology.member}`,
+        `${values.name} · ${values.coach || `未分配${terminology.coach}`}`,
         actorName,
       ));
-      setToast({ tone: "success", message: `会员“${values.name}”已保存到当前工作台` });
+      setToast({ tone: "success", message: `${terminology.member}“${values.name}”已保存到当前工作台` });
       return true;
     } catch (error) {
-      setToast({ tone: "danger", message: error.message || "会员保存失败" });
+      setToast({ tone: "danger", message: memberRoleCopy(error.message || `${terminology.member}保存失败`, terminology) });
       return false;
     }
   }
@@ -1394,13 +1444,13 @@ function App() {
       const label = MEMBER_STATUS_OPTIONS.find((item) => item.value === status)?.label || status;
       mutateActive((current) => audit(
         updateMemberStatus(current, memberId, status, { actor: actorName }),
-        "更新会员状态",
+        `更新${terminology.member}状态`,
         `${member?.name || memberId} → ${label}`,
         actorName,
       ));
-      setToast({ tone: "success", message: `${member?.name || "会员"}已更新为“${label}”` });
+      setToast({ tone: "success", message: `${member?.name || terminology.member}已更新为“${label}”` });
     } catch (error) {
-      setToast({ tone: "danger", message: error.message || "会员状态更新失败" });
+      setToast({ tone: "danger", message: memberRoleCopy(error.message || `${terminology.member}状态更新失败`, terminology) });
     }
   }
   function addLedgerEvent(values) {
@@ -1408,14 +1458,14 @@ function App() {
       const definition = MEMBER_EVENT_DEFINITIONS[values.kind];
       mutateActive((current) => audit(
         addMemberBusinessEvent(current, values, { actor: actorName }),
-        `新增${definition?.label || "会员业务"}`,
+        `新增${memberRoleCopy(definition?.label || `${terminology.member}业务`, terminology)}`,
         `${values.date} · ${values.amount} 元 · 待确认`,
         actorName,
       ));
       setToast({ tone: "success", message: `${definition?.label || "业务"}已新增，等待确认` });
       return true;
     } catch (error) {
-      setToast({ tone: "danger", message: error.message || "会员业务保存失败" });
+      setToast({ tone: "danger", message: memberRoleCopy(error.message || `${terminology.member}业务保存失败`, terminology) });
       return false;
     }
   }
@@ -1424,11 +1474,11 @@ function App() {
       const event = workspace.businessEvents.find((item) => item.id === eventId);
       mutateActive((current) => audit(
         updateMemberBusinessEventStatus(current, eventId, status, { actor: actorName }),
-        "更新会员业务状态",
+        `更新${terminology.member}业务状态`,
         `${event?.accountingLabel || event?.memberName || eventId} → ${status}`,
         actorName,
       ));
-      setToast({ tone: "success", message: status === "void" ? "业务已作废，余额已同步恢复" : "业务状态与会员余额已更新" });
+      setToast({ tone: "success", message: status === "void" ? "业务已作废，余额已同步恢复" : `业务状态与${terminology.member}余额已更新` });
     } catch (error) {
       setToast({ tone: "danger", message: error.message || "业务状态更新失败" });
     }
@@ -1506,7 +1556,7 @@ function App() {
       if (!note?.trim()) throw new Error("每一项确认都必须填写说明");
       if (isMajor && !responsibleName?.trim()) throw new Error("重大事项必须填写本项负责人签字姓名");
       const at = new Date().toISOString();
-      const decisionActor = isMajor ? responsibleName.trim() : "客户负责人";
+      const decisionActor = isMajor ? responsibleName.trim() : `${terminology.customer}负责人`;
       mutateActive((current) => {
         const flow = workflowChecks(current);
         const missingPrerequisites = flow.checks.slice(0, 5).filter((item) => !item.ok);
@@ -1572,7 +1622,7 @@ function App() {
               ownerConfirmedVersionId: null,
             },
             delivery: { ...next.delivery, filing: resetFiling },
-          }, "客户异议退回 S7", `${section}：${note.trim()}`, actorName);
+          }, `${terminology.customer}异议退回 S7`, `${section}：${note.trim()}`, actorName);
         }
 
         const withResetDownstream = {
@@ -1588,7 +1638,7 @@ function App() {
             financeConfirmedAt: savedConfirmation.updatedAt || at,
             financeConfirmedVersionId: flow.version.id,
           },
-        }, "客户第一次确认完成", "收入、成本费用、应交税额、进项税、工资、社保、财务报表与待核实事项均已逐项确认", actorName);
+        }, `${terminology.customer}第一次确认完成`, "收入、成本费用、应交税额、进项税、工资、社保、财务报表与待核实事项均已逐项确认", actorName);
       });
       if (decision === "reject") {
         navigateToPage("reconcile");
@@ -1598,7 +1648,7 @@ function App() {
       }
       return true;
     } catch (error) {
-      setToast({ tone: "danger", message: error.message || "客户确认记录失败" });
+      setToast({ tone: "danger", message: error.message || `${terminology.customer}确认记录失败` });
       return false;
     }
   }
@@ -1650,7 +1700,7 @@ function App() {
           && confirmation.status === "approved"
           && ["finance", "revenue", "costExpense", "vat", "inputVat", "payroll", "socialSecurity", "openItems"].every((section) => confirmation.sections?.[section]?.status === "approved"),
         );
-        if (!confirmationComplete) throw new Error("还不能生成底稿：八项客户确认尚未全部完成");
+        if (!confirmationComplete) throw new Error(`还不能生成底稿：八项${terminology.customer}确认尚未全部完成`);
         const missing = flow.prepare.filter((item) => !item.ok);
         if (missing.length) throw new Error(`还不能生成底稿：${missing.map((item) => item.label).join("、")}`);
         return prepareFilingDraft(current, actorName);
@@ -1677,7 +1727,7 @@ function App() {
           && ["finance", "revenue", "costExpense", "vat", "inputVat", "payroll", "socialSecurity", "openItems"].every((section) => initialConfirmation.sections?.[section]?.status === "approved"),
         );
         if (!versionId || current.delivery.filing.draftVersionId !== versionId || !current.delivery.filing.draftCreatedAt) throw new Error("当前底稿与报表版本不一致，请重新生成");
-        if (!initialConfirmationComplete || !flow.prepare.every((item) => item.ok)) throw new Error("第一次客户确认或前置复核已失效，请重新完成");
+        if (!initialConfirmationComplete || !flow.prepare.every((item) => item.ok)) throw new Error(`第一次${terminology.customer}确认或前置复核已失效，请重新完成`);
 
         const snapshot = buildFinalConfirmationSnapshot(current, flow);
         const finalRecord = {
@@ -1727,7 +1777,7 @@ function App() {
           },
         };
         const deductionLabel = selections.deductionAuthorization === "authorize_external" ? "授权外部办理扣款" : "不授权外部扣款";
-        return audit(next, "客户第二次最终确认", `${name.trim()}确认 ${versionId} 当前数字与风险；${deductionLabel}；仅保存本地记录，未提交税务局、未执行扣款`, actorName);
+        return audit(next, `${terminology.customer}第二次最终确认`, `${name.trim()}确认 ${versionId} 当前数字与风险；${deductionLabel}；仅保存本地记录，未提交税务局、未执行扣款`, actorName);
       });
       setToast({ tone: "success", message: "最终确认快照已保存；尚未提交税务局，也未执行扣款" });
     } catch (error) {
@@ -1820,7 +1870,7 @@ function App() {
         <Topbar state={state} workspace={workspace} page={activePage} workspaceOverlayOpen={Boolean(workspaceDialog || managerOpen)} onImport={() => setImportOpen(true)} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={openWorkspaceDialog} />
         {loadReport.recovered && <div className="danger-banner recovery-banner"><WarningCircle size={18} /><span><strong>{loadReport.source === "backup" ? "本地数据已从上一次有效副本恢复。" : "本地主副本与备用副本均无法读取，当前已加载初始模板。"}</strong>{loadReport.errors?.length ? ` 原因：${loadReport.errors.join("；")}` : " 请先核对数据并导出备份。"}</span></div>}
         {activePage === "overview" && <OverviewPage workspace={workspace} onPage={navigateToPage} onResolveNotice={resolveNotice} />}
-        {activePage === "members" && <MemberLedgerPage workspace={workspace} onAddMember={addLedgerMember} onMemberStatus={changeLedgerMemberStatus} onAddEvent={addLedgerEvent} onEventStatus={changeLedgerEventStatus} />}
+        {activePage === "members" && workspaceModuleEnabled(workspace, "members") && <MemberLedgerPage workspace={workspace} onAddMember={addLedgerMember} onMemberStatus={changeLedgerMemberStatus} onAddEvent={addLedgerEvent} onEventStatus={changeLedgerEventStatus} />}
         {activePage === "reconcile" && <ReconcilePage workspace={workspace} onPage={navigateToPage} onStatus={setTransactionStatus} onReview={reviewTransactions} onEvidence={addEvidence} onLinkEvidence={linkExistingEvidence} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} />}
         {activePage === "reports" && <ReportsPage workspace={workspace} onPage={navigateToPage} onFreeze={freezeReport} onExportExcel={exportReportExcel} />}
         {activePage === "tax" && <TaxPage workspace={workspace} onPage={navigateToPage} onTaxChange={changeTax} onTaxCommit={commitTax} onSectionDecision={recordInitialConfirmationSection} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} />}

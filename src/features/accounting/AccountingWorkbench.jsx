@@ -72,6 +72,7 @@ import {
   memberEventKind,
   memberEventStatusLabel,
 } from "../members/memberLedger.js";
+import { applyWorkspaceTerminology, workspaceTerminology } from "../../productWorkflow.js";
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
 import "./accounting-workbench.css";
 
@@ -156,6 +157,22 @@ const MEMBER_REPORT_EFFECTS = {
   commissionPayment: "货币资金、应付职工薪酬与经营现金流",
 };
 
+function localizedEventLabel(eventType, workspace) {
+  return applyWorkspaceTerminology(EVENT_LABELS[eventType] || eventType, workspace);
+}
+
+function localizedBillKindMeta(kind, workspace) {
+  const meta = BILL_KIND_META[kind] || { label: kind, counterparty: "交易对手", balance: "未核销" };
+  return Object.fromEntries(Object.entries(meta).map(([key, value]) => [
+    key,
+    applyWorkspaceTerminology(value, workspace),
+  ]));
+}
+
+function localizedMemberReportEffect(kind, workspace) {
+  return applyWorkspaceTerminology(MEMBER_REPORT_EFFECTS[kind] || "对应财务报表", workspace);
+}
+
 function emptyBillForm(period) {
   const date = `${period}-01`;
   return { kind: BILL_KINDS.RECEIVABLE, counterparty: "", summary: "", amount: "", date, dueDate: date, no: "" };
@@ -191,7 +208,10 @@ function workspaceAccountOptions(workspace) {
       status: account.status || "active",
     });
   });
-  return [...byId.values()].sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
+  return [...byId.values()].sort((left, right) => (
+    applyWorkspaceTerminology(left.label, workspace)
+      .localeCompare(applyWorkspaceTerminology(right.label, workspace), "zh-CN")
+  ));
 }
 
 function accountIsActive(accounts, accountId) {
@@ -204,21 +224,23 @@ function activeAccountOrEmpty(accounts, accountId) {
 
 function workspaceAccountLabel(workspace, accounts, accountId) {
   if (!accountId) return "待选择";
-  return accounts.find((account) => account.id === accountId)?.label
+  return applyWorkspaceTerminology(accounts.find((account) => account.id === accountId)?.label
     || accountDefinition(accountId, workspace).label
-    || accountId;
+    || accountId, workspace);
 }
 
 function WorkspaceAccountSelect({ workspace, accounts, value, onChange, required = false, ariaLabel }) {
   const activeAccounts = accounts.filter((account) => account.status !== "inactive");
   const selectedAccount = accounts.find((account) => account.id === value);
   const historicalSelection = Boolean(value && !accountIsActive(accounts, value));
-  const historicalLabel = selectedAccount?.label || workspaceAccountLabel(workspace, accounts, value);
+  const historicalLabel = selectedAccount
+    ? applyWorkspaceTerminology(selectedAccount.label, workspace)
+    : workspaceAccountLabel(workspace, accounts, value);
   return (
     <select required={required} value={value || ""} onChange={(event) => onChange(event.target.value)} aria-label={ariaLabel}>
       {!value && <option value="">请选择有效科目</option>}
       {historicalSelection && <option value={value} disabled>{historicalLabel}（已停用，仅保留历史）</option>}
-      {activeAccounts.map((account) => <option value={account.id} key={account.id}>{account.label}</option>)}
+      {activeAccounts.map((account) => <option value={account.id} key={account.id}>{applyWorkspaceTerminology(account.label, workspace)}</option>)}
     </select>
   );
 }
@@ -290,7 +312,10 @@ function VoucherAccountJudgement({ workspace, accounts, voucher, lines, pending 
       : null
   );
   const originalLabel = original?.accountLabel
-    || (original?.account ? workspaceAccountLabel(workspace, accounts, original.account) : null);
+    ? applyWorkspaceTerminology(original.accountLabel, workspace)
+    : original?.account
+      ? workspaceAccountLabel(workspace, accounts, original.account)
+      : null;
   const sync = judgement.accountSync;
   const syncText = pending
     ? "保存后写入新版本"
@@ -386,6 +411,8 @@ function LedgerTrace({ voucherId, voucherIds = [], sourceIds = [] }) {
 }
 
 function AccountingLedgerPanel({ workspace, onToast }) {
+  const terminology = workspaceTerminology(workspace);
+  const displayText = (value) => applyWorkspaceTerminology(value, workspace);
   const [view, setView] = useState("journal");
   const [filters, setFilters] = useState(() => ({
     periodFrom: workspace.currentPeriod || "",
@@ -426,7 +453,14 @@ function AccountingLedgerPanel({ workspace, onToast }) {
   }
 
   function exportCsv() {
-    const csv = ledgerToCsv(view, ledger);
+    const csv = ledgerToCsv(view, {
+      ...ledger,
+      rows: ledger.rows.map((row) => ({
+        ...row,
+        accountLabel: displayText(row.accountLabel),
+        auxiliaryTypeLabel: displayText(row.auxiliaryTypeLabel),
+      })),
+    });
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
     const link = document.createElement("a");
     const periodName = [filters.periodFrom, filters.periodTo].filter(Boolean).join("_") || "全部期间";
@@ -455,10 +489,10 @@ function AccountingLedgerPanel({ workspace, onToast }) {
       <div className="ledger-filters">
         <label><span>期间起</span><input type="month" value={filters.periodFrom} onChange={(event) => setFilter("periodFrom", event.target.value)} /></label>
         <label><span>期间止</span><input type="month" value={filters.periodTo} onChange={(event) => setFilter("periodTo", event.target.value)} /></label>
-        <label><span>科目</span><select value={filters.account} onChange={(event) => setFilter("account", event.target.value)}><option value="">全部科目</option>{options.accounts.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
-        <label><span>往来类型</span><select value={filters.auxiliaryType} onChange={(event) => changeAuxiliaryType(event.target.value)}><option value="">客户 / 供应商 / 员工</option>{options.auxiliaryTypes.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
-        <label><span>往来对象</span><select value={filters.auxiliaryId} onChange={(event) => setFilter("auxiliaryId", event.target.value)}><option value="">全部对象</option>{auxiliaryOptions.map((item) => <option value={item.id} key={`${item.type}-${item.id}`}>{item.typeLabel} · {item.label}</option>)}</select></label>
-        <label><span>门店</span><select value={filters.storeId} onChange={(event) => setFilter("storeId", event.target.value)}><option value="">全部门店</option>{options.stores.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+        <label><span>科目</span><select value={filters.account} onChange={(event) => setFilter("account", event.target.value)}><option value="">全部科目</option>{options.accounts.map((item) => <option value={item.id} key={item.id}>{displayText(item.label)}</option>)}</select></label>
+        <label><span>往来类型</span><select value={filters.auxiliaryType} onChange={(event) => changeAuxiliaryType(event.target.value)}><option value="">{terminology.customer} / {terminology.supplier} / {terminology.personnel}</option>{options.auxiliaryTypes.map((item) => <option value={item.id} key={item.id}>{displayText(item.label)}</option>)}</select></label>
+        <label><span>往来对象</span><select value={filters.auxiliaryId} onChange={(event) => setFilter("auxiliaryId", event.target.value)}><option value="">全部对象</option>{auxiliaryOptions.map((item) => <option value={item.id} key={`${item.type}-${item.id}`}>{displayText(item.typeLabel)} · {item.label}</option>)}</select></label>
+        <label><span>{terminology.location}</span><select value={filters.storeId} onChange={(event) => setFilter("storeId", event.target.value)}><option value="">全部{terminology.location}</option>{options.stores.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
         <label><span>部门</span><select value={filters.department} onChange={(event) => setFilter("department", event.target.value)}><option value="">全部部门</option>{options.departments.map((item) => <option value={item} key={item}>{item}</option>)}</select></label>
         <label><span>项目</span><select value={filters.project} onChange={(event) => setFilter("project", event.target.value)}><option value="">全部项目</option>{options.projects.map((item) => <option value={item} key={item}>{item}</option>)}</select></label>
         <button className="ledger-reset" type="button" onClick={resetFilters}>重置筛选</button>
@@ -475,8 +509,8 @@ function AccountingLedgerPanel({ workspace, onToast }) {
           <thead><tr><th>日期 / 凭证</th><th>摘要 / 科目</th><th>辅助维度</th><th className="number">借方</th><th className="number">贷方</th></tr></thead>
           <tbody>{ledger.rows.map((row) => <tr key={row.id}>
             <td><strong>{row.date}</strong><small>{row.voucherNo} · V{row.voucherVersion}</small><LedgerTrace voucherId={row.voucherId} sourceIds={row.originalSourceIds} /></td>
-            <td><strong>{row.voucherSummary}</strong><small>{row.accountLabel} · {row.account}</small></td>
-            <td><span>{row.auxiliaryLabels.join("、") || "—"}</span><small>{[row.storeNames.join("、"), row.departments.join("、"), row.projects.join("、")].filter(Boolean).join(" · ") || "无门店 / 部门 / 项目"}</small></td>
+            <td><strong>{row.voucherSummary}</strong><small>{displayText(row.accountLabel)} · {row.account}</small></td>
+            <td><span>{row.auxiliaryLabels.join("、") || "—"}</span><small>{[row.storeNames.join("、"), row.departments.join("、"), row.projects.join("、")].filter(Boolean).join(" · ") || `无${terminology.location} / 部门 / 项目`}</small></td>
             <td className="number">{row.debit ? money(row.debit) : "—"}</td>
             <td className="number">{row.credit ? money(row.credit) : "—"}</td>
           </tr>)}</tbody>
@@ -486,7 +520,7 @@ function AccountingLedgerPanel({ workspace, onToast }) {
         {view === "general" && <table className="ledger-table">
           <thead><tr><th>科目</th><th className="number">期初</th><th className="number">借方发生</th><th className="number">贷方发生</th><th className="number">期末</th></tr></thead>
           <tbody>{ledger.rows.map((row) => <tr key={row.account}>
-            <td><strong>{row.accountLabel}</strong><small>{row.account}</small><LedgerTrace voucherIds={row.voucherIds} sourceIds={row.originalSourceIds} /></td>
+            <td><strong>{displayText(row.accountLabel)}</strong><small>{row.account}</small><LedgerTrace voucherIds={row.voucherIds} sourceIds={row.originalSourceIds} /></td>
             <td className="number">{balanceText(row.openingDirection, row.openingBalance)}</td>
             <td className="number">{money(row.debit)}</td>
             <td className="number">{money(row.credit)}</td>
@@ -498,7 +532,7 @@ function AccountingLedgerPanel({ workspace, onToast }) {
           <thead><tr><th>日期 / 凭证</th><th>科目 / 摘要</th><th className="number">借方</th><th className="number">贷方</th><th className="number">运行余额</th></tr></thead>
           <tbody>{ledger.rows.map((row) => <tr key={row.id}>
             <td><strong>{row.date}</strong><small>{row.voucherNo} · V{row.voucherVersion}</small><LedgerTrace voucherId={row.voucherId} sourceIds={row.originalSourceIds} /></td>
-            <td><strong>{row.accountLabel}</strong><small>{row.voucherSummary}</small></td>
+            <td><strong>{displayText(row.accountLabel)}</strong><small>{row.voucherSummary}</small></td>
             <td className="number">{row.debit ? money(row.debit) : "—"}</td>
             <td className="number">{row.credit ? money(row.credit) : "—"}</td>
             <td className="number"><strong>{balanceText(row.runningDirection, row.runningBalance)}</strong></td>
@@ -513,6 +547,8 @@ function AccountingLedgerPanel({ workspace, onToast }) {
 
 function MemberBusinessAccountingQueue({ onToast }) {
   const { activeWorkspace, actions, state, store } = useFinanceDesk();
+  const terminology = workspaceTerminology(activeWorkspace);
+  const displayText = (value) => applyWorkspaceTerminology(value, activeWorkspace);
   const [reviewNotes, setReviewNotes] = useState({});
   const [voucherLineDrafts, setVoucherLineDrafts] = useState({});
   const [error, setError] = useState("");
@@ -544,10 +580,10 @@ function MemberBusinessAccountingQueue({ onToast }) {
       const current = store.getActiveWorkspace();
       const next = action(current);
       actions.replaceWorkspace(current.id, next);
-      onToast?.(successMessage);
+      onToast?.(displayText(successMessage));
       return true;
     } catch (caught) {
-      setError(caught.message || "会员业务会计处理失败");
+      setError(displayText(caught.message || "会员业务会计处理失败"));
       return false;
     }
   }
@@ -555,7 +591,7 @@ function MemberBusinessAccountingQueue({ onToast }) {
   function createDraft(eventId) {
     run(
       (workspace) => createMemberEventVoucherDraft(workspace, { eventId }, { actor }),
-      "已由会员台账生成借贷平衡的凭证草稿",
+      `已由${terminology.member}台账生成借贷平衡的凭证草稿`,
     );
   }
 
@@ -585,7 +621,7 @@ function MemberBusinessAccountingQueue({ onToast }) {
   function reviseDraft(event, voucher) {
     const reviewNote = String(reviewNotes[event.id] || "").trim();
     if (!reviewNote) {
-      setError("保存修订前，请填写这笔会员业务的复核意见");
+      setError(`保存修订前，请填写这笔${terminology.member}业务的复核意见`);
       return;
     }
     const { lines, validation } = validateDraft(voucher);
@@ -597,7 +633,7 @@ function MemberBusinessAccountingQueue({ onToast }) {
         lines,
         reason: reviewNote,
       }, { actor }),
-      "会员业务凭证草稿已保存为新版本",
+      `${terminology.member}业务凭证草稿已保存为新版本`,
     )) {
       setVoucherLineDrafts((current) => {
         const next = { ...current };
@@ -610,7 +646,7 @@ function MemberBusinessAccountingQueue({ onToast }) {
   function postDraft(event, voucher) {
     const reviewNote = String(reviewNotes[event.id] || "").trim();
     if (!reviewNote) {
-      setError("复核入账前，请填写这笔会员业务的复核意见");
+      setError(`复核入账前，请填写这笔${terminology.member}业务的复核意见`);
       return;
     }
     const { lines: editedLines, validation } = validateDraft(voucher);
@@ -631,7 +667,7 @@ function MemberBusinessAccountingQueue({ onToast }) {
           reviewNote,
         }, { actor });
       },
-      "会员业务凭证已复核入账，对应报表已实时更新",
+      `${terminology.member}业务凭证已复核入账，对应报表已实时更新`,
     )) {
       setReviewNotes((current) => ({ ...current, [event.id]: "" }));
       setVoucherLineDrafts((current) => {
@@ -645,7 +681,7 @@ function MemberBusinessAccountingQueue({ onToast }) {
   return (
     <section className="panel settlement-panel">
       <div className="settlement-heading">
-        <div><p className="eyebrow">会员台账 → 会计处理</p><h2>已确认会员业务</h2><p>充值、耗课、退款、提成计提与实际付款在这里生成凭证；只有人工复核入账后，数字才进入对应财务报表。</p></div>
+        <div><p className="eyebrow">{terminology.member}台账 → 会计处理</p><h2>已确认{terminology.member}业务</h2><p>充值、耗课、退款、提成计提与实际付款在这里生成凭证；只有人工复核入账后，数字才进入对应财务报表。</p></div>
       </div>
       <div className="settlement-metrics">
         <span><small>待生成凭证</small><strong>{readyCount} 笔</strong></span>
@@ -668,10 +704,10 @@ function MemberBusinessAccountingQueue({ onToast }) {
           ) : null;
           return (
             <article className="settlement-bill-row" key={event.id}>
-              <div className="settlement-bill-main"><span className="settlement-kind">{definition.label}</span><strong>{event.memberName || event.coach}</strong><small>{event.date} · {memberEventStatusLabel(event)} · {event.note || definition.accountingLabel}</small></div>
-              <div className="settlement-bill-amounts"><span><small>业务金额</small><strong>¥{money(event.amount)}</strong></span><span><small>会计状态</small><strong>{voucherLabel}</strong></span><span><small>报表影响</small><strong>{MEMBER_REPORT_EFFECTS[kind]}</strong></span></div>
+              <div className="settlement-bill-main"><span className="settlement-kind">{displayText(definition.label)}</span><strong>{event.memberName || event.coach}</strong><small>{event.date} · {memberEventStatusLabel(event)} · {event.note || displayText(definition.accountingLabel)}</small></div>
+              <div className="settlement-bill-amounts"><span><small>业务金额</small><strong>¥{money(event.amount)}</strong></span><span><small>会计状态</small><strong>{voucherLabel}</strong></span><span><small>报表影响</small><strong>{localizedMemberReportEffect(kind, activeWorkspace)}</strong></span></div>
               <details open={Boolean(voucher && voucher.status !== "posted")}>
-                <summary>{voucher ? "查看凭证分录与复核" : definition.suggestedEntry}</summary>
+                <summary>{voucher ? "查看凭证分录与复核" : displayText(definition.suggestedEntry)}</summary>
                 {voucher ? <div className="engine-voucher-card">
                   <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借方 ¥{money(validation?.debit)} · 贷方 ¥{money(validation?.credit)} · {validation?.balanced ? "借贷平衡" : "借贷不平"}</small></span><em>{voucher.status}</em></div>
                   <VoucherAccountJudgement
@@ -691,16 +727,16 @@ function MemberBusinessAccountingQueue({ onToast }) {
                     onRemove={(lineIndex) => removeVoucherLine(voucher, lineIndex)}
                   />
                   {editable && <VoucherLineValidation validation={validation} />}
-                  {voucher.status === "posted" ? <div className="engine-inline"><span className="engine-badge"><CheckCircle size={14} weight="fill" />已进入 {MEMBER_REPORT_EFFECTS[kind]}</span></div> : <form className="engine-form" onSubmit={(submitEvent) => { submitEvent.preventDefault(); postDraft(event, voucher); }}>
-                    <label className="full"><span>复核意见 *</span><textarea value={reviewNotes[event.id] || ""} onChange={(changeEvent) => setReviewNotes((current) => ({ ...current, [event.id]: changeEvent.target.value }))} placeholder="例如：已核对会员台账、金额和会计科目" /></label>
+                  {voucher.status === "posted" ? <div className="engine-inline"><span className="engine-badge"><CheckCircle size={14} weight="fill" />已进入 {localizedMemberReportEffect(kind, activeWorkspace)}</span></div> : <form className="engine-form" onSubmit={(submitEvent) => { submitEvent.preventDefault(); postDraft(event, voucher); }}>
+                    <label className="full"><span>复核意见 *</span><textarea value={reviewNotes[event.id] || ""} onChange={(changeEvent) => setReviewNotes((current) => ({ ...current, [event.id]: changeEvent.target.value }))} placeholder={`例如：已核对${terminology.member}台账、金额和会计科目`} /></label>
                     <button className="secondary-button wide" disabled={!validation?.balanced || !voucherLineDrafts[voucher.id]} type="button" onClick={() => reviseDraft(event, voucher)}>保存修订</button>
                     <button className="primary-button wide" disabled={!validation?.balanced} type="submit"><CheckCircle size={16} />复核入账并更新报表</button>
                   </form>}
-                </div> : <div className="engine-inline"><span><strong>{definition.accountingLabel}</strong><small>{definition.suggestedEntry}</small></span><button className="secondary-button" type="button" onClick={() => createDraft(event.id)}><Plus size={16} />生成平衡凭证</button></div>}
+                </div> : <div className="engine-inline"><span><strong>{displayText(definition.accountingLabel)}</strong><small>{displayText(definition.suggestedEntry)}</small></span><button className="secondary-button" type="button" onClick={() => createDraft(event.id)}><Plus size={16} />生成平衡凭证</button></div>}
               </details>
             </article>
           );
-        }) : <p className="settlement-empty">本期还没有已确认的会员业务。请先到会员台账记录并确认业务状态。</p>}
+        }) : <p className="settlement-empty">本期还没有已确认的{terminology.member}业务。请先到{terminology.member}台账记录并确认业务状态。</p>}
       </div>
     </section>
   );
@@ -708,6 +744,8 @@ function MemberBusinessAccountingQueue({ onToast }) {
 
 export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true }) {
   const { activeWorkspace, actions, state, store } = useFinanceDesk();
+  const terminology = workspaceTerminology(activeWorkspace);
+  const displayText = (value) => applyWorkspaceTerminology(value, activeWorkspace);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(() => emptyBillForm(activeWorkspace?.currentPeriod || new Date().toISOString().slice(0, 7)));
   const [advanceUsage, setAdvanceUsage] = useState({});
@@ -748,14 +786,15 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
 
   if (!activeWorkspace) return null;
 
+  const currentBillMeta = localizedBillKindMeta(form.kind, activeWorkspace);
   const totalFor = (kind, field) => billRows
     .filter((row) => row.bill.kind === kind)
     .reduce((sum, row) => sum + Number(row.settlement[field] || 0), 0);
   const metrics = [
     { label: "应收未核销", value: totalFor(BILL_KINDS.RECEIVABLE, "remaining") },
     { label: "应付未核销", value: totalFor(BILL_KINDS.PAYABLE, "remaining") },
-    { label: "客户预收可用", value: advanceSummary.depositsReceived },
-    { label: "供应商预付可用", value: advanceSummary.prepaymentsPaid },
+    { label: `${terminology.customer}预收可用`, value: advanceSummary.depositsReceived },
+    { label: `${terminology.supplier}预付可用`, value: advanceSummary.prepaymentsPaid },
   ];
   const ordinaryBillRows = billRows.filter(({ bill }) => ![BILL_KINDS.DEPOSIT_RECEIVED, BILL_KINDS.PREPAYMENT_PAID].includes(bill.kind));
   const advanceRowByBillId = new Map(advanceSummary.rows.map((row) => [row.billId, row]));
@@ -774,7 +813,7 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
       setShowForm(false);
       onToast?.("往来账单已保存，可在流水详情中做拆分或分次核销");
     } catch (caught) {
-      setError(caught.message || "账单保存失败");
+      setError(displayText(caught.message || "账单保存失败"));
     }
   }
 
@@ -798,7 +837,7 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
       setAdvanceUsage((currentUsage) => ({ ...currentUsage, [advanceBillId]: { targetBillId: "", amount: "" } }));
       onToast?.("余额使用已确认；对应账单与凭证来源关系已更新");
     } catch (caught) {
-      setError(caught.message || "预收/预付余额使用失败");
+      setError(displayText(caught.message || "预收/预付余额使用失败"));
     }
   }
 
@@ -813,7 +852,7 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
       actions.replaceWorkspace(current.id, next);
       onToast?.("已生成平衡凭证草稿，等待人工复核入账");
     } catch (caught) {
-      setError(caught.message || "冲销凭证草稿生成失败");
+      setError(displayText(caught.message || "冲销凭证草稿生成失败"));
     }
   }
 
@@ -835,7 +874,7 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
       setAdvanceVoucherNotes((notes) => ({ ...notes, [applicationId]: "" }));
       onToast?.("冲销凭证已人工复核入账，来源关系状态已回写");
     } catch (caught) {
-      setError(caught.message || "冲销凭证入账失败");
+      setError(displayText(caught.message || "冲销凭证入账失败"));
     }
   }
 
@@ -854,13 +893,13 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
 
       {showForm && (
         <form className="settlement-form" onSubmit={submitBill}>
-          <label><span>账单类型 *</span><select value={form.kind} onChange={(event) => setForm((current) => ({ ...current, kind: event.target.value }))}>{Object.entries(BILL_KIND_META).map(([kind, meta]) => <option key={kind} value={kind}>{meta.label}</option>)}</select></label>
-          <label><span>{BILL_KIND_META[form.kind].counterparty}名称 *</span><input autoFocus value={form.counterparty} onChange={(event) => setForm((current) => ({ ...current, counterparty: event.target.value }))} placeholder={`填写${BILL_KIND_META[form.kind].counterparty}名称`} /></label>
+          <label><span>账单类型 *</span><select value={form.kind} onChange={(event) => setForm((current) => ({ ...current, kind: event.target.value }))}>{Object.keys(BILL_KIND_META).map((kind) => <option key={kind} value={kind}>{localizedBillKindMeta(kind, activeWorkspace).label}</option>)}</select></label>
+          <label><span>{currentBillMeta.counterparty}名称 *</span><input autoFocus value={form.counterparty} onChange={(event) => setForm((current) => ({ ...current, counterparty: event.target.value }))} placeholder={`填写${currentBillMeta.counterparty}名称`} /></label>
           <label><span>账单金额 *</span><input type="number" min="0.01" step="0.01" value={form.amount} onChange={(event) => setForm((current) => ({ ...current, amount: event.target.value }))} placeholder="0.00" /></label>
           <label><span>账单编号</span><input value={form.no} onChange={(event) => setForm((current) => ({ ...current, no: event.target.value }))} placeholder="留空自动编号" /></label>
           <label><span>账单日期 *</span><input type="date" value={form.date} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value, dueDate: !current.dueDate || current.dueDate === current.date ? event.target.value : current.dueDate }))} /></label>
           <label><span>到期日期 *</span><input type="date" value={form.dueDate} onChange={(event) => setForm((current) => ({ ...current, dueDate: event.target.value }))} /></label>
-          <label className="full"><span>业务摘要</span><input value={form.summary} onChange={(event) => setForm((current) => ({ ...current, summary: event.target.value }))} placeholder="例如：9 月设计服务费" /></label>
+          <label className="full"><span>业务摘要</span><input value={form.summary} onChange={(event) => setForm((current) => ({ ...current, summary: event.target.value }))} placeholder={`例如：9 月设计${terminology.service}费`} /></label>
           {error && <div className="engine-error full"><WarningCircle size={16} />{error}</div>}
           <div className="engine-inline full"><button className="secondary-button" type="button" onClick={() => { setShowForm(false); setError(""); }}>取消</button><button className="primary-button" type="submit"><SealCheck size={16} />保存账单</button></div>
         </form>
@@ -869,7 +908,7 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
       <div className="settlement-bill-list">
         <div className="engine-subheading"><strong>月结应收 / 应付</strong><small>银行收付款与预收预付使用共同更新未核销余额</small></div>
         {ordinaryBillRows.length ? ordinaryBillRows.map(({ bill, settlement, allocations, advanceApplications }) => {
-          const meta = BILL_KIND_META[bill.kind] || { label: bill.kind, balance: "未核销" };
+          const meta = localizedBillKindMeta(bill.kind, activeWorkspace);
           const sourceCount = allocations.length + advanceApplications.length;
           return (
             <article className="settlement-bill-row" key={bill.id}>
@@ -888,9 +927,9 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
       </div>
 
       <div className="settlement-bill-list">
-        <div className="engine-subheading"><strong>客户预收 / 供应商预付</strong><small>与月结账单独立显示，只能人工选择对应账单使用</small></div>
+        <div className="engine-subheading"><strong>{terminology.customer}预收 / {terminology.supplier}预付</strong><small>与月结账单独立显示，只能人工选择对应账单使用</small></div>
         {advanceBillRows.length ? advanceBillRows.map(({ bill, allocations, advance }) => {
-          const meta = BILL_KIND_META[bill.kind] || { label: bill.kind };
+          const meta = localizedBillKindMeta(bill.kind, activeWorkspace);
           const usage = advanceUsage[bill.id] || { targetBillId: "", amount: "" };
           const targets = advanceApplicationTargets(activeWorkspace, bill.id);
           const selectedTarget = targets.find((target) => target.billId === usage.targetBillId);
@@ -924,7 +963,7 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
               </details>
             </article>
           );
-        }) : <p className="settlement-empty">还没有已形成资金余额的客户预收或供应商预付。</p>}
+        }) : <p className="settlement-empty">还没有已形成资金余额的{terminology.customer}预收或{terminology.supplier}预付。</p>}
       </div>
       </section>
     </>
@@ -933,6 +972,8 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
 
 export function AccountingWorkbench({ transactionId, onToast }) {
   const { activeWorkspace, actions, state, store } = useFinanceDesk();
+  const terminology = workspaceTerminology(activeWorkspace);
+  const displayText = (value) => applyWorkspaceTerminology(value, activeWorkspace);
   const actor = currentActorName(state, activeWorkspace);
   const transaction = activeWorkspace.transactions.find((item) => item.id === transactionId);
   const [allocationAmounts, setAllocationAmounts] = useState({});
@@ -1115,10 +1156,10 @@ export function AccountingWorkbench({ transactionId, onToast }) {
       const current = store.getActiveWorkspace();
       const next = action(current);
       actions.replaceWorkspace(current.id, next);
-      onToast?.(successMessage);
+      onToast?.(displayText(successMessage));
       return true;
     } catch (caught) {
-      setError(caught.message || "会计处理失败");
+      setError(displayText(caught.message || "会计处理失败"));
       return false;
     }
   }
@@ -1337,7 +1378,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
 
   function createDraft() {
     if (memberBusinessEventBlocked) {
-      setError("会员模块已关闭；历史会员业务仅保留查看，不能继续生成凭证");
+      setError(`${terminology.member}模块已关闭；历史${terminology.member}业务仅保留查看，不能继续生成凭证`);
       return;
     }
     run(
@@ -1356,7 +1397,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
 
   function postDraft(voucher) {
     if (memberBusinessEventBlocked) {
-      setError("会员模块已关闭；历史会员业务凭证保持未入账");
+      setError(`${terminology.member}模块已关闭；历史${terminology.member}业务凭证保持未入账`);
       return;
     }
     const editedLines = voucherLineDrafts[voucher.id] || voucher.lines;
@@ -1435,34 +1476,34 @@ export function AccountingWorkbench({ transactionId, onToast }) {
       {error && <div className="engine-error"><WarningCircle size={16} />{error}</div>}
 
       <div className="engine-summary">
-        <span><small>业务判断</small><strong>{EVENT_LABELS[classification.eventType]}</strong></span>
+        <span><small>业务判断</small><strong>{localizedEventLabel(classification.eventType, activeWorkspace)}</strong></span>
         <span><small>置信度</small><strong>{classification.confidence}%</strong></span>
         <span><small>核销状态</small><strong>{statusLabel(settlement.status)}</strong></span>
         <span><small>未核销</small><strong>¥{money(settlement.remaining)}</strong></span>
       </div>
-      <ul className="engine-reasons">{classification.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+      <ul className="engine-reasons">{classification.reasons.map((reason) => <li key={reason}>{displayText(reason)}</li>)}</ul>
       {!businessEvent && <button className="secondary-button wide" type="button" onClick={inspect}><MagicWand size={16} />运行本地分类、证据检查与匹配建议</button>}
 
       {requiresBusinessEventConfirmation && (
         <form className="engine-form" onSubmit={manualClassify}>
           <div className="engine-subheading full"><strong>人工确认业务事件</strong><small>只形成业务事件和复核任务，不自动生成或入账凭证</small></div>
-          <label className="full"><span>业务类型 *</span><select required value={judgement.businessType} onChange={(event) => selectBusinessType(event.target.value)}><option value="">请选择业务类型</option>{availableBusinessTypes.map((definition) => <option value={definition.id} key={definition.id} disabled={!definition.allowedDirections.includes(Number(transaction.amount) >= 0 ? "in" : "out")}>{definition.label}</option>)}</select></label>
+          <label className="full"><span>业务类型 *</span><select required value={judgement.businessType} onChange={(event) => selectBusinessType(event.target.value)}><option value="">请选择业务类型</option>{availableBusinessTypes.map((definition) => <option value={definition.id} key={definition.id} disabled={!definition.allowedDirections.includes(Number(transaction.amount) >= 0 ? "in" : "out")}>{displayText(definition.label)}</option>)}</select></label>
           {selectedBusinessDefinition && (
             <>
-              {selectedBusinessDefinition.counterpartyRequired && <label><span>交易对手 *</span><input required value={judgement.counterparty} onChange={(event) => setJudgement((current) => ({ ...current, counterparty: event.target.value }))} placeholder="客户、供应商、员工或资金方" /></label>}
+              {selectedBusinessDefinition.counterpartyRequired && <label><span>交易对手 *</span><input required value={judgement.counterparty} onChange={(event) => setJudgement((current) => ({ ...current, counterparty: event.target.value }))} placeholder={`${terminology.customer}、${terminology.supplier}、${terminology.personnel}或资金方`} /></label>}
               <label><span>会计属性 / 主科目 *</span><WorkspaceAccountSelect workspace={activeWorkspace} accounts={accountOptions} value={judgement.account} onChange={(account) => setJudgement((current) => ({ ...current, account }))} ariaLabel="人工确认业务主科目" required /><small>仅列出当前有效科目；用户新增科目与自定义名称会直接进入后续凭证分录。</small></label>
               <label><span>业务期间 *</span><input required type="month" value={judgement.businessPeriod} onChange={(event) => setJudgement((current) => ({ ...current, businessPeriod: event.target.value }))} /></label>
               <label><span>资金期间</span><input readOnly value={String(transaction.date || "").slice(0, 7)} /></label>
               {selectedBusinessDefinition.billKinds.length > 0 && <label><span>关联账单{selectedBusinessDefinition.referenceMode === "bill_or_reference" ? "（与编号至少一项）" : ""}</span><select value={judgement.relatedBillId} onChange={(event) => setJudgement((current) => ({ ...current, relatedBillId: event.target.value }))}><option value="">暂不选择账单</option>{businessEventBills.map((bill) => <option value={bill.id} key={bill.id}>{bill.no || bill.id} · {bill.counterparty} · ¥{money(bill.amount)}</option>)}</select></label>}
-              {selectedBusinessDefinition.referenceMode !== "none" && <label><span>{selectedBusinessDefinition.referenceLabel}{selectedBusinessDefinition.referenceMode === "reference" ? " *" : ""}</span><input value={judgement.referenceNo} onChange={(event) => setJudgement((current) => ({ ...current, referenceNo: event.target.value }))} placeholder="填写可追溯的订单、合同或审批编号" /></label>}
+              {selectedBusinessDefinition.referenceMode !== "none" && <label><span>{displayText(selectedBusinessDefinition.referenceLabel)}{selectedBusinessDefinition.referenceMode === "reference" ? " *" : ""}</span><input value={judgement.referenceNo} onChange={(event) => setJudgement((current) => ({ ...current, referenceNo: event.target.value }))} placeholder="填写可追溯的订单、合同或审批编号" /></label>}
               {selectedBusinessDefinition.relatedTransactionRole && <label className="full"><span>{selectedBusinessDefinition.relatedTransactionRole === "original_transaction" ? "原业务流水 *" : "内部转账另一端流水 *"}</span><select required value={judgement.relatedTransactionId} onChange={(event) => setJudgement((current) => ({ ...current, relatedTransactionId: event.target.value }))}><option value="">请选择关联流水</option>{businessEventRelatedTransactions.map((item) => <option value={item.id} key={item.id}>{item.date} · {item.serial || item.id} · {item.counterparty} · {Number(item.amount) > 0 ? "+" : "−"}¥{money(item.amount)}</option>)}</select></label>}
               {selectedBusinessDefinition.fixedTaxTreatment
                 ? <label><span>税务属性</span><input readOnly value={BUSINESS_EVENT_TAX_TREATMENTS.find((item) => item.id === selectedBusinessDefinition.fixedTaxTreatment)?.label || selectedBusinessDefinition.fixedTaxTreatment} /></label>
                 : <label><span>税务属性 *</span><select required value={judgement.taxTreatment} onChange={(event) => setJudgement((current) => ({ ...current, taxTreatment: event.target.value }))}><option value="">请选择税务属性</option>{BUSINESS_EVENT_TAX_TREATMENTS.filter((item) => selectedBusinessDefinition.taxTreatments.includes(item.id)).map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>}
               {selectedBusinessDefinition.invoiceRequired && <label><span>发票状态 *</span><select required value={judgement.invoiceStatus} onChange={(event) => setJudgement((current) => ({ ...current, invoiceStatus: event.target.value }))}><option value="">请选择发票状态</option>{BUSINESS_EVENT_INVOICE_STATUSES.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>}
-              <label className="full"><span>关联证据（可多选）· 期望：{selectedBusinessDefinition.evidenceHint}</span><select multiple size={Math.min(5, Math.max(2, activeWorkspace.documents.length))} value={judgement.evidenceIds} onChange={(event) => setJudgement((current) => ({ ...current, evidenceIds: Array.from(event.target.selectedOptions, (option) => option.value) }))}>{activeWorkspace.documents.map((document) => <option value={document.id} key={document.id}>{document.name || document.title || document.id} · {document.type || "资料"}</option>)}</select></label>
+              <label className="full"><span>关联证据（可多选）· 期望：{displayText(selectedBusinessDefinition.evidenceHint)}</span><select multiple size={Math.min(5, Math.max(2, activeWorkspace.documents.length))} value={judgement.evidenceIds} onChange={(event) => setJudgement((current) => ({ ...current, evidenceIds: Array.from(event.target.selectedOptions, (option) => option.value) }))}>{activeWorkspace.documents.map((document) => <option value={document.id} key={document.id}>{document.name || document.title || document.id} · {document.type || "资料"}</option>)}</select></label>
               <label><span>复核后置信度（0–100）* · 原判断 {classification.confidence}%</span><input required type="number" min="0" max="100" step="1" value={judgement.confidence} onChange={(event) => setJudgement((current) => ({ ...current, confidence: event.target.value }))} /></label>
-              <label><span>处理说明</span><input readOnly value={`${selectedBusinessDefinition.accountingTreatment.split("；主科目：")[0]}；主科目：${workspaceAccountLabel(activeWorkspace, accountOptions, judgement.account)}`} /></label>
+              <label><span>处理说明</span><input readOnly value={`${displayText(selectedBusinessDefinition.accountingTreatment.split("；主科目：")[0])}；主科目：${workspaceAccountLabel(activeWorkspace, accountOptions, judgement.account)}`} /></label>
               {Number(judgement.confidence) < accountingPolicy.confidenceThreshold && <div className="engine-missing full"><span>当前低于人工复核阈值 {accountingPolicy.confidenceThreshold}%。保存后仍会阻塞凭证；必须在 S7 填写复核说明并明确采用处理，才可继续。</span></div>}
               <label className="full"><span>人工判断依据 *</span><textarea required value={judgement.reason} onChange={(event) => setJudgement((current) => ({ ...current, reason: event.target.value }))} placeholder="写明核对了哪些对手、账单或订单、期间、税务和证据" /></label>
               <button className="secondary-button wide" type="submit">{Number(judgement.confidence) < accountingPolicy.confidenceThreshold ? "保存判断并进入人工复核" : "确认业务事件（不入账）"}</button>
@@ -1473,17 +1514,17 @@ export function AccountingWorkbench({ transactionId, onToast }) {
 
       {businessEvent && (
         <div className="engine-special">
-          <div className="engine-subheading"><strong>{businessEvent.businessEventNo} · {businessEvent.businessTypeLabel}</strong><small>已形成人工业务事件；入账策略：仅允许后续人工复核</small></div>
+          <div className="engine-subheading"><strong>{businessEvent.businessEventNo} · {displayText(businessEvent.businessTypeLabel)}</strong><small>已形成人工业务事件；入账策略：仅允许后续人工复核</small></div>
           <div className="engine-summary">
             <span><small>业务期 / 资金期</small><strong>{businessEvent.businessPeriod} / {businessEvent.fundingPeriod}</strong></span>
-            <span><small>业务事件原判断</small><strong>{accountDefinition(businessEvent.accountingAttributes.primaryAccount, activeWorkspace).label}</strong></span>
+            <span><small>业务事件原判断</small><strong>{displayText(accountDefinition(businessEvent.accountingAttributes.primaryAccount, activeWorkspace).label)}</strong></span>
             <span><small>税务属性</small><strong>{BUSINESS_EVENT_TAX_TREATMENTS.find((item) => item.id === businessEvent.taxAttributes.treatment)?.label || businessEvent.taxAttributes.treatment}</strong></span>
             <span><small>证据 / 置信度</small><strong>{businessEvent.evidenceCompleteness}% / {businessEvent.confidence}%</strong></span>
             <span><small>凭证状态</small><strong>{businessEvent.accountingStatus || "unprocessed"}</strong></span>
           </div>
-          <ul className="engine-reasons">{businessEvent.reasons.map((reason) => <li key={`${businessEvent.id}-${reason}`}>{reason}</li>)}</ul>
-          {memberBusinessEventBlocked && <div className="engine-missing"><span>会员模块已关闭；这条历史会员业务保留只读，不能继续生成、修改或入账凭证。重新启用会员模块后才可继续处理。</span></div>}
-          {businessEvent.review?.required && <div className="engine-missing"><span>仍需人工复核：{businessEvent.review.reasons.join("；")}</span></div>}
+          <ul className="engine-reasons">{businessEvent.reasons.map((reason) => <li key={`${businessEvent.id}-${reason}`}>{displayText(reason)}</li>)}</ul>
+          {memberBusinessEventBlocked && <div className="engine-missing"><span>{terminology.member}模块已关闭；这条历史{terminology.member}业务保留只读，不能继续生成、修改或入账凭证。重新启用{terminology.member}模块后才可继续处理。</span></div>}
+          {businessEvent.review?.required && <div className="engine-missing"><span>仍需人工复核：{businessEvent.review.reasons.map(displayText).join("；")}</span></div>}
           {!memberBusinessEventBlocked && businessEvent.accountingStatus === "unprocessed" && !businessEventReadyForDraft && <div className="engine-missing"><span>凭证草稿暂不可生成：请先补齐证据、确认税务属性并完成全部 S7 复核。</span></div>}
         </div>
       )}
@@ -1501,20 +1542,20 @@ export function AccountingWorkbench({ transactionId, onToast }) {
               accountRequired && businessEvent && selectedTreatment.eventType !== businessEvent.eventType,
             );
             return <article className="engine-voucher-card" key={item.id}>
-              <div className="engine-voucher-row"><WarningCircle size={16} /><span><strong>{item.triggerReason}</strong><small>{item.code} · {exceptionWorkflowLabel(item.workflowState)} · 历史 {item.history.length} 条</small></span><em className="engine-badge warning">阻塞入账</em></div>
+              <div className="engine-voucher-row"><WarningCircle size={16} /><span><strong>{displayText(item.triggerReason)}</strong><small>{item.code} · {exceptionWorkflowLabel(item.workflowState)} · 历史 {item.history.length} 条</small></span><em className="engine-badge warning">阻塞入账</em></div>
               <div className="engine-summary">
                 <span><small>相关流水</small><strong>{item.relatedTransactions.map((source) => source.serial || source.id).join("、") || "无"}</strong></span>
                 <span><small>相关账单</small><strong>{item.relatedBills.map((bill) => bill.no || bill.id).join("、") || "无"}</strong></span>
                 <span><small>相关资料</small><strong>{item.relatedDocuments.map((document) => document.name).join("、") || "无"}</strong></span>
-                <span><small>缺少内容</small><strong>{item.missingContents.map((missing) => missing.label).join("、") || "未识别出明确缺件"}</strong></span>
+                <span><small>缺少内容</small><strong>{item.missingContents.map((missing) => displayText(missing.label)).join("、") || "未识别出明确缺件"}</strong></span>
               </div>
               <details open>
                 <summary>查看匹配依据和账单余额</summary>
-                <ul className="engine-reasons">{item.matchBasis.length ? item.matchBasis.map((reason) => <li key={`${item.id}-${reason}`}>{reason}</li>) : <li>当前没有足够依据形成匹配结论</li>}</ul>
-                {item.relatedBills.length > 0 && <div className="settlement-source-list">{item.relatedBills.map((bill) => <div key={bill.id}><span><strong>{bill.no || bill.id} · {bill.counterparty}</strong><small>{BILL_KIND_META[bill.kind]?.label || bill.kind}</small></span><b>未核销 ¥{money(bill.remaining)}</b></div>)}</div>}
+                <ul className="engine-reasons">{item.matchBasis.length ? item.matchBasis.map((reason) => <li key={`${item.id}-${reason}`}>{displayText(reason)}</li>) : <li>当前没有足够依据形成匹配结论</li>}</ul>
+                {item.relatedBills.length > 0 && <div className="settlement-source-list">{item.relatedBills.map((bill) => <div key={bill.id}><span><strong>{bill.no || bill.id} · {bill.counterparty}</strong><small>{localizedBillKindMeta(bill.kind, activeWorkspace).label}</small></span><b>未核销 ¥{money(bill.remaining)}</b></div>)}</div>}
               </details>
               <div className="engine-account-grid">
-                <label><span>可选会计处理</span><select value={selectedTreatmentId} onChange={(event) => selectExceptionTreatment(item, event.target.value)}>{item.accountingTreatments.length ? item.accountingTreatments.map((treatment) => <option value={treatment.id} key={treatment.id}>{treatment.label}</option>) : <option value="">当前无法判断</option>}</select></label>
+                <label><span>可选会计处理</span><select value={selectedTreatmentId} onChange={(event) => selectExceptionTreatment(item, event.target.value)}>{item.accountingTreatments.length ? item.accountingTreatments.map((treatment) => <option value={treatment.id} key={treatment.id}>{displayText(treatment.label)}</option>) : <option value="">当前无法判断</option>}</select></label>
                 {accountRequired && <label><span>采用后的会计科目</span><WorkspaceAccountSelect workspace={activeWorkspace} accounts={accountOptions} value={selectedAccount} onChange={(account) => setExceptionAccounts((current) => ({ ...current, [item.id]: account }))} ariaLabel={`${item.code} 采用后的会计科目`} required /><small>确认后写回流水分类，随后生成的凭证使用此科目。</small></label>}
               </div>
               {requiresBusinessTypeReconfirmation && <div className="engine-missing"><span>该处理会改变已确认的业务类型，请回到人工业务确认重新填写对应税务属性和业务依据。</span></div>}
@@ -1543,7 +1584,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
                 </span>
                 <em className={item.requiresManualReview ? "engine-badge warning" : "engine-badge"}>{item.confidence}%</em>
               </div>
-              <ul className="engine-reasons">{item.reasons.map((reason) => <li key={`${item.id}-${reason}`}>{reason}</li>)}</ul>
+              <ul className="engine-reasons">{item.reasons.map((reason) => <li key={`${item.id}-${reason}`}>{displayText(reason)}</li>)}</ul>
               {item.requiresManualReview
                 ? <div className="engine-inline"><span className="engine-badge warning"><WarningCircle size={14} />保留异常，需人工核对差额或置信度</span></div>
                 : <button className="primary-button wide" type="button" onClick={() => confirmSuggestion(item)}><SealCheck size={16} />确认匹配并写入核销</button>}
@@ -1603,7 +1644,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
 
       <div className="engine-vouchers">
         <div className="engine-subheading"><strong>凭证与附件包</strong><small>{vouchers.length} 张关联凭证</small></div>
-        <label><span>复核意见 *</span><textarea disabled={memberBusinessEventBlocked} value={voucherNote} onChange={(event) => setVoucherNote(event.target.value)} placeholder={memberBusinessEventBlocked ? "会员模块已关闭，历史业务仅供查看" : "说明业务性质、科目与金额的复核结论"} /></label>
+        <label><span>复核意见 *</span><textarea disabled={memberBusinessEventBlocked} value={voucherNote} onChange={(event) => setVoucherNote(event.target.value)} placeholder={memberBusinessEventBlocked ? `${terminology.member}模块已关闭，历史业务仅供查看` : "说明业务性质、科目与金额的复核结论"} /></label>
         {canCreateDraft && <button className="secondary-button wide" type="button" onClick={createDraft}><Plus size={16} />{businessEvent ? `由 ${businessEvent.businessEventNo} 生成凭证草稿` : (vouchers.length ? `为新增核销生成凭证草稿（${unvoucheredAllocations.length} 条）` : "生成凭证草稿")}</button>}
         {vouchers.map((voucher) => {
           const attachments = buildAttachmentPackage(activeWorkspace, voucher.id);
@@ -1639,7 +1680,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
               <div className="engine-inline">
                 {!memberBusinessEventBlocked && voucher.status === "draft" && <button className="secondary-button" type="button" onClick={() => requestVoucherChanges(voucher.id)}>退回修改</button>}
                 {editable && <button className="secondary-button" type="button" disabled={!voucherNote.trim() || !lineValidation.balanced} onClick={() => reviseVoucher(voucher)}>保存修订</button>}
-                {voucher.status !== "posted" && voucher.status !== "superseded" && <button className="primary-button" disabled={!voucherNote.trim() || memberBusinessEventBlocked || !lineValidation.balanced} type="button" onClick={() => postDraft(voucher)}><CheckCircle size={16} />{memberBusinessEventBlocked ? "会员模块关闭，暂不可入账" : "填写意见后复核入账"}</button>}
+                {voucher.status !== "posted" && voucher.status !== "superseded" && <button className="primary-button" disabled={!voucherNote.trim() || memberBusinessEventBlocked || !lineValidation.balanced} type="button" onClick={() => postDraft(voucher)}><CheckCircle size={16} />{memberBusinessEventBlocked ? `${terminology.member}模块关闭，暂不可入账` : "填写意见后复核入账"}</button>}
                 {!memberBusinessEventBlocked && voucher.status === "posted" && <button className="secondary-button" type="button" onClick={() => createRevision(voucher.id)}><Plus size={16} />创建更正草稿</button>}
               </div>
               <details>

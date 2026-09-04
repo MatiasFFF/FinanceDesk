@@ -25,6 +25,41 @@ import {
 export const PRODUCT_NAME = "财务工作台";
 export const PRODUCT_STATE_VERSION = 4;
 
+export const DEFAULT_WORKSPACE_TERMINOLOGY = Object.freeze({
+  customer: "客户",
+  supplier: "供应商",
+  personnel: "员工",
+  location: "门店",
+  member: "会员",
+  coach: "教练",
+  service: "服务",
+});
+
+const DEFAULT_TERMINOLOGY_KEYS = Object.freeze({
+  客户: "customer",
+  供应商: "supplier",
+  员工: "personnel",
+  门店: "location",
+  会员: "member",
+  教练: "coach",
+  服务: "service",
+});
+
+export function workspaceTerminology(workspace) {
+  return Object.fromEntries(Object.entries(DEFAULT_WORKSPACE_TERMINOLOGY).map(([key, fallback]) => {
+    const configured = String(workspace?.terminology?.[key] || "").trim();
+    return [key, configured || fallback];
+  }));
+}
+
+export function applyWorkspaceTerminology(value, workspace) {
+  if (typeof value !== "string") return value;
+  const terminology = workspaceTerminology(workspace);
+  return value.replace(/客户|供应商|员工|门店|会员|教练|服务/g, (fallback) => (
+    terminology[DEFAULT_TERMINOLOGY_KEYS[fallback]] || fallback
+  ));
+}
+
 export const CLOSE_STAGES = [
   { id: "documents", label: "资料", page: "overview" },
   { id: "match", label: "匹配", page: "reconcile" },
@@ -65,7 +100,14 @@ export function workspaceModuleEnabled(workspace, moduleId) {
 }
 
 export function primaryNavigationForWorkspace(workspace) {
-  return PRIMARY_NAV.filter((item) => workspaceModuleEnabled(workspace, item.moduleId));
+  const terminology = workspaceTerminology(workspace);
+  return PRIMARY_NAV
+    .filter((item) => workspaceModuleEnabled(workspace, item.moduleId))
+    .map((item) => item.id === "members" ? {
+      ...item,
+      label: `${terminology.member}台账`,
+      shortLabel: terminology.member,
+    } : item);
 }
 
 const emptyFiling = (period) => ({
@@ -102,11 +144,12 @@ function replaceGeneratedAccountLabels(value, workspace) {
     ["主营业务收入 · 团课", accountDefinition("revenueGroup", workspace).label],
     ["销售费用 · 教练提成", accountDefinition("expenseCommission", workspace).label],
   ];
-  return replacements.reduce((current, [legacyLabel, currentLabel]) => (
+  const replaced = replacements.reduce((current, [legacyLabel, currentLabel]) => (
     legacyLabel === currentLabel || current.includes(currentLabel)
       ? current
       : current.replaceAll(legacyLabel, currentLabel)
   ), value);
+  return applyWorkspaceTerminology(replaced, workspace);
 }
 
 function neutralGeneratedReportLabel(value, workspace) {
@@ -118,30 +161,40 @@ function neutralGeneratedReportLabel(value, workspace) {
     会员退款: "业务退款",
     会员业务: "业务事件",
   };
-  return exactLabels[value] || replaceGeneratedAccountLabels(value, workspace);
+  return Object.hasOwn(exactLabels, value)
+    ? applyWorkspaceTerminology(exactLabels[value], workspace)
+    : replaceGeneratedAccountLabels(value, workspace);
 }
 
 function neutralGeneratedReportFormula(value, workspace) {
   if (typeof value !== "string") return value;
-  const commissionLabel = accountDefinition("expenseCommission", workspace).label;
-  return replaceGeneratedAccountLabels(value, workspace)
-    .replace("确认收入 − 教练提成", `确认收入 − ${commissionLabel}`);
+  const localizedCommissionLabel = applyWorkspaceTerminology(accountDefinition("expenseCommission", workspace).label, workspace);
+  const localizedFormula = replaceGeneratedAccountLabels(value, workspace);
+  const localizedLegacyFormula = applyWorkspaceTerminology("确认收入 − 教练提成", workspace);
+  return localizedFormula.replace(localizedLegacyFormula, `确认收入 − ${localizedCommissionLabel}`);
 }
 
-function normalizeFrozenReportVersionTerminology(version, workspace) {
-  if (!version?.snapshot || workspaceModuleEnabled(workspace, "members")) return version;
+function localizeReportSnapshot(snapshot, workspace, options = {}) {
+  if (!snapshot) return snapshot;
+  const memberEnabled = workspaceModuleEnabled(workspace, "members");
   const vouchers = safeArray(workspace.vouchers);
   const voucherForDetail = (detail) => vouchers.find((voucher) => (
     detail?.voucherId === voucher.id
     || detail?.id === voucher.id
     || String(detail?.id || "").startsWith(`${voucher.id}-`)
   ));
-  const normalizeDetail = (detail) => {
-    const voucher = voucherForDetail(detail);
+  const displayLabel = (value) => memberEnabled
+    ? replaceGeneratedAccountLabels(value, workspace)
+    : neutralGeneratedReportLabel(value, workspace);
+  const displayFormula = (value) => memberEnabled
+    ? replaceGeneratedAccountLabels(value, workspace)
+    : neutralGeneratedReportFormula(value, workspace);
+  const localizeDetail = (detail) => {
+    const voucher = options.attachVoucherTrace ? voucherForDetail(detail) : null;
     return {
       ...detail,
       title: replaceGeneratedAccountLabels(detail?.title, workspace),
-      reference: neutralGeneratedReportLabel(detail?.reference, workspace),
+      reference: displayLabel(detail?.reference),
       description: replaceGeneratedAccountLabels(detail?.description, workspace),
       ...(voucher ? {
         voucherId: voucher.id,
@@ -149,26 +202,34 @@ function normalizeFrozenReportVersionTerminology(version, workspace) {
       } : {}),
     };
   };
-  const normalizeRow = (row) => ({
+  const localizeRow = (row) => ({
     ...row,
-    label: neutralGeneratedReportLabel(row?.label, workspace),
-    formula: neutralGeneratedReportFormula(row?.formula, workspace),
-    details: safeArray(row?.details).map(normalizeDetail),
+    label: displayLabel(row?.label),
+    formula: displayFormula(row?.formula),
+    details: safeArray(row?.details).map(localizeDetail),
   });
-  const snapshot = version.snapshot;
+  return {
+    ...snapshot,
+    sections: Object.fromEntries(Object.entries(snapshot.sections || {}).map(([sectionId, section]) => [sectionId, {
+      ...section,
+      label: applyWorkspaceTerminology(section?.label, workspace),
+      rows: safeArray(section?.rows).map(localizeRow),
+    }])),
+    taxWorkpaper: snapshot.taxWorkpaper ? {
+      ...snapshot.taxWorkpaper,
+      disclaimer: applyWorkspaceTerminology(snapshot.taxWorkpaper.disclaimer, workspace),
+      rows: safeArray(snapshot.taxWorkpaper.rows).map(localizeRow),
+    } : snapshot.taxWorkpaper,
+  };
+}
+
+function normalizeFrozenReportVersionTerminology(version, workspace) {
+  if (!version?.snapshot) return version;
   return {
     ...version,
-    snapshot: {
-      ...snapshot,
-      sections: Object.fromEntries(Object.entries(snapshot.sections || {}).map(([sectionId, section]) => [sectionId, {
-        ...section,
-        rows: safeArray(section?.rows).map(normalizeRow),
-      }])),
-      taxWorkpaper: snapshot.taxWorkpaper ? {
-        ...snapshot.taxWorkpaper,
-        rows: safeArray(snapshot.taxWorkpaper.rows).map(normalizeRow),
-      } : snapshot.taxWorkpaper,
-    },
+    snapshot: localizeReportSnapshot(version.snapshot, workspace, {
+      attachVoucherTrace: !workspaceModuleEnabled(workspace, "members"),
+    }),
   };
 }
 
@@ -748,7 +809,7 @@ export function buildReportSnapshot(workspace) {
     formulaDetail("gap-tax", "减：预计税费", -estimatedTax, "本地演示估算，不代表正式申报额"),
   ];
 
-  return {
+  const report = {
     period: workspace.currentPeriod,
     generatedAt: new Date().toISOString(),
     ledger: statements.ledger,
@@ -911,6 +972,7 @@ export function buildReportSnapshot(workspace) {
       ],
     },
   };
+  return localizeReportSnapshot(report, workspace);
 }
 
 export function freezeReportVersion(workspace, actor = "本地用户") {
@@ -1172,7 +1234,7 @@ export function confirmPayrollSocialData(workspace, input = {}, context = {}) {
   };
   return audit(
     next,
-    confirmed ? `客户确认${sectionLabel}` : `撤销${sectionLabel}确认`,
+    confirmed ? `${workspaceTerminology(current).customer}确认${sectionLabel}` : `撤销${sectionLabel}确认`,
     `${current.currentPeriod} · ${boundVersion?.label || "当前未冻结版本"} · ${recordCount} 条数据 · 当前浏览器本地记录`,
     actor,
   );
@@ -1185,6 +1247,7 @@ function comparableSnapshot(snapshot) {
 }
 
 export function workflowChecks(workspace) {
+  const terminology = workspaceTerminology(workspace);
   const taxEnabled = workspaceModuleEnabled(workspace, "tax");
   const snapshot = buildReportSnapshot(workspace);
   const statementsBalanced = Object.values(snapshot.summary.engineChecks || {}).every((check) => check.passed);
@@ -1243,10 +1306,10 @@ export function workflowChecks(workspace) {
     { id: "exceptions", label: "流水、异常与跨期事项已完成复核", ok: unresolved.length === 0 && openExceptionTasks.length === 0 && openNotices.length === 0, page: openNotices.length ? "overview" : "reconcile", detail: unresolved.length || openExceptionTasks.length || openNotices.length ? `${unresolved.length} 笔流水、${openExceptionTasks.length} 项异常、${openNotices.length} 项跨期待办未完成` : "已完成" },
     { id: "vouchers", label: "本期凭证已全部复核入账", ok: pendingVouchers.length === 0, page: "reconcile", detail: pendingVouchers.length ? `${pendingVouchers.length} 张草稿或更正待处理` : "已完成" },
     { id: "frozen", label: "本期当前数据已有冻结版本", ok: Boolean(version), page: "reports", detail: latestVersion && !version ? "上游数据已变化，请重新冻结" : undefined },
-    { id: "finance", label: "客户已完成首次财务确认", ok: Boolean(version && workspace.tax.financeConfirmedAt && workspace.tax.financeConfirmedVersionId === version.id), page: "tax" },
-    { id: "payroll", label: "客户已单独确认工资表", ok: Boolean(version && payrollSocialConfirmation.payroll.confirmed), page: "tax", detail: payrollSocialConfirmation.payroll.available ? (payrollSocialConfirmation.payroll.confirmed ? "工资表已绑定当前冻结版本" : "工资表待客户勾选确认") : "当前期间尚未导入工资表" },
-    { id: "socialSecurity", label: "客户已单独确认社保表", ok: Boolean(version && payrollSocialConfirmation.socialSecurity.confirmed), page: "tax", detail: payrollSocialConfirmation.socialSecurity.available ? (payrollSocialConfirmation.socialSecurity.confirmed ? "社保表已绑定当前冻结版本" : "社保表待客户勾选确认") : "当前期间尚未导入社保表" },
-    { id: "owner", label: "客户已完成最终责任确认", ok: Boolean(version && workspace.tax.ownerConfirmedAt && workspace.tax.ownerConfirmedVersionId === version.id && filing.finalConfirmedVersionId === version.id), page: "tax" },
+    { id: "finance", label: `${terminology.customer}已完成首次财务确认`, ok: Boolean(version && workspace.tax.financeConfirmedAt && workspace.tax.financeConfirmedVersionId === version.id), page: "tax" },
+    { id: "payroll", label: `${terminology.customer}已单独确认工资表`, ok: Boolean(version && payrollSocialConfirmation.payroll.confirmed), page: "tax", detail: payrollSocialConfirmation.payroll.available ? (payrollSocialConfirmation.payroll.confirmed ? "工资表已绑定当前冻结版本" : `工资表待${terminology.customer}勾选确认`) : "当前期间尚未导入工资表" },
+    { id: "socialSecurity", label: `${terminology.customer}已单独确认社保表`, ok: Boolean(version && payrollSocialConfirmation.socialSecurity.confirmed), page: "tax", detail: payrollSocialConfirmation.socialSecurity.available ? (payrollSocialConfirmation.socialSecurity.confirmed ? "社保表已绑定当前冻结版本" : `社保表待${terminology.customer}勾选确认`) : "当前期间尚未导入社保表" },
+    { id: "owner", label: `${terminology.customer}已完成最终责任确认`, ok: Boolean(version && workspace.tax.ownerConfirmedAt && workspace.tax.ownerConfirmedVersionId === version.id && filing.finalConfirmedVersionId === version.id), page: "tax" },
     { id: "vatReconciliation", label: "增值税差异均已解释", ok: !snapshot.taxWorkpaper.vatReconciliation.hasUnexplainedDifferences, page: "tax", detail: snapshot.taxWorkpaper.vatReconciliation.hasUnexplainedDifferences ? snapshot.taxWorkpaper.vatReconciliation.unresolvedItems.map((item) => `${item.label}（差额 ${item.differenceBeforeAdjustment.toFixed(2)}）`).join("、") : "两项差异均已核对" },
     { id: "exported", label: "本地申报包已导出", ok: Boolean(version && filing.exportedAt && filing.exportedPackage?.reportVersionId === version.id), page: "tax" },
     { id: "receipt", label: "外部办理回执已本地导入", ok: Boolean(version
@@ -1319,6 +1382,7 @@ function downloadBlob(blob, fileName) {
 }
 
 export async function exportLocalFilingPackage(workspace) {
+  const terminology = workspaceTerminology(workspace);
   const flow = workflowChecks(workspace);
   if (!flow.export.every((item) => item.ok) || !flow.version) {
     const missing = flow.export.filter((item) => !item.ok).map((item) => item.label);
@@ -1335,7 +1399,7 @@ export async function exportLocalFilingPackage(workspace) {
     `报表版本：${flow.version.label}`,
     "",
     "此文件包由浏览器本地生成，不代表已经连接或提交至电子税务局。",
-    "请由客户或财务人员通过电子税务局/本地安全执行器完成外部办理，再把真实回执导回本工作台。",
+    `请由${terminology.customer}或财务人员通过电子税务局/本地安全执行器完成外部办理，再把真实回执导回本工作台。`,
   ].join("\n"));
   folder.file("报表快照.json", JSON.stringify(flow.version.snapshot, null, 2));
   folder.file("税务申报底稿.json", JSON.stringify({
@@ -1345,7 +1409,7 @@ export async function exportLocalFilingPackage(workspace) {
     workpaper: flow.version.snapshot.taxWorkpaper,
     disclaimer: "本地底稿，不是电子税务局正式申报文件。",
   }, null, 2));
-  folder.file("客户确认记录.json", JSON.stringify({
+  folder.file(`${terminology.customer}确认记录.json`, JSON.stringify({
     financeConfirmedAt: workspace.tax.financeConfirmedAt,
     payrollConfirmedAt: workspace.tax.payrollConfirmedAt,
     socialSecurityConfirmedAt: workspace.tax.socialSecurityConfirmedAt,

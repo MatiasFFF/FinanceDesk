@@ -26,6 +26,7 @@ import {
   upsertWorkspaceAccount,
   workspaceAccountDefinitions,
 } from "../../domain/accounting/model.js";
+import { DEFAULT_WORKSPACE_TERMINOLOGY, normalizeWorkspaceTerminology } from "../../domain/foundation.js";
 import { BankImportPanel } from "../intake/BankImportPanel.jsx";
 import { DocumentIntakePanel } from "../intake/DocumentIntakePanel.jsx";
 import "./foundation-ui.css";
@@ -78,6 +79,16 @@ const PERMISSION_OPTIONS = [
 ];
 
 const PERMISSION_LABELS = Object.fromEntries(PERMISSION_OPTIONS.map(([id, label]) => [id, label]));
+
+const TERMINOLOGY_FIELDS = Object.freeze([
+  { key: "customer", label: "客户称呼" },
+  { key: "supplier", label: "供应商称呼" },
+  { key: "personnel", label: "员工称呼" },
+  { key: "location", label: "场所称呼" },
+  { key: "member", label: "会员称呼", memberOnly: true },
+  { key: "coach", label: "教练称呼", memberOnly: true },
+  { key: "service", label: "服务称呼" },
+]);
 
 function statusLabel(status) {
   return STATUS_LABELS[status] || status || "未设置状态";
@@ -1035,6 +1046,54 @@ function LocalUserControl({ onToast }) {
   );
 }
 
+function TerminologyEditor({ onToast }) {
+  const { activeWorkspace, actions } = useFinanceDesk();
+  const membersEnabled = memberModuleEnabled(activeWorkspace);
+  const [draft, setDraft] = useState(() => normalizeWorkspaceTerminology(activeWorkspace.terminology));
+  const [error, setError] = useState("");
+  const visibleFields = TERMINOLOGY_FIELDS.filter((field) => membersEnabled || !field.memberOnly);
+
+  useEffect(() => {
+    setDraft(normalizeWorkspaceTerminology(activeWorkspace.terminology));
+    setError("");
+  }, [activeWorkspace.id, activeWorkspace.terminology]);
+
+  function save(event) {
+    event.preventDefault();
+    setError("");
+    try {
+      const terminology = normalizeWorkspaceTerminology(draft);
+      actions.replaceWorkspace(activeWorkspace.id, { ...activeWorkspace, terminology }, {
+        requiredPermission: "workspace.manage",
+        audit: {
+          action: "更新业务术语",
+          detail: TERMINOLOGY_FIELDS.map((field) => `${field.label}「${terminology[field.key]}」`).join("；"),
+          objectType: "terminology",
+          objectId: activeWorkspace.id,
+        },
+      });
+      setDraft(terminology);
+      onToast?.("业务术语已保存在当前工作台");
+    } catch (caught) {
+      setError(caught.message || "业务术语保存失败");
+    }
+  }
+
+  return (
+    <section className="foundation-section foundation-terminology-editor">
+      <div className="foundation-section-heading"><div><small>当前工作台界面称呼</small><h3><FileText size={18} />业务术语</h3></div><span>{visibleFields.length} 项可编辑</span></div>
+      <form className="foundation-terminology-form" onSubmit={save}>
+        <div className="foundation-terminology-grid">
+          {visibleFields.map((field) => <label className="foundation-field foundation-terminology-field" key={field.key}><span>{field.label}</span><input value={draft[field.key] || ""} placeholder={DEFAULT_WORKSPACE_TERMINOLOGY[field.key]} onChange={(event) => setDraft((current) => ({ ...current, [field.key]: event.target.value }))} /></label>)}
+        </div>
+        <p className="foundation-hint">留空保存会恢复默认称呼。{!membersEnabled && "会员模块未启用，会员与教练称呼会保留，启用模块后再显示。"}</p>
+        <div className="foundation-inline-actions foundation-terminology-actions"><button className="primary-button" type="submit">保存业务术语</button></div>
+        {error && <p className="entity-error">{error}</p>}
+      </form>
+    </section>
+  );
+}
+
 function CompanyProfile({ onToast, onBeginEditing }) {
   const { activeWorkspace, actions } = useFinanceDesk();
   const [draft, setDraft] = useState(activeWorkspace.company);
@@ -1222,7 +1281,7 @@ export function FoundationRecordsPanel({ initialStage = "s0", onToast }) {
       onCancelDelete={() => setPendingDeletion(null)}
     />;
     if (stage === "documents") return <div className="foundation-grid"><DocumentIntakePanel defaultCategory="其他资料" onToast={onToast} /></div>;
-    if (stage === "s0") return <div className="foundation-grid"><LocalUserControl onToast={onToast} /><CompanyProfile onToast={onToast} onBeginEditing={() => setPendingDeletion(null)} />{entityEditor("books")}{entityEditor("stores")}{entityEditor("users")}{entityEditor("roles")}<AuthorizationEditor onToast={onToast} onBeginEditing={() => setPendingDeletion(null)} /></div>;
+    if (stage === "s0") return <div className="foundation-grid"><LocalUserControl onToast={onToast} /><CompanyProfile onToast={onToast} onBeginEditing={() => setPendingDeletion(null)} /><TerminologyEditor onToast={onToast} />{entityEditor("books")}{entityEditor("stores")}{entityEditor("users")}{entityEditor("roles")}<AuthorizationEditor onToast={onToast} onBeginEditing={() => setPendingDeletion(null)} /></div>;
     if (stage === "s1") return <div className="foundation-grid"><AccountCatalogEditor onToast={onToast} /><AccountingRuleEditor onToast={onToast} /></div>;
     if (stage === "s2") return <div className="foundation-grid">{entityEditor("counterparties")}{entityEditor("contracts")}{entityEditor("bills")}{entityEditor("businessEvents")}<DocumentIntakePanel defaultCategory="合同" onToast={onToast} /></div>;
     if (stage === "s3") return <div className="foundation-grid">{entityEditor("bankAccounts")}<BankImportPanel onToast={onToast} /></div>;

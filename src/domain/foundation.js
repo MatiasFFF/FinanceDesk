@@ -51,6 +51,23 @@ export const FITNESS_WORKSPACE_MODULE_DEFAULTS = Object.freeze({
   members: true,
 });
 
+export const DEFAULT_WORKSPACE_TERMINOLOGY = Object.freeze({
+  customer: "客户",
+  supplier: "供应商",
+  personnel: "员工",
+  location: "门店",
+  member: "会员",
+  coach: "教练",
+  service: "服务",
+});
+
+export function normalizeWorkspaceTerminology(terminology) {
+  return Object.fromEntries(Object.entries(DEFAULT_WORKSPACE_TERMINOLOGY).map(([key, fallback]) => {
+    const value = typeof terminology?.[key] === "string" ? terminology[key].trim() : "";
+    return [key, value || fallback];
+  }));
+}
+
 const ALWAYS_ENABLED_WORKSPACE_MODULES = Object.freeze(["overview", "reports", "archive", "setup"]);
 const CONFIGURABLE_WORKSPACE_MODULES = Object.freeze(["members", "reconcile", "tax"]);
 
@@ -321,6 +338,7 @@ export function normalizeWorkspace(input, options = {}) {
     createdAt: workspace.createdAt || timestamp,
     updatedAt: workspace.updatedAt || timestamp,
     modules: normalizeWorkspaceModules(workspace.modules, { fitnessTemplate: hasMemberBusiness }),
+    terminology: normalizeWorkspaceTerminology(workspace.terminology),
     currentPeriod,
     periods: [...new Set([currentPeriod, ...(workspace.periods || [])])],
     company,
@@ -388,6 +406,7 @@ function createFitnessTemplateWorkspace(options = {}) {
     name: "山岚健身工作室",
     templateId: "fitness-studio",
     templateLabel: "健身行业模板",
+    terminology: normalizeWorkspaceTerminology(),
     personnelRecords: [
       { id: "person-coach-chen", name: "陈教练", type: "employee", department: "教练部", status: "active", role: "私教" },
       { id: "person-coach-song", name: "宋教练", type: "employee", department: "教练部", status: "active", role: "团课教练" },
@@ -458,6 +477,7 @@ export function createBlankWorkspace(input = {}, options = {}) {
     },
     currentPeriod: input.currentPeriod || timestamp.slice(0, 7),
     modules: normalizeWorkspaceModules(input.modules),
+    terminology: normalizeWorkspaceTerminology(input.terminology),
     periods: [input.currentPeriod || timestamp.slice(0, 7)],
     books: [{ id: `book-${id}`, name: "默认账套", accountingStandard: "小企业会计准则", currency: "CNY", status: "active" }],
     stores: [{ id: `store-${id}`, name, status: "active", address: "" }],
