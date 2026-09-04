@@ -1209,12 +1209,27 @@ export function attachReceipt(workspace, receipt, actor = "本地用户") {
 }
 
 export function markPackageExported(workspace, packageMeta, actor = "本地用户") {
+  const current = ensureWorkspace(workspace);
+  const flow = workflowChecks(current);
+  const missing = flow.export.filter((item) => !item.ok).map((item) => item.label);
+  if (missing.length || !flow.version) {
+    throw new Error(`登记本地申报包前仍需完成：${missing.join("、")}`);
+  }
+  if (
+    !packageMeta?.id
+    || !packageMeta.fileName
+    || !packageMeta.hash
+    || !packageMeta.exportedAt
+    || packageMeta.reportVersionId !== flow.version.id
+  ) {
+    throw new Error("申报包与当前已确认报表版本不一致，请重新生成本地申报包");
+  }
   const next = {
-    ...workspace,
+    ...current,
     delivery: {
-      ...workspace.delivery,
+      ...current.delivery,
       filing: {
-        ...workspace.delivery.filing,
+        ...current.delivery.filing,
         exportedAt: packageMeta.exportedAt,
         exportedPackage: packageMeta,
         receipt: null,
@@ -1222,7 +1237,7 @@ export function markPackageExported(workspace, packageMeta, actor = "本地用�
       },
     },
   };
-  return audit(next, "导出本地申报包", `${packageMeta.fileName} · 未连接税务局`, actor);
+  return audit(next, "导出本地申报包", `${packageMeta.fileName} · ${flow.version.label} · 未连接税务局`, actor);
 }
 
 export function archivePeriod(workspace, actor = "本地用户") {

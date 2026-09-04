@@ -55,6 +55,14 @@ export function WorkspaceManager({ open, onClose, onToast }) {
   const confirmationCancelRef = useRef(null);
   const confirmationTriggerRef = useRef(null);
 
+  function currentActorName() {
+    const latest = store.getState();
+    const currentWorkspace = latest.workspaces.find((workspace) => workspace.id === latest.activeWorkspaceId);
+    return currentWorkspace?.users
+      ?.find((user) => user.id === latest.activeUserId && user.status === "active")
+      ?.name?.trim() || "本地用户";
+  }
+
   useEffect(() => {
     setRenameValue(activeWorkspace.name);
     setSourceWorkspaceId(activeWorkspace.id);
@@ -67,6 +75,19 @@ export function WorkspaceManager({ open, onClose, onToast }) {
     setConfirmationBusy(false);
     confirmationTriggerRef.current = null;
   }, [open]);
+
+  useEffect(() => {
+    if (!open || pendingConfirmation) return undefined;
+    function handleManagerKeyDown(event) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setConfirmationBusy(false);
+      confirmationTriggerRef.current = null;
+      onClose();
+    }
+    document.addEventListener("keydown", handleManagerKeyDown);
+    return () => document.removeEventListener("keydown", handleManagerKeyDown);
+  }, [open, pendingConfirmation, onClose]);
 
   useEffect(() => {
     if (pendingConfirmation) confirmationCancelRef.current?.focus();
@@ -254,7 +275,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
         allowArchivedTransition: true,
         requiredPermission: "workspace.manage",
         audit: {
-          actor: "本地用户",
+          actor: currentActorName(),
           action: "导入工作台备份",
           detail: `${mode === "merge" ? "合并" : "替换"}导入；${availability.available} 份原文件仍可用，${availability.repaired} 份旧副本已隔离，${availability.missing} 份需重新关联，清理 ${cleanup.removed} 份孤立文件`,
         },
@@ -304,7 +325,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
         allowArchivedTransition: true,
         requiredPermission: "data.read",
         audit: {
-          actor: "本地用户",
+          actor: currentActorName(),
           action: "导出工作台备份",
           detail: "导出业务数据、资料元数据和审计记录；原文件仍保存在当前浏览器",
         },

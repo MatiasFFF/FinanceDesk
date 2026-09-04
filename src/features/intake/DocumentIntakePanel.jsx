@@ -45,7 +45,7 @@ import {
   downloadStoredDocument,
   filterLocalDocuments,
   getDocumentRelatedObjectIds,
-  getDocumentMissingRequirements,
+  getDocumentTaskRequirements,
   getLocalDocumentUsage,
   getMonthlyFinancialArchivePeriods,
   getStoredDocumentRecord,
@@ -63,6 +63,7 @@ import {
 const CATEGORIES = ["主体资料", "合同", "银行流水", "业务资料", "发票", "审批资料", "人员资料", "会计资料", "申报回执", "其他资料"];
 
 const RELATED_GROUPS = [
+  ["凭证", "vouchers"],
   ["银行账户", "bankAccounts"],
   ["银行流水", "transactions"],
   ["业务事件", "businessEvents"],
@@ -244,7 +245,9 @@ function previewKind(mimeType, name) {
 }
 
 function matchTargetLabel(sourceType) {
-  return sourceType === "bankTransaction" ? "银行流水" : "业务事件";
+  if (sourceType === "bankTransaction") return "银行流水";
+  if (sourceType === "voucher") return "凭证";
+  return "业务事件";
 }
 
 function documentKindLabel(kind) {
@@ -300,7 +303,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     status: statusFilter,
   }), [activeWorkspace, query, categoryFilter, statusFilter]);
   const matchSuggestions = useMemo(() => buildDocumentMatchSuggestions(activeWorkspace), [activeWorkspace]);
-  const missingRequirements = useMemo(() => getDocumentMissingRequirements(activeWorkspace), [activeWorkspace]);
+  const missingRequirements = useMemo(() => getDocumentTaskRequirements(activeWorkspace), [activeWorkspace]);
   const invoiceVatSummary = useMemo(() => buildStructuredInvoiceVatSummary(activeWorkspace, { period: activeWorkspace.currentPeriod }), [activeWorkspace]);
   const invoiceBillConnections = useMemo(() => (activeWorkspace.documents || [])
     .filter((document) => documentStructuredKind(document.category) === "invoice")

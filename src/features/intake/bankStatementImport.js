@@ -905,6 +905,40 @@ export function buildBankMonthlyReconciliation(workspace, { accountId, period })
   };
 }
 
+export function buildBankAccountReconciliationSummary(workspace, { period }) {
+  const bankAccounts = workspace.bankAccounts || [];
+  const periodTransactions = (workspace.transactions || []).filter((transaction) => (
+    String(transaction.date || "").slice(0, 7) === period
+  ));
+  const periodImports = (workspace.bankImports || []).filter((record) => record.period === period);
+  const accounts = bankAccounts.filter((account) => (
+    account.status !== "inactive"
+    || periodTransactions.some((transaction) => transaction.accountId === account.id)
+    || periodImports.some((record) => record.accountId === account.id)
+  ));
+  const rows = accounts.map((account) => ({
+    ...buildBankMonthlyReconciliation(workspace, { accountId: account.id, period }),
+    accountNumber: account.accountNumber || account.number || "",
+    currency: account.currency || "CNY",
+    accountStatus: account.status || "active",
+  }));
+  const completedCount = rows.filter((row) => row.passed).length;
+  const incompleteCount = rows.length - completedCount;
+  const passed = rows.length > 0 && incompleteCount === 0;
+  let message = `${incompleteCount} 个账户尚未完成本期勾稽`;
+  if (!rows.length) message = "本期没有需要勾稽的银行账户";
+  else if (passed) message = `${rows.length} 个账户已全部完成本期勾稽`;
+  return {
+    period,
+    accounts: rows,
+    accountCount: rows.length,
+    completedCount,
+    incompleteCount,
+    passed,
+    message,
+  };
+}
+
 export function normalizePlatformSettlementTable(table, mapping, options = {}) {
   const inspection = inspectPlatformSettlementTable(table, { mapping });
   if (inspection.missingFields.length) {

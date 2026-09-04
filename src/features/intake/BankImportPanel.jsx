@@ -7,6 +7,7 @@ import {
   PLATFORM_SETTLEMENT_CHANNELS,
   PLATFORM_SETTLEMENT_FIELD_DEFINITIONS,
   applyPlatformSettlementImport,
+  buildBankAccountReconciliationSummary,
   buildBankMonthlyReconciliation,
   inspectBankTable,
   inspectPlatformSettlementTable,
@@ -29,6 +30,15 @@ function displayDateTime(value) {
   if (!value) return "—";
   const date = new Date(value);
   return Number.isNaN(date.valueOf()) ? String(value) : date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function displayAccountIdentity(account) {
+  const accountNumber = account.accountNumber || account.number || "";
+  return [
+    account.name || account.accountName || "未命名账户",
+    accountNumber ? `尾号 ${accountNumber}` : "账号未填写",
+    account.currency || "CNY",
+  ].join(" · ");
 }
 
 export function BankImportPanel({ compact = false, onToast, onComplete }) {
@@ -89,6 +99,9 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
     accountId,
     period,
   }), [activeWorkspace, accountId, period]);
+  const accountReconciliationSummary = useMemo(() => buildBankAccountReconciliationSummary(activeWorkspace, {
+    period,
+  }), [activeWorkspace, period]);
   const platformSettlements = useMemo(() => (activeWorkspace.platformSettlements || [])
     .filter((settlement) => settlement.accountId === accountId && settlement.period === period)
     .sort((left, right) => String(right.settlementDate || "").localeCompare(String(left.settlementDate || ""))), [activeWorkspace, accountId, period]);
@@ -460,7 +473,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
       ) : (
         <>
           <div className="bank-import-start">
-            <label className="foundation-field"><span>导入到银行账户</span><select value={accountId} onChange={(event) => setAccountId(event.target.value)}>{activeWorkspace.bankAccounts.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
+            <label className="foundation-field"><span>导入到银行账户</span><select value={accountId} onChange={(event) => setAccountId(event.target.value)}>{activeWorkspace.bankAccounts.map((item) => <option value={item.id} key={item.id}>{displayAccountIdentity(item)}</option>)}</select></label>
             <label className="foundation-field"><span>所属账期</span><input type="month" value={period} onChange={(event) => { setPeriod(event.target.value); setPlan(null); setSettlementPlan(null); }} /></label>
             <button className="secondary-button" disabled={busy} type="button" onClick={() => inputRef.current?.click()}><FileArrowUp size={17} />{busy ? "正在读取…" : parsed ? "更换文件" : "选择 CSV / Excel"}</button>
             <input ref={inputRef} type="file" hidden accept=".csv,.txt,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={chooseFile} />
@@ -471,9 +484,37 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
 
       {error && <div className="foundation-error"><WarningCircle size={18} />{error}</div>}
 
+      {period && accountReconciliationSummary.accountCount > 0 && (
+        <div className="bank-import-workspace">
+          <div className="bank-file-summary">
+            <span><strong>{period} 逐账户勾稽总览</strong><small>{accountReconciliationSummary.completedCount} / {accountReconciliationSummary.accountCount} 个账户已完成</small></span>
+            <span className={accountReconciliationSummary.passed ? "mapping-badge" : "mapping-badge warning"}>{accountReconciliationSummary.passed ? "全部完成" : `${accountReconciliationSummary.incompleteCount} 个待完成`}</span>
+          </div>
+          <div className={`import-report ${accountReconciliationSummary.passed ? "passed" : "warning"}`}>
+            <span>{accountReconciliationSummary.passed ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} />}</span>
+            <div><strong>{accountReconciliationSummary.message}</strong><p>逐个核对账户身份、导入批次、流水日期范围和余额差额；未完成账户可直接切换后继续导入。</p></div>
+          </div>
+          <div className="bank-preview-scroll">
+            <table>
+              <thead><tr><th>银行账户</th><th>批次 / 流水</th><th>数据起止日期</th><th>余额差额</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody>{accountReconciliationSummary.accounts.map((row) => (
+                <tr key={row.accountId}>
+                  <td><strong>{row.accountName}</strong><small>{row.accountNumber ? `尾号 ${row.accountNumber}` : "账号未填写"} · {row.currency}{row.accountStatus === "inactive" ? " · 已停用" : ""}</small></td>
+                  <td>{row.batchCount} 批 · {row.transactionCount} 笔</td>
+                  <td>{row.dateFrom ? `${row.dateFrom} 至 ${row.dateTo}` : "尚无流水"}</td>
+                  <td>{displayMoney(row.difference)}</td>
+                  <td>{row.passed ? "已完成" : row.message}</td>
+                  <td><button className="secondary-button" type="button" disabled={row.accountId === accountId} onClick={() => setAccountId(row.accountId)}>{row.accountId === accountId ? "当前账户" : row.passed ? "查看" : "继续勾稽"}</button></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {account && period && (
         <div className="bank-import-workspace">
-          <div className="bank-file-summary"><span><strong>{account.name} · {period} 月度勾稽</strong><small>{monthlyReconciliation.batchCount} 个导入批次 · {monthlyReconciliation.transactionCount} 笔账户流水{monthlyReconciliation.dateFrom ? ` · ${monthlyReconciliation.dateFrom} 至 ${monthlyReconciliation.dateTo}` : ""}</small></span><span className={monthlyReconciliation.passed ? "mapping-badge" : "mapping-badge warning"}>{monthlyReconciliation.passed ? "已完成" : "未完成"}</span></div>
+          <div className="bank-file-summary"><span><strong>{displayAccountIdentity(account)} · {period} 月度勾稽</strong><small>{monthlyReconciliation.batchCount} 个导入批次 · {monthlyReconciliation.transactionCount} 笔账户流水{monthlyReconciliation.dateFrom ? ` · ${monthlyReconciliation.dateFrom} 至 ${monthlyReconciliation.dateTo}` : ""}</small></span><span className={monthlyReconciliation.passed ? "mapping-badge" : "mapping-badge warning"}>{monthlyReconciliation.passed ? "已完成" : "未完成"}</span></div>
           <div className={`import-report ${monthlyReconciliation.passed ? "passed" : "warning"}`}><span>{monthlyReconciliation.passed ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} />}</span><div><strong>{monthlyReconciliation.message}</strong><p>期初 {displayMoney(monthlyReconciliation.openingBalance)} ＋ 收入 {displayMoney(monthlyReconciliation.income)} − 支出 {displayMoney(monthlyReconciliation.expense)} ＝ 计算期末 {displayMoney(monthlyReconciliation.calculatedClosing)}；对账单期末 {displayMoney(monthlyReconciliation.statementClosing)}；差额 {displayMoney(monthlyReconciliation.difference)}</p></div></div>
           {monthlyReconciliation.imports.length > 0 && <div className="bank-preview-scroll"><table><thead><tr><th>导入文件</th><th>数据起止日期</th><th>导入时间</th><th>操作者</th><th>新增</th><th>重复</th><th>异常</th></tr></thead><tbody>{monthlyReconciliation.imports.map((record) => <tr key={record.id}><td>{record.fileName}</td><td>{record.dateFrom || "—"} 至 {record.dateTo || "—"}</td><td>{displayDateTime(record.importedAt)}</td><td>{record.actor}</td><td>{record.importableRowCount} 笔</td><td>{record.duplicateCount} 笔</td><td>{record.anomalousRowCount} 笔</td></tr>)}</tbody></table></div>}
         </div>

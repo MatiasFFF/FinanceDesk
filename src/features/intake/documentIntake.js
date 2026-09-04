@@ -4,6 +4,7 @@ import { attachEvidenceDocument, reviewTransactionEvidence } from "../evidence/e
 import { normalizeMoney, parseDelimitedText } from "./bankStatementImport.js";
 
 const LINKABLE_COLLECTIONS = [
+  "vouchers",
   "bankAccounts",
   "transactions",
   "businessEvents",
@@ -15,6 +16,7 @@ const LINKABLE_COLLECTIONS = [
 ];
 
 const LINKABLE_COLLECTION_LABELS = {
+  vouchers: "凭证",
   bankAccounts: "银行账户",
   transactions: "银行流水",
   businessEvents: "业务事件",
@@ -339,7 +341,7 @@ export function buildDocumentMatchSuggestions(workspace) {
 export function syncDocumentMissingTasks(workspace, context = {}) {
   const timestamp = context.at || new Date().toISOString();
   const actor = context.actor || "本地用户";
-  const requirements = getDocumentMissingRequirements(workspace);
+  const requirements = getDocumentTaskRequirements(workspace);
   const identities = new Set(requirements.map((item) => item.identity));
   const tasks = (workspace.exceptionTasks || []).map((task) => ({ ...task, history: [...(task.history || [])] }));
   let created = 0;
@@ -348,7 +350,7 @@ export function syncDocumentMissingTasks(workspace, context = {}) {
   let changed = false;
   requirements.forEach((requirement) => {
     const existing = tasks.find((task) => task.identity === requirement.identity);
-    const message = `缺少${requirement.label}：${requirement.sourceLabel}`;
+    const message = requirement.message || `缺少${requirement.label}：${requirement.sourceLabel}`;
     if (requirement.satisfied) {
       if (existing && existing.status !== "resolved") {
         existing.status = "resolved";
@@ -370,11 +372,18 @@ export function syncDocumentMissingTasks(workspace, context = {}) {
         sourceType: requirement.sourceType,
         sourceId: requirement.sourceId,
         message,
-        missingEvidence: [{ id: requirement.requirementId, label: requirement.label, anyOf: requirement.anyOf }],
+        missingEvidence: [{
+          id: requirement.requirementId,
+          label: requirement.label,
+          anyOf: requirement.anyOf || [],
+          reason: requirement.reason || null,
+          documentId: requirement.documentId || null,
+          sectionKey: requirement.sectionKey || null,
+        }],
         status: "open",
         createdAt: timestamp,
         updatedAt: timestamp,
-        sourceIds: [requirement.sourceId],
+        sourceIds: [...new Set([requirement.sourceId, ...(requirement.sourceIds || [])].filter(Boolean))],
         history: [{ at: timestamp, actor, action: "created", note: message }],
       });
       created += 1;
@@ -2899,6 +2908,14 @@ export function buildVoucherAttachmentPackagePlan(workspace, voucherId) {
     missing: [],
   };
   const missingItems = [
+    ...(relations.documents.length ? [] : [{
+      key: `voucher-original:${voucher.id}`,
+      kind: "voucher_original",
+      sectionKey: "missing",
+      sourceId: voucher.id,
+      label: "原始资料",
+      reason: `凭证 ${voucher.no || voucher.id} 尚未关联任何原始资料`,
+    }]),
     ...relations.documents.filter((document) => !document.storage?.availableLocally).map((document) => ({
       key: `document:${document.id}`,
       kind: "original_file",
@@ -2962,6 +2979,45 @@ export function buildVoucherAttachmentPackagePlan(workspace, voucherId) {
     missingItems: resolvedMissingItems,
     sections,
   };
+}
+
+const VOUCHER_ATTACHMENT_TASK_SECTIONS = new Set(["bankReceipt", "invoice", "contractOrder", "approval"]);
+
+function voucherAttachmentTaskRequirements(workspace) {
+  return (workspace?.vouchers || []).flatMap((voucher) => {
+    const plan = buildVoucherAttachmentPackagePlan(workspace, voucher.id);
+    const sourceLabel = `凭证 ${voucher.no || voucher.id}`;
+    return plan.missingItems
+      .filter((item) => (
+        item.kind === "voucher_original"
+        || item.kind === "original_file"
+        || (item.kind === "section" && VOUCHER_ATTACHMENT_TASK_SECTIONS.has(item.sectionKey))
+      ))
+      .map((item) => ({
+        identity: `voucher-attachment:${voucher.id}:${item.key}`,
+        sourceType: "voucher",
+        sourceId: voucher.id,
+        sourceIds: [voucher.id, item.documentId, ...plan.sourceIds].filter(Boolean),
+        sourceLabel,
+        eventType: "voucher_attachment",
+        requirementId: item.key,
+        label: item.kind === "original_file" ? `${item.label}原文件` : item.label,
+        anyOf: [],
+        satisfied: false,
+        linkedDocumentIds: plan.documents.map((document) => document.id),
+        documentId: item.documentId || null,
+        sectionKey: item.sectionKey,
+        reason: item.reason,
+        message: `${sourceLabel}缺件：${item.reason}`,
+      }));
+  });
+}
+
+export function getDocumentTaskRequirements(workspace) {
+  return [
+    ...getDocumentMissingRequirements(workspace),
+    ...voucherAttachmentTaskRequirements(workspace),
+  ];
 }
 
 function safeZipName(value, fallback) {
