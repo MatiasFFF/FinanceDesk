@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import {
   ArrowCounterClockwise,
   ArrowsLeftRight,
@@ -256,6 +256,12 @@ function blankVoucherLine(voucher) {
   return {
     account: "",
     auxiliaryId: null,
+    auxiliaryLabel: null,
+    auxiliaryType: null,
+    storeId: null,
+    storeName: null,
+    department: null,
+    project: null,
     debit: "",
     credit: "",
     sourceIds: [...new Set(voucher.sourceIds || [])],
@@ -273,7 +279,59 @@ function voucherLineSourceInput(line) {
 }
 
 function voucherLineAuxiliaryInput(line) {
-  return line?.auxiliaryIdText ?? line?.auxiliaryId ?? "";
+  return line?.auxiliaryIdText ?? line?.auxiliaryLabel ?? line?.auxiliaryId ?? "";
+}
+
+function voucherLineDimensionInput(line, ...names) {
+  for (const name of names) {
+    const value = line?.[name] ?? line?.dimensions?.[name];
+    if (value != null && String(value).trim()) return String(value);
+  }
+  return "";
+}
+
+function uniqueTextOptions(values) {
+  return [...new Set(values.flat(Infinity).map((value) => String(value || "").trim()).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right, "zh-CN"));
+}
+
+function voucherAuxiliaryOptions(workspace) {
+  const terminology = workspaceTerminology(workspace);
+  const options = [];
+  (workspace.counterparties || [])
+    .filter((item) => item.status !== "inactive" && ["customer", "supplier"].includes(item.kind))
+    .forEach((item) => options.push({
+      id: item.id,
+      label: item.name || item.id,
+      type: item.kind,
+      typeLabel: item.kind === "supplier" ? terminology.supplier : terminology.customer,
+    }));
+  (workspace.personnelRecords || [])
+    .filter((item) => item.status !== "inactive")
+    .forEach((item) => options.push({
+      id: item.id,
+      label: item.name || item.employeeName || item.id,
+      type: "employee",
+      typeLabel: terminology.personnel,
+    }));
+  return options;
+}
+
+function voucherDimensionOptions(workspace) {
+  const records = [
+    ...(workspace.businessEvents || []),
+    ...(workspace.bills || []),
+    ...(workspace.transactions || []),
+    ...(workspace.vouchers || []).flatMap((voucher) => voucher.lines || []),
+  ];
+  return {
+    stores: (workspace.stores || []).filter((item) => item.status !== "inactive"),
+    departments: uniqueTextOptions([
+      (workspace.personnelRecords || []).map((item) => item.department),
+      records.map((item) => voucherLineDimensionInput(item, "department", "departmentName")),
+    ]),
+    projects: uniqueTextOptions(records.map((item) => voucherLineDimensionInput(item, "project", "projectName"))),
+  };
 }
 
 function parseVoucherLineSourceIds(value) {
@@ -367,6 +425,12 @@ function VoucherLineValidation({ validation }) {
 }
 
 function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChange, onAdd, onRemove }) {
+  const terminology = workspaceTerminology(workspace);
+  const auxiliaryListId = useId();
+  const departmentListId = useId();
+  const projectListId = useId();
+  const auxiliaryOptions = useMemo(() => voucherAuxiliaryOptions(workspace), [workspace]);
+  const dimensionOptions = useMemo(() => voucherDimensionOptions(workspace), [workspace]);
   return (
     <div className="engine-voucher-lines">
       {(lines || []).map((line, index) => {
@@ -374,6 +438,9 @@ function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChan
         const credit = Number(line.credit || 0);
         const unavailable = !accountIsActive(accounts, line.account);
         const sourceIds = voucherLineSourceIds(line);
+        const selectedAuxiliary = auxiliaryOptions.find((item) => (
+          item.id === line.auxiliaryId && (!line.auxiliaryType || item.type === line.auxiliaryType)
+        ));
         if (editable) {
           return (
             <div className="engine-voucher-line is-editable" key={line.id || `voucher-line-${index}`}>
@@ -392,11 +459,43 @@ function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChan
               </label>
               <label className="engine-voucher-line-field engine-voucher-line-auxiliary-field">
                 <span>辅助核算</span>
-                <input value={voucherLineAuxiliaryInput(line)} onChange={(event) => {
+                <input list={`${auxiliaryListId}-${index}`} value={voucherLineAuxiliaryInput(line)} onChange={(event) => {
                   const auxiliaryIdText = event.target.value;
-                  onChange(index, { auxiliaryIdText, auxiliaryId: auxiliaryIdText.trim() || null });
-                }} aria-label={`第 ${index + 1} 行辅助核算`} placeholder="往来对象或辅助标识" />
-                <small>{line.auxiliaryId ? "随本行保存" : "未设置"}</small>
+                  const normalized = auxiliaryIdText.trim();
+                  const selected = auxiliaryOptions.find((item) => item.id === normalized || item.label === normalized);
+                  onChange(index, {
+                    auxiliaryIdText,
+                    auxiliaryId: selected?.id || normalized || null,
+                    auxiliaryLabel: selected?.label || normalized || null,
+                    auxiliaryType: selected?.type || (normalized ? "counterparty" : null),
+                  });
+                }} aria-label={`第 ${index + 1} 行辅助核算`} placeholder={`选择${terminology.customer}、${terminology.supplier}、${terminology.personnel}或手填`} />
+                <datalist id={`${auxiliaryListId}-${index}`}>{auxiliaryOptions.map((item) => <option value={item.label} label={`${item.typeLabel} · ${item.id}`} key={`${item.type}-${item.id}`} />)}</datalist>
+                <small>{line.auxiliaryId ? `${selectedAuxiliary?.typeLabel || "手工标识"} · ${line.auxiliaryId}` : "未设置"}</small>
+              </label>
+              <label className="engine-voucher-line-field engine-voucher-line-store-field">
+                <span>{terminology.location}</span>
+                <select value={voucherLineDimensionInput(line, "storeId", "locationId")} onChange={(event) => {
+                  const store = dimensionOptions.stores.find((item) => item.id === event.target.value);
+                  onChange(index, { storeId: store?.id || null, storeName: store?.name || null });
+                }} aria-label={`第 ${index + 1} 行${terminology.location}`}>
+                  <option value="">不设置</option>
+                  {voucherLineDimensionInput(line, "storeId", "locationId") && !dimensionOptions.stores.some((item) => item.id === voucherLineDimensionInput(line, "storeId", "locationId")) && <option value={voucherLineDimensionInput(line, "storeId", "locationId")}>{voucherLineDimensionInput(line, "storeName", "store", "locationName") || voucherLineDimensionInput(line, "storeId", "locationId")}（历史）</option>}
+                  {dimensionOptions.stores.map((item) => <option value={item.id} key={item.id}>{item.name || item.id}</option>)}
+                </select>
+                <small>{voucherLineDimensionInput(line, "storeName", "store", "locationName") || "未设置"}</small>
+              </label>
+              <label className="engine-voucher-line-field engine-voucher-line-department-field">
+                <span>部门</span>
+                <input list={`${departmentListId}-${index}`} value={voucherLineDimensionInput(line, "department", "departmentName")} onChange={(event) => onChange(index, { department: event.target.value })} aria-label={`第 ${index + 1} 行部门`} placeholder="选择已有部门或手填" />
+                <datalist id={`${departmentListId}-${index}`}>{dimensionOptions.departments.map((item) => <option value={item} key={item} />)}</datalist>
+                <small>{voucherLineDimensionInput(line, "department", "departmentName") || "未设置"}</small>
+              </label>
+              <label className="engine-voucher-line-field engine-voucher-line-project-field">
+                <span>项目</span>
+                <input list={`${projectListId}-${index}`} value={voucherLineDimensionInput(line, "project", "projectName")} onChange={(event) => onChange(index, { project: event.target.value })} aria-label={`第 ${index + 1} 行项目`} placeholder="选择已有项目或手填" />
+                <datalist id={`${projectListId}-${index}`}>{dimensionOptions.projects.map((item) => <option value={item} key={item} />)}</datalist>
+                <small>{voucherLineDimensionInput(line, "project", "projectName") || "未设置"}</small>
               </label>
               <label className="engine-voucher-line-field engine-voucher-line-source-field">
                 <span>来源说明（sourceIds）</span>
@@ -430,7 +529,12 @@ function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChan
               <small>{line.account}{unavailable ? " · 当前已停用" : ""}</small>
             </span>
             <span className="engine-voucher-line-details">
-              <span><small>辅助核算</small><strong>{line.auxiliaryId || "未设置"}</strong></span>
+              <span><small>辅助核算</small><strong>{line.auxiliaryLabel || line.auxiliaryId || "未设置"}</strong></span>
+              <span><small>{terminology.location} / 部门 / 项目</small><strong>{[
+                voucherLineDimensionInput(line, "storeName", "store", "locationName", "storeId", "locationId"),
+                voucherLineDimensionInput(line, "department", "departmentName"),
+                voucherLineDimensionInput(line, "project", "projectName"),
+              ].filter(Boolean).join(" · ") || "未设置"}</strong></span>
               <span><small>来源说明（sourceIds）</small><strong>{sourceIds.join("、") || "无分录来源"}</strong></span>
             </span>
           </div>

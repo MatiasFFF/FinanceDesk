@@ -10,6 +10,7 @@ import { buildBankAccountReconciliationSummary } from "./features/intake/bankSta
 import {
   FITNESS_WORKSPACE_MODULE_DEFAULTS,
   WORKSPACE_MODULE_DEFAULTS,
+  applyManagementReportConfig,
   normalizeWorkspaceModules,
 } from "./domain/foundation.js";
 import {
@@ -882,7 +883,7 @@ export function buildReportSnapshot(workspace) {
       },
       owner: {
         label: "老板报表",
-        rows: [
+        rows: applyManagementReportConfig([
           makeTraceableRow("ownerCash", "现金余额", cashBalance, cashDetails, "期初现金 + 本期已入账现金变动"),
           makeTraceableRow("ownerCashIn", "本月收款", cashIn, cashFlowDetails.filter((item) => item.amount > 0), "本期已入账现金流入合计"),
           makeTraceableRow("ownerRevenue", "本月收入", statements.revenue, revenueDetails, "收入类发生额 − 销售退回与折让"),
@@ -896,7 +897,7 @@ export function buildReportSnapshot(workspace) {
           makeTraceableRow("ownerCommission", commissionLabel, detailTotal(commissionDetails), commissionDetails, `${commissionLabel}本期借方净发生额`),
           makeTraceableRow("ownerTax", "预计税款（演示估算）", estimatedTax, taxEstimateDetails, "增值税估算 + 附加税费估算 + 所得税估算"),
           makeTraceableRow("ownerGap", "未来现金缺口", cashGapValue, cashGapDetails, "max(0，应付与预计税费 − 可用现金)"),
-        ],
+        ], workspace.managementReport),
       },
     },
     taxWorkpaper: {
@@ -1121,9 +1122,13 @@ function workflowSourceValue(workspace, key) {
 
 export function workflowSourceFingerprint(workspace) {
   const tax = workspace.tax || {};
+  const managementReport = (workspace.managementReport?.displayItems || [])
+    .filter((item) => item?.visible === false || String(item?.label || "").trim())
+    .map((item) => ({ id: item.id, visible: item.visible !== false, label: String(item.label || "").trim() }));
   return JSON.stringify({
     currentPeriod: workspace.currentPeriod,
     sources: Object.fromEntries(WORKFLOW_SOURCE_KEYS.map((key) => [key, workflowSourceValue(workspace, key)])),
+    ...(managementReport.length ? { managementReport } : {}),
     tax: {
       adjustments: Number(tax.adjustments || 0),
       payroll: Number(tax.payroll || 0),

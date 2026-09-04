@@ -2305,7 +2305,8 @@
   }
 }
 
-.foundation-terminology-editor {
+.foundation-terminology-editor,
+.management-report-display-editor {
   grid-column: 1 / -1;
 }
 
@@ -2317,6 +2318,65 @@
 
 .foundation-terminology-form {
   gap: 11px;
+}
+
+.management-report-display-form {
+  display: grid;
+  min-width: 0;
+  gap: 11px;
+}
+
+.management-report-display-grid {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.management-report-display-item {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(190px, 1.2fr);
+  align-items: end;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--canvas);
+}
+
+.management-report-display-item.is-hidden {
+  opacity: 0.68;
+}
+
+.management-report-display-toggle {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+}
+
+.management-report-display-toggle > input {
+  flex: 0 0 auto;
+}
+
+.management-report-display-toggle > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.management-report-display-toggle strong,
+.management-report-display-toggle small {
+  min-width: 0;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.management-report-display-toggle small {
+  color: var(--quiet);
+  font-size: 10px;
 }
 
 .foundation-terminology-grid {
@@ -2345,13 +2405,20 @@
 }
 
 @media (max-width: 900px) {
-  .foundation-terminology-grid {
+  .foundation-terminology-grid,
+  .management-report-display-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .management-report-display-item {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
   }
 }
 
 @media (max-width: 560px) {
-  .foundation-terminology-grid {
+  .foundation-terminology-grid,
+  .management-report-display-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 

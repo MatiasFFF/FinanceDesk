@@ -183,7 +183,7 @@
 
 .engine-voucher-line-details {
   grid-column: 1 / -1;
-  grid-template-columns: minmax(140px, 0.5fr) minmax(0, 1.5fr);
+  grid-template-columns: repeat(3, minmax(140px, 1fr));
   gap: 8px 14px;
   padding-top: 7px;
   border-top: 1px solid var(--line-soft);
@@ -220,7 +220,7 @@
 
 .engine-voucher-line.is-editable > .engine-voucher-line-index {
   grid-column: 1;
-  grid-row: 1 / span 2;
+  grid-row: 1 / span 3;
 }
 
 .engine-voucher-line-account-field {
@@ -248,9 +248,24 @@
   grid-row: 1;
 }
 
+.engine-voucher-line-store-field {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.engine-voucher-line-department-field {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.engine-voucher-line-project-field {
+  grid-column: 4 / 6;
+  grid-row: 2;
+}
+
 .engine-voucher-line-source-field {
   grid-column: 2 / -1;
-  grid-row: 2;
+  grid-row: 3;
 }
 
 .engine-voucher-line > .engine-voucher-line-field {
@@ -1143,7 +1158,7 @@
 
   .engine-voucher-line.is-editable > .engine-voucher-line-index {
     grid-column: 1;
-    grid-row: 1 / span 5;
+    grid-row: 1 / span 7;
   }
 
   .engine-voucher-line-account-field {
@@ -1158,22 +1173,37 @@
 
   .engine-voucher-line-source-field {
     grid-column: 2 / -1;
+    grid-row: 5;
+  }
+
+  .engine-voucher-line-store-field {
+    grid-column: 2;
     grid-row: 3;
+  }
+
+  .engine-voucher-line-department-field {
+    grid-column: 3;
+    grid-row: 3;
+  }
+
+  .engine-voucher-line-project-field {
+    grid-column: 2 / -1;
+    grid-row: 4;
   }
 
   .engine-voucher-line-debit-field {
     grid-column: 2;
-    grid-row: 4;
+    grid-row: 6;
   }
 
   .engine-voucher-line-credit-field {
     grid-column: 3;
-    grid-row: 4;
+    grid-row: 6;
   }
 
   .engine-voucher-line.is-editable > .engine-voucher-line-remove {
     grid-column: 2 / -1;
-    grid-row: 5;
+    grid-row: 7;
   }
 
   .engine-voucher-line-remove {
@@ -1233,6 +1263,9 @@
   .engine-voucher-line.is-editable > .engine-voucher-line-index,
   .engine-voucher-line.is-editable > .engine-voucher-line-account-field,
   .engine-voucher-line.is-editable > .engine-voucher-line-auxiliary-field,
+  .engine-voucher-line.is-editable > .engine-voucher-line-store-field,
+  .engine-voucher-line.is-editable > .engine-voucher-line-department-field,
+  .engine-voucher-line.is-editable > .engine-voucher-line-project-field,
   .engine-voucher-line.is-editable > .engine-voucher-line-source-field,
   .engine-voucher-line.is-editable > .engine-voucher-line-debit-field,
   .engine-voucher-line.is-editable > .engine-voucher-line-credit-field,

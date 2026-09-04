@@ -26,7 +26,13 @@ import {
   upsertWorkspaceAccount,
   workspaceAccountDefinitions,
 } from "../../domain/accounting/model.js";
-import { DEFAULT_WORKSPACE_TERMINOLOGY, normalizeWorkspaceTerminology } from "../../domain/foundation.js";
+import {
+  DEFAULT_WORKSPACE_TERMINOLOGY,
+  MANAGEMENT_REPORT_DISPLAY_ITEMS,
+  managementReportDefaultLabel,
+  normalizeManagementReportConfig,
+  normalizeWorkspaceTerminology,
+} from "../../domain/foundation.js";
 import { BankImportPanel } from "../intake/BankImportPanel.jsx";
 import { DocumentIntakePanel } from "../intake/DocumentIntakePanel.jsx";
 import "./foundation-ui.css";
@@ -1173,6 +1179,81 @@ function TerminologyEditor({ onToast }) {
   );
 }
 
+function ManagementReportDisplayEditor({ onToast }) {
+  const { activeWorkspace, actions } = useFinanceDesk();
+  const memberBusiness = memberModuleEnabled(activeWorkspace);
+  const terminology = normalizeWorkspaceTerminology(activeWorkspace.terminology);
+  const [draft, setDraft] = useState(() => normalizeManagementReportConfig(activeWorkspace.managementReport));
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setDraft(normalizeManagementReportConfig(activeWorkspace.managementReport));
+    setError("");
+  }, [activeWorkspace.id, activeWorkspace.managementReport]);
+
+  function updateItem(itemId, patch) {
+    setDraft((current) => ({
+      ...current,
+      displayItems: current.displayItems.map((item) => item.id === itemId ? { ...item, ...patch } : item),
+    }));
+  }
+
+  function save(event) {
+    event.preventDefault();
+    setError("");
+    try {
+      const managementReport = normalizeManagementReportConfig(draft);
+      const visibleCount = managementReport.displayItems.filter((item) => item.visible).length;
+      const renamedCount = managementReport.displayItems.filter((item) => item.label).length;
+      actions.replaceWorkspace(activeWorkspace.id, { ...activeWorkspace, managementReport }, {
+        requiredPermission: "workspace.manage",
+        audit: {
+          action: "更新管理报表显示项",
+          detail: `显示 ${visibleCount} 项；自定义名称 ${renamedCount} 项；未修改计算公式与来源`,
+          objectType: "managementReport",
+          objectId: activeWorkspace.id,
+        },
+      });
+      setDraft(managementReport);
+      onToast?.("管理报表显示项已保存在当前工作台");
+    } catch (caught) {
+      setError(caught.message || "管理报表显示项保存失败");
+    }
+  }
+
+  const visibleCount = draft.displayItems.filter((item) => item.visible).length;
+  const itemById = new Map(draft.displayItems.map((item) => [item.id, item]));
+
+  return (
+    <section className="foundation-section management-report-display-editor">
+      <div className="foundation-section-heading"><div><small>当前工作台报表偏好</small><h3><FileText size={18} />管理报表显示项</h3></div><span>{visibleCount} / {MANAGEMENT_REPORT_DISPLAY_ITEMS.length} 项显示</span></div>
+      <form className="management-report-display-form" onSubmit={save}>
+        <p className="foundation-hint">这里只控制老板报表中的显示与名称；金额、计算公式、来源明细和下钻关系保持原样。</p>
+        <div className="management-report-display-grid">
+          {MANAGEMENT_REPORT_DISPLAY_ITEMS.map((definition) => {
+            const item = itemById.get(definition.id);
+            const rawDefaultLabel = definition.accountId
+              ? accountDefinition(definition.accountId, activeWorkspace).label
+              : managementReportDefaultLabel(definition, { memberBusiness });
+            const defaultLabel = localizeTerminologyText(rawDefaultLabel, terminology);
+            return (
+              <article className={`management-report-display-item ${item?.visible ? "" : "is-hidden"}`} key={definition.id}>
+                <label className="management-report-display-toggle">
+                  <input type="checkbox" checked={item?.visible !== false} onChange={(event) => updateItem(definition.id, { visible: event.target.checked })} />
+                  <span><strong>{defaultLabel}</strong><small>{item?.visible ? "报表中显示" : "报表中隐藏"}</small></span>
+                </label>
+                <label className="foundation-field"><span>自定义显示名称</span><input value={item?.label || ""} onChange={(event) => updateItem(definition.id, { label: event.target.value })} placeholder={`默认：${defaultLabel}`} /></label>
+              </article>
+            );
+          })}
+        </div>
+        <div className="foundation-inline-actions"><button className="primary-button" type="submit">保存管理报表显示项</button></div>
+        {error && <p className="entity-error">{error}</p>}
+      </form>
+    </section>
+  );
+}
+
 function CompanyProfile({ onToast, onBeginEditing }) {
   const { activeWorkspace, actions } = useFinanceDesk();
   const [draft, setDraft] = useState(activeWorkspace.company);
@@ -1362,7 +1443,7 @@ export function FoundationRecordsPanel({ initialStage = "s0", onToast }) {
     />;
     if (stage === "documents") return <div className="foundation-grid"><DocumentIntakePanel defaultCategory="其他资料" onToast={onToast} /></div>;
     if (stage === "s0") return <div className="foundation-grid"><LocalUserControl onToast={onToast} /><CompanyProfile onToast={onToast} onBeginEditing={() => setPendingDeletion(null)} /><TerminologyEditor onToast={onToast} />{entityEditor("books")}{entityEditor("stores")}{entityEditor("users")}{entityEditor("roles")}<AuthorizationEditor onToast={onToast} onBeginEditing={() => setPendingDeletion(null)} /></div>;
-    if (stage === "s1") return <div className="foundation-grid"><AccountCatalogEditor onToast={onToast} /><AccountingRuleEditor onToast={onToast} /></div>;
+    if (stage === "s1") return <div className="foundation-grid"><AccountCatalogEditor onToast={onToast} /><AccountingRuleEditor onToast={onToast} /><ManagementReportDisplayEditor onToast={onToast} /></div>;
     if (stage === "s2") return <div className="foundation-grid">{entityEditor("counterparties")}{entityEditor("contracts")}{entityEditor("bills")}{entityEditor("businessEvents")}<DocumentIntakePanel defaultCategory="合同" onToast={onToast} /></div>;
     if (stage === "s3") return <div className="foundation-grid">{entityEditor("bankAccounts")}<BankImportPanel onToast={onToast} /></div>;
     return <div className="foundation-grid">{entityEditor("invoices")}{entityEditor("approvals")}{entityEditor("personnelRecords")}<DocumentIntakePanel defaultCategory="人员资料" onToast={onToast} /></div>;

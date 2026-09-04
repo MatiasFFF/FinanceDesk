@@ -61,6 +61,52 @@ export const DEFAULT_WORKSPACE_TERMINOLOGY = Object.freeze({
   service: "服务",
 });
 
+export const MANAGEMENT_REPORT_DISPLAY_ITEMS = Object.freeze([
+  { id: "ownerCash", label: "现金余额" },
+  { id: "ownerCashIn", label: "本月收款" },
+  { id: "ownerRevenue", label: "本月收入" },
+  { id: "ownerGrossProfit", label: "本月毛利" },
+  { id: "ownerProfit", label: "本月利润" },
+  { id: "ownerPrepaid", label: "客户预收 / 未履约服务", memberBusinessLabel: "会员预收 / 未履约服务" },
+  { id: "ownerReceivable", label: "应收账款" },
+  { id: "ownerPayable", label: "供应商应付" },
+  { id: "ownerPrepayment", label: "供应商预付" },
+  { id: "ownerRefund", label: "本月退款" },
+  { id: "ownerCommission", label: "销售费用 · 业务提成", accountId: "expenseCommission" },
+  { id: "ownerTax", label: "预计税款（演示估算）" },
+  { id: "ownerGap", label: "未来现金缺口" },
+].map((item) => Object.freeze(item)));
+
+export function managementReportDefaultLabel(item, options = {}) {
+  if (!item) return "管理指标";
+  return options.memberBusiness && item.memberBusinessLabel ? item.memberBusinessLabel : item.label;
+}
+
+export function normalizeManagementReportConfig(config) {
+  const source = Array.isArray(config?.displayItems) ? config.displayItems : [];
+  const byId = new Map(source.map((item) => [item?.id, item]));
+  return {
+    displayItems: MANAGEMENT_REPORT_DISPLAY_ITEMS.map((definition) => {
+      const item = byId.get(definition.id);
+      return {
+        id: definition.id,
+        visible: item?.visible !== false,
+        label: typeof item?.label === "string" ? item.label.trim() : "",
+      };
+    }),
+  };
+}
+
+export function applyManagementReportConfig(rows, config) {
+  const displayItems = normalizeManagementReportConfig(config).displayItems;
+  const byId = new Map(displayItems.map((item) => [item.id, item]));
+  return (rows || []).flatMap((row) => {
+    const item = byId.get(row.id);
+    if (item?.visible === false) return [];
+    return [{ ...row, ...(item.label ? { label: item.label } : {}) }];
+  });
+}
+
 export function normalizeWorkspaceTerminology(terminology) {
   return Object.fromEntries(Object.entries(DEFAULT_WORKSPACE_TERMINOLOGY).map(([key, fallback]) => {
     const value = typeof terminology?.[key] === "string" ? terminology[key].trim() : "";
@@ -339,6 +385,7 @@ export function normalizeWorkspace(input, options = {}) {
     updatedAt: workspace.updatedAt || timestamp,
     modules: normalizeWorkspaceModules(workspace.modules, { fitnessTemplate: hasMemberBusiness }),
     terminology: normalizeWorkspaceTerminology(workspace.terminology),
+    managementReport: normalizeManagementReportConfig(workspace.managementReport),
     currentPeriod,
     periods: [...new Set([currentPeriod, ...(workspace.periods || [])])],
     company,

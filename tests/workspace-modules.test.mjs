@@ -107,6 +107,23 @@ test("reports stay neutral when member business is disabled", () => {
   assert.doesNotMatch(labels, /会员|教练|私教|团课/);
 });
 
+test("management report display preferences hide and rename rows without changing their values", () => {
+  const workspace = createBlankWorkspace({ id: "workspace-report-preferences", name: "管理报表配置" }, { now: fixedNow });
+  const baseline = buildReportSnapshot(workspace).sections.owner.rows;
+  const revenue = baseline.find((row) => row.id === "ownerRevenue");
+  workspace.managementReport = {
+    displayItems: [
+      { id: "ownerCash", visible: false, label: "" },
+      { id: "ownerRevenue", visible: true, label: "经营收入" },
+    ],
+  };
+  const configured = buildReportSnapshot(workspace).sections.owner.rows;
+  assert.equal(configured.some((row) => row.id === "ownerCash"), false);
+  assert.equal(configured.find((row) => row.id === "ownerRevenue").label, "经营收入");
+  assert.equal(configured.find((row) => row.id === "ownerRevenue").value, revenue.value);
+  assert.deepEqual(configured.find((row) => row.id === "ownerRevenue").details, revenue.details);
+});
+
 test("app wiring uses workspace modules for creation, navigation, operator identity, and reconciliation", () => {
   const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
   const managerSource = readFileSync(new URL("../src/features/workspaces/WorkspaceManager.jsx", import.meta.url), "utf8");

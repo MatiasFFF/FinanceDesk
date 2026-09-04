@@ -118,14 +118,41 @@ function postedSourceIds(workspace) {
     .flatMap((voucher) => voucher.sourceIds || []));
 }
 
+function voucherLineDimension(line, ...names) {
+  for (const name of names) {
+    const value = line?.[name] ?? line?.dimensions?.[name];
+    if (value != null && String(value).trim()) return String(value).trim();
+  }
+  return null;
+}
+
 function aggregateLines(lines) {
   const grouped = new Map();
   lines.forEach((line) => {
     const direction = Number(line.debit || 0) > 0 ? "debit" : Number(line.credit || 0) > 0 ? "credit" : "empty";
-    const key = `${line.account}|${line.auxiliaryId || ""}|${direction}`;
+    const dimensions = {
+      auxiliaryId: voucherLineDimension(line, "auxiliaryId", "counterpartyId"),
+      auxiliaryLabel: voucherLineDimension(line, "auxiliaryLabel", "counterparty", "counterpartyName"),
+      auxiliaryType: voucherLineDimension(line, "auxiliaryType", "counterpartyType"),
+      storeId: voucherLineDimension(line, "storeId", "locationId"),
+      storeName: voucherLineDimension(line, "storeName", "store", "locationName"),
+      department: voucherLineDimension(line, "department", "departmentName"),
+      project: voucherLineDimension(line, "project", "projectName"),
+    };
+    const key = JSON.stringify([
+      line.account,
+      dimensions.auxiliaryId,
+      dimensions.auxiliaryLabel,
+      dimensions.auxiliaryType,
+      dimensions.storeId,
+      dimensions.storeName,
+      dimensions.department,
+      dimensions.project,
+      direction,
+    ]);
     const current = grouped.get(key) || {
       account: line.account,
-      auxiliaryId: line.auxiliaryId || null,
+      ...dimensions,
       debit: 0,
       credit: 0,
       sourceIds: [],

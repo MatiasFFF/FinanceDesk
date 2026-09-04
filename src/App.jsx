@@ -537,16 +537,23 @@ function TransactionList({ items, selectedIds, focusedId, onToggle, onToggleAll,
   );
 }
 
-function TransactionDetail({ workspace, transaction, onClose, onStatus, onEvidence, onLinkEvidence, onToast }) {
+function TransactionDetail({ workspace, transaction, onClose, onStatus, onSaveReview, onEvidence, onLinkEvidence, onToast }) {
   const terminology = workspaceTerminology(workspace);
   const evidenceInput = useRef(null);
   const [evidenceCategory, setEvidenceCategory] = useState("发票");
   const [existingEvidenceId, setExistingEvidenceId] = useState("");
+  const [reviewNote, setReviewNote] = useState("");
   useEffect(() => {
     setEvidenceCategory("发票");
     setExistingEvidenceId("");
   }, [transaction?.id]);
+  useEffect(() => {
+    setReviewNote(transaction?.manualReview?.note || "");
+  }, [transaction?.id, transaction?.manualReview?.note]);
   if (!transaction) return null;
+  const savedReviewNote = String(transaction.manualReview?.note || "").trim();
+  const normalizedReviewNote = reviewNote.trim();
+  const reviewNoteChanged = normalizedReviewNote !== savedReviewNote;
   const linkedDocuments = workspace.documents.filter((item) => transaction.evidenceIds?.includes(item.id));
   const availableDocuments = workspace.documents.filter((item) => !transaction.evidenceIds?.includes(item.id));
   const allocations = (transaction.allocations || []).map((allocation) => ({ ...allocation, bill: workspace.bills.find((bill) => bill.id === allocation.billId) }));
@@ -564,14 +571,23 @@ function TransactionDetail({ workspace, transaction, onClose, onStatus, onEviden
           <input ref={evidenceInput} hidden type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) onEvidence(transaction.id, file, evidenceCategory); event.target.value = ""; }} />
           <button className="secondary-button wide" onClick={() => evidenceInput.current?.click()} type="button"><FileArrowUp size={17} />上传新的本地证据</button>
         </section>
+        <section className="detail-section transaction-review-section">
+          <div className="detail-section-title"><i className="section-mark clay" />人工复核记录</div>
+          <label className="field-label transaction-review-note"><span>复核备注</span><textarea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} placeholder="写明已核对的依据；暂时无法判断时，说明仍需核实的内容。" /></label>
+          <div className="transaction-review-meta">
+            <small>{transaction.manualReview?.updatedAt ? `${transaction.manualReview.updatedBy || "本地用户"} · ${formatDateTime(transaction.manualReview.updatedAt)}` : "尚未保存人工复核备注"}</small>
+            <button className="secondary-button" disabled={!normalizedReviewNote || !reviewNoteChanged} onClick={() => onSaveReview(transaction.id, normalizedReviewNote)} type="button"><CheckCircle size={16} />保存复核备注</button>
+          </div>
+          <p className="quiet-copy transaction-review-boundary">保存备注不会自动分类、核销或入账；当前无法判断时，流水会继续保留在待处理链路。</p>
+        </section>
         <AccountingWorkbench transactionId={transaction.id} onToast={onToast} />
       </div>
-      <div className="detail-actions"><button className="secondary-button" onClick={() => onStatus([transaction.id], "ignored")} type="button">暂不处理</button><span className="detail-action-note">核销与入账请使用上方真实会计处理区</span></div>
+      <div className="detail-actions"><button className="secondary-button" onClick={() => onStatus([transaction.id], transaction.status === "ignored" ? "pending" : "ignored")} type="button">{transaction.status === "ignored" ? "恢复为待处理" : "暂不处理"}</button><span className="detail-action-note">核销与入账请使用上方真实会计处理区</span></div>
     </aside>
   );
 }
 
-function ReconcilePage({ workspace, onPage, onStatus, onReview, onEvidence, onLinkEvidence, onExportSelected, onResolveException, onToast }) {
+function ReconcilePage({ workspace, onPage, onStatus, onReview, onSaveReview, onEvidence, onLinkEvidence, onExportSelected, onResolveException, onToast }) {
   const terminology = workspaceTerminology(workspace);
   const [filter, setFilter] = useState("unresolved");
   const [query, setQuery] = useState("");
@@ -602,7 +618,7 @@ function ReconcilePage({ workspace, onPage, onStatus, onReview, onEvidence, onLi
         <section className="panel table-panel"><div className="table-heading"><span>本期流水</span><span>{filtered.length} / {periodTransactions.length} 笔</span></div><TransactionList items={filtered} selectedIds={selectedIds} focusedId={focusedId} onToggle={toggle} onToggleAll={toggleAll} onFocus={setFocusedId} /></section>
         <BoundaryNote />
       </div>
-      <TransactionDetail workspace={workspace} transaction={focused} onClose={() => setFocusedId(null)} onStatus={onStatus} onEvidence={onEvidence} onLinkEvidence={onLinkEvidence} onToast={onToast} />
+      <TransactionDetail workspace={workspace} transaction={focused} onClose={() => setFocusedId(null)} onStatus={onStatus} onSaveReview={onSaveReview} onEvidence={onEvidence} onLinkEvidence={onLinkEvidence} onToast={onToast} />
     </div>
   );
 }
@@ -1357,19 +1373,52 @@ function App() {
   }
   function setTransactionStatus(ids, status) {
     if (!workspace || !ids.length) return;
-    if (status !== "ignored") {
-      setToast({ tone: "warning", message: "核销必须通过单笔会计处理区完成，不能直接改状态" });
+    if (!["ignored", "pending"].includes(status)) {
+      setToast({ tone: "warning", message: "这里只能暂不处理或恢复待处理；核销必须通过单笔会计处理区完成" });
       return;
     }
     const idSet = new Set(ids);
     try {
-      mutateActive((current) => audit({
-        ...current,
-        transactions: current.transactions.map((item) => idSet.has(item.id) ? { ...item, status: "ignored", reviewedAt: new Date().toISOString() } : item),
-      }, "暂不处理流水", idSet.size + " 笔 · 保留原始流水与审计记录", actorName));
-      setToast({ tone: "success", message: "已将 " + idSet.size + " 笔设为暂不处理" });
+      let changedCount = 0;
+      mutateActive((current) => {
+        const changedIds = new Set(current.transactions
+          .filter((item) => idSet.has(item.id) && (status === "ignored" ? item.status !== "ignored" : item.status === "ignored"))
+          .map((item) => item.id));
+        changedCount = changedIds.size;
+        if (!changedCount) throw new Error(status === "pending" ? "所选流水当前不是暂不处理状态" : "所选流水已经是暂不处理状态");
+        const reviewedAt = new Date().toISOString();
+        return audit({
+          ...current,
+          transactions: current.transactions.map((item) => changedIds.has(item.id) ? { ...item, status, reviewedAt, reviewedBy: actorName } : item),
+        }, status === "ignored" ? "暂不处理流水" : "恢复流水待处理", `${changedCount} 笔 · ${status === "ignored" ? "保留原始流水，暂不进入后续处理" : "重新进入 S7 待处理链路"}`, actorName);
+      });
+      setToast({ tone: "success", message: status === "ignored" ? `已将 ${changedCount} 笔设为暂不处理` : `已将 ${changedCount} 笔恢复为待处理` });
     } catch (error) {
       setToast({ tone: "danger", message: error.message || "流水状态更新失败" });
+    }
+  }
+  function saveTransactionReview(transactionId, note) {
+    const reviewNote = String(note || "").trim();
+    if (!workspace || !transactionId || !reviewNote) {
+      setToast({ tone: "warning", message: "请先填写人工复核备注" });
+      return false;
+    }
+    try {
+      mutateActive((current) => {
+        const transaction = current.transactions.find((item) => item.id === transactionId);
+        if (!transaction) throw new Error("找不到要记录复核备注的流水");
+        const updatedAt = new Date().toISOString();
+        const manualReview = { note: reviewNote, updatedAt, updatedBy: actorName };
+        return audit({
+          ...current,
+          transactions: current.transactions.map((item) => item.id === transactionId ? { ...item, manualReview } : item),
+        }, "保存流水人工复核备注", `${transaction.serial || transaction.id} · ${reviewNote}`, actorName);
+      });
+      setToast({ tone: "success", message: "人工复核备注已保存到当前工作台" });
+      return true;
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "人工复核备注保存失败" });
+      return false;
     }
   }
   function reviewTransactions(ids) {
@@ -1893,7 +1942,7 @@ function App() {
         {loadReport.recovered && <div className="danger-banner recovery-banner"><WarningCircle size={18} /><span><strong>{loadReport.source === "backup" ? "本地数据已从上一次有效副本恢复。" : "本地主副本与备用副本均无法读取，当前已加载初始模板。"}</strong>{loadReport.errors?.length ? ` 原因：${loadReport.errors.join("；")}` : " 请先核对数据并导出备份。"}</span></div>}
         {activePage === "overview" && <OverviewPage workspace={workspace} onPage={navigateToPage} onResolveNotice={resolveNotice} />}
         {activePage === "members" && workspaceModuleEnabled(workspace, "members") && <MemberLedgerPage workspace={workspace} onAddMember={addLedgerMember} onMemberStatus={changeLedgerMemberStatus} onAddEvent={addLedgerEvent} onEventStatus={changeLedgerEventStatus} />}
-        {activePage === "reconcile" && <ReconcilePage workspace={workspace} onPage={navigateToPage} onStatus={setTransactionStatus} onReview={reviewTransactions} onEvidence={addEvidence} onLinkEvidence={linkExistingEvidence} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} />}
+        {activePage === "reconcile" && <ReconcilePage workspace={workspace} onPage={navigateToPage} onStatus={setTransactionStatus} onReview={reviewTransactions} onSaveReview={saveTransactionReview} onEvidence={addEvidence} onLinkEvidence={linkExistingEvidence} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} />}
         {activePage === "reports" && <ReportsPage workspace={workspace} onPage={navigateToPage} onFreeze={freezeReport} onExportExcel={exportReportExcel} />}
         {activePage === "tax" && <TaxPage workspace={workspace} onPage={navigateToPage} onTaxChange={changeTax} onTaxCommit={commitTax} onSectionDecision={recordInitialConfirmationSection} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} />}
         {activePage === "archive" && <ArchivePage workspace={workspace} onPage={navigateToPage} onDocuments={addDocuments} onReceipt={receiveReceipt} onArchive={completeArchive} onNextPeriod={goNextPeriod} onExportIndex={exportArchiveIndex} />}

@@ -5883,6 +5883,51 @@ summary.forecast-week-row {
   align-items: center;
 }
 
+.transaction-review-note textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 88px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  outline: 0;
+  background: var(--paper-strong);
+  color: var(--espresso);
+  font: inherit;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.transaction-review-note textarea:focus {
+  border-color: var(--sage);
+  box-shadow: 0 0 0 3px rgba(91, 111, 82, 0.1);
+}
+
+.transaction-review-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.transaction-review-meta small {
+  min-width: 0;
+  color: var(--quiet);
+  font-size: 9px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.transaction-review-meta > button {
+  flex: 0 0 auto;
+}
+
+.transaction-review-boundary {
+  margin-bottom: 0;
+}
+
 .reports-page .report-toolbar-actions > button {
   max-width: 100%;
   white-space: normal;
@@ -5909,6 +5954,15 @@ summary.forecast-week-row {
 
   .transaction-detail-panel .detail-action-note {
     text-align: left;
+  }
+
+  .transaction-review-meta {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .transaction-review-meta > button {
+    width: 100%;
   }
 
   .reports-page .statement-heading,

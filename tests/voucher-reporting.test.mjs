@@ -408,13 +408,41 @@ test("draft revision keeps versions, while posted voucher requires a separate re
   let workspace = createAccountingFixture({ withReconciliations: true, withPostedVouchers: false });
   workspace = createVoucherDraft(workspace, { transactionId: "txn-split" }, context);
   const voucherId = workspace.vouchers[0].id;
+  const dimensionedLines = workspace.vouchers[0].lines.map((line, index) => ({
+    ...line,
+    auxiliaryId: `party-${index + 1}`,
+    auxiliaryLabel: `往来对象 ${index + 1}`,
+    auxiliaryType: index === 0 ? "customer" : "supplier",
+    storeId: "store-east",
+    storeName: "东区门店",
+    department: "运营部",
+    project: "年度项目",
+  }));
   workspace = reviseDraftVoucher(workspace, {
     voucherId,
     summary: "收到橙子平台两期结算款",
+    lines: dimensionedLines,
     reason: "补充跨月结算说明",
   }, { ...context, at: "2026-09-06T13:05:00.000Z" });
   assert.equal(workspace.vouchers[0].version, 2);
   assert.ok(workspace.vouchers[0].versions.length >= 2);
+  assert.deepEqual(workspace.vouchers[0].lines.map((line) => ({
+    auxiliaryId: line.auxiliaryId,
+    auxiliaryLabel: line.auxiliaryLabel,
+    auxiliaryType: line.auxiliaryType,
+    storeId: line.storeId,
+    storeName: line.storeName,
+    department: line.department,
+    project: line.project,
+  })), dimensionedLines.map((line) => ({
+    auxiliaryId: line.auxiliaryId,
+    auxiliaryLabel: line.auxiliaryLabel,
+    auxiliaryType: line.auxiliaryType,
+    storeId: line.storeId,
+    storeName: line.storeName,
+    department: line.department,
+    project: line.project,
+  })));
   workspace = postVoucher(workspace, { voucherId, mode: "automatic" }, { ...context, at: "2026-09-06T13:06:00.000Z" });
 
   assert.throws(() => reviseDraftVoucher(workspace, {
