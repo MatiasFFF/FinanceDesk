@@ -722,6 +722,36 @@
   background: var(--canvas);
 }
 
+.foundation-record-list {
+  gap: 0;
+  margin-bottom: 10px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--canvas);
+}
+
+.foundation-record {
+  min-height: 42px;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: 0;
+  background: transparent;
+}
+
+.foundation-record:last-child {
+  border-bottom: 0;
+}
+
+.foundation-record:hover {
+  border-radius: 6px;
+  background: var(--paper);
+}
+
+.foundation-record-list > .foundation-empty {
+  margin: 0;
+  background: transparent;
+}
+
 .foundation-empty {
   border: 0;
   background: var(--canvas);
@@ -768,10 +798,13 @@
 
 /* Dialog sizing and natural-height foundation cards. */
 .modal-card.foundation-manager {
+  display: flex;
   width: min(1020px, calc(100vw - 40px));
   max-width: 100%;
   max-height: min(880px, calc(100dvh - 40px));
-  overflow-y: auto;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .modal-card.foundation-manager[aria-labelledby="bank-import-title"],
@@ -780,8 +813,64 @@
 }
 
 .foundation-manager-grid {
+  min-height: 0;
+  flex: 1 1 auto;
   align-items: start;
   gap: 16px;
+  margin-top: 14px;
+  padding: 0 5px 2px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--clay) var(--sand);
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+.modal-card.foundation-manager > .modal-heading {
+  flex: 0 0 auto;
+  margin-bottom: 0;
+  padding-bottom: 13px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--paper-strong);
+}
+
+.modal-card.foundation-manager > .foundation-error {
+  flex: 0 0 auto;
+  margin: 12px 0 0;
+}
+
+.foundation-manager-footer {
+  flex: 0 0 auto;
+  margin-top: 12px;
+  padding: 12px 4px 0;
+  border-top: 1px solid var(--line-soft);
+  background: var(--paper-strong);
+}
+
+.foundation-manager-footer .text-danger-button {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.foundation-manager-grid::-webkit-scrollbar,
+.modal-card.foundation-manager[aria-labelledby="bank-import-title"] > .bank-import-panel::-webkit-scrollbar,
+.modal-card.bank-import-dialog > .bank-import-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+.foundation-manager-grid::-webkit-scrollbar-track,
+.modal-card.foundation-manager[aria-labelledby="bank-import-title"] > .bank-import-panel::-webkit-scrollbar-track,
+.modal-card.bank-import-dialog > .bank-import-panel::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: var(--sand);
+}
+
+.foundation-manager-grid::-webkit-scrollbar-thumb,
+.modal-card.foundation-manager[aria-labelledby="bank-import-title"] > .bank-import-panel::-webkit-scrollbar-thumb,
+.modal-card.bank-import-dialog > .bank-import-panel::-webkit-scrollbar-thumb {
+  border: 2px solid var(--sand);
+  border-radius: 999px;
+  background: var(--clay);
 }
 
 .foundation-manager .choice-cards,
@@ -859,9 +948,17 @@
 
 .modal-card.foundation-manager[aria-labelledby="bank-import-title"] > .bank-import-panel,
 .modal-card.bank-import-dialog > .bank-import-panel {
-  padding: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  margin-top: 14px;
+  padding: 0 4px 0 0;
+  overflow-y: auto;
   border: 0;
   background: transparent;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--clay) var(--sand);
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
 }
 
 .modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-import-workspace,
@@ -935,6 +1032,10 @@
 
   .foundation-manager-grid {
     grid-template-columns: 1fr;
+  }
+
+  .foundation-manager-footer .text-danger-button {
+    margin-left: 0;
   }
 
   .modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-import-start,

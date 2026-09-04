@@ -295,28 +295,41 @@ function displayName(item, collection, fallbackLabel = "记录") {
   return item.name || item.title || item.no || item.summary || item.invoiceNumber || `未命名${fallbackLabel}`;
 }
 
+function amountSummary(label, value) {
+  if (value == null || value === "") return "";
+  return `${label} ¥${Number(value || 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 function recordDescription(item, collection, workspace) {
   const parts = [];
-  if (collection === "users") {
+  if (collection === "books") {
+    parts.push(item.accountingStandard || "会计准则未填写", item.currency ? `本位币 ${item.currency}` : "本位币未填写");
+  } else if (collection === "stores") {
+    parts.push(item.address || "地址未填写");
+  } else if (collection === "users") {
     parts.push(workspace.roles.find((role) => role.id === item.roleId)?.name || item.role || "未分配角色");
-  } else if (["counterparties", "bills", "businessEvents"].includes(collection)) {
-    parts.push(recordTypeLabel(item));
-    if (collection !== "counterparties") parts.push(item.counterparty || item.memberName || item.coach);
+  } else if (collection === "roles") {
+    parts.push(`${(item.permissions || []).length} 项权限`);
+  } else if (collection === "counterparties") {
+    parts.push(recordTypeLabel(item) || "往来单位", item.taxId ? `税号 ${item.taxId}` : "税号未填写");
   } else if (collection === "contracts") {
-    parts.push(item.counterpartyName);
+    parts.push(item.no ? `合同号 ${item.no}` : "合同号未填写", item.counterpartyName ? `签约方 ${item.counterpartyName}` : "签约方未填写", amountSummary("合同金额", item.amount));
+  } else if (collection === "bills") {
+    parts.push(recordTypeLabel(item) || "往来账单", item.counterparty || "往来方未填写", amountSummary("账单金额", item.amount), item.date ? `业务日 ${item.date}` : "", item.dueDate ? `到期日 ${item.dueDate}` : "");
+  } else if (collection === "businessEvents") {
+    parts.push(recordTypeLabel(item) || "业务事件", item.businessPeriod ? `业务期间 ${item.businessPeriod}` : "", item.date ? `发生日 ${item.date}` : "", amountSummary("业务金额", item.amount));
   } else if (collection === "bankAccounts") {
-    parts.push(item.accountNumber ? `尾号 ${item.accountNumber}` : "银行账户");
+    parts.push(item.accountNumber || item.number ? `账号 ${item.accountNumber || item.number}` : "账号未填写", amountSummary("期初余额", item.openingBalance), amountSummary("对账单期末", item.statementClosing));
   } else if (collection === "invoices") {
-    parts.push(item.seller || item.invoiceType || "发票资料");
+    parts.push(item.seller || item.sellerName ? `开票方 ${item.seller || item.sellerName}` : "开票方未填写", amountSummary("价税合计", item.amount), amountSummary("税额", item.taxAmount));
   } else if (collection === "approvals") {
-    parts.push(recordTypeLabel(item) || item.kind || "审批事项");
+    parts.push(recordTypeLabel(item) || item.kind || "审批事项", item.no ? `审批号 ${item.no}` : "", amountSummary("金额", item.amount));
   } else if (collection === "personnelRecords") {
-    parts.push(item.department, item.role);
+    parts.push(item.department ? `部门 ${item.department}` : "部门未填写", item.role ? `岗位 ${item.role}` : "岗位未填写", item.socialSecurityLocation ? `社保归属 ${item.socialSecurityLocation}` : "");
   } else {
     parts.push(recordTypeLabel(item));
   }
   if (item.status) parts.push(statusLabel(item.status));
-  if (item.id) parts.push(`内部编号 ${item.id}`);
   return parts.filter(Boolean).join(" · ") || "未设置摘要";
 }
 

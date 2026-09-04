@@ -191,6 +191,8 @@ function WorkspaceMenu({ state, activeWorkspace, onSwitch, onOpenDialog, onClose
 function Sidebar({ state, workspace, page, onPage, onSwitchWorkspace, onSwitchUser, onOpenWorkspaceDialog }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const workspaceMenuRef = useRef(null);
+  const workspaceTriggerRef = useRef(null);
   const accountSwitcherRef = useRef(null);
   const accountTriggerRef = useRef(null);
   const navigation = primaryNavigationForWorkspace(workspace);
@@ -202,7 +204,27 @@ function Sidebar({ state, workspace, page, onPage, onSwitchWorkspace, onSwitchUs
   const operatorRole = operator
     ? roleName(operator)
     : "可在基础资料中设置";
-  useEffect(() => { setAccountOpen(false); }, [workspace?.id]);
+  useEffect(() => {
+    setMenuOpen(false);
+    setAccountOpen(false);
+  }, [workspace?.id]);
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    function closeOnOutsidePointer(event) {
+      if (!workspaceMenuRef.current?.contains(event.target)) setMenuOpen(false);
+    }
+    function closeOnEscape(event) {
+      if (event.key !== "Escape") return;
+      setMenuOpen(false);
+      workspaceTriggerRef.current?.focus();
+    }
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [menuOpen]);
   useEffect(() => {
     if (!accountOpen) return undefined;
     function closeOnOutsidePointer(event) {
@@ -222,8 +244,8 @@ function Sidebar({ state, workspace, page, onPage, onSwitchWorkspace, onSwitchUs
   }, [accountOpen]);
   return (
     <aside className="sidebar">
-      <div className="sidebar-brand-wrap">
-        <button className="brand" onClick={() => { setAccountOpen(false); setMenuOpen((value) => !value); }} type="button">
+      <div className="sidebar-brand-wrap" ref={workspaceMenuRef}>
+        <button ref={workspaceTriggerRef} className="brand" aria-expanded={menuOpen} aria-haspopup="menu" onClick={() => { setAccountOpen(false); setMenuOpen((value) => !value); }} type="button">
           <span className="brand-copy"><strong>{PRODUCT_NAME}</strong><small>{workspace?.name || "还没有工作台"}</small></span>
           <CaretDown size={14} />
         </button>
@@ -281,7 +303,27 @@ function BottomNav({ workspace, page, onPage }) {
 function Topbar({ state, workspace, page, onImport, onSwitchWorkspace, onOpenWorkspaceDialog }) {
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const workspaceMenuRef = useRef(null);
+  const workspaceTriggerRef = useRef(null);
   const [title, subtitle] = PAGE_HEADINGS[page];
+  useEffect(() => { setWorkspaceOpen(false); }, [workspace?.id]);
+  useEffect(() => {
+    if (!workspaceOpen) return undefined;
+    function closeOnOutsidePointer(event) {
+      if (!workspaceMenuRef.current?.contains(event.target)) setWorkspaceOpen(false);
+    }
+    function closeOnEscape(event) {
+      if (event.key !== "Escape") return;
+      setWorkspaceOpen(false);
+      workspaceTriggerRef.current?.focus();
+    }
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [workspaceOpen]);
   return (
     <header className="topbar">
       <div className="topbar-title">
@@ -290,15 +332,15 @@ function Topbar({ state, workspace, page, onImport, onSwitchWorkspace, onOpenWor
         <p className="page-subtitle">{subtitle}</p>
       </div>
       <div className="topbar-actions">
-        <div className="mobile-workspace-wrap">
-          <button className="secondary-button mobile-workspace" onClick={() => setWorkspaceOpen((value) => !value)} type="button"><span>{workspace?.name || "选择工作台"}</span><CaretDown size={14} /></button>
+        <div className="mobile-workspace-wrap" ref={workspaceMenuRef}>
+          <button ref={workspaceTriggerRef} className="secondary-button mobile-workspace" aria-expanded={workspaceOpen} aria-haspopup="menu" onClick={() => { setMoreOpen(false); setWorkspaceOpen((value) => !value); }} type="button"><span>{workspace?.name || "选择工作台"}</span><CaretDown size={14} /></button>
           {workspaceOpen && <WorkspaceMenu state={state} activeWorkspace={workspace} onSwitch={onSwitchWorkspace} onOpenDialog={onOpenWorkspaceDialog} onClose={() => setWorkspaceOpen(false)} />}
         </div>
         {workspace && <div className="period-select" aria-label={`当前活动账期 ${formatPeriod(workspace.currentPeriod)}`} title="历史账期请在资料归档中查看；新账期由归档流程创建"><CalendarBlank size={18} /><span><small>活动账期</small><strong>{formatPeriod(workspace.currentPeriod)}</strong></span></div>}
         {workspace && workspaceModuleEnabled(workspace, "reconcile") && (page === "overview" || page === "reconcile") && <button className="primary-button" onClick={onImport} type="button"><UploadSimple size={18} weight="bold" />本地导入</button>}
         {workspace && (
           <div className="menu-wrap">
-            <button className="icon-button" aria-label="更多操作" onClick={() => setMoreOpen((value) => !value)} type="button"><GearSix size={20} /></button>
+            <button className="icon-button" aria-label="更多操作" onClick={() => { setWorkspaceOpen(false); setMoreOpen((value) => !value); }} type="button"><GearSix size={20} /></button>
             {moreOpen && <div className="popover-menu"><button onClick={() => { onOpenWorkspaceDialog("manage"); setMoreOpen(false); }} type="button"><GearSix size={17} />管理、复制与备份</button><button onClick={() => { onOpenWorkspaceDialog("rename"); setMoreOpen(false); }} type="button"><PencilSimple size={17} />重命名工作台</button><button onClick={() => { onOpenWorkspaceDialog("create"); setMoreOpen(false); }} type="button"><Plus size={17} />新建工作台</button><button onClick={() => { onOpenWorkspaceDialog("delete"); setMoreOpen(false); }} type="button"><Trash size={17} />删除工作台</button></div>}
           </div>
         )}

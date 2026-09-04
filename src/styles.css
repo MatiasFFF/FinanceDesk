@@ -4897,13 +4897,20 @@ summary.forecast-week-row {
 }
 
 .workspace-module-grid > label:focus-within {
+  border-color: rgba(217, 119, 87, 0.68);
+  background: var(--clay-soft);
+  color: var(--clay-dark);
   outline: 2px solid rgba(217, 119, 87, 0.38);
   outline-offset: 2px;
 }
 
 .workspace-module-grid input {
+  width: 15px;
+  height: 15px;
   flex: 0 0 auto;
   margin-top: 2px;
+  accent-color: var(--clay);
+  cursor: pointer;
 }
 
 .workspace-module-grid > label > span {
