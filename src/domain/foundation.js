@@ -196,7 +196,9 @@ export function normalizeWorkspace(input, options = {}) {
   const workspace = deepClone(input || {});
   const id = workspace.id || createId("workspace");
   const name = String(workspace.name || workspace.company?.legalName || "未命名工作台").trim();
-  const isFitnessTemplate = id === "workspace-shanlan" || workspace.templateId === "fitness-studio" || workspace.isDemo;
+  const isFitnessTemplate = workspace.templateId === "fitness-studio"
+    || workspace.isDemo
+    || (workspace.templateId === undefined && id === "workspace-shanlan");
   const hasMemberBusiness = isFitnessTemplate
     || (workspace.members || []).length > 0
     || (workspace.businessEvents || []).some((event) => event.memberId || event.memberName || event.coach);
@@ -421,6 +423,12 @@ export function createBlankWorkspace(input = {}, options = {}) {
   const timestamp = options.timestamp || nowIso(options.now);
   const id = input.id || createId("workspace");
   const name = String(input.name || "新工作台").trim();
+  const initialUserName = String(input.initialUserName || "").trim();
+  const users = Array.isArray(input.users)
+    ? deepClone(input.users)
+    : initialUserName
+      ? [{ id: `user-${id}`, name: initialUserName, roleId: "role-owner", role: "经营者", status: "active", localOnly: true }]
+      : [];
   return normalizeWorkspace({
     id,
     name,
@@ -434,6 +442,7 @@ export function createBlankWorkspace(input = {}, options = {}) {
       taxpayerType: input.taxpayerType || "小规模纳税人",
       taxId: input.taxId || "",
       ownerName: input.ownerName || "",
+      financeContact: input.financeContact || "",
       verificationStatus: "unverified",
     },
     currentPeriod: input.currentPeriod || timestamp.slice(0, 7),
@@ -441,13 +450,25 @@ export function createBlankWorkspace(input = {}, options = {}) {
     periods: [input.currentPeriod || timestamp.slice(0, 7)],
     books: [{ id: `book-${id}`, name: "默认账套", accountingStandard: "小企业会计准则", currency: "CNY", status: "active" }],
     stores: [{ id: `store-${id}`, name, status: "active", address: "" }],
-    users: [],
+    users,
+    roles: Array.isArray(input.roles) ? deepClone(input.roles) : undefined,
+    counterparties: [],
+    members: [],
+    contracts: [],
+    invoices: [],
+    approvals: [],
+    personnelRecords: [],
     bankAccounts: [],
+    bankImports: [],
     transactions: [],
     businessEvents: [],
     bills: [],
     documents: [],
+    evidenceLinks: [],
     vouchers: [],
+    exceptionTasks: [],
+    confirmations: [],
+    reportVersions: [],
     openingLedger: {},
     tax: {},
   }, { timestamp });
@@ -555,6 +576,8 @@ export function switchActiveUser(state, workspaceId, userId, options = {}) {
   const workspace = getWorkspace(state, workspaceId);
   const user = workspace?.users?.find((candidate) => candidate.id === userId);
   if (!user || user.status !== "active") throw new Error("只能切换到当前工作台中的启用用户");
+  const role = workspace.roles.find((candidate) => candidate.id === user.roleId || candidate.name === user.role);
+  if (!role || role.status !== "active") throw new Error(`人员「${user.name}」没有可用的启用角色，请先调整其角色`);
   const next = { ...state, activeWorkspaceId: workspaceId, activeUserId: userId, updatedAt: timestamp };
   return assertValidState(appendRootAudit(next, {
     actor: user.name,
@@ -762,6 +785,10 @@ export function clearWorkspace(state, workspaceId, options = {}) {
       };
       return cleared;
     }
+    const currentUser = workspace.users.find((user) => user.id === state.activeUserId && user.status === "active");
+    const currentRole = currentUser
+      ? workspace.roles.find((role) => role.id === currentUser.roleId || role.name === currentUser.role)
+      : null;
     const blank = createBlankWorkspace({
       id: workspace.id,
       name: workspace.name,
@@ -770,18 +797,14 @@ export function clearWorkspace(state, workspaceId, options = {}) {
       taxpayerType: workspace.company?.taxpayerType,
       currentPeriod: workspace.currentPeriod,
       modules: workspace.modules,
-    }, options);
-    const currentUser = workspace.users.find((user) => user.id === state.activeUserId && user.status === "active");
-    if (currentUser) {
-      blank.users = [{
-        ...blank.users[0],
-        id: currentUser.id,
-        name: currentUser.name,
-        roleId: "role-owner",
-        role: "经营者",
+      users: currentUser ? [{
+        ...currentUser,
+        roleId: currentRole?.id || "role-owner",
+        role: currentRole?.name || "经营者",
         status: "active",
-      }];
-    }
+      }] : [],
+      roles: currentRole ? [{ ...currentRole, status: "active" }] : undefined,
+    }, options);
     return { ...blank, auditLog: workspace.auditLog };
   }, {
     actor: options.actor,
@@ -879,26 +902,40 @@ export function upsertWorkspaceEntity(state, workspaceId, collection, values, op
   const item = timestamped({ ...deepClone(values), id: values.id || createId(collection.slice(0, -1) || "item") }, timestamp);
   const currentWorkspace = getWorkspace(state, workspaceId);
   if (!currentWorkspace) throw new Error(`找不到工作台：${workspaceId}`);
+  const existingItem = (currentWorkspace[collection] || []).find((candidate) => candidate.id === item.id);
+  const effectiveStatus = item.status || existingItem?.status || "active";
   const hasActiveUser = (currentWorkspace.users || []).some((user) => user.status === "active");
-  const bootstrappingFirstUser = collection === "users" && !hasActiveUser && item.status === "active";
-  if (bootstrappingFirstUser) {
-    const role = currentWorkspace.roles.find((candidate) => (
+  const bootstrappingFirstUser = collection === "users" && !hasActiveUser && effectiveStatus === "active";
+  let assignedRole = null;
+  if (collection === "users" && effectiveStatus === "active") {
+    assignedRole = currentWorkspace.roles.find((candidate) => (
       candidate.id === item.roleId || candidate.name === item.role
     ));
-    const permissions = role?.permissions || [];
-    if (!role || role.status !== "active" || (!permissions.includes("*") && !permissions.includes("workspace.manage"))) {
+    if (!assignedRole || assignedRole.status !== "active") {
+      throw new Error("启用人员必须选择一个已启用的有效角色");
+    }
+  }
+  if (bootstrappingFirstUser) {
+    const permissions = assignedRole?.permissions || [];
+    if (!permissions.includes("*") && !permissions.includes("workspace.manage")) {
       throw new Error("首位启用人员必须选择具备“管理工作台”权限的启用角色，避免首次配置后无法继续管理");
     }
   }
-  if (collection === "users" && item.id === state.activeUserId && item.status !== "active") {
+  if (collection === "users" && item.id === state.activeUserId && effectiveStatus !== "active") {
     throw new Error("当前正在使用的本地用户不能停用；请先切换到其他启用用户");
   }
   const activeUser = activeWorkspaceUser(state, workspaceId);
-  if (collection === "roles" && item.status !== "active" && activeUser && (activeUser.roleId === item.id || activeUser.role === item.name)) {
-    throw new Error("当前用户所属角色不能停用；请先切换用户或调整该用户角色");
+  const previousRoleName = collection === "roles" ? existingItem?.name : null;
+  const assignedActiveUsers = collection === "roles"
+    ? currentWorkspace.users.filter((user) => user.status === "active" && (
+      user.roleId === item.id || (!user.roleId && user.role === previousRoleName)
+    ))
+    : [];
+  if (collection === "roles" && effectiveStatus !== "active" && assignedActiveUsers.length) {
+    throw new Error(`角色仍分配给启用人员：${assignedActiveUsers.map((user) => user.name).join("、")}；请先调整人员角色或停用人员`);
   }
-  if (collection === "roles" && activeUser && (activeUser.roleId === item.id || activeUser.role === item.name)) {
-    const permissions = item.permissions || [];
+  if (collection === "roles" && activeUser && (activeUser.roleId === item.id || (!activeUser.roleId && activeUser.role === previousRoleName))) {
+    const permissions = item.permissions || existingItem?.permissions || [];
     if (!permissions.includes("*") && !permissions.includes("workspace.manage")) {
       throw new Error("当前操作身份所属角色必须保留“管理工作台”权限；如需移除，请先切换到其他管理员");
     }
@@ -912,7 +949,16 @@ export function upsertWorkspaceEntity(state, workspaceId, collection, values, op
     const items = created
       ? [...prepared, item]
       : prepared.map((candidate) => candidate.id === item.id ? { ...candidate, ...item, createdAt: candidate.createdAt, updatedAt: timestamp } : candidate);
-    return { ...workspace, [collection]: items };
+    const updatedWorkspace = { ...workspace, [collection]: items };
+    if (collection !== "roles") return updatedWorkspace;
+    return {
+      ...updatedWorkspace,
+      users: (workspace.users || []).map((user) => (
+        user.roleId === item.id || (!user.roleId && previousRoleName && user.role === previousRoleName)
+          ? { ...user, roleId: item.id, role: item.name, updatedAt: timestamp }
+          : user
+      )),
+    };
   }, {
     actor: options.actor,
     action: created ? `新增${options.label || collection}` : `更新${options.label || collection}`,
@@ -962,8 +1008,14 @@ export function removeWorkspaceEntity(state, workspaceId, collection, itemId, op
   const workspace = getWorkspace(state, workspaceId);
   const item = workspace?.[collection]?.find((candidate) => candidate.id === itemId);
   if (!item) throw new Error(`找不到要删除的记录：${collection}/${itemId}`);
-  if (state.activeUserId === itemId) throw new Error("当前正在使用的本地用户不能删除；请先切换用户或停用该用户");
+  if (state.activeUserId === itemId) throw new Error("当前正在使用的本地用户不能删除；请先切换到其他启用用户");
   if (collection === "ruleSets" && item.status === "active") throw new Error("正在生效的规则版本不能删除；请先启用另一版本或将其停用");
+  if (collection === "roles") {
+    const assignedUsers = workspace.users.filter((user) => user.roleId === itemId || (!user.roleId && user.role === item.name));
+    if (assignedUsers.length) {
+      throw new Error(`角色仍分配给人员：${assignedUsers.map((user) => user.name).join("、")}；请先调整人员角色再删除`);
+    }
+  }
   const references = collectReferencePaths(workspace, collection, itemId);
   if (references.length) {
     throw new Error(`该记录仍被 ${references.slice(0, 3).join("、")} 引用，不能直接删除；请先解除关联或改为停用`);

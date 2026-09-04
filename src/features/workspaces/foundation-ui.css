@@ -1018,6 +1018,191 @@
   overscroll-behavior-inline: contain;
 }
 
+.bank-import-panel > .bank-import-workspace,
+.document-intake-panel > .bank-import-workspace {
+  min-width: 0;
+  align-content: start;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+  border-top: 0;
+  border-radius: 10px;
+  background: var(--canvas);
+}
+
+.bank-import-start,
+.document-intake-controls,
+.mapping-grid,
+.balance-inputs,
+.bank-import-start > *,
+.document-intake-controls > *,
+.mapping-grid > * {
+  min-width: 0;
+}
+
+.bank-import-source-controls {
+  grid-template-columns: minmax(240px, 1.25fr) minmax(170px, 0.55fr) auto;
+}
+
+.document-upload-controls,
+.document-filter-controls,
+.document-edit-controls {
+  grid-template-columns: minmax(160px, 0.7fr) minmax(150px, 0.6fr) minmax(260px, 1.25fr) auto;
+}
+
+.document-structured-fields {
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
+}
+
+.document-import-controls,
+.document-reconciliation-controls {
+  grid-template-columns: repeat(2, minmax(220px, 1fr)) auto;
+}
+
+.document-action-controls {
+  grid-template-columns: minmax(260px, 1fr) auto;
+}
+
+.document-structured-fields > .foundation-hint {
+  grid-column: 1 / -1;
+}
+
+.bank-import-start > button,
+.document-intake-controls > button {
+  min-height: var(--control-height, 40px);
+  align-self: end;
+}
+
+.bank-file-summary {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.bank-file-summary > span:first-child {
+  min-width: 0;
+  flex: 1 1 280px;
+}
+
+.bank-file-summary strong,
+.bank-file-summary small,
+.import-report strong,
+.import-report p,
+.import-report small,
+.bank-import-panel .foundation-hint,
+.document-intake-panel .foundation-hint {
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.import-report > span:first-child {
+  flex: 0 0 auto;
+}
+
+.import-report > div {
+  min-width: 0;
+}
+
+.bank-preview-scroll table {
+  min-width: 720px;
+}
+
+.bank-preview-scroll button {
+  white-space: nowrap;
+}
+
+.bank-import-actions,
+.document-preview-actions {
+  justify-content: flex-end;
+}
+
+.bank-import-actions .text-danger-button {
+  margin-left: auto;
+}
+
+.import-feedback {
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 10px 0 0;
+}
+
+.import-feedback > svg {
+  flex: 0 0 auto;
+}
+
+.import-feedback > span {
+  min-width: 0;
+  flex: 1 1 240px;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.import-feedback > button {
+  flex: 0 0 auto;
+}
+
+.document-record {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.document-record > div {
+  flex: 1 1 360px;
+}
+
+.document-record > .foundation-record-actions {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.document-record > div > small,
+.document-record > div > p,
+.document-record .bank-import-workspace p,
+.document-action-confirmation-copy p {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.document-record .bank-import-workspace {
+  min-width: 0;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--paper);
+}
+
+.document-record-grid.is-editing {
+  max-height: none;
+  overflow: visible;
+}
+
+@media (max-width: 1100px) {
+  .bank-import-source-controls,
+  .document-upload-controls,
+  .document-filter-controls,
+  .document-edit-controls,
+  .document-structured-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bank-import-source-controls > button,
+  .document-import-controls > button,
+  .document-reconciliation-controls > button {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .document-import-controls,
+  .document-reconciliation-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 900px) {
   .foundation-grid > :only-child {
     grid-column: auto;
@@ -1038,6 +1223,25 @@
   .document-intake-controls,
   .mapping-grid {
     grid-template-columns: 1fr;
+  }
+
+  .bank-import-source-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .bank-import-source-controls > button,
+  .document-intake-controls > button {
+    grid-column: auto;
+    width: 100%;
+    justify-self: stretch;
+  }
+
+  .document-record > .foundation-record-actions {
+    flex: 1 0 100%;
+    justify-content: flex-end;
+    margin-left: 0;
+    padding-top: 8px;
+    border-top: 1px solid var(--line-soft);
   }
 }
 
@@ -1454,6 +1658,9 @@
 
   .modal-card.foundation-manager[aria-labelledby="bank-import-title"] .bank-import-workspace,
   .modal-card.bank-import-dialog .bank-import-workspace,
+  .bank-import-panel > .bank-import-workspace,
+  .document-intake-panel > .bank-import-workspace,
+  .document-record .bank-import-workspace,
   .foundation-editor-panel {
     padding: 10px;
   }
@@ -1493,6 +1700,18 @@
 
   .foundation-inline-actions > button,
   .document-action-confirmation-actions > button {
+    width: 100%;
+  }
+
+  .bank-import-actions .text-danger-button {
+    margin-left: 0;
+  }
+
+  .import-feedback {
+    align-items: flex-start;
+  }
+
+  .import-feedback > button {
     width: 100%;
   }
 

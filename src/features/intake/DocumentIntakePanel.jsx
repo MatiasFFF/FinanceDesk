@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
+  CheckCircle,
   DownloadSimple,
   Eye,
   FileArrowUp,
@@ -157,7 +158,7 @@ function StructuredDataFields({ category, value, onChange, workspace, currentDoc
       id !== "membership" || membershipEnabled || details.contractType === "membership"
     ));
     return (
-      <div className="document-intake-controls">
+      <div className="document-intake-controls document-structured-fields">
         <label className="foundation-field"><span>合同甲方</span><input value={details.partyA || ""} onChange={(event) => update("partyA", event.target.value)} /></label>
         <label className="foundation-field"><span>合同乙方</span><input value={details.partyB || ""} onChange={(event) => update("partyB", event.target.value)} /></label>
         <label className="foundation-field"><span>合同类型</span><select value={details.contractType || "unclassified"} onChange={(event) => update("contractType", event.target.value)}>{contractTypes.map(([id, label]) => <option value={id} key={id}>{label}{id === "membership" && !membershipEnabled ? "（会员模块已停用）" : ""}</option>)}</select></label>
@@ -206,7 +207,7 @@ function StructuredDataFields({ category, value, onChange, workspace, currentDoc
       onChange({ ...details, originalInvoiceDocumentId: documentId, originalBillId: relatedBill?.id || "" });
     };
     return (
-      <div className="document-intake-controls">
+      <div className="document-intake-controls document-structured-fields">
         <label className="foundation-field"><span>发票号码</span><input value={details.invoiceNumber || ""} onChange={(event) => update("invoiceNumber", event.target.value)} placeholder="保存时检查重复" /></label>
         <label className="foundation-field"><span>发票日期</span><input type="date" value={details.invoiceDate || ""} onChange={(event) => update("invoiceDate", event.target.value)} /></label>
         <label className="foundation-field"><span>增值税方向（人工选择）</span><select value={details.taxDirection || "unclassified"} onChange={(event) => update("taxDirection", event.target.value)}>{INVOICE_TAX_DIRECTION_OPTIONS.map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label>
@@ -225,7 +226,7 @@ function StructuredDataFields({ category, value, onChange, workspace, currentDoc
     );
   }
   return (
-    <div className="document-intake-controls">
+    <div className="document-intake-controls document-structured-fields">
       <label className="foundation-field"><span>审批类型</span><select value={details.approvalType || "unclassified"} onChange={(event) => update("approvalType", event.target.value)}>{Object.entries(APPROVAL_TYPES).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label>
       <label className="foundation-field"><span>申请人</span><input value={details.applicant || ""} onChange={(event) => update("applicant", event.target.value)} /></label>
       <label className="foundation-field"><span>供应商／收退款对象</span><input value={details.supplier || ""} onChange={(event) => update("supplier", event.target.value)} placeholder="报销可留空，使用申请人匹配" /></label>
@@ -294,6 +295,8 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const [payrollImportBusy, setPayrollImportBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [uploadFeedback, setUploadFeedback] = useState(null);
+  const [matchFeedback, setMatchFeedback] = useState(null);
   const relatedGroups = useMemo(() => RELATED_GROUPS.map(([label, collection]) => ({
     label,
     collection,
@@ -399,6 +402,8 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     setPayrollFilePreview(null);
     setPayrollFieldMapping({});
     setError("");
+    setUploadFeedback(null);
+    setMatchFeedback(null);
   }, [activeWorkspace.id, activeWorkspace.currentPeriod, defaultCategory]);
 
   useEffect(() => {
@@ -442,6 +447,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     if (!files.length) return;
     setBusy(true);
     setError("");
+    setUploadFeedback(null);
     try {
       for (const file of files) {
         await saveLocalDocument({
@@ -457,9 +463,11 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           },
         });
       }
-      onToast?.(`已将 ${files.length} 份原文件保存到当前浏览器`);
+      const message = `已将 ${files.length} 份原文件保存到当前浏览器`;
+      setUploadFeedback({ tone: "success", message });
+      onToast?.(message);
     } catch (caught) {
-      setError(caught.message || "资料保存失败");
+      setUploadFeedback({ tone: "error", message: caught.message || "资料保存失败" });
     } finally {
       setBusy(false);
     }
@@ -631,13 +639,16 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
 
   function refreshMissingTasks() {
     setError("");
+    setMatchFeedback(null);
     try {
       const result = refreshDocumentMissingTasks({ store, workspaceId: activeWorkspace.id });
-      onToast?.(result.changed
+      const message = result.changed
         ? `缺件待办已刷新：当前待补 ${result.open} 项`
-        : `缺件待办已是最新状态：当前待补 ${result.open} 项`);
+        : `缺件待办已是最新状态：当前待补 ${result.open} 项`;
+      setMatchFeedback({ tone: "success", message });
+      onToast?.(message);
     } catch (caught) {
-      setError(caught.message || "资料缺件待办刷新失败");
+      setMatchFeedback({ tone: "error", message: caught.message || "资料缺件待办刷新失败" });
     }
   }
 
@@ -809,6 +820,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
 
   function confirmSuggestion(suggestion) {
     setError("");
+    setMatchFeedback(null);
     setConfirmingSuggestionId(suggestion.id);
     try {
       const result = confirmDocumentMatch({
@@ -816,9 +828,11 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         workspaceId: activeWorkspace.id,
         suggestionId: suggestion.id,
       });
-      onToast?.(`已确认资料关联，并自动关闭 ${result.closedTaskCount} 项缺件待办`);
+      const message = `已确认资料关联，并自动关闭 ${result.closedTaskCount} 项缺件待办`;
+      setMatchFeedback({ tone: "success", message });
+      onToast?.(message);
     } catch (caught) {
-      setError(caught.message || "资料匹配确认失败");
+      setMatchFeedback({ tone: "error", message: caught.message || "资料匹配确认失败" });
     } finally {
       setConfirmingSuggestionId("");
     }
@@ -868,7 +882,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     <section className={`foundation-section document-intake-panel ${compact ? "compact" : "intake-wide"}`}>
       <div className="foundation-section-heading"><div><small>IndexedDB · 不上传</small><h3><FileText size={18} />本地资料库</h3></div><span>{filteredDocuments.length} / {activeWorkspace.documents.length} 份</span></div>
       {!fileVault && <div className="foundation-error"><WarningCircle size={18} />当前环境不支持浏览器本地文件保险箱，只能查看已有资料元数据。</div>}
-      <div className="document-intake-controls">
+      <div className="document-intake-controls document-upload-controls">
         <label className="foundation-field"><span>资料类别</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{CATEGORIES.map((item) => <option key={item}>{item}</option>)}</select></label>
         <label className="foundation-field"><span>业务期间</span><input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} /></label>
         <label className="foundation-field"><span>关联业务对象（可选）</span><select value={relatedObjectId} onChange={(event) => setRelatedObjectId(event.target.value)}><option value="">暂不关联</option>{relatedGroups.map((group) => <optgroup label={group.label} key={group.collection}>{group.items.map((item) => <option value={item.id} key={item.id}>{relatedLabel(item)} · {item.id}</option>)}</optgroup>)}</select></label>
@@ -876,6 +890,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         <input ref={inputRef} type="file" multiple hidden onChange={addFiles} />
       </div>
       <p className="foundation-hint">合同、发票、审批单等原文件保存在当前浏览器 IndexedDB；分类、期间、校验哈希和业务关联保存在当前工作台，不会上传外部服务。</p>
+      {uploadFeedback && <div className={`${uploadFeedback.tone === "error" ? "foundation-error" : "foundation-notice"} import-feedback document-upload-feedback`} role={uploadFeedback.tone === "error" ? "alert" : "status"} aria-live="polite">{uploadFeedback.tone === "error" ? <WarningCircle size={18} /> : <CheckCircle size={18} weight="fill" />}<span>{uploadFeedback.message}</span></div>}
       <div className="foundation-notice" style={{ marginTop: 12 }}><WarningCircle size={18} /><span><strong>OCR 未连接。</strong> 合同、发票和审批字段必须由本地用户人工录入并核对，系统不会假装从原文件自动识别。</span></div>
       <div className="bank-import-workspace">
         <div className="foundation-section-heading">
@@ -1030,7 +1045,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                   <strong>{item.label}</strong>
                   <small>{VAT_RECONCILIATION_STATUS_LABELS[item.status]} · 当前口径：发票数 + 本地调整 − 账面数</small>
                   <p>账面数 {amountLabel(item.bookAmount)} · 发票数 {amountLabel(item.invoiceAmount)} · 调整前差额 {amountLabel(item.differenceBeforeAdjustment)}</p>
-                  <div className="document-intake-controls">
+                  <div className="document-intake-controls document-reconciliation-controls">
                     <label className="foundation-field"><span>真实差额原因</span><input value={draft.reason || ""} onChange={(event) => updateVatReconciliationDraft(item.kind, "reason", event.target.value)} placeholder={item.requiresExplanation ? "例如：未开票收入、认证跨期" : "当前无差额，可不填写"} /></label>
                     <label className="foundation-field"><span>本地调整金额（计入发票口径）</span><input type="number" step="0.01" value={draft.adjustmentAmount ?? ""} onChange={(event) => updateVatReconciliationDraft(item.kind, "adjustmentAmount", event.target.value)} placeholder="0.00" /></label>
                     <button className="primary-button" type="button" onClick={() => saveVatReconciliation(item)}>保存说明与调整</button>
@@ -1065,7 +1080,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           <span>工资 {payrollSocialSummary.counts.payroll} 人 · 社保 {payrollSocialSummary.counts.socialSecurity} 人 · 差异 {payrollSocialSummary.counts.issues} 人</span>
         </div>
         <p className="foundation-hint">每次选择工资表或社保表，字段确认后按“同类表＋员工＋所属期”覆盖去重写入当前工作台。文件只在当前浏览器解析，不上传；这里不会连接社保、个税或税务平台。</p>
-        <div className="document-intake-controls">
+        <div className="document-intake-controls document-import-controls">
           <label className="foundation-field"><span>导入类型</span><select value={payrollImportKind} onChange={(event) => setPayrollImportKind(event.target.value)}>{Object.entries(PAYROLL_SOCIAL_IMPORT_KINDS).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label>
           <label className="foundation-field"><span>默认所属期</span><input type="month" value={payrollImportPeriod} onChange={(event) => setPayrollImportPeriod(event.target.value)} /></label>
           <button className="secondary-button" type="button" disabled={payrollImportBusy} onClick={() => payrollFileInputRef.current?.click()}><FileArrowUp size={17} />{payrollImportBusy ? "读取中…" : `选择${PAYROLL_SOCIAL_IMPORT_KINDS[payrollImportKind]}`}</button>
@@ -1074,7 +1089,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         {payrollFilePreview && payrollImportPlan && (
           <div className="bank-import-workspace">
             <div className="foundation-section-heading"><div><small>{payrollFilePreview.sheetName ? `工作表 ${payrollFilePreview.sheetName}` : "CSV"}</small><h3>{payrollFilePreview.fileName}</h3></div><span>{payrollImportPlan.canApply ? `可写入 ${payrollImportPlan.rows.length} 人次` : "映射或数据待修正"}</span></div>
-            <div className="document-intake-controls">
+            <div className="document-intake-controls document-structured-fields">
               {Object.entries(PAYROLL_SOCIAL_FIELD_DEFINITIONS).map(([field, definition]) => (
                 <label className="foundation-field" key={field}>
                   <span>{definition.label}{definition.required ? "（必填）" : ""}</span>
@@ -1137,6 +1152,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         </div>
         <p className="foundation-hint">建议只比较资料名称、人工录入字段与业务的对方、金额、日期／期间；生成建议不会建立任何关联。</p>
         <div className="foundation-inline-actions"><button className="secondary-button" type="button" onClick={refreshMissingTasks}>刷新缺件待办</button></div>
+        {matchFeedback && <div className={`${matchFeedback.tone === "error" ? "foundation-error" : "foundation-notice"} import-feedback document-match-feedback`} role={matchFeedback.tone === "error" ? "alert" : "status"} aria-live="polite">{matchFeedback.tone === "error" ? <WarningCircle size={18} /> : <CheckCircle size={18} weight="fill" />}<span>{matchFeedback.message}</span></div>}
         {!!openDocumentTasks.length && (
           <div className="foundation-record-list">
             {openDocumentTasks.map((task) => <article className="foundation-record" key={task.id}><div><strong>{task.message}</strong><small>{matchTargetLabel(task.sourceType)} · 等待补齐并确认关联</small></div></article>)}
@@ -1158,7 +1174,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           <span>{selectedVoucher?.attachmentPackages?.length || 0} 次生成记录</span>
         </div>
         <p className="foundation-hint">选择凭证只展示已关联资料和缺失项，不会读取原文件或生成 ZIP；只有点击下方按钮才会从当前浏览器读取原文件、复核哈希并下载，任何内容都不会上传网络。</p>
-        <div className="document-intake-controls">
+        <div className="document-intake-controls document-action-controls">
           <label className="foundation-field"><span>凭证</span><select value={selectedVoucherId} onChange={(event) => setSelectedVoucherId(event.target.value)}><option value="">请选择凭证</option>{(activeWorkspace.vouchers || []).map((voucher) => <option value={voucher.id} key={voucher.id}>{voucher.no || "凭证草稿"} · {voucher.summary || voucher.id}</option>)}</select></label>
           <button className="primary-button" type="button" disabled={!fileVault || !selectedVoucher || generatingPackage} onClick={generateAttachmentPackage}><DownloadSimple size={17} />{generatingPackage ? "正在生成 ZIP…" : "生成并下载本地 ZIP"}</button>
         </div>
@@ -1192,7 +1208,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           <span>{monthlyArchivePlan?.isComplete ? "可生成完整档案" : "仅可导出不完整草稿"}</span>
         </div>
         <p className="foundation-hint">选择期间只计算归档清单，不读取回执原文件、不生成 ZIP。点击导出后才会读取并校验真实回执，为 ZIP 内每个文件生成统一哈希；导出记录不会把期间标记为正式归档，也不会上传网络。</p>
-        <div className="document-intake-controls">
+        <div className="document-intake-controls document-action-controls">
           <label className="foundation-field"><span>财务期间</span><select value={selectedArchivePeriod} onChange={(event) => setSelectedArchivePeriod(event.target.value)}>{archivePeriods.map((archivePeriod) => <option value={archivePeriod} key={archivePeriod}>{archivePeriod}</option>)}</select></label>
           <button className={monthlyArchivePlan?.isComplete ? "primary-button" : "secondary-button"} type="button" disabled={!fileVault || !monthlyArchivePlan || generatingMonthlyArchive} onClick={generateMonthlyArchive}><DownloadSimple size={17} />{generatingMonthlyArchive ? "正在生成 ZIP…" : (monthlyArchivePlan?.isComplete ? "生成完整财务档案 ZIP" : "导出不完整财务档案草稿")}</button>
         </div>
@@ -1209,13 +1225,13 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           </>
         ) : <p className="foundation-empty">当前工作台没有可导出的财务期间。</p>}
       </div>
-      <div className="document-intake-controls" style={{ marginTop: 14 }}>
+      <div className="document-intake-controls document-filter-controls" style={{ marginTop: 14 }}>
         <label className="foundation-field"><span>搜索资料</span><span className="search-field"><MagnifyingGlass size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="文件名、哈希或关联对象" /></span></label>
         <label className="foundation-field"><span>类别筛选</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="all">全部类别</option>{categories.map((item) => <option value={item} key={item}>{item}</option>)}</select></label>
         <label className="foundation-field"><span>状态筛选</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">全部状态</option><option value="active">未归档</option><option value="archived">已归档</option><option value="linked">已关联</option><option value="unlinked">未使用，可删除</option><option value="available">原文件可用</option><option value="missing">原文件缺失</option></select></label>
         <button className="secondary-button" type="button" onClick={() => { setQuery(""); setCategoryFilter("all"); setStatusFilter("all"); }}>清空筛选</button>
       </div>
-      {error && <div className="foundation-error"><WarningCircle size={18} />{error}</div>}
+      {error && <div className="foundation-error" role="alert"><WarningCircle size={18} /><span>{error}</span></div>}
       {preview && (
         <div className="bank-import-workspace">
           <div className="foundation-section-heading"><div><small>浏览器本地预览</small><h3>{preview.document.name}</h3></div><button className="foundation-icon-button" type="button" aria-label="关闭预览" onClick={closePreview}><X size={17} /></button></div>
@@ -1225,10 +1241,10 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           {preview.kind === "audio" && <audio src={preview.url} controls style={{ width: "100%" }} />}
           {preview.kind === "video" && <video src={preview.url} controls style={{ width: "100%", maxHeight: 560 }} />}
           {preview.kind === "unsupported" && <div className="foundation-notice"><WarningCircle size={18} />该格式无法由浏览器直接预览，原文件仍可完整下载。</div>}
-          <div className="foundation-inline-actions"><button className="secondary-button" type="button" onClick={() => download(preview.document)}><DownloadSimple size={16} />下载原文件</button></div>
+          <div className="foundation-inline-actions document-preview-actions"><button className="secondary-button" type="button" onClick={() => download(preview.document)}><DownloadSimple size={16} />下载原文件</button><button className="secondary-button" type="button" onClick={closePreview}>关闭预览</button></div>
         </div>
       )}
-      <div className="document-record-grid">
+      <div className={`document-record-grid${editing ? " is-editing" : ""}`}>
         {filteredDocuments.map((document) => {
           const locallyAvailable = document.storage?.mode === "indexeddb" && document.storage?.availableLocally;
           const usage = getLocalDocumentUsage(activeWorkspace, document.id);
@@ -1248,7 +1264,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                 {documentStructuredKind(document.category) && <p>字段来源：人工录入 · OCR 未连接</p>}
                 {isEditing && (
                   <div className="bank-import-workspace">
-                    <div className="document-intake-controls">
+                    <div className="document-intake-controls document-edit-controls">
                       <label className="foundation-field"><span>文件名称</span><input value={editing.name} onChange={(event) => setEditing((current) => ({ ...current, name: event.target.value }))} /></label>
                       <label className="foundation-field"><span>资料类别</span><select value={editing.category} onChange={(event) => changeEditCategory(event.target.value)}>{CATEGORIES.map((item) => <option key={item}>{item}</option>)}</select></label>
                       <label className="foundation-field"><span>业务期间</span><input type="month" value={editing.period} onChange={(event) => setEditing((current) => ({ ...current, period: event.target.value }))} /></label>

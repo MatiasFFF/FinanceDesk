@@ -5317,3 +5317,546 @@ summary.forecast-week-row {
     min-height: 160px;
   }
 }
+
+/* Reports, filing confirmation, and archive workflow refinement. */
+.reports-page,
+.tax-page,
+.archive-page,
+.report-toolbar > div:first-child,
+.report-toolbar-actions,
+.report-reconciliation-panel,
+.statement-panel,
+.version-panel,
+.tax-boundary-card > div,
+.confirmation-item,
+.confirmation-item-body,
+.confirmation-item-heading > div,
+.confirmation-heading-actions,
+.archive-hero > div,
+.archive-content-panel,
+.archive-toolbar,
+.archive-tools {
+  min-width: 0;
+}
+
+.report-toolbar {
+  align-items: flex-start;
+  gap: 28px;
+  padding: 20px 22px;
+}
+
+.report-toolbar > div:first-child {
+  max-width: 560px;
+}
+
+.report-toolbar-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.report-toolbar-actions > button {
+  white-space: nowrap;
+}
+
+.report-toolbar-actions .compact-select {
+  width: min(230px, 100%);
+  border-color: var(--line-soft);
+  border-radius: var(--radius-control);
+}
+
+.report-toolbar-actions .compact-select select {
+  min-width: 0;
+  width: 100%;
+  max-width: none;
+}
+
+.report-reconciliation-panel {
+  padding: 18px 20px;
+}
+
+.report-check-rows {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 14px;
+}
+
+.report-check-rows button {
+  min-width: 0;
+  min-height: 66px;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--canvas);
+}
+
+.report-check-rows button:hover {
+  border-color: #d8cbbd;
+  background: var(--sand);
+}
+
+.reports-layout {
+  gap: 16px;
+}
+
+.statement-rows button {
+  transition: background-color 140ms ease, box-shadow 140ms ease;
+}
+
+.statement-rows button.active {
+  background: var(--clay-soft);
+  box-shadow: inset 3px 0 var(--clay);
+}
+
+.version-list button,
+.statement-rows button > span,
+.version-diff > div:not(.subheading) span,
+.report-export-history article > span {
+  min-width: 0;
+}
+
+.version-list small,
+.version-diff strong,
+.report-export-history article strong,
+.report-export-history article small {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.report-detail-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 75;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  padding: 18px;
+  background: rgba(45, 41, 38, 0.34);
+  backdrop-filter: blur(4px);
+}
+
+.report-detail-backdrop .report-detail {
+  position: relative;
+  top: auto;
+  right: auto;
+  width: min(460px, 100%);
+  height: calc(100dvh - 36px);
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 16px;
+  background: var(--paper-strong);
+  box-shadow: 0 26px 64px rgba(61, 50, 41, 0.2);
+}
+
+.report-detail .detail-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 20px;
+  border-bottom-color: var(--line-soft);
+}
+
+.report-detail .drill-formula {
+  margin: 0 18px 12px;
+}
+
+.report-detail .drill-list > div,
+.report-detail .drill-list > div > span {
+  min-width: 0;
+}
+
+.report-detail .drill-list strong,
+.report-detail .drill-list small {
+  overflow-wrap: anywhere;
+}
+
+.tax-boundary-card,
+.receipt-upload-card {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-panel);
+  box-shadow: 0 1px 2px rgba(61, 50, 41, 0.035), 0 10px 28px rgba(61, 50, 41, 0.03);
+}
+
+.tax-layout {
+  grid-template-columns: minmax(0, 1.5fr) minmax(340px, 0.72fr);
+  gap: 16px;
+}
+
+.tax-side-column {
+  position: sticky;
+  top: 20px;
+  align-self: start;
+}
+
+.workpaper-grid > div,
+.tax-page .final-review-section,
+.tax-page .final-risk-section,
+.tax-page .final-open-section,
+.tax-page .final-deduction-summary,
+.tax-page .final-attestations label,
+.tax-page .final-deduction-choice label {
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+}
+
+.confirmation-list {
+  gap: 8px;
+}
+
+.confirmation-item,
+.confirmation-item.approved,
+.confirmation-item.rejected {
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 11px;
+  background: var(--paper-strong);
+  box-shadow: 0 5px 16px rgba(61, 50, 41, 0.025);
+}
+
+.confirmation-item.approved {
+  border-color: #cbd7c4;
+}
+
+.confirmation-item.rejected {
+  border-color: #dfb09f;
+}
+
+.confirmation-item-toggle {
+  width: 100%;
+  min-height: 66px;
+  padding: 12px 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.confirmation-item.approved .confirmation-item-toggle {
+  background: var(--sage-soft);
+}
+
+.confirmation-item.rejected .confirmation-item-toggle {
+  background: var(--clay-soft);
+}
+
+.confirmation-item-toggle:hover,
+.confirmation-item.expanded .confirmation-item-toggle {
+  background: var(--sand);
+}
+
+.confirmation-heading-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 9px;
+}
+
+.confirmation-caret {
+  flex: 0 0 auto;
+  color: var(--quiet);
+  transition: transform 150ms ease;
+}
+
+.confirmation-item.expanded .confirmation-caret {
+  transform: rotate(180deg);
+}
+
+.confirmation-item-body {
+  padding: 0 14px 14px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.confirmation-item-body .confirmation-source {
+  margin-top: 11px;
+}
+
+.confirmation-source span,
+.confirmation-record > div,
+.confirmation-note,
+.confirmation-signer,
+.major-toggle > span {
+  min-width: 0;
+}
+
+.confirmation-source,
+.confirmation-source span,
+.confirmation-record p,
+.confirmation-record small {
+  overflow-wrap: anywhere;
+}
+
+.check-rows button.complete:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.check-rows button.actionable:hover {
+  color: var(--clay-dark);
+}
+
+.final-confirm-panel {
+  overflow: hidden;
+}
+
+.final-context-strip {
+  border-color: var(--line-soft);
+  background: var(--line-soft);
+}
+
+.final-context-strip strong,
+.final-tax-grid strong,
+.final-tax-grid small,
+.final-risk-list strong,
+.final-risk-list small,
+.final-open-list strong,
+.final-open-list small {
+  overflow-wrap: anywhere;
+}
+
+.archive-hero {
+  align-items: flex-start;
+  gap: 24px;
+  padding: 20px 22px;
+}
+
+.archive-hero-actions {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.archive-status-grid .metric-card {
+  min-height: 104px;
+}
+
+.archive-toolbar {
+  min-height: 54px;
+  padding-right: 14px;
+  background: var(--paper-strong);
+}
+
+.archive-tools {
+  flex: 1;
+  justify-content: flex-end;
+}
+
+.archive-tools .search-field {
+  width: clamp(190px, 24vw, 290px);
+}
+
+.archive-page .document-grid {
+  gap: 12px;
+  padding: 16px;
+}
+
+.archive-page .document-card {
+  min-height: 78px;
+  border-color: var(--line-soft);
+  border-radius: 11px;
+  box-shadow: 0 5px 16px rgba(61, 50, 41, 0.025);
+}
+
+.archive-page .document-card strong,
+.archive-page .document-card p,
+.audit-list strong,
+.audit-list small,
+.period-archive-list strong,
+.period-archive-list small {
+  overflow-wrap: anywhere;
+}
+
+.archive-check-panel {
+  width: 100%;
+  max-width: none;
+  padding: 18px 20px;
+}
+
+.archive-check-panel .check-rows {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.archive-check-panel .check-rows button {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--canvas);
+}
+
+@media (max-width: 1280px) {
+  .report-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .report-toolbar > div:first-child {
+    max-width: 720px;
+  }
+
+  .report-toolbar-actions {
+    justify-content: flex-start;
+  }
+
+  .tax-side-column {
+    position: static;
+  }
+
+  .final-review-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .report-check-rows,
+  .archive-check-panel .check-rows {
+    grid-template-columns: 1fr;
+  }
+
+  .archive-hero,
+  .archive-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .archive-hero-actions,
+  .archive-tools {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .archive-toolbar {
+    padding-right: 0;
+  }
+
+  .archive-tools {
+    padding: 0 14px 14px;
+  }
+
+  .archive-tools .search-field {
+    width: auto;
+    flex: 1;
+  }
+
+  .archive-page .document-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .audit-list > div {
+    grid-template-columns: 18px minmax(0, 1fr);
+    align-items: start;
+    padding-block: 11px;
+  }
+
+  .audit-list > div > span:last-child {
+    grid-column: 2;
+    text-align: left;
+  }
+}
+
+@media (max-width: 640px) {
+  .report-toolbar {
+    gap: 18px;
+    padding: 17px;
+  }
+
+  .report-toolbar-actions,
+  .archive-hero-actions,
+  .archive-tools {
+    align-items: stretch;
+    flex-direction: column;
+    flex-wrap: nowrap;
+  }
+
+  .report-toolbar-actions .compact-select,
+  .report-toolbar-actions > button,
+  .archive-hero-actions > button,
+  .archive-tools .search-field,
+  .archive-tools > button {
+    width: 100%;
+    flex: 0 0 auto;
+  }
+
+  .report-detail-backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .report-detail-backdrop .report-detail {
+    width: 100%;
+    height: min(88dvh, 760px);
+    border-width: 1px 0 0;
+    border-radius: 16px 16px 0 0;
+  }
+
+  .confirmation-item-toggle {
+    align-items: flex-start;
+  }
+
+  .confirmation-item-heading > div {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .confirmation-heading-actions {
+    gap: 6px;
+  }
+
+  .confirmation-item-body {
+    padding-inline: 12px;
+  }
+
+  .confirmation-decisions {
+    align-items: stretch;
+  }
+
+  .confirmation-decisions label {
+    flex: 1;
+    justify-content: center;
+  }
+
+  .archive-hero {
+    padding: 17px;
+  }
+
+  .archive-toolbar .report-tabs {
+    width: 100%;
+  }
+
+  .archive-toolbar .report-tabs button {
+    flex: 1;
+    padding-inline: 10px;
+  }
+
+  .archive-page .document-grid {
+    grid-template-columns: 1fr;
+    padding-block: 12px;
+  }
+
+  .archive-page .document-card {
+    grid-template-columns: 36px minmax(0, 1fr);
+  }
+
+  .archive-page .document-card > .tone-pill {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .period-archive-list article {
+    grid-template-columns: 34px minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .period-archive-list article > span:nth-last-child(2),
+  .period-archive-list article > .tone-pill {
+    grid-column: 2;
+    justify-self: start;
+    text-align: left;
+  }
+}

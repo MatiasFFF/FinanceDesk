@@ -414,16 +414,16 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
   const config = useMemo(() => {
     const base = COLLECTION_CONFIG[collection];
     if (collection === "users") {
+      const activeRoles = activeWorkspace.roles.filter((role) => role.status === "active");
       const selectableRoles = hasActiveUsers
-        ? activeWorkspace.roles
-        : activeWorkspace.roles.filter((role) => (
-          role.status === "active"
-          && ((role.permissions || []).includes("*") || (role.permissions || []).includes("workspace.manage"))
+        ? activeRoles
+        : activeRoles.filter((role) => (
+          (role.permissions || []).includes("*") || (role.permissions || []).includes("workspace.manage")
         ));
       return {
         ...base,
         fields: base.fields.map((field) => field.key === "roleId"
-          ? { ...field, options: selectableRoles.map((role) => [role.id, `${role.name}${role.status === "active" ? "" : "（停用）"}`]) }
+          ? { ...field, options: selectableRoles.map((role) => [role.id, role.name]) }
           : field),
       };
     }
@@ -532,7 +532,6 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
     <section className="foundation-section entity-editor">
       <div className="foundation-section-heading"><div><small>{collection === "users" ? "可新增、改名、调整角色、停用或删除" : "本地资料"}</small><h3><Icon size={18} />{config.title}</h3></div><span>{items.length} 条</span></div>
       {collection === "users" && !hasActiveUsers && <p className="foundation-hint">当前没有启用人员。首位启用人员需选择具备“管理工作台”权限的启用角色；保存后会自动成为当前本地操作身份。</p>}
-      {collection === "users" && items.some((item) => ["周会计", "林岚"].includes(item.name)) && <p className="foundation-hint">周会计、林岚只是当前模板的示例人员，可直接修改或删除；左下身份切换器会即时读取这里的有效人员。</p>}
       <div className="foundation-record-list">
         {items.map((item, index) => {
           const name = displayName(item, collection, config.title);
@@ -774,14 +773,19 @@ function LocalUserControl({ onToast }) {
   const { state, activeWorkspace, actions } = useFinanceDesk();
   const [error, setError] = useState("");
   const activeUsers = activeWorkspace.users.filter((user) => user.status === "active");
-  const currentUser = activeUsers.find((user) => user.id === state.activeUserId) || activeUsers[0];
-  const role = activeWorkspace.roles.find((item) => item.id === currentUser?.roleId || item.name === currentUser?.role);
+  const roleForUser = (user) => activeWorkspace.roles.find((item) => (
+    item.status === "active" && (item.id === user?.roleId || item.name === user?.role)
+  ));
+  const switchableUsers = activeUsers.filter((user) => roleForUser(user));
+  const unavailableUsers = activeUsers.filter((user) => !roleForUser(user));
+  const currentUser = switchableUsers.find((user) => user.id === state.activeUserId) || switchableUsers[0];
+  const role = roleForUser(currentUser);
 
   function switchUser(userId) {
     setError("");
     try {
       actions.switchUser(activeWorkspace.id, userId);
-      const user = activeUsers.find((item) => item.id === userId);
+      const user = switchableUsers.find((item) => item.id === userId);
       onToast?.(`当前本地操作身份已切换为「${user?.name || "未命名用户"}」`);
     } catch (caught) {
       setError(caught.message || "切换本地操作身份失败");
@@ -791,9 +795,10 @@ function LocalUserControl({ onToast }) {
   return (
     <section className="foundation-section local-user-control">
       <div className="foundation-section-heading"><div><small>审计与最小权限</small><h3><UsersThree size={18} />当前本地操作身份</h3></div><span>{role?.name || "无有效角色"}</span></div>
-      <label className="foundation-field"><span>以哪位人员操作</span><select value={currentUser?.id || ""} onChange={(event) => switchUser(event.target.value)} disabled={!activeUsers.length}>{activeUsers.map((user) => <option value={user.id} key={user.id}>{user.name} · {activeWorkspace.roles.find((item) => item.id === user.roleId)?.name || user.role || "未分配角色"}</option>)}</select></label>
+      <label className="foundation-field"><span>以哪位人员操作</span><select value={currentUser?.id || ""} onChange={(event) => switchUser(event.target.value)} disabled={!switchableUsers.length}>{switchableUsers.map((user) => <option value={user.id} key={user.id}>{user.name} · {roleForUser(user)?.name || "未分配角色"}</option>)}</select></label>
       <div className="permission-chip-list">{(role?.permissions || []).map((permission) => <span key={permission}>{PERMISSION_LABELS[permission] || permission}</span>)}</div>
       <p className="foundation-hint">这是当前浏览器里的操作身份，用于真实权限拦截和审计归属；它不是联网登录或多因素认证。</p>
+      {unavailableUsers.length > 0 && <p className="foundation-hint">{unavailableUsers.map((user) => user.name).join("、")} 的角色已停用或不存在；请先在“工作台人员”中改为启用角色。</p>}
       {error && <p className="entity-error">{error}</p>}
     </section>
   );

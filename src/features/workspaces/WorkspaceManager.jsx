@@ -44,6 +44,8 @@ export function WorkspaceManager({ open, onClose, onToast }) {
   const [sourceWorkspaceId, setSourceWorkspaceId] = useState(activeWorkspace.id);
   const [newModules, setNewModules] = useState(() => defaultWorkspaceModules("blank"));
   const [newName, setNewName] = useState("");
+  const [newOperatorName, setNewOperatorName] = useState("");
+  const [newFinanceContact, setNewFinanceContact] = useState("");
   const [renameValue, setRenameValue] = useState(activeWorkspace.name);
   const [importMode, setImportMode] = useState("merge");
   const [error, setError] = useState("");
@@ -58,9 +60,8 @@ export function WorkspaceManager({ open, onClose, onToast }) {
   function currentActorName() {
     const latest = store.getState();
     const currentWorkspace = latest.workspaces.find((workspace) => workspace.id === latest.activeWorkspaceId);
-    return currentWorkspace?.users
-      ?.find((user) => user.id === latest.activeUserId && user.status === "active")
-      ?.name?.trim() || "本地用户";
+    const activeUsers = currentWorkspace?.users?.filter((user) => user.status === "active") || [];
+    return (activeUsers.find((user) => user.id === latest.activeUserId) || activeUsers[0])?.name?.trim() || "本地用户";
   }
 
   useEffect(() => {
@@ -174,12 +175,21 @@ export function WorkspaceManager({ open, onClose, onToast }) {
     try {
       const input = createMode === "copy"
         ? { name, sourceWorkspaceId, modules: newModules }
-        : { name, industry: "其他服务业", taxpayerType: "小规模纳税人", modules: newModules };
+        : {
+          name,
+          industry: "其他服务业",
+          taxpayerType: "小规模纳税人",
+          modules: newModules,
+          initialUserName: newOperatorName.trim(),
+          financeContact: newFinanceContact.trim(),
+        };
       created = actions.createWorkspace(input);
       if (createMode === "copy") {
         await copyWorkspaceLocalFiles({ store, fileVault, sourceWorkspaceId, targetWorkspaceId: created.id });
       }
       setNewName("");
+      setNewOperatorName("");
+      setNewFinanceContact("");
       onToast?.(`已创建「${name}」`);
     } catch (caught) {
       if (created) {
@@ -426,6 +436,11 @@ export function WorkspaceManager({ open, onClose, onToast }) {
               <label className="foundation-field"><span>名称</span><input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="例如：静安门店" /></label>
               <label className="foundation-field"><span>创建方式</span><select value={createMode} onChange={(event) => setCreationMode(event.target.value)}><option value="blank">空白工作台</option><option value="copy">复制现有工作台</option></select></label>
               {createMode === "copy" && <label className="foundation-field"><span>复制来源</span><select value={sourceWorkspaceId} onChange={(event) => selectCopySource(event.target.value)}>{state.workspaces.map((workspace) => <option value={workspace.id} key={workspace.id}>{workspace.name}</option>)}</select></label>}
+              {createMode === "blank" && <>
+                <label className="foundation-field"><span>首位本地操作人员（可选）</span><input value={newOperatorName} onChange={(event) => setNewOperatorName(event.target.value)} placeholder="填写实际姓名" /></label>
+                <label className="foundation-field"><span>财务负责人（可选）</span><input value={newFinanceContact} onChange={(event) => setNewFinanceContact(event.target.value)} placeholder="填写实际姓名或岗位" /></label>
+                <p className="foundation-hint">两项都可留空；创建后仍可在基础资料中新增、改名、调整角色或补充企业负责人。</p>
+              </>}
               <div className="workspace-module-grid" role="group" aria-label="新工作台启用模块">
                 {WORKSPACE_MODULE_OPTIONS.map((module) => {
                   const enabled = Boolean(newModules[module.id]);
