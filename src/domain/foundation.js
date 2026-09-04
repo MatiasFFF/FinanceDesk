@@ -44,13 +44,13 @@ const DEFAULT_ROLE_DEFINITIONS = [
   {
     id: "role-owner",
     name: "经营者",
-    permissions: ["workspace.manage", "data.read", "data.write", "confirm.owner"],
+    permissions: ["workspace.manage", "data.read", "data.write", "documents.add", "rules.manage", "confirm.finance", "confirm.owner"],
     status: "active",
   },
   {
     id: "role-finance",
     name: "财务负责人",
-    permissions: ["data.read", "data.write", "rules.manage", "confirm.finance"],
+    permissions: ["workspace.manage", "data.read", "data.write", "documents.add", "rules.manage", "confirm.finance"],
     status: "active",
   },
   {
@@ -60,6 +60,10 @@ const DEFAULT_ROLE_DEFINITIONS = [
     status: "active",
   },
 ];
+
+const BUILTIN_ROLE_REQUIRED_PERMISSIONS = Object.fromEntries(
+  DEFAULT_ROLE_DEFINITIONS.map((role) => [role.id, role.permissions]),
+);
 
 const DEFAULT_RULE_SET = {
   id: "rules-default",
@@ -182,7 +186,8 @@ export function normalizeWorkspace(input, options = {}) {
     status: "active",
     address: "",
   }];
-  const users = (workspace.users || []).map((user, index) => ({
+  const sourceUsers = workspace.users?.length ? workspace.users : [{ id: "user-accountant", name: "本地负责人", roleId: "role-owner", role: "经营者" }];
+  const users = sourceUsers.map((user, index) => ({
     id: user.id || `user-${index + 1}`,
     name: user.name || "未命名用户",
     roleId: user.roleId || (user.role === "经营者" ? "role-owner" : "role-finance"),
@@ -191,7 +196,14 @@ export function normalizeWorkspace(input, options = {}) {
     localOnly: true,
     ...user,
   }));
-  const roles = workspace.roles?.length ? workspace.roles : DEFAULT_ROLE_DEFINITIONS;
+  const roleSource = workspace.roles?.length ? workspace.roles : DEFAULT_ROLE_DEFINITIONS;
+  const roles = roleSource.map((role) => ({
+    ...role,
+    permissions: [...new Set([
+      ...(role.permissions || []),
+      ...(BUILTIN_ROLE_REQUIRED_PERMISSIONS[role.id] || []),
+    ])],
+  }));
   const legacyRule = workspace.rules || {};
   const ruleSets = workspace.ruleSets?.length ? workspace.ruleSets : [{
     ...DEFAULT_RULE_SET,
@@ -209,7 +221,7 @@ export function normalizeWorkspace(input, options = {}) {
     externalConnection: "not_connected",
     ...account,
   }));
-  const authorizations = workspace.authorizations?.length ? workspace.authorizations : [
+  const authorizationSource = workspace.authorizations?.length ? workspace.authorizations : [
     {
       id: `authorization-bank-${id}`,
       system: "bank",
@@ -238,6 +250,18 @@ export function normalizeWorkspace(input, options = {}) {
       note: "未来能力；当前资料仅由浏览器本地处理。",
     },
   ];
+  const authorizations = authorizationSource.map((authorization) => ({
+    grantedBy: "",
+    grantedAt: null,
+    expiresAt: null,
+    revokedAt: null,
+    proofDocumentId: null,
+    externalConnection: false,
+    ...authorization,
+  }));
+  const currentPeriod = workspace.currentPeriod || timestamp.slice(0, 7);
+  const deliverySource = workspace.delivery || {};
+  const filingSource = deliverySource.filing || {};
 
   const normalized = {
     ...workspace,
@@ -248,6 +272,8 @@ export function normalizeWorkspace(input, options = {}) {
     isDemo: Boolean(workspace.isDemo),
     createdAt: workspace.createdAt || timestamp,
     updatedAt: workspace.updatedAt || timestamp,
+    currentPeriod,
+    periods: [...new Set([currentPeriod, ...(workspace.periods || [])])],
     company,
     books: uniqueById(books.map((item) => timestamped(item, timestamp))),
     stores: uniqueById(stores.map((item) => timestamped(item, timestamp))),
@@ -273,6 +299,25 @@ export function normalizeWorkspace(input, options = {}) {
     confirmations: uniqueById((workspace.confirmations || []).map((item) => timestamped(item, timestamp))),
     reportVersions: uniqueById((workspace.reportVersions || []).map((item) => timestamped(item, timestamp))),
     auditLog: uniqueById((workspace.auditLog || []).map((item) => timestamped(item, timestamp))),
+    tax: { period: currentPeriod, ...(workspace.tax || {}) },
+    delivery: {
+      ...deliverySource,
+      reportVersions: uniqueById((deliverySource.reportVersions || []).map((item) => timestamped(item, timestamp))),
+      filing: {
+        period: currentPeriod,
+        draftCreatedAt: null,
+        draftVersionId: null,
+        initialConfirmationId: null,
+        finalConfirmedVersionId: null,
+        exportedAt: null,
+        exportedPackage: null,
+        receipt: null,
+        archivedAt: null,
+        ...filingSource,
+      },
+      archives: uniqueById((deliverySource.archives || []).map((item) => timestamped(item, timestamp))),
+      notices: uniqueById((deliverySource.notices || []).map((item) => timestamped(item, timestamp))),
+    },
     stages: { ...defaultStages(), ...(workspace.stages || {}) },
     integrations: {
       bank: { availability: "future", connected: false, currentMethod: "local-file-import" },
@@ -383,10 +428,14 @@ export function migrateState(rawState, options = {}) {
   const activeWorkspaceId = workspaces.some((item) => item.id === source.activeWorkspaceId)
     ? source.activeWorkspaceId
     : workspaces[0].id;
+  const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId) || workspaces[0];
+  const activeUserId = activeWorkspace.users.some((user) => user.id === source.activeUserId && user.status === "active")
+    ? source.activeUserId
+    : activeWorkspace.users.find((user) => user.status === "active")?.id || null;
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     activeWorkspaceId,
-    activeUserId: source.activeUserId || workspaces[0].users[0]?.id || null,
+    activeUserId,
     createdAt: source.createdAt || timestamp,
     updatedAt: timestamp,
     workspaces,
@@ -410,6 +459,10 @@ export function validateState(state) {
     });
   });
   if (state.workspaces?.length && !ids.has(state.activeWorkspaceId)) errors.push("当前工作台不存在");
+  const activeWorkspace = state.workspaces?.find((workspace) => workspace.id === state.activeWorkspaceId);
+  if (activeWorkspace && !activeWorkspace.users.some((user) => user.id === state.activeUserId && user.status === "active")) {
+    errors.push("当前本地操作用户不属于活动工作台或已停用");
+  }
   return { ok: errors.length === 0, errors };
 }
 
@@ -421,6 +474,47 @@ export function assertValidState(state) {
 
 export function getWorkspace(state, workspaceId = state.activeWorkspaceId) {
   return state.workspaces.find((workspace) => workspace.id === workspaceId) || null;
+}
+
+export function activeWorkspaceUser(state, workspaceId = state.activeWorkspaceId) {
+  const workspace = getWorkspace(state, workspaceId);
+  if (!workspace) return null;
+  return workspace.users.find((user) => user.id === state.activeUserId && user.status === "active")
+    || workspace.users.find((user) => user.status === "active")
+    || null;
+}
+
+export function workspaceUserPermissions(state, workspaceId = state.activeWorkspaceId) {
+  const workspace = getWorkspace(state, workspaceId);
+  const user = activeWorkspaceUser(state, workspaceId);
+  if (!workspace || !user || user.status !== "active") return [];
+  const role = workspace.roles.find((candidate) => candidate.id === user.roleId || candidate.name === user.role);
+  if (!role || role.status !== "active") return [];
+  return [...new Set(role.permissions || [])];
+}
+
+export function assertWorkspacePermission(state, workspaceId, permission) {
+  const user = activeWorkspaceUser(state, workspaceId);
+  if (!user) throw new Error("当前工作台没有可用的本地用户，请先由工作台负责人恢复人员配置");
+  const permissions = workspaceUserPermissions(state, workspaceId);
+  if (!permissions.includes("*") && !permissions.includes(permission)) {
+    throw new Error(`当前用户「${user.name}」缺少权限 ${permission}`);
+  }
+  return user;
+}
+
+export function switchActiveUser(state, workspaceId, userId, options = {}) {
+  const timestamp = options.timestamp || nowIso(options.now);
+  const workspace = getWorkspace(state, workspaceId);
+  const user = workspace?.users?.find((candidate) => candidate.id === userId);
+  if (!user || user.status !== "active") throw new Error("只能切换到当前工作台中的启用用户");
+  const next = { ...state, activeWorkspaceId: workspaceId, activeUserId: userId, updatedAt: timestamp };
+  return assertValidState(appendRootAudit(next, {
+    actor: user.name,
+    action: "切换本地操作用户",
+    detail: `当前操作身份切换为「${user.name}」`,
+    workspaceId,
+  }, timestamp));
 }
 
 function appendRootAudit(state, event, timestamp) {
@@ -504,6 +598,9 @@ export function addWorkspace(state, input = {}, options = {}) {
     ...state,
     workspaces: [...state.workspaces, workspace],
     activeWorkspaceId: input.activate === false ? state.activeWorkspaceId : workspace.id,
+    activeUserId: input.activate === false
+      ? state.activeUserId
+      : workspace.users.find((user) => user.status === "active")?.id || null,
     updatedAt: timestamp,
   };
   return {
@@ -533,7 +630,10 @@ export function switchWorkspace(state, workspaceId, options = {}) {
   const target = getWorkspace(state, workspaceId);
   if (!target) throw new Error(`找不到工作台：${workspaceId}`);
   const timestamp = options.timestamp || nowIso(options.now);
-  return assertValidState(appendRootAudit({ ...state, activeWorkspaceId: workspaceId, updatedAt: timestamp }, {
+  const activeUserId = target.users.find((user) => user.id === state.activeUserId && user.status === "active")?.id
+    || target.users.find((user) => user.status === "active")?.id
+    || null;
+  return assertValidState(appendRootAudit({ ...state, activeWorkspaceId: workspaceId, activeUserId, updatedAt: timestamp }, {
     actor: options.actor,
     action: "切换工作台",
     detail: `切换到「${target.name}」`,
@@ -551,6 +651,9 @@ export function deleteWorkspace(state, workspaceId, options = {}) {
     ...state,
     workspaces,
     activeWorkspaceId: state.activeWorkspaceId === workspaceId ? workspaces[0].id : state.activeWorkspaceId,
+    activeUserId: state.activeWorkspaceId === workspaceId
+      ? workspaces[0].users.find((user) => user.status === "active")?.id || null
+      : state.activeUserId,
     updatedAt: timestamp,
   };
   return assertValidState(appendRootAudit(next, {
@@ -594,6 +697,17 @@ export function clearWorkspace(state, workspaceId, options = {}) {
       taxpayerType: workspace.company?.taxpayerType,
       currentPeriod: workspace.currentPeriod,
     }, options);
+    const currentUser = workspace.users.find((user) => user.id === state.activeUserId && user.status === "active");
+    if (currentUser) {
+      blank.users = [{
+        ...blank.users[0],
+        id: currentUser.id,
+        name: currentUser.name,
+        roleId: "role-owner",
+        role: "经营者",
+        status: "active",
+      }];
+    }
     return { ...blank, auditLog: workspace.auditLog };
   }, {
     actor: options.actor,
@@ -615,9 +729,43 @@ export function updateCompanyProfile(state, workspaceId, patch, options = {}) {
   }, options);
 }
 
+export function stageCompletionIssues(workspace, stage, at = new Date().toISOString()) {
+  if (!workspace) return ["工作台不存在"];
+  const missingOrPending = (collections) => collections.flatMap((collection) => (workspace[collection] || [])
+    .filter((item) => ["missing", "pending"].includes(item.status))
+    .map((item) => `${collection}/${item.name || item.title || item.no || item.id}`));
+  if (stage === "s0") {
+    const issues = [];
+    if (!String(workspace.company?.legalName || "").trim()) issues.push("企业名称未填写");
+    if (!workspace.books.some((item) => item.status === "active")) issues.push("没有启用账套");
+    if (!workspace.stores.some((item) => item.status === "active")) issues.push("没有启用门店");
+    if (!workspace.users.some((item) => item.status === "active")) issues.push("没有启用用户");
+    if (!workspace.roles.some((item) => item.status === "active")) issues.push("没有启用角色");
+    const expiredRecords = workspace.authorizations.filter((item) => item.expiresAt && Date.parse(item.expiresAt) <= Date.parse(at) && !["revoked", "expired"].includes(item.status));
+    if (expiredRecords.length) issues.push(`${expiredRecords.length} 条授权已过期`);
+    return issues;
+  }
+  if (stage === "s1") {
+    const activeRules = workspace.ruleSets.filter((item) => item.status === "active");
+    return activeRules.length === 1 ? [] : [activeRules.length ? "同时存在多个启用规则版本" : "没有启用账务规则"];
+  }
+  if (stage === "s2") return missingOrPending(["counterparties", "contracts", "bills", "businessEvents"]);
+  if (stage === "s3") {
+    return (workspace.bankImports || []).filter((item) => item.status !== "completed" || !item.reconciliation?.passed)
+      .map((item) => `bankImports/${item.fileName || item.id}`);
+  }
+  if (stage === "s4") return missingOrPending(["invoices", "approvals", "personnelRecords"]);
+  return ["未知阶段"];
+}
+
 export function setWorkspaceStageStatus(state, workspaceId, stage, status, options = {}) {
   if (!/^s[0-4]$/.test(stage)) throw new Error(`当前底座只允许更新 S0-S4：${stage}`);
   const timestamp = options.timestamp || nowIso(options.now);
+  const workspace = getWorkspace(state, workspaceId);
+  if (status === "complete") {
+    const issues = stageCompletionIssues(workspace, stage, timestamp);
+    if (issues.length) throw new Error(`${stage.toUpperCase()} 仍有未完成事项：${issues.slice(0, 3).join("、")}`);
+  }
   return updateWorkspace(state, workspaceId, (workspace) => ({
     ...workspace,
     stages: {
@@ -657,12 +805,22 @@ export function upsertWorkspaceEntity(state, workspaceId, collection, values, op
   const item = timestamped({ ...deepClone(values), id: values.id || createId(collection.slice(0, -1) || "item") }, timestamp);
   const currentWorkspace = getWorkspace(state, workspaceId);
   if (!currentWorkspace) throw new Error(`找不到工作台：${workspaceId}`);
+  if (collection === "users" && item.id === state.activeUserId && item.status !== "active") {
+    throw new Error("当前正在使用的本地用户不能停用；请先切换到其他启用用户");
+  }
+  const activeUser = activeWorkspaceUser(state, workspaceId);
+  if (collection === "roles" && item.status !== "active" && activeUser && (activeUser.roleId === item.id || activeUser.role === item.name)) {
+    throw new Error("当前用户所属角色不能停用；请先切换用户或调整该用户角色");
+  }
   const created = !(currentWorkspace[collection] || []).some((candidate) => candidate.id === item.id);
   const next = updateWorkspace(state, workspaceId, (workspace) => {
     const existing = workspace[collection] || [];
+    const prepared = collection === "ruleSets" && item.status === "active"
+      ? existing.map((candidate) => candidate.id === item.id ? candidate : { ...candidate, status: "inactive", updatedAt: timestamp })
+      : existing;
     const items = created
-      ? [...existing, item]
-      : existing.map((candidate) => candidate.id === item.id ? { ...candidate, ...item, createdAt: candidate.createdAt, updatedAt: timestamp } : candidate);
+      ? [...prepared, item]
+      : prepared.map((candidate) => candidate.id === item.id ? { ...candidate, ...item, createdAt: candidate.createdAt, updatedAt: timestamp } : candidate);
     return { ...workspace, [collection]: items };
   }, {
     actor: options.actor,
@@ -674,6 +832,35 @@ export function upsertWorkspaceEntity(state, workspaceId, collection, values, op
   return { state: next, item: getWorkspace(next, workspaceId)[collection].find((candidate) => candidate.id === item.id), created };
 }
 
+function collectReferencePaths(workspace, collection, itemId) {
+  const root = {
+    ...workspace,
+    [collection]: (workspace[collection] || []).filter((item) => item.id !== itemId),
+    auditLog: [],
+  };
+  if (collection === "bankAccounts") root.accounts = [];
+  const paths = [];
+  function visit(value, path) {
+    if (paths.length >= 6 || value == null) return;
+    if (typeof value === "string") {
+      if (value === itemId) paths.push(path.join("."));
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => visit(item, [...path, String(index)]));
+      return;
+    }
+    if (typeof value === "object") {
+      Object.entries(value).forEach(([key, item]) => {
+        if (key === itemId) paths.push([...path, key].join("."));
+        visit(item, [...path, key]);
+      });
+    }
+  }
+  visit(root, []);
+  return [...new Set(paths)];
+}
+
 export function removeWorkspaceEntity(state, workspaceId, collection, itemId, options = {}) {
   if (!ALL_MUTABLE_COLLECTIONS.has(collection) && collection !== "bankAccounts") {
     throw new Error(`不允许删除集合：${collection}`);
@@ -681,9 +868,16 @@ export function removeWorkspaceEntity(state, workspaceId, collection, itemId, op
   const workspace = getWorkspace(state, workspaceId);
   const item = workspace?.[collection]?.find((candidate) => candidate.id === itemId);
   if (!item) throw new Error(`找不到要删除的记录：${collection}/${itemId}`);
+  if (state.activeUserId === itemId) throw new Error("当前正在使用的本地用户不能删除；请先切换用户或停用该用户");
+  if (collection === "ruleSets" && item.status === "active") throw new Error("正在生效的规则版本不能删除；请先启用另一版本或将其停用");
+  const references = collectReferencePaths(workspace, collection, itemId);
+  if (references.length) {
+    throw new Error(`该记录仍被 ${references.slice(0, 3).join("、")} 引用，不能直接删除；请先解除关联或改为停用`);
+  }
   return updateWorkspace(state, workspaceId, (current) => ({
     ...current,
     [collection]: current[collection].filter((candidate) => candidate.id !== itemId),
+    ...(collection === "bankAccounts" ? { accounts: current.accounts.filter((candidate) => candidate.id !== itemId) } : {}),
   }), {
     actor: options.actor,
     action: `删除${options.label || collection}`,
@@ -704,14 +898,28 @@ export function setWorkspaceEntityStatus(state, workspaceId, collection, itemId,
 }
 
 export function recordLocalAuthorization(state, workspaceId, values, options = {}) {
+  const timestamp = options.timestamp || nowIso(options.now);
+  const expiresAt = values.expiresAt || null;
+  if (expiresAt && Number.isNaN(Date.parse(expiresAt))) throw new Error("授权有效期不是有效日期");
+  const workspace = getWorkspace(state, workspaceId);
+  if (values.proofDocumentId && !workspace?.documents?.some((document) => document.id === values.proofDocumentId)) {
+    throw new Error("授权凭证不属于当前工作台");
+  }
+  const expired = expiresAt ? Date.parse(expiresAt) <= Date.parse(timestamp) : false;
+  const revoked = values.status === "revoked";
   return upsertWorkspaceEntity(state, workspaceId, "authorizations", {
-    status: "recorded",
-    grantedAt: values.grantedAt || nowIso(options.now),
     ...values,
+    status: revoked ? "revoked" : expired ? "expired" : (values.status || "recorded"),
+    grantedAt: values.grantedAt || timestamp,
+    grantedBy: values.grantedBy || options.actor || "本地负责人",
+    expiresAt,
+    revokedAt: revoked ? (values.revokedAt || timestamp) : null,
+    proofDocumentId: values.proofDocumentId || null,
     mode: "local-record",
     externalConnection: false,
   }, {
     ...options,
+    timestamp,
     label: "本地授权记录",
     detail: options.detail || `${values.label || values.system || "数据源"}：仅记录授权，不建立外部连接`,
   });

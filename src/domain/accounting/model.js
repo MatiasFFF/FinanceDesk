@@ -106,7 +106,7 @@ export function accountingRules(workspace) {
   const activeRuleSet = [...(workspace.ruleSets || [])]
     .filter((ruleSet) => ruleSet.status === "active")
     .sort((left, right) => String(left.updatedAt || "").localeCompare(String(right.updatedAt || "")))
-    .at(-1) || workspace.ruleSets?.[0] || {};
+    .at(-1) || {};
   return {
     ...DEFAULT_ACCOUNTING_RULES,
     ...(workspace.rules || {}),

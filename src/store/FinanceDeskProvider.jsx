@@ -1,6 +1,7 @@
-import { createContext, useContext, useMemo, useRef, useSyncExternalStore } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 
 import { createBrowserFileVault } from "../features/intake/browserFileVault.js";
+import { refreshLocalFileAvailability } from "../features/intake/documentIntake.js";
 import { createFinanceDeskStore } from "./financeDeskStore.js";
 
 const FinanceDeskContext = createContext(null);
@@ -15,6 +16,14 @@ export function FinanceDeskProvider({ children, store: suppliedStore, fileVault:
     if (!globalThis.indexedDB) return null;
     return createBrowserFileVault();
   }, [suppliedFileVault]);
+  useEffect(() => {
+    if (!fileVault) return undefined;
+    let active = true;
+    refreshLocalFileAvailability({ store, fileVault }).catch((error) => {
+      if (active) console.warn("本地文件归属核对失败", error);
+    });
+    return () => { active = false; };
+  }, [store, fileVault]);
   const value = useMemo(() => ({
     store,
     state,

@@ -31,7 +31,6 @@ import {
 } from "@phosphor-icons/react";
 import { transactionStatus, uid } from "./financeData.js";
 import {
-  attachEvidenceDocument,
   createCustomerConfirmationPackage,
   freezeReportVersion as freezeAccountingReportVersion,
   recordCustomerConfirmation,
@@ -40,7 +39,7 @@ import {
 } from "./domain/accounting/index.js";
 import { AccountingWorkbench } from "./features/accounting/AccountingWorkbench.jsx";
 import { BankImportPanel } from "./features/intake/BankImportPanel.jsx";
-import { copyWorkspaceLocalFiles, saveLocalDocument } from "./features/intake/documentIntake.js";
+import { copyWorkspaceLocalFiles, removeLocalDocument, saveLocalDocument } from "./features/intake/documentIntake.js";
 import { FoundationRecordsPanel } from "./features/workspaces/FoundationRecordsPanel.jsx";
 import { WorkspaceManager } from "./features/workspaces/WorkspaceManager.jsx";
 import {
@@ -215,7 +214,7 @@ function BottomNav({ page, onPage }) {
   );
 }
 
-function Topbar({ state, workspace, page, onPeriod, onImport, onSwitchWorkspace, onOpenWorkspaceDialog }) {
+function Topbar({ state, workspace, page, onImport, onSwitchWorkspace, onOpenWorkspaceDialog }) {
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [title, subtitle] = PAGE_HEADINGS[page];
@@ -231,7 +230,7 @@ function Topbar({ state, workspace, page, onPeriod, onImport, onSwitchWorkspace,
           <button className="secondary-button mobile-workspace" onClick={() => setWorkspaceOpen((value) => !value)} type="button"><span>{workspace?.name || "选择工作台"}</span><CaretDown size={14} /></button>
           {workspaceOpen && <WorkspaceMenu state={state} activeWorkspace={workspace} onSwitch={onSwitchWorkspace} onOpenDialog={onOpenWorkspaceDialog} onClose={() => setWorkspaceOpen(false)} />}
         </div>
-        {workspace && <label className="period-select"><CalendarBlank size={18} /><select value={workspace.currentPeriod} onChange={(event) => onPeriod(event.target.value)} aria-label="选择账期">{workspace.periods.map((period) => <option key={period} value={period}>{formatPeriod(period)}</option>)}</select><CaretDown size={14} /></label>}
+        {workspace && <div className="period-select" aria-label={`当前活动账期 ${formatPeriod(workspace.currentPeriod)}`} title="历史账期请在资料归档中查看；新账期由归档流程创建"><CalendarBlank size={18} /><span><small>活动账期</small><strong>{formatPeriod(workspace.currentPeriod)}</strong></span></div>}
         {workspace && (page === "overview" || page === "reconcile") && <button className="primary-button" onClick={onImport} type="button"><UploadSimple size={18} weight="bold" />本地导入</button>}
         {workspace && (
           <div className="menu-wrap">
@@ -438,20 +437,30 @@ function CheckRows({ items, onNavigate }) {
 }
 
 function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onInitialConfirm, onDispute, onPrepareDraft, onFinalConfirm, onExport, onReceipt }) {
-  const [financeChecked, setFinanceChecked] = useState(false);
-  const [payrollChecked, setPayrollChecked] = useState(false);
+  const [sectionChecks, setSectionChecks] = useState({});
   const [finalChecked, setFinalChecked] = useState(false);
   const [confirmer, setConfirmer] = useState(workspace.tax.confirmedBy || "");
   const [disputeSection, setDisputeSection] = useState("finance");
   const [disputeNote, setDisputeNote] = useState("");
   const receiptInput = useRef(null);
-  useEffect(() => { setFinanceChecked(false); setPayrollChecked(false); setFinalChecked(false); setConfirmer(workspace.tax.confirmedBy || ""); setDisputeSection("finance"); setDisputeNote(""); }, [workspace.id, workspace.currentPeriod]);
+  useEffect(() => { setSectionChecks({}); setFinalChecked(false); setConfirmer(workspace.tax.confirmedBy || ""); setDisputeSection("finance"); setDisputeNote(""); }, [workspace.id, workspace.currentPeriod]);
   const flow = workflowChecks(workspace);
   const version = flow.version;
   const snapshot = version?.snapshot || flow.snapshot;
   const prerequisiteChecks = flow.checks.slice(0, 5);
-  const initialReady = prerequisiteChecks.every((item) => item.ok) && financeChecked && payrollChecked;
   const initialDone = flow.checks.find((item) => item.id === "finance")?.ok && flow.checks.find((item) => item.id === "payroll")?.ok;
+  const workpaperById = Object.fromEntries(snapshot.taxWorkpaper.rows.map((row) => [row.id, row]));
+  const confirmationItems = [
+    { id: "finance", label: "财务报表与关键数字", detail: `资产 ${formatCurrency(snapshot.summary.assets)} · 利润 ${formatCurrency(snapshot.summary.profit)}` },
+    { id: "revenue", label: "收入金额", detail: formatCurrency(snapshot.summary.revenue) },
+    { id: "costExpense", label: "成本和费用", detail: formatCurrency(Number(snapshot.summary.cost || 0) + Number(snapshot.summary.expenses || 0)) },
+    { id: "vat", label: "应交税额", detail: formatCurrency(workpaperById.vatPayable?.value || 0) },
+    { id: "inputVat", label: "进项税额", detail: formatCurrency(workpaperById.inputVat?.value || 0) },
+    { id: "payroll", label: "工资薪金", detail: formatCurrency(workspace.tax.payroll) },
+    { id: "socialSecurity", label: "社保数据", detail: formatCurrency(workspace.tax.socialSecurity) },
+    { id: "openItems", label: "待核实事项", detail: flow.openExceptionTasks.length || flow.unresolved.length || flow.openNotices.length ? `${flow.openExceptionTasks.length + flow.unresolved.length + flow.openNotices.length} 项未完成` : "当前为 0 项" },
+  ];
+  const initialReady = prerequisiteChecks.every((item) => item.ok) && confirmationItems.every((item) => sectionChecks[item.id]);
   const finalReady = prerequisiteChecks.every((item) => item.ok) && initialDone && Boolean(workspace.delivery.filing.draftCreatedAt) && finalChecked && confirmer.trim().length > 0;
   const exportReady = flow.export.every((item) => item.ok);
   const filing = workspace.delivery.filing;
@@ -461,12 +470,12 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onInitialConfirm
       <section className="tax-boundary-card"><span className="boundary-icon"><CloudSlash size={27} /></span><div><p className="eyebrow">安全边界</p><h2>电子税务局未连接</h2><p>第一版只生成本地底稿与申报包。真实填报、提交和缴税必须在电子税务局或未来的本地安全执行器中完成。</p></div><TonePill tone="neutral">后续连接能力</TonePill></section>
       <div className="tax-layout">
         <div className="tax-main-column">
-          <section className="panel workpaper-panel"><div className="panel-heading"><div><p className="eyebrow">S10–S11 · 申报底稿</p><h2>{formatPeriod(workspace.currentPeriod)} 本地复核稿</h2></div>{version ? <TonePill tone="success">基于 {version.label}</TonePill> : <TonePill tone="warning">尚未冻结报表</TonePill>}</div><div className="workpaper-grid">{snapshot.taxWorkpaper.rows.map((row) => <div key={row.id}><span>{row.label}</span><strong>{formatCurrency(row.value)}</strong></div>)}</div><p className="workpaper-disclaimer"><WarningCircle size={16} />{snapshot.taxWorkpaper.disclaimer}</p><div className="tax-input-grid"><label><span>税会调整</span><input type="number" step="0.01" value={workspace.tax.adjustments} onChange={(event) => onTaxChange("adjustments", Number(event.target.value))} onBlur={() => onTaxCommit("adjustments")} /></label><label><span>工资薪金</span><input type="number" step="0.01" value={workspace.tax.payroll} onChange={(event) => onTaxChange("payroll", Number(event.target.value))} onBlur={() => onTaxCommit("payroll")} /></label><label><span>社保数据</span><input type="number" step="0.01" value={workspace.tax.socialSecurity} onChange={(event) => onTaxChange("socialSecurity", Number(event.target.value))} onBlur={() => onTaxCommit("socialSecurity")} /></label><label className="full"><span>复核备注</span><textarea value={workspace.tax.note} onChange={(event) => onTaxChange("note", event.target.value)} onBlur={() => onTaxCommit("note")} placeholder="记录本期特殊口径或待说明事项" /></label></div><p className="edit-warning">修改底稿会撤销后续确认与导出状态；请重新冻结报表版本后再继续。</p></section>
+          <section className="panel workpaper-panel"><div className="panel-heading"><div><p className="eyebrow">S10–S11 · 申报底稿</p><h2>{formatPeriod(workspace.currentPeriod)} 本地复核稿</h2></div>{version ? <TonePill tone="success">基于 {version.label}</TonePill> : <TonePill tone="warning">尚未冻结报表</TonePill>}</div><div className="workpaper-grid">{snapshot.taxWorkpaper.rows.map((row) => <div key={row.id}><span>{row.label}</span><strong>{formatCurrency(row.value)}</strong></div>)}</div><p className="workpaper-disclaimer"><WarningCircle size={16} />{snapshot.taxWorkpaper.disclaimer}</p><div className="tax-input-grid"><label><span>增值税计税基础调整</span><input type="number" step="0.01" value={workspace.tax.adjustments} onChange={(event) => onTaxChange("adjustments", Number(event.target.value))} onBlur={() => onTaxCommit("adjustments")} /></label><label><span>工资薪金</span><input type="number" step="0.01" value={workspace.tax.payroll} onChange={(event) => onTaxChange("payroll", Number(event.target.value))} onBlur={() => onTaxCommit("payroll")} /></label><label><span>社保数据</span><input type="number" step="0.01" value={workspace.tax.socialSecurity} onChange={(event) => onTaxChange("socialSecurity", Number(event.target.value))} onBlur={() => onTaxCommit("socialSecurity")} /></label><label className="full"><span>复核备注</span><textarea value={workspace.tax.note} onChange={(event) => onTaxChange("note", event.target.value)} onBlur={() => onTaxCommit("note")} placeholder="记录本期特殊口径或待说明事项" /></label></div><p className="edit-warning">修改底稿会撤销后续确认与导出状态；请重新冻结报表版本后再继续。</p></section>
           <section className="panel confirmation-panel">
             <div className="panel-heading"><div><p className="eyebrow">第一次客户确认</p><h2>确认财务数据与工资社保</h2></div>{initialDone && <TonePill tone="success">已确认</TonePill>}</div>
             <CheckRows items={prerequisiteChecks} onNavigate={onPage} />
-            <div className="confirmation-options"><label><input type="checkbox" checked={financeChecked || Boolean(workspace.tax.financeConfirmedAt)} disabled={Boolean(workspace.tax.financeConfirmedAt)} onChange={(event) => setFinanceChecked(event.target.checked)} /><span><strong>我已查看收入、成本费用、预计税额和三大报表</strong><small>有异议时先回到流水或报表处理，不带疑问进入申报。</small></span></label><label><input type="checkbox" checked={payrollChecked || Boolean(workspace.tax.payrollConfirmedAt)} disabled={Boolean(workspace.tax.payrollConfirmedAt)} onChange={(event) => setPayrollChecked(event.target.checked)} /><span><strong>我已单独核对工资薪金与社保数据</strong><small>此确认与最终提交责任确认分开记录。</small></span></label></div>
-            <div className="dispute-box"><div><strong>有异议，退回 S7</strong><small>选择有问题的部分并写明原因；系统会形成真实异常任务，不能继续申报。</small></div><label><span>异议部分</span><select value={disputeSection} onChange={(event) => setDisputeSection(event.target.value)}><option value="finance">财务报表</option><option value="revenue">收入</option><option value="vat">增值税</option><option value="payroll">工资</option><option value="socialSecurity">社保</option></select></label><label><span>异议说明</span><textarea value={disputeNote} onChange={(event) => setDisputeNote(event.target.value)} placeholder="例如：8 月课程收入与经营系统差 1,200 元" /></label><button className="secondary-button" disabled={!flow.version || !disputeNote.trim()} onClick={() => { onDispute(disputeSection, disputeNote.trim()); setDisputeNote(""); }} type="button">提交异议并退回复核</button></div>
+            <div className="confirmation-options">{confirmationItems.map((item) => <label key={item.id}><input type="checkbox" checked={Boolean(initialDone || sectionChecks[item.id])} disabled={Boolean(initialDone)} onChange={(event) => setSectionChecks((current) => ({ ...current, [item.id]: event.target.checked }))} /><span><strong>{item.label}</strong><small>{item.detail} · 请逐项核对；有异议时不要勾选。</small></span></label>)}</div>
+            <div className="dispute-box"><div><strong>有异议，退回 S7</strong><small>选择有问题的部分并写明原因；系统会形成真实异常任务，不能继续申报。</small></div><label><span>异议部分</span><select value={disputeSection} onChange={(event) => setDisputeSection(event.target.value)}><option value="finance">财务报表</option><option value="revenue">收入</option><option value="costExpense">成本和费用</option><option value="vat">应交税额</option><option value="inputVat">进项税额</option><option value="payroll">工资</option><option value="socialSecurity">社保</option><option value="openItems">待核实事项</option></select></label><label><span>异议说明</span><textarea value={disputeNote} onChange={(event) => setDisputeNote(event.target.value)} placeholder="例如：8 月课程收入与经营系统差 1,200 元" /></label><button className="secondary-button" disabled={!flow.version || !disputeNote.trim()} onClick={() => { onDispute(disputeSection, disputeNote.trim()); setDisputeNote(""); }} type="button">提交异议并退回复核</button></div>
             <button className="primary-button wide" disabled={initialDone || !initialReady} onClick={onInitialConfirm} type="button">{initialDone ? `首次确认于 ${formatDateTime(workspace.tax.financeConfirmedAt)}` : "完成第一次客户确认"}</button>
           </section>
         </div>
@@ -587,21 +596,26 @@ function App() {
   const [importOpen, setImportOpen] = useState(false);
   const [toast, setToast] = useState(null);
   const workspace = activeWorkspace ? ensureWorkspace(activeWorkspace) : null;
+  const actorName = workspace?.users?.find((user) => user.id === state.activeUserId && user.status === "active")?.name || "本地用户";
   useEffect(() => { window.scrollTo({ top: 0, left: 0, behavior: "auto" }); }, [page, workspace?.id]);
   useEffect(() => { if (!toast) return undefined; const timer = window.setTimeout(() => setToast(null), 3200); return () => window.clearTimeout(timer); }, [toast]);
-  function mutateActive(updater) {
+  function mutateActive(updater, actionOptions = {}) {
     const current = store.getActiveWorkspace();
     if (!current) return;
-    actions.replaceWorkspace(current.id, ensureWorkspace(updater(ensureWorkspace(current))));
+    actions.replaceWorkspace(current.id, ensureWorkspace(updater(ensureWorkspace(current))), actionOptions);
   }
   function openWorkspaceDialog(mode) {
     if (mode === "manage") setManagerOpen(true);
     else setWorkspaceDialog(mode);
   }
   function switchWorkspace(id) {
-    actions.switchWorkspace(id);
-    setPage("overview");
-    setToast({ tone: "success", message: "已切换到" + (state.workspaces.find((item) => item.id === id)?.name || "工作台") });
+    try {
+      actions.switchWorkspace(id);
+      setPage("overview");
+      setToast({ tone: "success", message: "已切换到" + (state.workspaces.find((item) => item.id === id)?.name || "工作台") });
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "工作台切换失败" });
+    }
   }
   async function submitWorkspaceDialog(form) {
     try {
@@ -633,8 +647,14 @@ function App() {
       } else if (workspaceDialog === "delete" && workspace) {
         if (state.workspaces.length === 1) throw new Error("至少保留一个工作台；请先新建工作台，再删除当前工作台。");
         const deletedName = workspace.name;
-        actions.deleteWorkspace(workspace.id);
+        const savedFiles = fileVault ? await fileVault.listByWorkspace(workspace.id) : [];
         if (fileVault) await fileVault.clearWorkspace(workspace.id);
+        try {
+          actions.deleteWorkspace(workspace.id);
+        } catch (error) {
+          if (fileVault) for (const record of savedFiles) await fileVault.put(record);
+          throw error;
+        }
         setPage("overview");
         setToast({ tone: "success", message: "已从本地删除“" + deletedName + "”" });
       }
@@ -643,7 +663,6 @@ function App() {
       setToast({ tone: "danger", message: error.message || "工作台操作失败" });
     }
   }
-  function changePeriod(period) { if (!workspace || period === workspace.currentPeriod) return; mutateActive((current) => audit({ ...current, currentPeriod: period, tax: { ...current.tax, period, adjustments: 0, payroll: 0, socialSecurity: 0, note: "", frozenAt: null, financeConfirmedAt: null, payrollConfirmedAt: null, ownerConfirmedAt: null, confirmedBy: "", financeConfirmedVersionId: null, payrollConfirmedVersionId: null, ownerConfirmedVersionId: null }, delivery: { ...current.delivery, filing: { period, draftCreatedAt: null, draftVersionId: null, initialConfirmationId: null, finalConfirmedVersionId: null, exportedAt: null, exportedPackage: null, receipt: null, archivedAt: null } } }, "切换账期", `${current.currentPeriod} → ${period}`)); setToast({ tone: "success", message: `已切换到${formatPeriod(period)}，确认与申报链已按新账期重置` }); }
   function setTransactionStatus(ids, status) {
     if (!workspace || !ids.length) return;
     if (status !== "ignored") {
@@ -651,18 +670,22 @@ function App() {
       return;
     }
     const idSet = new Set(ids);
-    mutateActive((current) => audit({
-      ...current,
-      transactions: current.transactions.map((item) => idSet.has(item.id) ? { ...item, status: "ignored", reviewedAt: new Date().toISOString() } : item),
-    }, "暂不处理流水", idSet.size + " 笔 · 保留原始流水与审计记录"));
-    setToast({ tone: "success", message: "已将 " + idSet.size + " 笔设为暂不处理" });
+    try {
+      mutateActive((current) => audit({
+        ...current,
+        transactions: current.transactions.map((item) => idSet.has(item.id) ? { ...item, status: "ignored", reviewedAt: new Date().toISOString() } : item),
+      }, "暂不处理流水", idSet.size + " 笔 · 保留原始流水与审计记录", actorName));
+      setToast({ tone: "success", message: "已将 " + idSet.size + " 笔设为暂不处理" });
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "流水状态更新失败" });
+    }
   }
   function reviewTransactions(ids) {
     if (!ids.length) return;
     try {
       mutateActive((current) => ids.reduce((next, id) => {
-        const reviewed = reviewTransactionEvidence(next, id, { actor: "周会计", mode: "local-rule" });
-        return recordReconciliationSuggestions(reviewed, id, { actor: "周会计", mode: "local-rule" });
+        const reviewed = reviewTransactionEvidence(next, id, { actor: actorName, mode: "local-rule" });
+        return recordReconciliationSuggestions(reviewed, id, { actor: actorName, mode: "local-rule" });
       }, current));
       setToast({ tone: "success", message: "已复核 " + ids.length + " 笔并生成本地匹配建议；未自动核销或入账" });
     } catch (error) {
@@ -671,7 +694,7 @@ function App() {
   }
   async function addEvidence(transactionId, file, category = "会计资料") {
     try {
-      const document = await saveLocalDocument({
+      await saveLocalDocument({
         store,
         fileVault,
         workspaceId: workspace.id,
@@ -684,17 +707,22 @@ function App() {
         relation: "supports",
         note: "单笔流水复核证据",
       });
-      mutateActive((current) => attachEvidenceDocument(
-        current,
-        { transactionId, documentId: document.id },
-        { actor: "周会计", mode: "manual" },
-      ));
       setToast({ tone: "success", message: "原文件与证据关联已保存在当前浏览器，请完成人工确认" });
     } catch (error) {
       setToast({ tone: "danger", message: error.message || "本地证据保存失败" });
     }
   }
-  function exportSelected(items) { const rows = [["日期", "对方", "摘要", "金额", "状态", "流水号"], ...items.map((item) => [item.date, item.counterparty, item.summary, item.amount, transactionStatus(item).label, item.serial])]; const csv = `\ufeff${rows.map((row) => row.map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`).join(",")).join("\n")}`; downloadText(csv, `${PRODUCT_NAME}-${workspace.currentPeriod}-所选流水.csv`, "text/csv;charset=utf-8"); mutateActive((current) => audit(current, "导出所选流水", `${items.length} 笔 · CSV`)); setToast({ tone: "success", message: `已导出 ${items.length} 笔所选流水` }); }
+  function exportSelected(items) {
+    try {
+      const rows = [["日期", "对方", "摘要", "金额", "状态", "流水号"], ...items.map((item) => [item.date, item.counterparty, item.summary, item.amount, transactionStatus(item).label, item.serial])];
+      const csv = `\ufeff${rows.map((row) => row.map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`).join(",")).join("\n")}`;
+      mutateActive((current) => audit(current, "导出所选流水", `${items.length} 笔 · CSV`, actorName), { allowArchivedTransition: true, requiredPermission: "data.read" });
+      downloadText(csv, `${PRODUCT_NAME}-${workspace.currentPeriod}-所选流水.csv`, "text/csv;charset=utf-8");
+      setToast({ tone: "success", message: `已导出 ${items.length} 笔所选流水` });
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "流水导出失败" });
+    }
+  }
   function freezeReport() {
     try {
       const snapshot = buildReportSnapshot(workspace);
@@ -706,28 +734,44 @@ function App() {
         const engineFrozen = freezeAccountingReportVersion(
           current,
           { period: current.currentPeriod, label: "月度财务报表" },
-          { actor: "周会计" },
+          { actor: actorName },
         );
-        return freezeReportVersion(engineFrozen, "周会计");
+        return freezeReportVersion(engineFrozen, actorName);
       });
       setToast({ tone: "success", message: "已冻结 " + workspace.currentPeriod + " 新报表版本与来源快照" });
     } catch (error) {
       setToast({ tone: "danger", message: error.message || "报表校验未通过" });
     }
   }
-  function changeTax(field, value) { mutateActive((current) => ({ ...current, tax: { ...current.tax, [field]: value, frozenAt: null, financeConfirmedAt: null, payrollConfirmedAt: null, ownerConfirmedAt: null, confirmedBy: "", financeConfirmedVersionId: null, payrollConfirmedVersionId: null, ownerConfirmedVersionId: null }, delivery: { ...current.delivery, filing: { period: current.currentPeriod, draftCreatedAt: null, draftVersionId: null, initialConfirmationId: null, finalConfirmedVersionId: null, exportedAt: null, exportedPackage: null, receipt: null, archivedAt: null } } })); }
-  function commitTax(field) { const labels = { adjustments: "税会调整", payroll: "工资薪金", socialSecurity: "社保数据", note: "复核备注" }; mutateActive((current) => audit(current, "修改申报底稿", `${labels[field] || field}已更新，后续确认状态已撤销`)); setToast({ tone: "warning", message: "底稿已更新，请重新冻结报表并确认" }); }
+  function changeTax(field, value) {
+    try {
+      mutateActive((current) => ({ ...current, tax: { ...current.tax, [field]: value, frozenAt: null, financeConfirmedAt: null, payrollConfirmedAt: null, ownerConfirmedAt: null, confirmedBy: "", financeConfirmedVersionId: null, payrollConfirmedVersionId: null, ownerConfirmedVersionId: null }, delivery: { ...current.delivery, filing: { period: current.currentPeriod, draftCreatedAt: null, draftVersionId: null, initialConfirmationId: null, finalConfirmedVersionId: null, exportedAt: null, exportedPackage: null, receipt: null, archivedAt: null } } }));
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "申报底稿更新失败" });
+    }
+  }
+  function commitTax(field) {
+    try {
+      const labels = { adjustments: "增值税计税基础调整", payroll: "工资薪金", socialSecurity: "社保数据", note: "复核备注" };
+      mutateActive((current) => audit(current, "修改申报底稿", `${labels[field] || field}已更新，后续确认状态已撤销`, actorName));
+      setToast({ tone: "warning", message: "底稿已更新，请重新冻结报表并确认" });
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "申报底稿保存失败" });
+    }
+  }
   function initialConfirm() {
     try {
       const now = new Date().toISOString();
       mutateActive((current) => {
+        const reportVersionId = workflowChecks(current).version?.id || null;
+        if (!reportVersionId) throw new Error("当前报表版本已变化，请重新冻结后确认");
         let next = createCustomerConfirmationPackage(
           current,
-          { period: current.currentPeriod },
-          { actor: "周会计", at: now },
+          { period: current.currentPeriod, reportVersionId },
+          { actor: actorName, at: now },
         );
         const confirmationId = next.confirmations.at(-1).id;
-        ["finance", "revenue", "vat", "payroll", "socialSecurity"].forEach((section, index) => {
+        ["finance", "revenue", "costExpense", "vat", "inputVat", "payroll", "socialSecurity", "openItems"].forEach((section, index) => {
           next = recordCustomerConfirmation(next, {
             confirmationId,
             section,
@@ -737,9 +781,9 @@ function App() {
         });
         return audit({
           ...next,
-          tax: { ...next.tax, financeConfirmedAt: now, payrollConfirmedAt: now, financeConfirmedVersionId: workflowChecks(next).version?.id || null, payrollConfirmedVersionId: workflowChecks(next).version?.id || null },
+          tax: { ...next.tax, financeConfirmedAt: now, payrollConfirmedAt: now, financeConfirmedVersionId: reportVersionId, payrollConfirmedVersionId: reportVersionId },
           delivery: { ...next.delivery, filing: { ...next.delivery.filing, initialConfirmationId: confirmationId } },
-        }, "客户第一次确认", "财务、收入、增值税、工资与社保五个部分已逐项记录");
+        }, "客户第一次确认", "财务报表、收入、成本费用、税额、进项税、工资、社保与待核实事项已逐项记录", "客户负责人");
       });
       setToast({ tone: "success", message: "第一次客户确认已逐项记录并写入审计链" });
     } catch (error) {
@@ -751,7 +795,7 @@ function App() {
       mutateActive((current) => {
         const flow = workflowChecks(current);
         if (!flow.version) throw new Error("请先冻结当前报表版本，再提交异议");
-        let next = createCustomerConfirmationPackage(current, { period: current.currentPeriod }, { actor: "周会计" });
+        let next = createCustomerConfirmationPackage(current, { period: current.currentPeriod, reportVersionId: flow.version.id }, { actor: actorName });
         const confirmationId = next.confirmations.at(-1).id;
         next = recordCustomerConfirmation(next, { confirmationId, section, decision: "reject", note }, { actor: "客户负责人" });
         return audit({
@@ -774,8 +818,8 @@ function App() {
         if (!task) throw new Error("找不到要关闭的异常任务");
         return audit({
           ...current,
-          exceptionTasks: current.exceptionTasks.map((item) => item.id === taskId ? { ...item, status: "resolved", resolvedAt: now, updatedAt: now, history: [...(item.history || []), { at: now, actor: "周会计", action: "resolved", note: "已在本地复核并准备重新出具报表" }] } : item),
-        }, "关闭异常任务", `${task.code}：${task.message}`);
+          exceptionTasks: current.exceptionTasks.map((item) => item.id === taskId ? { ...item, status: "resolved", resolvedAt: now, updatedAt: now, history: [...(item.history || []), { at: now, actor: actorName, action: "resolved", note: "已在本地复核并准备重新出具报表" }] } : item),
+        }, "关闭异常任务", `${task.code}：${task.message}`, actorName);
       });
       setToast({ tone: "success", message: "异议已关闭；请重新核对并冻结新的报表版本" });
     } catch (error) {
@@ -792,33 +836,43 @@ function App() {
           ...current,
           delivery: {
             ...current.delivery,
-            notices: current.delivery.notices.map((item) => item.id === noticeId ? { ...item, status: "resolved", resolvedAt, resolvedBy: "周会计" } : item),
+            notices: current.delivery.notices.map((item) => item.id === noticeId ? { ...item, status: "resolved", resolvedAt, resolvedBy: actorName } : item),
           },
-        }, "处理跨期事项", `${notice.sourceId}：${notice.message}`);
+        }, "处理跨期事项", `${notice.sourceId}：${notice.message}`, actorName);
       });
       setToast({ tone: "success", message: "跨期事项已处理并保留来源记录" });
     } catch (error) {
       setToast({ tone: "danger", message: error.message || "跨期事项处理失败" });
     }
   }
-  function prepareDraft() { mutateActive((current) => prepareFilingDraft(current)); setToast({ tone: "success", message: "本地申报底稿已生成，尚未连接税务局" }); }
+  function prepareDraft() {
+    try {
+      const missing = workflowChecks(workspace).prepare.filter((item) => !item.ok);
+      if (missing.length) throw new Error(`还不能生成底稿：${missing.map((item) => item.label).join("、")}`);
+      mutateActive((current) => prepareFilingDraft(current, actorName));
+      setToast({ tone: "success", message: "本地申报底稿已生成，尚未连接税务局" });
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "申报底稿生成失败" });
+    }
+  }
   function finalConfirm(name) {
     try {
       const now = new Date().toISOString();
       mutateActive((current) => {
         const versionId = workflowChecks(current).version?.id;
         if (!versionId || current.delivery.filing.draftVersionId !== versionId) throw new Error("当前底稿与报表版本不一致，请重新生成");
-        return audit({ ...current, tax: { ...current.tax, ownerConfirmedAt: now, confirmedBy: name, ownerConfirmedVersionId: versionId }, delivery: { ...current.delivery, filing: { ...current.delivery.filing, finalConfirmedVersionId: versionId } } }, "客户第二次最终确认", `${name}确认 ${versionId} 本地申报数据并知晓需外部办理`);
+        return audit({ ...current, tax: { ...current.tax, ownerConfirmedAt: now, confirmedBy: name, ownerConfirmedVersionId: versionId }, delivery: { ...current.delivery, filing: { ...current.delivery.filing, finalConfirmedVersionId: versionId } } }, "客户第二次最终确认", `${name}确认 ${versionId} 本地申报数据并知晓需外部办理`, name);
       });
       setToast({ tone: "success", message: "第二次最终确认已记录，可以导出本地申报包" });
     } catch (error) {
       setToast({ tone: "danger", message: error.message || "最终确认失败" });
     }
   }
-  async function exportPackage() { try { const meta = await exportLocalFilingPackage(workspace); mutateActive((current) => markPackageExported(current, meta)); setToast({ tone: "success", message: "本地申报包已导出；这不代表已提交税务局" }); } catch (error) { setToast({ tone: "danger", message: error.message || "本地申报包导出失败" }); } }
+  async function exportPackage() { try { const meta = await exportLocalFilingPackage(workspace); mutateActive((current) => markPackageExported(current, meta, actorName)); setToast({ tone: "success", message: "本地申报包已导出；这不代表已提交税务局" }); } catch (error) { setToast({ tone: "danger", message: error.message || "本地申报包导出失败" }); } }
   async function receiveReceipt(file) {
+    let document = null;
     try {
-      const document = await saveLocalDocument({
+      document = await saveLocalDocument({
         store,
         fileVault,
         workspaceId: workspace.id,
@@ -826,12 +880,20 @@ function App() {
         metadata: {
           category: "申报回执",
           period: workspace.currentPeriod,
+          deliveryArtifact: true,
         },
       });
       const receipt = await importLocalReceipt(file);
-      mutateActive((current) => attachReceipt(current, { ...receipt, documentId: document.id, storage: document.storage }));
+      mutateActive((current) => attachReceipt(current, { ...receipt, documentId: document.id, storage: document.storage }, actorName));
       setToast({ tone: "success", message: "真实外部回执原件与索引已保存在当前浏览器" });
     } catch (error) {
+      if (document) {
+        try {
+          await removeLocalDocument({ store, fileVault, workspaceId: workspace.id, documentId: document.id });
+        } catch {
+          // The visible document record is retained if compensating cleanup cannot complete.
+        }
+      }
       setToast({ tone: "danger", message: error.message || "无法保存该回执文件" });
     }
   }
@@ -850,15 +912,32 @@ function App() {
           },
         });
       }
-      mutateActive((current) => audit(current, "添加本地资料", files.length + " 份 · 原文件保存在浏览器 IndexedDB"));
       setToast({ tone: "success", message: "已把 " + files.length + " 份资料与原文件保存到当前浏览器" });
     } catch (error) {
       setToast({ tone: "danger", message: error.message || "本地资料保存失败" });
     }
   }
-  function completeArchive() { mutateActive((current) => archivePeriod(current)); setToast({ tone: "success", message: `${workspace.currentPeriod} 已完成本地归档` }); }
-  function goNextPeriod() { const next = enterNextPeriod(workspace); if (next.currentPeriod === workspace.currentPeriod) { setToast({ tone: "warning", message: "请先完成本期归档。" }); return; } mutateActive(() => next); setPage("overview"); setToast({ tone: "success", message: `已进入${formatPeriod(next.currentPeriod)}，期末余额已继承` }); }
-  function exportArchiveIndex() { const index = { product: PRODUCT_NAME, workspace: workspace.name, exportedAt: new Date().toISOString(), archives: workspace.delivery.archives, activeFiling: workspace.delivery.filing, auditLog: workspace.auditLog }; downloadText(JSON.stringify(index, null, 2), `${PRODUCT_NAME}-${workspace.name}-归档索引.json`, "application/json;charset=utf-8"); mutateActive((current) => audit(current, "导出归档索引", `${current.delivery.archives.length} 个期间 · JSON`)); setToast({ tone: "success", message: "归档索引已导出到本地" }); }
+  function completeArchive() {
+    try {
+      const missing = workflowChecks(workspace).archive.filter((item) => !item.ok);
+      if (missing.length) throw new Error(`还不能归档：${missing.map((item) => item.label).join("、")}`);
+      mutateActive((current) => archivePeriod(current, actorName));
+      setToast({ tone: "success", message: `${workspace.currentPeriod} 已完成本地归档` });
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "期间归档失败" });
+    }
+  }
+  function goNextPeriod() { try { const next = enterNextPeriod(workspace, actorName); if (next.currentPeriod === workspace.currentPeriod) { setToast({ tone: "warning", message: "请先完成本期归档。" }); return; } mutateActive(() => next, { allowArchivedTransition: true }); setPage("overview"); setToast({ tone: "success", message: `已进入${formatPeriod(next.currentPeriod)}，期末余额已继承` }); } catch (error) { setToast({ tone: "danger", message: error.message || "无法进入下一期" }); } }
+  function exportArchiveIndex() {
+    try {
+      const index = { product: PRODUCT_NAME, workspace: workspace.name, exportedAt: new Date().toISOString(), archives: workspace.delivery.archives, activeFiling: workspace.delivery.filing, auditLog: workspace.auditLog };
+      mutateActive((current) => audit(current, "导出归档索引", `${current.delivery.archives.length} 个期间 · JSON`, actorName), { allowArchivedTransition: true, requiredPermission: "data.read" });
+      downloadText(JSON.stringify(index, null, 2), `${PRODUCT_NAME}-${workspace.name}-归档索引.json`, "application/json;charset=utf-8");
+      setToast({ tone: "success", message: "归档索引已导出到本地" });
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "归档索引导出失败" });
+    }
+  }
   if (!workspace) {
     return (
       <div className="app-shell empty-shell">
@@ -872,7 +951,7 @@ function App() {
     <div className="app-shell">
       <Sidebar state={state} workspace={workspace} page={page} onPage={setPage} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={openWorkspaceDialog} />
       <div className="app-main">
-        <Topbar state={state} workspace={workspace} page={page} onPeriod={changePeriod} onImport={() => setImportOpen(true)} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={openWorkspaceDialog} />
+        <Topbar state={state} workspace={workspace} page={page} onImport={() => setImportOpen(true)} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={openWorkspaceDialog} />
         {loadReport.recovered && <div className="danger-banner recovery-banner"><WarningCircle size={18} /><span><strong>{loadReport.source === "backup" ? "本地数据已从上一次有效副本恢复。" : "本地主副本与备用副本均无法读取，当前已加载初始模板。"}</strong>{loadReport.errors?.length ? ` 原因：${loadReport.errors.join("；")}` : " 请先核对数据并导出备份。"}</span></div>}
         {page === "overview" && <OverviewPage workspace={workspace} onPage={setPage} onResolveNotice={resolveNotice} />}
         {page === "reconcile" && <ReconcilePage workspace={workspace} onPage={setPage} onStatus={setTransactionStatus} onReview={reviewTransactions} onEvidence={addEvidence} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} />}

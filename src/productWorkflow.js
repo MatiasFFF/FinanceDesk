@@ -282,12 +282,13 @@ export function buildReportSnapshot(workspace) {
   const cashMovements = statements.cashFlow.movements || [];
   const cashIn = roundMoney(cashMovements.filter((item) => item.amount > 0).reduce((sum, item) => sum + item.amount, 0));
   const cashOut = roundMoney(cashMovements.filter((item) => item.amount < 0).reduce((sum, item) => sum + Math.abs(item.amount), 0));
-  const receivable = managementById.receivable?.value ?? billOutstanding(workspace, "receivable");
-  const payable = managementById.payable?.value ?? billOutstanding(workspace, "payable");
-  const prepayment = managementById.prepayment?.value ?? billOutstanding(workspace, "prepaymentPaid");
-  const contractLiability = managementById.deposit?.value ?? roundMoney(Math.max(0, -amountForAccount(statements.ledger, "contractLiability")));
+  const receivable = roundMoney(Math.max(0, amountForAccount(statements.ledger, "receivable")));
+  const payable = roundMoney(Math.max(0, -amountForAccount(statements.ledger, "payable")));
+  const prepayment = roundMoney(Math.max(0, amountForAccount(statements.ledger, "prepayment")));
+  const contractLiability = roundMoney(Math.max(0, -amountForAccount(statements.ledger, "contractLiability")));
   const refunds = workspace.businessEvents.filter((item) => item.type === "refund" && String(item.date || "").startsWith(workspace.currentPeriod));
   const commissions = workspace.businessEvents.filter((item) => item.type === "commission" && String(item.date || "").startsWith(workspace.currentPeriod));
+  const estimatedOutputVat = engineTax.outputVat.value;
   const estimatedVat = engineTax.vatPayable.value;
   const estimatedSurtax = roundMoney(estimatedVat * 0.12);
   const estimatedIncomeTax = roundMoney(Math.max(0, statements.profit) * 0.05);
@@ -324,6 +325,7 @@ export function buildReportSnapshot(workspace) {
     ledger: statements.ledger,
     summary: {
       revenue: statements.revenue,
+      cost: engine.incomeStatement.cost.value,
       expenses: statements.expenses,
       profit: statements.profit,
       assets: statements.assets,
@@ -388,10 +390,10 @@ export function buildReportSnapshot(workspace) {
           makeRow("ownerRevenue", "本月收入", statements.revenue, accountRows(workspace, ["revenuePrivate", "revenueGroup"])),
           makeTraceableRow("ownerGrossProfit", "本月毛利", engine.incomeStatement.grossProfit.value, [...revenueDetails, ...costDetails.map((item) => ({ ...item, amount: -item.amount }))], "营业收入 − 销售退回 − 营业成本"),
           makeTraceableRow("ownerProfit", "本月利润", statements.profit, profitDetails, "营业收入 − 销售退回 − 成本 − 期间费用"),
-          makeRow("ownerPrepaid", "会员预收 / 未履约服务", contractLiability, detailsFromBills(workspace, "depositReceived")),
-          makeRow("ownerReceivable", "应收账款", receivable, detailsFromBills(workspace, "receivable")),
-          makeRow("ownerPayable", "供应商应付", payable, detailsFromBills(workspace, "payable")),
-          makeRow("ownerPrepayment", "供应商预付", prepayment, detailsFromBills(workspace, "prepaymentPaid")),
+          makeTraceableRow("ownerPrepaid", "会员预收 / 未履约服务", contractLiability, contractLiabilityDetails, "合同负债科目期末贷方余额"),
+          makeTraceableRow("ownerReceivable", "应收账款", receivable, receivableDetails, "应收账款科目期末借方余额"),
+          makeTraceableRow("ownerPayable", "供应商应付", payable, payableDetails, "应付账款科目期末贷方余额"),
+          makeTraceableRow("ownerPrepayment", "供应商预付", prepayment, prepaymentDetails, "预付款项科目期末借方余额"),
           makeRow("ownerRefund", "待处理退款", refunds.reduce((sum, item) => sum + Number(item.amount || 0), 0), refunds.map((item) => ({ id: item.id, date: item.date, title: item.memberName, reference: "会员退款", description: item.note, amount: item.amount }))),
           makeRow("ownerCommission", "教练提成", commissions.reduce((sum, item) => sum + Number(item.amount || 0), 0), commissions.map((item) => ({ id: item.id, date: item.date, title: item.memberName, reference: "提成", description: item.note, amount: item.amount }))),
           makeTraceableRow("ownerTax", "预计税款（演示估算）", estimatedTax, taxEstimateDetails, "增值税估算 + 附加税费估算 + 所得税估算"),
@@ -403,9 +405,9 @@ export function buildReportSnapshot(workspace) {
       disclaimer: "本地演示估算口径，不是正式申报结果；税务局连接将在后续阶段提供。",
       rows: [
         makeTraceableRow("taxRevenue", "账面营业收入", statements.revenue, revenueDetails, "收入类发生额 − 销售退回与折让"),
-        makeTraceableRow("taxAdjustments", "税会调整", Number(workspace.tax.adjustments || 0), [], "客户或财务人员在本地底稿中录入"),
-        makeTraceableRow("taxBase", "增值税估算计税基础", Math.max(0, statements.revenue + Number(workspace.tax.adjustments || 0)), revenueDetails, "max(0，账面营业收入 + 税会调整)"),
-        makeTraceableRow("vat", "增值税估算", estimatedVat, taxEstimateDetails.slice(0, 1), "计税基础 × 本地配置税率"),
+        makeTraceableRow("taxAdjustments", "增值税计税基础调整", engineTax.adjustments.value, [], "客户或财务人员在本地底稿中录入"),
+        makeTraceableRow("taxBase", "增值税估算计税基础", engineTax.taxableBase.value, revenueDetails, "max(0，账面营业收入 + 增值税计税基础调整)"),
+        makeTraceableRow("vat", "销项税额估算", estimatedOutputVat, [formulaDetail("output-vat", "销项税额估算", estimatedOutputVat, "计税基础 × 本地配置税率")], "计税基础 × 本地配置税率"),
         makeTraceableRow("inputVat", "进项税额", engineTax.inputVat.value, ledgerDetails(workspace, engine, (item) => String(item.accountId).startsWith("taxInput"), (amount) => amount), "进项税额科目借方净发生额"),
         makeTraceableRow("vatPayable", "应交增值税", engineTax.vatPayable.value, taxEstimateDetails.slice(0, 1), "max(0，销项税额估算 − 进项税额)"),
         makeTraceableRow("surtax", "附加税费估算", estimatedSurtax, taxEstimateDetails.slice(1, 2), "增值税估算额 × 12%"),
@@ -477,6 +479,7 @@ export function getLatestReportVersion(workspace) {
 }
 
 const WORKFLOW_SOURCE_KEYS = [
+  "company",
   "accounts",
   "bankAccounts",
   "transactions",
@@ -496,11 +499,28 @@ const WORKFLOW_SOURCE_KEYS = [
   "openingLedger",
 ];
 
+function workflowSourceValue(workspace, key) {
+  if (key === "documents") {
+    return (workspace.documents || [])
+      .filter((document) => document.category !== "申报回执" && document.deliveryArtifact !== true)
+      .map((document) => ({
+        id: document.id,
+        name: document.name,
+        category: document.category,
+        period: document.period,
+        version: document.version,
+        hash: document.hash,
+        relatedObjectIds: document.relatedObjectIds || [],
+      }));
+  }
+  return workspace[key] || (key === "company" || key === "openingLedger" || key === "rules" ? {} : []);
+}
+
 export function workflowSourceFingerprint(workspace) {
   const tax = workspace.tax || {};
   return JSON.stringify({
     currentPeriod: workspace.currentPeriod,
-    sources: Object.fromEntries(WORKFLOW_SOURCE_KEYS.map((key) => [key, workspace[key] || (key === "openingLedger" || key === "rules" ? {} : [])])),
+    sources: Object.fromEntries(WORKFLOW_SOURCE_KEYS.map((key) => [key, workflowSourceValue(workspace, key)])),
     tax: {
       adjustments: Number(tax.adjustments || 0),
       payroll: Number(tax.payroll || 0),
@@ -554,7 +574,10 @@ export function workflowChecks(workspace) {
     { id: "payroll", label: "工资与社保数据已确认", ok: Boolean(version && workspace.tax.payrollConfirmedAt && workspace.tax.payrollConfirmedVersionId === version.id), page: "tax" },
     { id: "owner", label: "客户已完成最终责任确认", ok: Boolean(version && workspace.tax.ownerConfirmedAt && workspace.tax.ownerConfirmedVersionId === version.id && filing.finalConfirmedVersionId === version.id), page: "tax" },
     { id: "exported", label: "本地申报包已导出", ok: Boolean(version && filing.exportedAt && filing.exportedPackage?.reportVersionId === version.id), page: "tax" },
-    { id: "receipt", label: "外部办理回执已本地导入", ok: Boolean(version && filing.receipt?.reportVersionId === version.id), page: "archive" },
+    { id: "receipt", label: "外部办理回执已本地导入", ok: Boolean(version
+      && filing.receipt?.reportVersionId === version.id
+      && filing.receipt?.packageId === filing.exportedPackage?.id
+      && filing.receipt?.packageHash === filing.exportedPackage?.hash), page: "archive" },
   ];
   return {
     checks,
@@ -575,7 +598,10 @@ export function workflowChecks(workspace) {
 export function prepareFilingDraft(workspace, actor = "周会计") {
   const flow = workflowChecks(workspace);
   const ready = flow.prepare.every((item) => item.ok);
-  if (!ready || !flow.version) return workspace;
+  if (!ready || !flow.version) {
+    const missing = flow.prepare.filter((item) => !item.ok).map((item) => item.label);
+    throw new Error(`生成申报底稿前仍需完成：${missing.join("、")}`);
+  }
   const at = new Date().toISOString();
   const next = {
     ...workspace,
@@ -657,13 +683,17 @@ export async function exportLocalFilingPackage(workspace) {
   folder.file("操作日志.csv", auditCsv(workspace));
   const blob = await zip.generateAsync({ type: "blob" });
   const fileName = `${PRODUCT_NAME}-${workspace.name}-${workspace.currentPeriod}-本地申报包.zip`;
+  const buffer = await blob.arrayBuffer();
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", buffer);
+  const hash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const id = uid("filing-package");
   downloadBlob(blob, fileName);
-  return { fileName, size: blob.size, exportedAt: new Date().toISOString(), reportVersionId: flow.version.id };
+  return { id, fileName, size: blob.size, hash, exportedAt: new Date().toISOString(), reportVersionId: flow.version.id };
 }
 
 export async function importLocalReceipt(file) {
   const buffer = await file.arrayBuffer();
-  const digest = await window.crypto.subtle.digest("SHA-256", buffer);
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", buffer);
   const hash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   let preview = "";
   if (/text|json|xml|csv/.test(file.type) || /\.(txt|json|xml|csv)$/i.test(file.name)) {
@@ -681,14 +711,24 @@ export async function importLocalReceipt(file) {
 }
 
 export function attachReceipt(workspace, receipt, actor = "周会计") {
-  const reportVersionId = workspace.delivery.filing.exportedPackage?.reportVersionId || workspace.delivery.filing.draftVersionId || null;
+  const exportedPackage = workspace.delivery.filing.exportedPackage;
+  if (!exportedPackage?.id || !exportedPackage.reportVersionId) throw new Error("请先导出当前版本的本地申报包，再导入对应回执");
+  const currentVersion = workflowChecks(workspace).version;
+  if (!currentVersion || exportedPackage.reportVersionId !== currentVersion.id) {
+    throw new Error("报表数据已变化，请重新冻结并导出新的本地申报包后再导入回执");
+  }
   const next = {
     ...workspace,
     delivery: {
       ...workspace.delivery,
       filing: {
         ...workspace.delivery.filing,
-        receipt: { ...receipt, reportVersionId },
+        receipt: {
+          ...receipt,
+          reportVersionId: exportedPackage.reportVersionId,
+          packageId: exportedPackage.id,
+          packageHash: exportedPackage.hash,
+        },
       },
     },
   };
@@ -704,6 +744,8 @@ export function markPackageExported(workspace, packageMeta, actor = "周会计")
         ...workspace.delivery.filing,
         exportedAt: packageMeta.exportedAt,
         exportedPackage: packageMeta,
+        receipt: null,
+        archivedAt: null,
       },
     },
   };
@@ -712,7 +754,10 @@ export function markPackageExported(workspace, packageMeta, actor = "周会计")
 
 export function archivePeriod(workspace, actor = "周会计") {
   const flow = workflowChecks(workspace);
-  if (!flow.archive.every((item) => item.ok) || !flow.version) return workspace;
+  if (!flow.archive.every((item) => item.ok) || !flow.version) {
+    const missing = flow.archive.filter((item) => !item.ok).map((item) => item.label);
+    throw new Error(`期间归档前仍需完成：${missing.join("、")}`);
+  }
   const archivedAt = new Date().toISOString();
   const record = {
     id: uid("archive"),
@@ -720,6 +765,7 @@ export function archivePeriod(workspace, actor = "周会计") {
     archivedAt,
     reportVersionId: flow.version.id,
     reportVersionLabel: flow.version.label,
+    sourceFingerprint: workflowSourceFingerprint(workspace),
     package: workspace.delivery.filing.exportedPackage,
     receipt: workspace.delivery.filing.receipt,
     confirmations: {
@@ -727,7 +773,13 @@ export function archivePeriod(workspace, actor = "周会计") {
       payrollConfirmedAt: workspace.tax.payrollConfirmedAt,
       ownerConfirmedAt: workspace.tax.ownerConfirmedAt,
       confirmedBy: workspace.tax.confirmedBy,
+      financeConfirmedVersionId: workspace.tax.financeConfirmedVersionId,
+      payrollConfirmedVersionId: workspace.tax.payrollConfirmedVersionId,
+      ownerConfirmedVersionId: workspace.tax.ownerConfirmedVersionId,
+      finalConfirmedVersionId: workspace.delivery.filing.finalConfirmedVersionId,
+      initialConfirmationId: workspace.delivery.filing.initialConfirmationId,
     },
+    filing: { ...workspace.delivery.filing },
     unresolvedIds: flow.unresolved.map((item) => item.id),
     carryForwardItems: workspace.transactions
       .filter((item) => String(item.date || "").startsWith(workspace.currentPeriod) && item.status === "ignored")
@@ -742,8 +794,12 @@ export function archivePeriod(workspace, actor = "周会计") {
     exceptionRecords: (workspace.exceptionTasks || []).filter((task) => task.status === "resolved" || flow.unresolved.some((item) => item.id === task.sourceId)),
     auditSnapshot: workspace.auditLog || [],
   };
+  const archivedDocumentIds = new Set(record.documents.map((document) => document.id));
   const next = {
     ...workspace,
+    documents: (workspace.documents || []).map((document) => archivedDocumentIds.has(document.id)
+      ? { ...document, lifecycleStatus: "已归档", archiveStatus: "archived", archivedAt }
+      : document),
     delivery: {
       ...workspace.delivery,
       archives: [record, ...workspace.delivery.archives],
@@ -759,10 +815,36 @@ export function nextPeriod(period) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
+export function resetTaxForPeriod(tax = {}, period) {
+  return {
+    period,
+    vatRate: Number(tax.vatRate ?? 0.03),
+    adjustments: 0,
+    adjustmentSourceIds: [],
+    payroll: 0,
+    socialSecurity: 0,
+    sourceIds: [],
+    payrollSourceIds: [],
+    socialSecuritySourceIds: [],
+    note: "",
+    frozenAt: null,
+    financeConfirmedAt: null,
+    payrollConfirmedAt: null,
+    ownerConfirmedAt: null,
+    confirmedBy: "",
+    financeConfirmedVersionId: null,
+    payrollConfirmedVersionId: null,
+    ownerConfirmedVersionId: null,
+  };
+}
+
 export function enterNextPeriod(workspace, actor = "周会计") {
   const filing = workspace.delivery.filing;
   const archive = workspace.delivery.archives.find((item) => item.period === workspace.currentPeriod);
   if (!filing.archivedAt || !archive) return workspace;
+  if (archive.sourceFingerprint && archive.sourceFingerprint !== workflowSourceFingerprint(workspace)) {
+    throw new Error("本期归档后数据又发生变化，不能沿用旧期末余额；请通过更正流程重新归档");
+  }
   const target = nextPeriod(workspace.currentPeriod);
   const ledger = archive.closingLedger || {};
   const openingLedger = Object.fromEntries(Object.entries(ledger).map(([accountId, value]) => {
@@ -775,17 +857,7 @@ export function enterNextPeriod(workspace, actor = "周会计") {
     currentPeriod: target,
     periods: [...new Set([target, ...workspace.periods])],
     openingLedger,
-    tax: {
-      ...workspace.tax,
-      period: target,
-      adjustments: 0,
-      note: "",
-      frozenAt: null,
-      financeConfirmedAt: null,
-      payrollConfirmedAt: null,
-      ownerConfirmedAt: null,
-      confirmedBy: "",
-    },
+    tax: resetTaxForPeriod(workspace.tax, target),
     delivery: {
       ...workspace.delivery,
       notices: [

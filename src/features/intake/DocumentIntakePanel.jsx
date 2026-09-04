@@ -1,10 +1,25 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Archive, DownloadSimple, FileArrowUp, FileText, Trash, WarningCircle } from "@phosphor-icons/react";
 
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
 import { downloadStoredDocument, removeLocalDocument, saveLocalDocument } from "./documentIntake.js";
 
 const CATEGORIES = ["主体资料", "合同", "银行流水", "业务资料", "发票", "审批资料", "人员资料", "会计资料", "其他资料"];
+
+const RELATED_GROUPS = [
+  ["银行账户", "bankAccounts"],
+  ["银行流水", "transactions"],
+  ["业务事件", "businessEvents"],
+  ["应收应付与预收预付", "bills"],
+  ["合同", "contracts"],
+  ["发票", "invoices"],
+  ["审批单", "approvals"],
+  ["人员", "personnelRecords"],
+];
+
+function relatedLabel(item) {
+  return item.name || item.title || item.no || item.counterparty || item.summary || item.id;
+}
 
 function fileSize(size) {
   if (!Number.isFinite(Number(size))) return "未知大小";
@@ -21,6 +36,11 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const [relatedObjectId, setRelatedObjectId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const relatedGroups = useMemo(() => RELATED_GROUPS.map(([label, collection]) => ({
+    label,
+    collection,
+    items: activeWorkspace[collection] || [],
+  })).filter((group) => group.items.length), [activeWorkspace]);
 
   useEffect(() => {
     setPeriod(activeWorkspace.currentPeriod || "");
@@ -59,10 +79,19 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   async function download(document) {
     setError("");
     try {
-      const record = await fileVault.get(document.storage?.blobId || document.id);
+      if (!fileVault) throw new Error("当前浏览器不支持本地文件保险箱");
+      const blobId = document.storage?.blobId || document.id;
+      const record = fileVault.getOwned
+        ? await fileVault.getOwned(blobId, activeWorkspace.id, document.hash)
+        : await fileVault.get(blobId);
+      if (!record || record.workspaceId !== activeWorkspace.id || (document.hash && record.hash && record.hash !== document.hash)) {
+        throw new Error("该文件不属于当前工作台或本地内容已变化，请重新关联原文件");
+      }
       downloadStoredDocument(record);
       const current = store.getActiveWorkspace();
       actions.replaceWorkspace(current.id, current, {
+        allowArchivedTransition: true,
+        requiredPermission: "data.read",
         audit: {
           actor: "本地用户",
           action: "下载本地资料",
@@ -86,8 +115,13 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   }
 
   function archive(document) {
-    actions.upsertEntity(activeWorkspace.id, "documents", { ...document, lifecycleStatus: "已归档", archiveStatus: "archived" }, { label: "资料状态" });
-    onToast?.("资料已标记归档");
+    setError("");
+    try {
+      actions.upsertEntity(activeWorkspace.id, "documents", { ...document, lifecycleStatus: "已归档", archiveStatus: "archived" }, { label: "资料状态" });
+      onToast?.("资料已标记归档");
+    } catch (caught) {
+      setError(caught.message || "资料归档失败");
+    }
   }
 
   return (
@@ -97,7 +131,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
       <div className="document-intake-controls">
         <label className="foundation-field"><span>资料类别</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{CATEGORIES.map((item) => <option key={item}>{item}</option>)}</select></label>
         <label className="foundation-field"><span>业务期间</span><input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} /></label>
-        <label className="foundation-field"><span>关联对象 ID（可选）</span><input value={relatedObjectId} onChange={(event) => setRelatedObjectId(event.target.value)} placeholder="合同、流水、发票或审批 ID" /></label>
+        <label className="foundation-field"><span>关联当前工作台对象（可选）</span><select value={relatedObjectId} onChange={(event) => setRelatedObjectId(event.target.value)}><option value="">暂不关联</option>{relatedGroups.map((group) => <optgroup label={group.label} key={group.collection}>{group.items.map((item) => <option value={item.id} key={item.id}>{relatedLabel(item)} · {item.id}</option>)}</optgroup>)}</select></label>
         <button className="secondary-button" type="button" disabled={!fileVault || busy} onClick={() => inputRef.current?.click()}><FileArrowUp size={17} />{busy ? "正在保存…" : "选择本地资料"}</button>
         <input ref={inputRef} type="file" multiple hidden onChange={addFiles} />
       </div>

@@ -58,7 +58,7 @@ const COLLECTION_CONFIG = {
     icon: UsersThree,
     fields: [
       { key: "name", label: "姓名", required: true },
-      { key: "role", label: "角色", placeholder: "财务负责人" },
+      { key: "roleId", label: "角色", type: "select", options: [] },
       { key: "status", label: "状态", type: "status" },
     ],
   },
@@ -177,7 +177,7 @@ const COLLECTION_CONFIG = {
 };
 
 function emptyDraft(config) {
-  return Object.fromEntries(config.fields.map((field) => [field.key, field.type === "status" ? "active" : field.type === "select" ? field.options[0][0] : ""]));
+  return Object.fromEntries(config.fields.map((field) => [field.key, field.type === "status" ? "active" : field.type === "select" ? field.options?.[0]?.[0] || "" : ""]));
 }
 
 function Field({ field, value, onChange }) {
@@ -193,7 +193,16 @@ function displayName(item) {
 
 function EntityEditor({ collection, onToast }) {
   const { activeWorkspace, actions } = useFinanceDesk();
-  const config = COLLECTION_CONFIG[collection];
+  const config = useMemo(() => {
+    const base = COLLECTION_CONFIG[collection];
+    if (collection !== "users") return base;
+    return {
+      ...base,
+      fields: base.fields.map((field) => field.key === "roleId"
+        ? { ...field, options: activeWorkspace.roles.map((role) => [role.id, `${role.name}${role.status === "active" ? "" : "（停用）"}`]) }
+        : field),
+    };
+  }, [collection, activeWorkspace.roles]);
   const Icon = config.icon;
   const items = activeWorkspace[collection] || [];
   const [draft, setDraft] = useState(() => emptyDraft(config));
@@ -214,7 +223,12 @@ function EntityEditor({ collection, onToast }) {
         const field = config.fields.find((candidate) => candidate.key === key);
         return [key, field?.type === "number" ? Number(value || 0) : value];
       }));
-      const values = config.fromDraft ? config.fromDraft(normalized) : normalized;
+      let values = config.fromDraft ? config.fromDraft(normalized) : normalized;
+      if (collection === "users") {
+        const role = activeWorkspace.roles.find((item) => item.id === values.roleId);
+        if (!role || role.status !== "active") throw new Error("请选择一个有效角色");
+        values = { ...values, role: role.name };
+      }
       actions.upsertEntity(activeWorkspace.id, collection, values, { label: config.title });
       setDraft(emptyDraft(config));
       onToast?.(`${config.title}已保存`);
@@ -240,7 +254,7 @@ function EntityEditor({ collection, onToast }) {
       <div className="foundation-record-list">
         {items.map((item) => (
           <article className="foundation-record" key={item.id}>
-            <div><strong>{displayName(item)}</strong><small>{item.status || item.kind || "未设置状态"}</small></div>
+            <div><strong>{displayName(item)}</strong><small>{collection === "users" ? `${activeWorkspace.roles.find((role) => role.id === item.roleId)?.name || item.role || "未分配角色"} · ${item.status || "未设置状态"}` : item.status || item.kind || "未设置状态"}</small></div>
             <span className="foundation-record-actions"><button type="button" aria-label="编辑" onClick={() => edit(item)}><PencilSimple size={15} /></button><button type="button" aria-label="删除" onClick={() => remove(item)}><Trash size={15} /></button></span>
           </article>
         ))}
@@ -255,14 +269,59 @@ function EntityEditor({ collection, onToast }) {
   );
 }
 
+const PERMISSION_LABELS = {
+  "workspace.manage": "管理工作台",
+  "data.read": "查看数据",
+  "data.write": "处理业务",
+  "documents.add": "管理资料",
+  "rules.manage": "管理规则",
+  "confirm.finance": "财务确认",
+  "confirm.owner": "负责人确认",
+};
+
+function LocalUserControl({ onToast }) {
+  const { state, activeWorkspace, actions } = useFinanceDesk();
+  const [error, setError] = useState("");
+  const activeUsers = activeWorkspace.users.filter((user) => user.status === "active");
+  const currentUser = activeUsers.find((user) => user.id === state.activeUserId) || activeUsers[0];
+  const role = activeWorkspace.roles.find((item) => item.id === currentUser?.roleId || item.name === currentUser?.role);
+
+  function switchUser(userId) {
+    setError("");
+    try {
+      actions.switchUser(activeWorkspace.id, userId);
+      const user = activeUsers.find((item) => item.id === userId);
+      onToast?.(`当前本地操作身份已切换为「${user?.name || "未命名用户"}」`);
+    } catch (caught) {
+      setError(caught.message || "切换本地操作身份失败");
+    }
+  }
+
+  return (
+    <section className="foundation-section local-user-control">
+      <div className="foundation-section-heading"><div><small>审计与最小权限</small><h3><UsersThree size={18} />当前本地操作身份</h3></div><span>{role?.name || "无有效角色"}</span></div>
+      <label className="foundation-field"><span>以哪位人员操作</span><select value={currentUser?.id || ""} onChange={(event) => switchUser(event.target.value)} disabled={!activeUsers.length}>{activeUsers.map((user) => <option value={user.id} key={user.id}>{user.name} · {activeWorkspace.roles.find((item) => item.id === user.roleId)?.name || user.role || "未分配角色"}</option>)}</select></label>
+      <div className="permission-chip-list">{(role?.permissions || []).map((permission) => <span key={permission}>{PERMISSION_LABELS[permission] || permission}</span>)}</div>
+      <p className="foundation-hint">这是当前浏览器里的操作身份，用于真实权限拦截和审计归属；它不是联网登录或多因素认证。</p>
+      {error && <p className="entity-error">{error}</p>}
+    </section>
+  );
+}
+
 function CompanyProfile({ onToast }) {
   const { activeWorkspace, actions } = useFinanceDesk();
   const [draft, setDraft] = useState(activeWorkspace.company);
+  const [error, setError] = useState("");
   useEffect(() => setDraft(activeWorkspace.company), [activeWorkspace.id, activeWorkspace.company]);
   function save(event) {
     event.preventDefault();
-    actions.updateCompanyProfile(activeWorkspace.id, draft);
-    onToast?.("企业资料已保存在当前浏览器");
+    setError("");
+    try {
+      actions.updateCompanyProfile(activeWorkspace.id, draft);
+      onToast?.("企业资料已保存在当前浏览器");
+    } catch (caught) {
+      setError(caught.message || "企业资料保存失败");
+    }
   }
   return (
     <section className="foundation-section company-profile">
@@ -272,6 +331,7 @@ function CompanyProfile({ onToast }) {
           ["legalName", "企业 / 个体户全称"], ["taxId", "统一社会信用代码"], ["ownerName", "法定代表人 / 经营者"], ["financeContact", "财务负责人"], ["industry", "行业"], ["taxpayerType", "纳税人类型"],
         ].map(([key, label]) => <label className="foundation-field" key={key}><span>{label}</span><input value={draft[key] || ""} onChange={(event) => setDraft((current) => ({ ...current, [key]: event.target.value }))} /></label>)}
         <button className="primary-button" type="submit">保存企业资料</button>
+        {error && <p className="entity-error">{error}</p>}
       </form>
     </section>
   );
@@ -279,22 +339,41 @@ function CompanyProfile({ onToast }) {
 
 function AuthorizationEditor({ onToast }) {
   const { activeWorkspace, actions } = useFinanceDesk();
-  const [draft, setDraft] = useState({ system: "bank", label: "银行数据", scope: "本地文件导入", status: "recorded", note: "" });
+  const [draft, setDraft] = useState({ system: "bank", label: "银行数据", scope: "本地文件导入", status: "recorded", grantedBy: "", expiresAt: "", proofDocumentId: "", note: "" });
+  const [error, setError] = useState("");
   function save(event) {
     event.preventDefault();
-    actions.recordAuthorization(activeWorkspace.id, draft, { label: "本地授权记录" });
-    setDraft((current) => ({ ...current, note: "" }));
-    onToast?.("授权记录已保存；未建立任何外部连接");
+    setError("");
+    try {
+      actions.recordAuthorization(activeWorkspace.id, draft, { label: "本地授权记录" });
+      setDraft((current) => ({ ...current, note: "", proofDocumentId: "" }));
+      onToast?.("授权范围、期限和凭证索引已保存；未建立任何外部连接");
+    } catch (caught) {
+      setError(caught.message || "授权记录保存失败");
+    }
   }
+  const effectiveStatus = (authorization) => authorization.status === "revoked"
+    ? "已撤回"
+    : authorization.expiresAt && Date.parse(authorization.expiresAt) <= Date.now()
+      ? "已过期"
+      : authorization.status === "not_connected"
+        ? "未连接"
+        : "有效记录";
   return (
     <section className="foundation-section">
       <div className="foundation-section-heading"><div><small>不连接外部系统</small><h3><ShieldCheck size={18} />本地授权记录</h3></div><span>{activeWorkspace.authorizations.length} 条</span></div>
       <div className="foundation-notice"><WarningCircle size={17} />此处只记录客户允许处理的范围，不会保存银行或税务密码，也不会连接银行、税务、AI 或 OCR。</div>
+      <div className="foundation-record-list authorization-list">{activeWorkspace.authorizations.map((authorization) => <article className="foundation-record" key={authorization.id}><div><strong>{authorization.label || authorization.system}</strong><small>{effectiveStatus(authorization)} · {authorization.scope || "未填写范围"}{authorization.expiresAt ? ` · 至 ${String(authorization.expiresAt).slice(0, 10)}` : ""}</small></div></article>)}</div>
       <form className="entity-form" onSubmit={save}>
         <label className="foundation-field"><span>数据源</span><select value={draft.system} onChange={(event) => setDraft((current) => ({ ...current, system: event.target.value, label: event.target.selectedOptions[0].text }))}><option value="bank">银行数据</option><option value="tax">税务资料</option><option value="business">经营系统文件</option><option value="finance">现有财务软件文件</option></select></label>
         <label className="foundation-field"><span>允许范围</span><input value={draft.scope} onChange={(event) => setDraft((current) => ({ ...current, scope: event.target.value }))} /></label>
+        <label className="foundation-field"><span>授权人</span><input value={draft.grantedBy} onChange={(event) => setDraft((current) => ({ ...current, grantedBy: event.target.value }))} placeholder="法定代表人 / 负责人" /></label>
+        <label className="foundation-field"><span>有效期至（可选）</span><input type="date" value={draft.expiresAt} onChange={(event) => setDraft((current) => ({ ...current, expiresAt: event.target.value }))} /></label>
+        <label className="foundation-field"><span>授权凭证（可选）</span><select value={draft.proofDocumentId} onChange={(event) => setDraft((current) => ({ ...current, proofDocumentId: event.target.value }))}><option value="">暂不关联</option>{activeWorkspace.documents.map((document) => <option value={document.id} key={document.id}>{document.name}</option>)}</select></label>
+        <label className="foundation-field"><span>授权状态</span><select value={draft.status} onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value }))}><option value="recorded">有效记录</option><option value="revoked">已撤回</option></select></label>
         <label className="foundation-field"><span>授权说明</span><input value={draft.note} onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))} placeholder="谁在何时允许处理哪些本地文件" /></label>
         <button className="primary-button" type="submit">记录本地授权</button>
+        {error && <p className="entity-error">{error}</p>}
       </form>
     </section>
   );
@@ -302,9 +381,10 @@ function AuthorizationEditor({ onToast }) {
 
 function StageStatusControl({ stage, onToast }) {
   const { activeWorkspace, actions } = useFinanceDesk();
+  const [error, setError] = useState("");
   const value = activeWorkspace.stages[stage]?.status || "not_started";
   return (
-    <label className="stage-status-control"><span>阶段状态</span><select value={value} onChange={(event) => { actions.setStageStatus(activeWorkspace.id, stage, event.target.value); onToast?.(`${stage.toUpperCase()} 状态已更新`); }}><option value="not_started">未开始</option><option value="draft">草稿</option><option value="collecting">资料收集中</option><option value="in_progress">进行中</option><option value="needs_review">待复核</option><option value="complete">已完成</option></select></label>
+    <div className="stage-status-control"><span>阶段状态</span><select value={value} onChange={(event) => { setError(""); try { actions.setStageStatus(activeWorkspace.id, stage, event.target.value); onToast?.(`${stage.toUpperCase()} 状态已更新`); } catch (caught) { setError(caught.message || "阶段状态更新失败"); } }}><option value="not_started">未开始</option><option value="draft">草稿</option><option value="collecting">资料收集中</option><option value="in_progress">进行中</option><option value="needs_review">待复核</option><option value="complete">已完成</option></select>{error && <small className="entity-error">{error}</small>}</div>
   );
 }
 
@@ -312,7 +392,7 @@ export function FoundationRecordsPanel({ initialStage = "s0", onToast }) {
   const { activeWorkspace } = useFinanceDesk();
   const [stage, setStage] = useState(initialStage);
   const body = useMemo(() => {
-    if (stage === "s0") return <div className="foundation-grid"><CompanyProfile onToast={onToast} /><EntityEditor collection="books" onToast={onToast} /><EntityEditor collection="stores" onToast={onToast} /><EntityEditor collection="users" onToast={onToast} /><EntityEditor collection="roles" onToast={onToast} /><AuthorizationEditor onToast={onToast} /></div>;
+    if (stage === "s0") return <div className="foundation-grid"><LocalUserControl onToast={onToast} /><CompanyProfile onToast={onToast} /><EntityEditor collection="books" onToast={onToast} /><EntityEditor collection="stores" onToast={onToast} /><EntityEditor collection="users" onToast={onToast} /><EntityEditor collection="roles" onToast={onToast} /><AuthorizationEditor onToast={onToast} /></div>;
     if (stage === "s1") return <div className="foundation-grid"><EntityEditor collection="ruleSets" onToast={onToast} /></div>;
     if (stage === "s2") return <div className="foundation-grid"><EntityEditor collection="counterparties" onToast={onToast} /><EntityEditor collection="contracts" onToast={onToast} /><EntityEditor collection="bills" onToast={onToast} /><EntityEditor collection="businessEvents" onToast={onToast} /><DocumentIntakePanel defaultCategory="合同" onToast={onToast} /></div>;
     if (stage === "s3") return <div className="foundation-grid"><EntityEditor collection="bankAccounts" onToast={onToast} /><BankImportPanel onToast={onToast} /></div>;

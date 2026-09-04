@@ -175,7 +175,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
 
           <div className="bank-preview-scroll"><table><thead><tr><th>原始行</th>{inspection.headers.slice(0, 7).map((header) => <th key={header}>{header}</th>)}</tr></thead><tbody>{inspection.preview.map((row) => <tr key={row.rowNumber}><td>{row.rowNumber}</td>{row.cells.slice(0, 7).map((cell, index) => <td key={`${row.rowNumber}-${index}`}>{String(cell.value)}</td>)}</tr>)}</tbody></table></div>
 
-          <div className="foundation-inline-actions"><button className="secondary-button" type="button" onClick={previewImport}>预检查去重与余额</button>{plan && <button className="primary-button" type="button" onClick={applyImport} disabled={!plan.importableRowCount}>确认导入 {plan.importableRowCount} 笔</button>}</div>
+          <div className="foundation-inline-actions"><button className="secondary-button" type="button" onClick={previewImport}>预检查去重与余额</button>{plan && <button className="primary-button" type="button" onClick={applyImport} disabled={!plan.importableRowCount || plan.errorCount > 0 || !plan.reconciliation.available || !plan.reconciliation.passed}>确认导入 {plan.importableRowCount} 笔</button>}</div>
 
           {plan && <div className={`import-report ${plan.reconciliation.passed ? "passed" : "warning"}`}><span>{plan.reconciliation.passed ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} />}</span><div><strong>{plan.reconciliation.message}</strong><p>可导入 {plan.importableRowCount} 笔 · 重复 {plan.duplicateCount} 笔 · 错误 {plan.errorCount} 行 · 流水变动 {plan.reconciliation.movement.toFixed(2)} 元</p>{plan.errors.slice(0, 3).map((item) => <small key={item.rowNumber}>第 {item.rowNumber} 行：{item.message}</small>)}</div></div>}
         </div>

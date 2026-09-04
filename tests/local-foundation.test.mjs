@@ -7,6 +7,7 @@ import {
   FINANCE_DESK_STORAGE_KEY,
   addWorkspace,
   clearWorkspace,
+  createFinanceDeskStore,
   createInitialState,
   createLocalFoundationRepository,
   createMemoryStorage,
@@ -14,7 +15,11 @@ import {
   getWorkspace,
   importBackupJson,
   migrateState,
+  recordLocalAuthorization,
+  removeWorkspaceEntity,
   renameWorkspace,
+  setWorkspaceStageStatus,
+  stageCompletionIssues,
   switchWorkspace,
   updateWorkspace,
   upsertWorkspaceEntity,
@@ -158,4 +163,74 @@ test("清空单工作台只影响目标工作台", () => {
   assert.equal(clearedWorkspace.delivery.filing.exportedAt, null);
   assert.equal(getWorkspace(cleared, initial.activeWorkspaceId).transactions.length, originalCount);
   assert.ok(clearedWorkspace.company.legalName);
+});
+
+test("切换工作台会同步切换到目标工作台的启用用户", () => {
+  const initial = createInitialState({ now: fixedNow });
+  const sourceId = initial.activeWorkspaceId;
+  const { state: created } = addWorkspace(initial, {
+    id: "workspace-user-scope",
+    name: "独立用户工作台",
+  }, { now: fixedNow });
+  let state = upsertWorkspaceEntity(created, "workspace-user-scope", "users", {
+    id: "user-second-owner",
+    name: "第二负责人",
+    roleId: "role-owner",
+    role: "经营者",
+    status: "active",
+  }, { now: fixedNow }).state;
+  state = switchWorkspace(state, sourceId, { now: fixedNow });
+  state = switchWorkspace(state, "workspace-user-scope", { now: fixedNow });
+
+  assert.equal(state.activeWorkspaceId, "workspace-user-scope");
+  assert.equal(getWorkspace(state).users.some((user) => user.id === state.activeUserId && user.status === "active"), true);
+});
+
+test("角色权限在 store 写入口真实拦截，资料协作者仍可添加资料元数据", () => {
+  const storage = createMemoryStorage();
+  const repository = createLocalFoundationRepository({ storage, now: fixedNow });
+  const store = createFinanceDeskStore({ repository });
+  const workspaceId = store.getState().activeWorkspaceId;
+  store.actions.upsertEntity(workspaceId, "users", {
+    id: "user-staff-test",
+    name: "资料协作者测试",
+    roleId: "role-staff",
+    role: "资料协作者",
+    status: "active",
+  });
+  store.actions.switchUser(workspaceId, "user-staff-test");
+
+  assert.throws(() => store.actions.replaceWorkspace(workspaceId, store.getActiveWorkspace()), /缺少权限 data\.write/);
+  assert.throws(() => store.actions.createWorkspace({ name: "不应创建" }), /缺少权限 workspace\.manage/);
+  assert.doesNotThrow(() => store.actions.upsertEntity(workspaceId, "documents", {
+    id: "document-staff-added",
+    name: "协作者资料索引",
+    status: "active",
+  }));
+});
+
+test("被业务对象引用的基础记录不能直接硬删除", () => {
+  const state = createInitialState({ now: fixedNow });
+  const workspaceId = state.activeWorkspaceId;
+  assert.throws(
+    () => removeWorkspaceEntity(state, workspaceId, "bankAccounts", "bank-cmb-8821", { now: fixedNow }),
+    /仍被.*引用/,
+  );
+});
+
+test("阶段完成会核对未结事项，授权到期会留下失效状态", () => {
+  const initial = createInitialState({ now: fixedNow });
+  const workspaceId = initial.activeWorkspaceId;
+  const workspace = getWorkspace(initial);
+  assert.equal(stageCompletionIssues(workspace, "s4", fixedNow().toISOString()).some((item) => item.includes("力量器械采购")), true);
+  assert.throws(() => setWorkspaceStageStatus(initial, workspaceId, "s4", "complete", { now: fixedNow }), /仍有未完成事项/);
+
+  const recorded = recordLocalAuthorization(initial, workspaceId, {
+    id: "authorization-expired",
+    system: "bank",
+    label: "历史银行授权",
+    scope: "本地流水文件",
+    expiresAt: "2026-09-01",
+  }, { now: fixedNow });
+  assert.equal(recorded.item.status, "expired");
 });

@@ -17,6 +17,7 @@ import {
   parseDelimitedText,
   prepareBankImport,
   readBankFile,
+  refreshLocalFileAvailability,
   removeLocalDocument,
   saveLocalDocument,
   updateWorkspace,
@@ -72,7 +73,7 @@ test("字段映射同时支持常见英文银行表头", () => {
   assert.deepEqual(mapping, { date: 0, amount: 3, counterparty: 1, summary: 2, serial: 4, balance: 5 });
 });
 
-test("银行导入保留原始行，识别文件内和工作台内重复，并完成余额勾稽", () => {
+test("银行导入保留原始行、识别重复，并在坏行修正前拒绝落库", () => {
   const state = stateWithTestAccount();
   const workspace = getWorkspace(state);
   const table = [
@@ -102,11 +103,24 @@ test("银行导入保留原始行，识别文件内和工作台内重复，并�
   assert.equal(plan.transactions[0].sourceRow, 2);
   assert.equal(plan.transactions[0].raw["对方名称"], "客户甲");
 
-  const applied = applyBankImport(state, workspace.id, plan, { now: fixedNow, actor: "测试会计" });
+  assert.throws(
+    () => applyBankImport(state, workspace.id, plan, { now: fixedNow, actor: "测试会计" }),
+    /仍有 1 行错误/,
+  );
+
+  const correctedPlan = prepareBankImport(workspace, {
+    accountId: "bank-test",
+    fileName: "测试银行流水-已修正.csv",
+    table: table.slice(0, -1),
+    importedAt: fixedTimestamp,
+    openingBalance: 1000,
+    statementClosing: 1120,
+  });
+  const applied = applyBankImport(state, workspace.id, correctedPlan, { now: fixedNow, actor: "测试会计" });
   const updated = getWorkspace(applied);
   assert.equal(updated.transactions.length, workspace.transactions.length + 2);
   assert.equal(updated.bankImports.length, 1);
-  assert.equal(updated.stages.s3.status, "needs_review", "存在坏行时仍需人工复核");
+  assert.equal(updated.stages.s3.status, "complete");
   assert.match(updated.auditLog.at(-1).detail, /新增 2 笔/);
 });
 
@@ -125,6 +139,70 @@ test("余额不平时给出明确差额而不是伪装通过", () => {
   assert.equal(plan.reconciliation.passed, false);
   assert.equal(plan.status, "reconciliation_failed");
   assert.match(plan.reconciliation.message, /余额相差/);
+  assert.throws(() => applyBankImport(stateWithTestAccount(), workspace.id, plan, { now: fixedNow }), /尚未勾稽通过/);
+});
+
+test("空白工作台可随首份已勾稽流水建立活动账期，已有业务时拒绝跨期混入", () => {
+  const initial = createInitialState({ now: fixedNow });
+  const workspaceId = initial.activeWorkspaceId;
+  const blankState = updateWorkspace(initial, workspaceId, (workspace) => ({
+    ...workspace,
+    currentPeriod: "2026-09",
+    periods: ["2026-09"],
+    transactions: [],
+    vouchers: [],
+    bankImports: [],
+    delivery: { ...workspace.delivery, reportVersions: [], filing: { ...workspace.delivery.filing, period: "2026-09", draftCreatedAt: null } },
+    bankAccounts: [{ id: "bank-blank", name: "空白账户", openingBalance: 1000, statementClosing: 1120, status: "active", currency: "CNY" }],
+  }), null, { now: fixedNow });
+  const blankWorkspace = getWorkspace(blankState);
+  const table = [
+    ["交易日期", "对方名称", "摘要", "金额", "流水号", "账户余额"],
+    ["2026-08-01", "客户甲", "收款", 100, "A-1", 1100],
+    ["2026-08-02", "客户乙", "收款", 20, "A-2", 1120],
+  ];
+  const plan = prepareBankImport(blankWorkspace, {
+    accountId: "bank-blank",
+    fileName: "首份流水.csv",
+    table,
+    importedAt: fixedTimestamp,
+    openingBalance: 1000,
+    statementClosing: 1120,
+  });
+  const applied = applyBankImport(blankState, workspaceId, plan, { now: fixedNow });
+  assert.equal(getWorkspace(applied).currentPeriod, "2026-08");
+  assert.equal(getWorkspace(applied).periods[0], "2026-08");
+
+  const alreadyHasData = getWorkspace(applied);
+  const laterTable = [
+    ["交易日期", "对方名称", "摘要", "金额", "流水号", "账户余额"],
+    ["2026-09-01", "客户丙", "收款", 10, "B-1", 1130],
+  ];
+  const laterPlan = prepareBankImport(alreadyHasData, {
+    accountId: "bank-blank",
+    fileName: "跨期流水.csv",
+    table: laterTable,
+    importedAt: fixedTimestamp,
+    openingBalance: 1120,
+    statementClosing: 1130,
+  });
+  assert.throws(() => applyBankImport(applied, workspaceId, laterPlan, { now: fixedNow }), /已有业务数据时不能导入/);
+});
+
+test("同一文件混入多个账期时预检查直接拒绝", () => {
+  const workspace = getWorkspace(stateWithTestAccount());
+  const table = [
+    ["交易日期", "对方名称", "摘要", "金额"],
+    ["2026-08-31", "客户甲", "八月收款", 10],
+    ["2026-09-01", "客户乙", "九月收款", 20],
+  ];
+  assert.throws(() => prepareBankImport(workspace, {
+    accountId: "bank-test",
+    fileName: "混合账期.csv",
+    table,
+    openingBalance: 1000,
+    statementClosing: 1030,
+  }), /一次只能导入一个账期/);
 });
 
 test("XLSX 文件读取首个工作表并给出映射预览", async () => {
@@ -222,4 +300,46 @@ test("复制工作台会复制独立 Blob，删除副本资料不影响来源工
   await removeLocalDocument({ store, fileVault, workspaceId: target.id, documentId: copiedDocument.id });
   assert.equal(Boolean(await fileVault.get(sourceDocument.storage.blobId)), true);
   assert.equal(store.getState().workspaces.find((item) => item.id === sourceWorkspaceId).documents.length > 0, true);
+});
+
+test("资料关联对象必须属于当前工作台，失败时不留下孤立 Blob", async () => {
+  const storage = createMemoryStorage();
+  const repository = createLocalFoundationRepository({ storage, now: fixedNow });
+  const store = createFinanceDeskStore({ repository });
+  const fileVault = createMemoryFileVault();
+  const workspaceId = store.getState().activeWorkspaceId;
+  const file = Object.assign(new Blob(["invalid link"], { type: "text/plain" }), { name: "错误关联.txt" });
+
+  await assert.rejects(() => saveLocalDocument({
+    store,
+    fileVault,
+    workspaceId,
+    file,
+    metadata: { relatedObjectIds: ["object-from-another-workspace"] },
+  }), /关联对象不属于当前工作台/);
+  assert.equal((await fileVault.listByWorkspace(workspaceId)).length, 0);
+});
+
+test("旧备份中跨工作台复用的 Blob 会在启动核对时复制成独立归属", async () => {
+  const storage = createMemoryStorage();
+  const repository = createLocalFoundationRepository({ storage, now: fixedNow });
+  const store = createFinanceDeskStore({ repository });
+  const fileVault = createMemoryFileVault();
+  const sourceWorkspaceId = store.getState().activeWorkspaceId;
+  const file = Object.assign(new Blob(["legacy shared blob"], { type: "text/plain" }), { name: "旧资料.txt" });
+  const sourceDocument = await saveLocalDocument({ store, fileVault, workspaceId: sourceWorkspaceId, file });
+  const target = store.actions.createWorkspace({ name: "旧副本", sourceWorkspaceId });
+  const targetWorkspace = store.getActiveWorkspace();
+  store.actions.replaceWorkspace(target.id, {
+    ...targetWorkspace,
+    documents: targetWorkspace.documents.map((document) => document.id === sourceDocument.id
+      ? { ...document, storage: { ...document.storage, blobId: sourceDocument.storage.blobId, backupBlobId: sourceDocument.storage.blobId, availableLocally: false } }
+      : document),
+  });
+
+  const result = await refreshLocalFileAvailability({ store, fileVault });
+  const repairedDocument = store.getActiveWorkspace().documents.find((document) => document.id === sourceDocument.id);
+  assert.equal(result.repaired, 1);
+  assert.notEqual(repairedDocument.storage.blobId, sourceDocument.storage.blobId);
+  assert.equal((await fileVault.get(repairedDocument.storage.blobId)).workspaceId, target.id);
 });

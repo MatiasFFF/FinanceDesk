@@ -51,6 +51,12 @@ export function createBrowserFileVault(options = {}) {
     async get(id) {
       return transaction("readonly", (store) => requestResult(store.get(id)));
     },
+    async getOwned(id, workspaceId, hash) {
+      const record = await this.get(id);
+      if (!record || record.workspaceId !== workspaceId) return null;
+      if (hash && record.hash && record.hash !== hash) return null;
+      return record;
+    },
     async delete(id) {
       await transaction("readwrite", (store) => requestResult(store.delete(id)));
     },
@@ -72,6 +78,12 @@ export function createMemoryFileVault() {
   return {
     async put(record) { records.set(record.id, record); return record.id; },
     async get(id) { return records.get(id); },
+    async getOwned(id, workspaceId, hash) {
+      const record = records.get(id);
+      if (!record || record.workspaceId !== workspaceId) return null;
+      if (hash && record.hash && record.hash !== hash) return null;
+      return record;
+    },
     async delete(id) { records.delete(id); },
     async listByWorkspace(workspaceId) { return [...records.values()].filter((record) => record.workspaceId === workspaceId); },
     async clearWorkspace(workspaceId) {

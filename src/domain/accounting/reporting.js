@@ -208,6 +208,16 @@ export function buildManagementMetrics(workspace, { period = workspace.currentPe
   const payableRows = ageing.rows.filter((row) => row.kind === "payable");
   const duePayables = sumMoney(payableRows.map((row) => row.balance));
   const cashGap = Math.min(0, roundMoney(cashLine.value - duePayables));
+  const contractLiabilityAccount = statements.ledger.accounts.find((item) => item.accountId === "contractLiability");
+  const prepaymentAccount = statements.ledger.accounts.find((item) => item.accountId === "prepayment");
+  const depositBalance = valueWithSources(
+    Math.max(0, roundMoney(-(contractLiabilityAccount?.closing || 0))),
+    contractLiabilityAccount?.sourceIds || [],
+  );
+  const prepaymentBalance = valueWithSources(
+    Math.max(0, roundMoney(prepaymentAccount?.closing || 0)),
+    prepaymentAccount?.sourceIds || [],
+  );
   return {
     period,
     metrics: [
@@ -218,8 +228,8 @@ export function buildManagementMetrics(workspace, { period = workspace.currentPe
       { id: "profit", label: "本月利润", ...statements.incomeStatement.profit },
       { id: "receivable", label: "应收账款", ...valueWithSources(sumMoney(receivableRows.map((row) => row.balance)), receivableRows.map((row) => row.sourceIds)) },
       { id: "payable", label: "供应商应付", ...valueWithSources(duePayables, payableRows.map((row) => row.sourceIds)) },
-      { id: "deposit", label: "客户预收", ...valueWithSources(advances.depositsReceived, advances.rows.filter((row) => row.kind === "depositReceived").map((row) => row.sourceIds)) },
-      { id: "prepayment", label: "供应商预付", ...valueWithSources(advances.prepaymentsPaid, advances.rows.filter((row) => row.kind === "prepaymentPaid").map((row) => row.sourceIds)) },
+      { id: "deposit", label: "客户预收", ...depositBalance },
+      { id: "prepayment", label: "供应商预付", ...prepaymentBalance },
       { id: "refund", label: "本月退款", ...statements.incomeStatement.salesReturns },
       { id: "cashGap", label: "未来现金缺口", ...valueWithSources(cashGap, collectSourceIds(cashLine.sourceIds, payableRows.map((row) => row.sourceIds))) },
     ],
@@ -233,18 +243,28 @@ export function buildTaxWorkpaper(workspace, { period = workspace.currentPeriod 
   const statements = buildFinancialStatements(workspace, { period });
   const rate = Number(workspace.tax?.vatRate ?? 0.03);
   const taxableRevenue = statements.incomeStatement.netRevenue;
-  const outputVat = valueWithSources(roundMoney(taxableRevenue.value * rate), taxableRevenue.sourceIds);
+  const adjustments = valueWithSources(Number(workspace.tax?.adjustments || 0), workspace.tax?.adjustmentSourceIds || []);
+  const taxableBase = valueWithSources(
+    Math.max(0, roundMoney(taxableRevenue.value + adjustments.value)),
+    collectSourceIds(taxableRevenue.sourceIds, adjustments.sourceIds),
+  );
+  const outputVat = valueWithSources(roundMoney(taxableBase.value * rate), taxableBase.sourceIds);
   const taxInputAccounts = statements.ledger.accounts.filter((item) => String(item.accountId).startsWith("taxInput"));
   const inputVat = valueWithSources(sumMoney(taxInputAccounts.map((item) => item.debit - item.credit)), taxInputAccounts.map((item) => item.sourceIds));
   const vatPayable = valueWithSources(Math.max(0, roundMoney(outputVat.value - inputVat.value)), collectSourceIds(outputVat.sourceIds, inputVat.sourceIds));
   const payroll = valueWithSources(workspace.tax?.payroll || 0, workspace.tax?.payrollSourceIds || workspace.tax?.sourceIds || []);
   const socialSecurity = valueWithSources(workspace.tax?.socialSecurity || 0, workspace.tax?.socialSecuritySourceIds || workspace.tax?.sourceIds || []);
   const unresolved = (workspace.exceptionTasks || []).filter((task) => task.status !== "resolved");
-  const confirmation = (workspace.confirmations || []).find((item) => item.period === period && item.kind === "tax");
+  const confirmation = [...(workspace.confirmations || [])]
+    .filter((item) => item.period === period && item.kind === "tax")
+    .sort((left, right) => String(left.updatedAt || left.createdAt || "").localeCompare(String(right.updatedAt || right.createdAt || "")))
+    .at(-1);
   return {
     period,
     status: unresolved.length ? "blocked_by_exceptions" : (confirmation?.status === "approved" ? "customer_confirmed" : "awaiting_customer_confirmation"),
     taxableRevenue,
+    adjustments,
+    taxableBase,
     vatRate: rate,
     outputVat,
     inputVat,
@@ -293,7 +313,7 @@ export function freezeReportVersion(workspace, { period = workspace.currentPerio
   return next;
 }
 
-export function createCustomerConfirmationPackage(workspace, { period = workspace.currentPeriod } = {}, context = {}) {
+export function createCustomerConfirmationPackage(workspace, { period = workspace.currentPeriod, reportVersionId = null } = {}, context = {}) {
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext(context);
   const tax = buildTaxWorkpaper(next, { period });
@@ -303,6 +323,7 @@ export function createCustomerConfirmationPackage(workspace, { period = workspac
     id: nextRecordId(confirmations, "confirmation-package"),
     kind: "tax",
     period,
+    reportVersionId,
     version: confirmations.filter((item) => item.kind === "tax" && item.period === period).length + 1,
     status: "pending",
     createdAt: resolvedContext.at,
@@ -310,9 +331,12 @@ export function createCustomerConfirmationPackage(workspace, { period = workspac
     sections: {
       finance: { status: "pending", value: statements.incomeStatement.profit.value, sourceIds: statements.incomeStatement.profit.sourceIds },
       revenue: { status: "pending", value: tax.taxableRevenue.value, sourceIds: tax.taxableRevenue.sourceIds },
+      costExpense: { status: "pending", value: roundMoney(statements.incomeStatement.cost.value + statements.incomeStatement.expenses.value), sourceIds: collectSourceIds(statements.incomeStatement.cost.sourceIds, statements.incomeStatement.expenses.sourceIds) },
       vat: { status: "pending", value: tax.vatPayable.value, sourceIds: tax.vatPayable.sourceIds },
+      inputVat: { status: "pending", value: tax.inputVat.value, sourceIds: tax.inputVat.sourceIds },
       payroll: { status: "pending", value: tax.payroll.value, sourceIds: tax.payroll.sourceIds },
       socialSecurity: { status: "pending", value: tax.socialSecurity.value, sourceIds: tax.socialSecurity.sourceIds },
+      openItems: { status: "pending", value: tax.unresolvedExceptionIds.length, sourceIds: tax.unresolvedExceptionIds },
     },
     unresolvedExceptionIds: tax.unresolvedExceptionIds,
     decisions: [],

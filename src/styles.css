@@ -286,14 +286,9 @@ button:disabled {
   color: var(--muted);
 }
 
-.period-select select {
-  appearance: none;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--espresso);
-  cursor: pointer;
-}
+.period-select > span { display: grid; gap: 1px; }
+.period-select small { color: var(--quiet); font-size: 8px; font-weight: 600; }
+.period-select strong { color: var(--espresso); font-size: 11px; white-space: nowrap; }
 
 .primary-button,
 .secondary-button,
@@ -2683,8 +2678,8 @@ button.metric-card:hover {
 }
 
 .confirmation-options {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   margin-top: 14px;
 }
@@ -3295,7 +3290,8 @@ button.metric-card:hover {
   .metric-grid.four,
   .tax-input-grid,
   .form-grid,
-  .choice-cards {
+  .choice-cards,
+  .confirmation-options {
     grid-template-columns: 1fr;
   }
 

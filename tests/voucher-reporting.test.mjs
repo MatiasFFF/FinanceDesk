@@ -168,7 +168,8 @@ test("customer confirms each section explicitly and every decision is audited", 
   let workspace = createAccountingFixture();
   workspace = createCustomerConfirmationPackage(workspace, { period: "2026-08" }, context);
   const confirmationId = workspace.confirmations[0].id;
-  for (const [index, section] of ["finance", "revenue", "vat", "payroll", "socialSecurity"].entries()) {
+  const sections = ["finance", "revenue", "costExpense", "vat", "inputVat", "payroll", "socialSecurity", "openItems"];
+  for (const [index, section] of sections.entries()) {
     workspace = recordCustomerConfirmation(workspace, {
       confirmationId,
       section,
@@ -177,8 +178,8 @@ test("customer confirms each section explicitly and every decision is audited", 
     }, { actor: "客户负责人", at: `2026-09-06T13:${10 + index}:00.000Z` });
   }
   assert.equal(workspace.confirmations[0].status, "approved");
-  assert.equal(workspace.confirmations[0].decisions.length, 5);
-  assert.equal(workspace.auditLog.filter((item) => item.action === "confirmation.approve").length, 5);
+  assert.equal(workspace.confirmations[0].decisions.length, sections.length);
+  assert.equal(workspace.auditLog.filter((item) => item.action === "confirmation.approve").length, sections.length);
   assert.equal(buildTaxWorkpaper(workspace, { period: "2026-08" }).status, "customer_confirmed");
 });
 

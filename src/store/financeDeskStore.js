@@ -1,5 +1,7 @@
 import {
   addWorkspace,
+  activeWorkspaceUser,
+  assertWorkspacePermission,
   clearWorkspace,
   deleteWorkspace,
   getWorkspace,
@@ -11,6 +13,7 @@ import {
   setWorkspaceStageStatus,
   setWorkspaceEntityStatus,
   switchWorkspace,
+  switchActiveUser,
   updateCompanyProfile,
   updateWorkspace,
   upsertWorkspaceEntity,
@@ -39,9 +42,36 @@ export function createFinanceDeskStore(options = {}) {
     return () => listeners.delete(listener);
   }
 
+  function assertActivePeriodWritable(workspaceId, actionOptions = {}) {
+    if (actionOptions.allowArchivedTransition) return;
+    const workspace = getWorkspace(state, workspaceId);
+    const archived = workspace?.delivery?.archives?.some((item) => item.period === workspace.currentPeriod);
+    if (archived || workspace?.delivery?.filing?.archivedAt) {
+      throw new Error("当前账期已经归档，只能查看；如需继续，请先进入下一期，历史更正需走新的更正版流程");
+    }
+  }
+
+  function permissionForCollection(collection) {
+    if (["users", "roles", "authorizations", "books", "stores"].includes(collection)) return "workspace.manage";
+    if (collection === "ruleSets") return "rules.manage";
+    if (["documents", "evidenceLinks"].includes(collection)) return "documents.add";
+    return "data.write";
+  }
+
+  function withActor(workspaceId, actionOptions = {}) {
+    const actor = activeWorkspaceUser(state, workspaceId)?.name || "本地用户";
+    return {
+      ...actionOptions,
+      actor: actionOptions.actor || actor,
+      audit: actionOptions.audit ? { actor, ...actionOptions.audit } : actionOptions.audit,
+    };
+  }
+
   const actions = {
-    createWorkspace(input) {
-      const result = addWorkspace(state, input);
+    createWorkspace(input = {}) {
+      assertWorkspacePermission(state, state.activeWorkspaceId, "workspace.manage");
+      const actor = activeWorkspaceUser(state)?.name || "本地用户";
+      const result = addWorkspace(state, { ...input, actor: input.actor || actor });
       commit(result.state);
       return result.workspace;
     },
@@ -49,63 +79,94 @@ export function createFinanceDeskStore(options = {}) {
       return actions.createWorkspace({ ...input, sourceWorkspaceId: workspaceId });
     },
     renameWorkspace(workspaceId, name, actionOptions) {
-      return commit(renameWorkspace(state, workspaceId, name, actionOptions));
+      assertWorkspacePermission(state, workspaceId, "workspace.manage");
+      return commit(renameWorkspace(state, workspaceId, name, withActor(workspaceId, actionOptions)));
     },
     switchWorkspace(workspaceId, actionOptions) {
-      return commit(switchWorkspace(state, workspaceId, actionOptions));
+      assertWorkspacePermission(state, workspaceId, "data.read");
+      return commit(switchWorkspace(state, workspaceId, withActor(workspaceId, actionOptions)));
+    },
+    switchUser(workspaceId, userId, actionOptions) {
+      return commit(switchActiveUser(state, workspaceId, userId, actionOptions));
     },
     deleteWorkspace(workspaceId, actionOptions) {
-      return commit(deleteWorkspace(state, workspaceId, actionOptions));
+      assertWorkspacePermission(state, workspaceId, "workspace.manage");
+      return commit(deleteWorkspace(state, workspaceId, withActor(workspaceId, actionOptions)));
     },
     clearWorkspace(workspaceId, actionOptions) {
-      return commit(clearWorkspace(state, workspaceId, actionOptions));
+      assertWorkspacePermission(state, workspaceId, "workspace.manage");
+      assertActivePeriodWritable(workspaceId, actionOptions);
+      return commit(clearWorkspace(state, workspaceId, withActor(workspaceId, actionOptions)));
     },
     updateCompanyProfile(workspaceId, patch, actionOptions) {
-      return commit(updateCompanyProfile(state, workspaceId, patch, actionOptions));
+      assertWorkspacePermission(state, workspaceId, "workspace.manage");
+      assertActivePeriodWritable(workspaceId, actionOptions);
+      return commit(updateCompanyProfile(state, workspaceId, patch, withActor(workspaceId, actionOptions)));
     },
     replaceWorkspace(workspaceId, workspace, actionOptions = {}) {
+      assertWorkspacePermission(state, workspaceId, actionOptions.requiredPermission || "data.write");
+      assertActivePeriodWritable(workspaceId, actionOptions);
+      const resolvedOptions = withActor(workspaceId, actionOptions);
       return commit(updateWorkspace(
         state,
         workspaceId,
         () => workspace,
-        actionOptions.audit || null,
-        actionOptions,
+        resolvedOptions.audit || null,
+        resolvedOptions,
       ));
     },
     setStageStatus(workspaceId, stage, status, actionOptions) {
-      return commit(setWorkspaceStageStatus(state, workspaceId, stage, status, actionOptions));
+      assertWorkspacePermission(state, workspaceId, "data.write");
+      assertActivePeriodWritable(workspaceId, actionOptions);
+      return commit(setWorkspaceStageStatus(state, workspaceId, stage, status, withActor(workspaceId, actionOptions)));
     },
     setPeriod(workspaceId, period, actionOptions) {
-      return commit(setWorkspacePeriod(state, workspaceId, period, actionOptions));
+      assertWorkspacePermission(state, workspaceId, "data.write");
+      assertActivePeriodWritable(workspaceId, actionOptions);
+      return commit(setWorkspacePeriod(state, workspaceId, period, withActor(workspaceId, actionOptions)));
     },
     upsertEntity(workspaceId, collection, values, actionOptions) {
-      const result = upsertWorkspaceEntity(state, workspaceId, collection, values, actionOptions);
+      assertWorkspacePermission(state, workspaceId, permissionForCollection(collection));
+      assertActivePeriodWritable(workspaceId, actionOptions);
+      const result = upsertWorkspaceEntity(state, workspaceId, collection, values, withActor(workspaceId, actionOptions));
       commit(result.state);
       return result.item;
     },
     removeEntity(workspaceId, collection, itemId, actionOptions) {
-      return commit(removeWorkspaceEntity(state, workspaceId, collection, itemId, actionOptions));
+      assertWorkspacePermission(state, workspaceId, permissionForCollection(collection));
+      assertActivePeriodWritable(workspaceId, actionOptions);
+      return commit(removeWorkspaceEntity(state, workspaceId, collection, itemId, withActor(workspaceId, actionOptions)));
     },
     setEntityStatus(workspaceId, collection, itemId, status, actionOptions) {
-      return commit(setWorkspaceEntityStatus(state, workspaceId, collection, itemId, status, actionOptions));
+      assertWorkspacePermission(state, workspaceId, permissionForCollection(collection));
+      assertActivePeriodWritable(workspaceId, actionOptions);
+      return commit(setWorkspaceEntityStatus(state, workspaceId, collection, itemId, status, withActor(workspaceId, actionOptions)));
     },
     recordAuthorization(workspaceId, values, actionOptions) {
-      const result = recordLocalAuthorization(state, workspaceId, values, actionOptions);
+      assertWorkspacePermission(state, workspaceId, "workspace.manage");
+      assertActivePeriodWritable(workspaceId, actionOptions);
+      const result = recordLocalAuthorization(state, workspaceId, values, withActor(workspaceId, actionOptions));
       commit(result.state);
       return result.item;
     },
     linkEvidence(workspaceId, values, actionOptions) {
-      const result = linkEvidence(state, workspaceId, values, actionOptions);
+      assertWorkspacePermission(state, workspaceId, "documents.add");
+      assertActivePeriodWritable(workspaceId, actionOptions);
+      const result = linkEvidence(state, workspaceId, values, withActor(workspaceId, actionOptions));
       commit(result.state);
       return result.item;
     },
     applyBankImport(workspaceId, plan, actionOptions) {
-      return commit(applyBankImport(state, workspaceId, plan, actionOptions));
+      assertWorkspacePermission(state, workspaceId, "data.write");
+      assertActivePeriodWritable(workspaceId, actionOptions);
+      return commit(applyBankImport(state, workspaceId, plan, withActor(workspaceId, actionOptions)));
     },
     exportBackup(exportOptions) {
+      assertWorkspacePermission(state, state.activeWorkspaceId, "data.read");
       return exportBackupJson(state, exportOptions);
     },
     importBackup(text, importOptions = {}) {
+      assertWorkspacePermission(state, state.activeWorkspaceId, "workspace.manage");
       return commit(importBackupJson(text, { ...importOptions, currentState: state }));
     },
   };

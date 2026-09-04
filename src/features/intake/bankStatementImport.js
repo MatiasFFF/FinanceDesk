@@ -329,6 +329,8 @@ export function prepareBankImport(workspace, input) {
   });
 
   const reconciliation = reconcileRows(statementRows, account, input);
+  const rowPeriods = [...new Set(statementRows.map((row) => row.date?.slice(0, 7)).filter(Boolean))];
+  if (rowPeriods.length > 1) throw new Error(`一次只能导入一个账期；当前文件包含 ${rowPeriods.join("、")}`);
   const period = input.period || statementRows[0]?.date?.slice(0, 7) || workspace.currentPeriod;
   return {
     id: normalized.importId,
@@ -363,9 +365,23 @@ export function applyBankImport(state, workspaceId, plan, options = {}) {
   const existingWorkspace = getWorkspace(state, workspaceId);
   if (!existingWorkspace) throw new Error(`找不到工作台：${workspaceId}`);
   if (existingWorkspace.bankImports.some((item) => item.id === plan.id)) throw new Error("这份导入计划已经执行过");
+  if (plan.errorCount > 0) throw new Error(`文件仍有 ${plan.errorCount} 行错误，请修正后重新预检查`);
+  if (!plan.reconciliation?.available || !plan.reconciliation?.passed) throw new Error("银行期初、收支与期末余额尚未勾稽通过，不能落库");
+  const hasWorkflowData = existingWorkspace.transactions.length > 0
+    || existingWorkspace.vouchers.length > 0
+    || existingWorkspace.bankImports.length > 0
+    || existingWorkspace.delivery?.reportVersions?.length > 0
+    || Boolean(existingWorkspace.delivery?.filing?.draftCreatedAt);
+  if (plan.period !== existingWorkspace.currentPeriod && hasWorkflowData) {
+    throw new Error(`当前活动账期是 ${existingWorkspace.currentPeriod}；已有业务数据时不能导入 ${plan.period}，请先完成归档进入下一期或新建工作台`);
+  }
   const record = deepClone({ ...plan, transactions: undefined });
   return updateWorkspace(state, workspaceId, (workspace) => ({
     ...workspace,
+    currentPeriod: plan.period,
+    periods: [plan.period, ...(workspace.periods || []).filter((period) => period !== plan.period)],
+    tax: { ...workspace.tax, period: plan.period },
+    delivery: { ...workspace.delivery, filing: { ...workspace.delivery.filing, period: plan.period } },
     bankImports: [...workspace.bankImports, record],
     transactions: [...plan.transactions, ...workspace.transactions],
     bankAccounts: workspace.bankAccounts.map((account) => account.id === plan.accountId ? {

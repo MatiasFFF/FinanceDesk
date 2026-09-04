@@ -156,6 +156,26 @@
   line-height: 1.55;
 }
 
+.permission-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.permission-chip-list span {
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: var(--sage-soft);
+  color: #52604d;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.authorization-list {
+  max-height: 150px;
+}
+
 .foundation-error,
 .foundation-notice {
   display: flex;

@@ -12,7 +12,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
-import { copyWorkspaceLocalFiles, refreshLocalFileAvailability } from "../intake/documentIntake.js";
+import { copyWorkspaceLocalFiles, pruneUnreferencedLocalFiles, refreshLocalFileAvailability } from "../intake/documentIntake.js";
 import "./foundation-ui.css";
 
 function downloadJson(text, fileName) {
@@ -103,9 +103,18 @@ export function WorkspaceManager({ open, onClose, onToast }) {
     setError("");
     const workspaceId = activeWorkspace.id;
     const workspaceName = activeWorkspace.name;
+    let savedFiles = [];
     try {
-      actions.deleteWorkspace(workspaceId);
-      if (fileVault) await fileVault.clearWorkspace(workspaceId);
+      if (fileVault) {
+        savedFiles = await fileVault.listByWorkspace(workspaceId);
+        await fileVault.clearWorkspace(workspaceId);
+      }
+      try {
+        actions.deleteWorkspace(workspaceId);
+      } catch (caught) {
+        if (fileVault) for (const record of savedFiles) await fileVault.put(record);
+        throw caught;
+      }
       onToast?.(`已删除「${workspaceName}」`);
     } catch (caught) {
       setError(caught.message || "删除工作台失败");
@@ -116,9 +125,18 @@ export function WorkspaceManager({ open, onClose, onToast }) {
     if (!window.confirm(`确定清空「${activeWorkspace.name}」的流水、资料、证据和凭证吗？企业设置会保留。`)) return;
     setError("");
     const workspaceId = activeWorkspace.id;
+    let savedFiles = [];
     try {
-      actions.clearWorkspace(workspaceId, { scope: "operational" });
-      if (fileVault) await fileVault.clearWorkspace(workspaceId);
+      if (fileVault) {
+        savedFiles = await fileVault.listByWorkspace(workspaceId);
+        await fileVault.clearWorkspace(workspaceId);
+      }
+      try {
+        actions.clearWorkspace(workspaceId, { scope: "operational" });
+      } catch (caught) {
+        if (fileVault) for (const record of savedFiles) await fileVault.put(record);
+        throw caught;
+      }
       onToast?.("当前工作台的业务数据已清空");
     } catch (caught) {
       setError(caught.message || "清空工作台失败");
@@ -129,6 +147,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
+    if (importMode === "replace" && !window.confirm("替换会覆盖当前所有工作台业务数据和元数据。原文件仅在仍能与导入记录匹配时保留，确定继续吗？")) return;
     setError("");
     try {
       const text = await file.text();
@@ -141,12 +160,15 @@ export function WorkspaceManager({ open, onClose, onToast }) {
         }
       }
       const availability = await refreshLocalFileAvailability({ store, fileVault });
+      const cleanup = await pruneUnreferencedLocalFiles({ store, fileVault });
       const current = store.getActiveWorkspace();
       actions.replaceWorkspace(current.id, current, {
+        allowArchivedTransition: true,
+        requiredPermission: "workspace.manage",
         audit: {
           actor: "本地用户",
           action: "导入工作台备份",
-          detail: `${importMode === "merge" ? "合并" : "替换"}导入；${availability.available} 份原文件仍可用，${availability.missing} 份需重新关联`,
+          detail: `${importMode === "merge" ? "合并" : "替换"}导入；${availability.available} 份原文件仍可用，${availability.repaired} 份旧副本已隔离，${availability.missing} 份需重新关联，清理 ${cleanup.removed} 份孤立文件`,
         },
       });
       onToast?.(`${importMode === "merge" ? "备份已合并" : "本地数据已替换"}；${availability.missing ? `${availability.missing} 份原文件需重新关联` : "本地原文件状态已核对"}`);
@@ -156,16 +178,23 @@ export function WorkspaceManager({ open, onClose, onToast }) {
   }
 
   function exportBackup() {
-    const current = store.getActiveWorkspace();
-    actions.replaceWorkspace(current.id, current, {
-      audit: {
-        actor: "本地用户",
-        action: "导出工作台备份",
-        detail: "导出业务数据、资料元数据和审计记录；原文件仍保存在当前浏览器",
-      },
-    });
-    downloadJson(actions.exportBackup(), `财务工作台备份-${new Date().toISOString().slice(0, 10)}.json`);
-    onToast?.("工作台 JSON 备份已导出");
+    setError("");
+    try {
+      const current = store.getActiveWorkspace();
+      actions.replaceWorkspace(current.id, current, {
+        allowArchivedTransition: true,
+        requiredPermission: "data.read",
+        audit: {
+          actor: "本地用户",
+          action: "导出工作台备份",
+          detail: "导出业务数据、资料元数据和审计记录；原文件仍保存在当前浏览器",
+        },
+      });
+      downloadJson(actions.exportBackup(), `财务工作台备份-${new Date().toISOString().slice(0, 10)}.json`);
+      onToast?.("工作台 JSON 备份已导出");
+    } catch (caught) {
+      setError(caught.message || "备份导出失败");
+    }
   }
 
   return (
