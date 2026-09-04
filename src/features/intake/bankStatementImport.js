@@ -1,5 +1,3 @@
-import * as XLSX from "xlsx";
-
 import {
   createId,
   deepClone,
@@ -144,9 +142,9 @@ export function inspectBankTable(table, options = {}) {
 
 function parseExcelDate(serial) {
   if (!Number.isFinite(serial)) return null;
-  const parts = XLSX.SSF.parse_date_code(serial);
-  if (!parts) return null;
-  return `${String(parts.y).padStart(4, "0")}-${String(parts.m).padStart(2, "0")}-${String(parts.d).padStart(2, "0")}`;
+  const milliseconds = Date.UTC(1899, 11, 30) + Math.floor(serial) * 86_400_000;
+  const date = new Date(milliseconds);
+  return Number.isNaN(date.valueOf()) ? null : date.toISOString().slice(0, 10);
 }
 
 export function normalizeBankDate(value) {
@@ -406,6 +404,7 @@ export async function readBankFile(file, options = {}) {
     return { fileName, sheetName: null, table: parsed.table, delimiter: parsed.delimiter, inspection: inspectBankTable(parsed.table) };
   }
   if (extension !== "xlsx" && extension !== "xls") throw new Error("仅支持 CSV、XLSX 和 XLS 银行流水文件");
+  const XLSX = await import("xlsx");
   const data = await file.arrayBuffer();
   const workbook = XLSX.read(data, { type: "array", cellDates: true });
   const sheetName = options.sheetName || workbook.SheetNames[0];

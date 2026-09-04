@@ -27,6 +27,12 @@ import {
   X,
 } from "@phosphor-icons/react";
 
+import { BankImportPanel } from "./features/intake/BankImportPanel.jsx";
+import { DocumentIntakePanel } from "./features/intake/DocumentIntakePanel.jsx";
+import { FoundationRecordsPanel } from "./features/workspaces/FoundationRecordsPanel.jsx";
+import { WorkspaceManager, WorkspaceTrigger } from "./features/workspaces/WorkspaceManager.jsx";
+import { useFinanceDesk } from "./store/FinanceDeskProvider.jsx";
+
 const STORAGE_KEY = "shanlan-finance-demo-v1";
 
 const stages = ["资料", "匹配", "核销", "凭证", "报表", "确认"];
@@ -288,18 +294,14 @@ const navItems = [
   { id: "reconcile", label: "核销工作台", mobileLabel: "核销", icon: SealCheck },
   { id: "reports", label: "凭证与报表", mobileLabel: "凭证报表", icon: ClipboardText },
   { id: "archive", label: "资料档案", mobileLabel: "资料档案", icon: Archive },
+  { id: "setup", label: "基础资料", mobileLabel: "基础", icon: GearSix },
 ];
 
-function Sidebar({ page, setPage }) {
+function Sidebar({ page, setPage, activeWorkspace, onManageWorkspace }) {
+  const activeUser = activeWorkspace.users.find((user) => user.status === "active") || activeWorkspace.users[0];
   return (
     <aside className="sidebar">
-      <button className="brand" type="button" onClick={() => setPage("close")}>
-        <span className="brand-copy">
-          <strong>山岚健身工作室</strong>
-          <small>财务工作台</small>
-        </span>
-        <CaretDown size={14} />
-      </button>
+      <WorkspaceTrigger onClick={onManageWorkspace} />
 
       <nav className="primary-nav" aria-label="主导航">
         {navItems.map((item) => {
@@ -321,12 +323,11 @@ function Sidebar({ page, setPage }) {
       <div className="sidebar-bottom">
         <div className="period-card">
           <CalendarBlank size={18} />
-          <div><small>当前账期</small><strong>2026 年 8 月</strong></div>
+          <div><small>当前账期</small><strong>{activeWorkspace.currentPeriod || "未设置"}</strong></div>
         </div>
         <button className="account-card" type="button">
           <span className="avatar">会</span>
-          <div><strong>周会计</strong><small>财务负责人</small></div>
-          <CaretDown size={14} />
+          <div><strong>{activeUser?.name || "本地用户"}</strong><small>{activeUser?.role || "尚未设置角色"}</small></div>
         </button>
       </div>
     </aside>
@@ -349,21 +350,20 @@ function BottomNav({ page, setPage }) {
   );
 }
 
-function Topbar({ title, subtitle, onImport, onReset }) {
+function Topbar({ title, subtitle, workspace, onPeriodChange, onImport, onManageWorkspace, onOpenSetup, onReset }) {
   const [menuOpen, setMenuOpen] = useState(false);
   return (
     <header className="topbar">
       <div>
-        <p className="eyebrow">2026 年 8 月 · 演示账套</p>
+        <p className="eyebrow">{workspace.currentPeriod || "未设置账期"} · {workspace.templateLabel || "本地工作台"}</p>
         <h1>{title}</h1>
         {subtitle && <p className="page-subtitle">{subtitle}</p>}
       </div>
       <div className="topbar-actions">
         <label className="period-select">
           <CalendarBlank size={18} />
-          <select defaultValue="2026-08" aria-label="选择账期">
-            <option value="2026-08">2026 年 8 月</option>
-            <option value="2026-07">2026 年 7 月</option>
+          <select value={workspace.currentPeriod || ""} onChange={(event) => onPeriodChange(event.target.value)} aria-label="选择账期">
+            {(workspace.periods || [workspace.currentPeriod]).filter(Boolean).map((period) => <option value={period} key={period}>{period.replace("-", " 年 ")} 月</option>)}
           </select>
           <CaretDown size={14} />
         </label>
@@ -377,9 +377,9 @@ function Topbar({ title, subtitle, onImport, onReset }) {
           </button>
           {menuOpen && (
             <div className="popover-menu">
-              <button type="button"><GearSix size={17} />匹配规则设置</button>
-              <button type="button"><Clock size={17} />查看操作记录</button>
-              <button type="button" onClick={() => { onReset(); setMenuOpen(false); }}><SpinnerGap size={17} />重置演示数据</button>
+              <button type="button" onClick={() => { onOpenSetup(); setMenuOpen(false); }}><GearSix size={17} />基础资料与规则</button>
+              <button type="button" onClick={() => { onManageWorkspace(); setMenuOpen(false); }}><Clock size={17} />工作台与备份</button>
+              <button type="button" onClick={() => { onReset(); setMenuOpen(false); }}><SpinnerGap size={17} />清空当前业务数据</button>
             </div>
           )}
         </div>
@@ -560,7 +560,8 @@ function DetailPanel({ item, onClose, updateStatus }) {
 function ReconcileWorkspace({ transactions, updateStatus }) {
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
-  const [selectedId, setSelectedId] = useState(() => window.matchMedia("(min-width: 1101px)").matches ? "txn-001" : null);
+  const firstTransactionId = transactions[0]?.id || null;
+  const [selectedId, setSelectedId] = useState(() => window.matchMedia("(min-width: 1101px)").matches ? firstTransactionId : null);
   const filtered = useMemo(() => transactions.filter((item) => {
     const matchesFilter = filter === "all" || item.status === filter;
     const text = `${item.counterparty} ${item.summary} ${item.category}`.toLowerCase();
@@ -570,11 +571,11 @@ function ReconcileWorkspace({ transactions, updateStatus }) {
 
   useEffect(() => {
     const desktopQuery = window.matchMedia("(min-width: 1101px)");
-    const adaptSelection = (event) => setSelectedId(event.matches ? "txn-001" : null);
+    const adaptSelection = (event) => setSelectedId(event.matches ? firstTransactionId : null);
     adaptSelection(desktopQuery);
     desktopQuery.addEventListener("change", adaptSelection);
     return () => desktopQuery.removeEventListener("change", adaptSelection);
-  }, []);
+  }, [firstTransactionId]);
 
   return (
     <div className={`reconcile-layout ${selected ? "" : "without-detail"}`}>
@@ -654,37 +655,21 @@ function ReportsPage() {
   );
 }
 
-function ArchivePage() {
-  const [documents, setDocuments] = useState(demoDocuments);
-  const fileInput = useRef(null);
-  function addFiles(event) {
-    const files = Array.from(event.target.files || []);
-    if (!files.length) return;
-    setDocuments((current) => [
-      ...files.map((file, index) => ({ id: Date.now() + index, title: file.name, type: "本地文件", meta: `${Math.max(1, Math.round(file.size / 1024))} KB`, status: "待解析" })),
-      ...current,
-    ]);
-    event.target.value = "";
-  }
+function ArchivePage({ onToast }) {
   return (
     <div className="page-content archive-page">
-      <section className="upload-hero" onClick={() => fileInput.current?.click()}>
-        <input ref={fileInput} type="file" multiple hidden onChange={addFiles} />
-        <span><FileArrowUp size={29} /></span>
-        <div><h2>把本月资料放到一起</h2><p>选择本地文件后仅在当前浏览器中展示，不会上传网络。</p></div>
-        <button className="primary-button" type="button">选择文件</button>
-      </section>
-      <section className="panel archive-panel">
-        <div className="panel-heading"><div><p className="eyebrow">资料档案</p><h2>2026 年 8 月</h2></div><span className="table-count">{documents.length} 组资料</span></div>
-        <div className="document-grid">
-          {documents.map((document) => (
-            <article className="document-card" key={document.id}>
-              <span className="document-icon"><FileText size={23} /></span>
-              <div><small>{document.type}</small><strong>{document.title}</strong><p>{document.meta}</p></div>
-              <span className={document.status.includes("待") ? "doc-status warning" : "doc-status"}>{document.status}</span>
-            </article>
-          ))}
-        </div>
+      <DocumentIntakePanel defaultCategory="其他资料" onToast={onToast} />
+    </div>
+  );
+}
+
+function LocalBankImportDialog({ open, onClose, onToast }) {
+  if (!open) return null;
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="modal-card foundation-manager" role="dialog" aria-modal="true" aria-labelledby="local-bank-import-title">
+        <div className="modal-heading"><div><p className="eyebrow">浏览器本地</p><h2 id="local-bank-import-title">导入银行流水</h2></div><button className="icon-button" onClick={onClose} type="button" aria-label="关闭"><X size={19} /></button></div>
+        <BankImportPanel compact onToast={onToast} onComplete={onClose} />
       </section>
     </div>
   );
@@ -759,15 +744,35 @@ function ImportDialog({ open, onClose, onImport }) {
   );
 }
 
-function App() {
-  const [page, setPage] = useState("close");
-  const [transactions, setTransactions] = useState(loadTransactions);
-  const [importOpen, setImportOpen] = useState(false);
-  const [toast, setToast] = useState("");
+function toUiTransaction(workspace, transaction) {
+  const account = workspace.bankAccounts.find((item) => item.id === transaction.accountId);
+  const status = transaction.status === "reconciled"
+    ? "matched"
+    : transaction.status === "exception"
+      ? "pending"
+      : transaction.status || "pending";
+  const evidenceCount = transaction.evidence ?? Math.min(5, 1 + (transaction.evidenceIds || []).length);
+  return {
+    ...transaction,
+    status,
+    category: transaction.category || transaction.suggestion || "待确认科目",
+    evidence: evidenceCount,
+    evidenceTotal: transaction.evidenceTotal || 5,
+    missing: transaction.missing || transaction.exceptionReason || "业务单据、发票或审批资料",
+    source: transaction.source || account?.name || "本地银行流水",
+    billNo: transaction.billNo || transaction.allocations?.[0]?.billId || "待关联",
+    customer: transaction.customer || transaction.counterparty || "待确认",
+    reason: transaction.reason || transaction.exceptionReason || "本地导入流水，等待人工确认与证据关联。",
+  };
+}
 
-  useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(transactions));
-  }, [transactions]);
+function App() {
+  const { activeWorkspace, actions, fileVault, loadReport } = useFinanceDesk();
+  const [page, setPage] = useState("close");
+  const [importOpen, setImportOpen] = useState(false);
+  const [workspaceManagerOpen, setWorkspaceManagerOpen] = useState(false);
+  const [toast, setToast] = useState("");
+  const transactions = useMemo(() => activeWorkspace.transactions.map((item) => toUiTransaction(activeWorkspace, item)), [activeWorkspace]);
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
@@ -779,15 +784,30 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    if (loadReport.recovered) setToast("检测到本地数据损坏，已恢复到最近一次有效副本");
+  }, [loadReport.recovered]);
+
   function updateStatus(id, status) {
-    setTransactions((current) => current.map((item) => item.id === id ? { ...item, status } : item));
+    const transaction = activeWorkspace.transactions.find((item) => item.id === id);
+    if (!transaction) return;
+    actions.upsertEntity(activeWorkspace.id, "transactions", {
+      ...transaction,
+      status: status === "matched" ? "reconciled" : status,
+      reviewedAt: status === "matched" ? new Date().toISOString() : transaction.reviewedAt,
+    }, { label: "银行流水状态" });
     setToast(status === "matched" ? "这笔流水已完成核销" : "已移入暂不处理");
   }
 
-  function resetDemo() {
-    setTransactions(seedTransactions);
-    window.localStorage.removeItem(STORAGE_KEY);
-    setToast("演示数据已重置");
+  async function resetDemo() {
+    if (!window.confirm(`确定清空「${activeWorkspace.name}」的流水、资料、证据和凭证吗？企业设置会保留。`)) return;
+    try {
+      if (fileVault) await fileVault.clearWorkspace(activeWorkspace.id);
+      actions.clearWorkspace(activeWorkspace.id, { scope: "operational" });
+      setToast("当前工作台的业务数据已清空");
+    } catch (caught) {
+      setToast(caught.message || "清空工作台失败");
+    }
   }
 
   const headings = {
@@ -795,20 +815,32 @@ function App() {
     reconcile: ["核销工作台", "先看批量状态，再深入每一笔证据。"],
     reports: ["凭证与报表", "核销结果形成凭证草稿，再汇总为可复核报表。"],
     archive: ["资料档案", "所有银行流水、业务账单和票据的统一入口。"],
+    setup: ["基础资料", "从企业初始化到银行、发票与组织资料，全部保存在当前浏览器。"],
   };
 
   return (
     <div className="app-shell">
-      <Sidebar page={page} setPage={setPage} />
+      <Sidebar page={page} setPage={setPage} activeWorkspace={activeWorkspace} onManageWorkspace={() => setWorkspaceManagerOpen(true)} />
       <div className="app-main">
-        <Topbar title={headings[page][0]} subtitle={headings[page][1]} onImport={() => setImportOpen(true)} onReset={resetDemo} />
+        <Topbar
+          title={headings[page][0]}
+          subtitle={headings[page][1]}
+          workspace={activeWorkspace}
+          onPeriodChange={(period) => actions.setPeriod(activeWorkspace.id, period)}
+          onImport={() => setImportOpen(true)}
+          onManageWorkspace={() => setWorkspaceManagerOpen(true)}
+          onOpenSetup={() => setPage("setup")}
+          onReset={resetDemo}
+        />
         {page === "close" && <CloseOverview transactions={transactions} goReconcile={() => setPage("reconcile")} />}
         {page === "reconcile" && <ReconcileWorkspace transactions={transactions} updateStatus={updateStatus} />}
         {page === "reports" && <ReportsPage />}
-        {page === "archive" && <ArchivePage />}
+        {page === "archive" && <ArchivePage onToast={setToast} />}
+        {page === "setup" && <FoundationRecordsPanel onToast={setToast} />}
       </div>
       <BottomNav page={page} setPage={setPage} />
-      <ImportDialog open={importOpen} onClose={() => setImportOpen(false)} onImport={(items) => { setTransactions((current) => [...items, ...current]); setPage("reconcile"); setToast(`已导入 ${items.length} 条本地流水`); }} />
+      <LocalBankImportDialog open={importOpen} onClose={() => setImportOpen(false)} onToast={(message) => { setToast(message); setPage("reconcile"); }} />
+      <WorkspaceManager open={workspaceManagerOpen} onClose={() => setWorkspaceManagerOpen(false)} onToast={setToast} />
       {toast && <div className="toast"><CheckCircle size={19} weight="fill" />{toast}</div>}
     </div>
   );
@@ -816,4 +848,3 @@ function App() {
 
 export default App;
 export { App };
-

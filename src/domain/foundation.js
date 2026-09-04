@@ -291,7 +291,7 @@ function createFitnessTemplateWorkspace(options = {}) {
       { id: "person-coach-song", name: "宋教练", type: "employee", department: "教练部", status: "active", role: "团课教练" },
     ],
     contracts: [
-      { id: "contract-member-li", no: "HY-202608-014", title: "李女士私教会员协议", kind: "sales", counterpartyId: "counterparty-2", amount: 4800, status: "active", documentIds: ["doc-li-contract"] },
+      { id: "contract-member-li", no: "HY-202608-014", title: "李女士私教会员协议", kind: "sales", counterpartyName: "李女士", amount: 4800, status: "active", documentIds: ["doc-li-contract"] },
     ],
     invoices: [
       { id: "invoice-power-aug", no: "DEMO-POWER-202608", kind: "purchase", seller: "国家电网", amount: 320.5, taxAmount: 0, status: "verified_locally", documentIds: ["doc-power-invoice"] },
@@ -587,6 +587,40 @@ export function updateCompanyProfile(state, workspaceId, patch, options = {}) {
     detail: options.detail || "更新企业主体与初始化资料",
     objectType: "company",
     objectId: workspaceId,
+  }, options);
+}
+
+export function setWorkspaceStageStatus(state, workspaceId, stage, status, options = {}) {
+  if (!/^s[0-4]$/.test(stage)) throw new Error(`当前底座只允许更新 S0-S4：${stage}`);
+  const timestamp = options.timestamp || nowIso(options.now);
+  return updateWorkspace(state, workspaceId, (workspace) => ({
+    ...workspace,
+    stages: {
+      ...workspace.stages,
+      [stage]: { status, updatedAt: timestamp },
+    },
+  }), {
+    actor: options.actor,
+    action: "更新流程状态",
+    detail: `${stage.toUpperCase()}：${status}`,
+    objectType: "stages",
+    objectId: stage,
+  }, { ...options, timestamp });
+}
+
+export function setWorkspacePeriod(state, workspaceId, period, options = {}) {
+  const nextPeriod = String(period || "").trim();
+  if (!/^\d{4}-\d{2}$/.test(nextPeriod)) throw new Error("账期必须是 YYYY-MM 格式");
+  return updateWorkspace(state, workspaceId, (workspace) => ({
+    ...workspace,
+    currentPeriod: nextPeriod,
+    periods: [nextPeriod, ...(workspace.periods || []).filter((item) => item !== nextPeriod)],
+  }), {
+    actor: options.actor,
+    action: "切换账期",
+    detail: `当前账期设为 ${nextPeriod}`,
+    objectType: "period",
+    objectId: nextPeriod,
   }, options);
 }
 

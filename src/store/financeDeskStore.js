@@ -7,12 +7,15 @@ import {
   recordLocalAuthorization,
   removeWorkspaceEntity,
   renameWorkspace,
+  setWorkspacePeriod,
+  setWorkspaceStageStatus,
   setWorkspaceEntityStatus,
   switchWorkspace,
   updateCompanyProfile,
   upsertWorkspaceEntity,
 } from "../domain/foundation.js";
 import { createLocalFoundationRepository, exportBackupJson, importBackupJson } from "../storage/localFoundationRepository.js";
+import { applyBankImport } from "../features/intake/bankStatementImport.js";
 
 export function createFinanceDeskStore(options = {}) {
   const repository = options.repository || createLocalFoundationRepository(options.repositoryOptions);
@@ -59,6 +62,12 @@ export function createFinanceDeskStore(options = {}) {
     updateCompanyProfile(workspaceId, patch, actionOptions) {
       return commit(updateCompanyProfile(state, workspaceId, patch, actionOptions));
     },
+    setStageStatus(workspaceId, stage, status, actionOptions) {
+      return commit(setWorkspaceStageStatus(state, workspaceId, stage, status, actionOptions));
+    },
+    setPeriod(workspaceId, period, actionOptions) {
+      return commit(setWorkspacePeriod(state, workspaceId, period, actionOptions));
+    },
     upsertEntity(workspaceId, collection, values, actionOptions) {
       const result = upsertWorkspaceEntity(state, workspaceId, collection, values, actionOptions);
       commit(result.state);
@@ -79,6 +88,9 @@ export function createFinanceDeskStore(options = {}) {
       const result = linkEvidence(state, workspaceId, values, actionOptions);
       commit(result.state);
       return result.item;
+    },
+    applyBankImport(workspaceId, plan, actionOptions) {
+      return commit(applyBankImport(state, workspaceId, plan, actionOptions));
     },
     exportBackup(exportOptions) {
       return exportBackupJson(state, exportOptions);

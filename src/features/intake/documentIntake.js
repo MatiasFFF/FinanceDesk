@@ -86,6 +86,12 @@ export async function saveLocalDocument(input) {
 
 export async function removeLocalDocument(input) {
   const { store, fileVault, workspaceId, documentId } = input;
+  const workspace = store.getState().workspaces.find((item) => item.id === workspaceId);
+  const linkedEvidence = (workspace?.evidenceLinks || []).filter((link) => link.documentIds?.includes(documentId));
+  linkedEvidence.forEach((link) => store.actions.removeEntity(workspaceId, "evidenceLinks", link.id, {
+    actor: input.actor,
+    label: "证据关联",
+  }));
   store.actions.removeEntity(workspaceId, "documents", documentId, {
     actor: input.actor,
     label: "本地资料",
