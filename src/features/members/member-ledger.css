@@ -158,6 +158,15 @@
 .commission-rule-feedback { margin: 11px 0 0; padding: 9px 11px; border-radius: 8px; font-size: var(--font-helper, 12px); }
 .commission-rule-feedback.success { background: var(--sage-soft); color: var(--sage); }
 .commission-rule-feedback.danger { background: var(--clay-soft); color: var(--clay-dark); }
+.commission-collection-empty { margin: 0; color: var(--muted); font-size: var(--font-body, 14px); }
+.commission-source-issues > summary { display: flex; align-items: flex-start; gap: 8px; }
+.commission-source-issues > summary > svg { flex-shrink: 0; margin-top: 2px; }
+.commission-source-issues > div { display: grid; gap: 10px; padding: 10px; }
+.commission-source-issues p { display: grid; gap: 3px; margin: 0; overflow-wrap: anywhere; }
+.commission-source-issues strong { font-size: var(--font-body, 14px); font-weight: 500; }
+.commission-source-issues small { color: var(--quiet); font-size: var(--font-helper, 12px); }
+.commission-rules-panel .commission-calculation-list small { overflow-wrap: anywhere; }
+.commission-rules-panel .commission-rule-list > article > .soft-button { display: flex; align-items: center; justify-content: center; gap: 8px; }
 
 .member-balance-panel, .member-events-panel { overflow: hidden; }
 .member-balance-panel > .panel-heading > span, .member-events-panel > .panel-heading > span { color: var(--quiet); font-size: var(--font-helper, 12px); }

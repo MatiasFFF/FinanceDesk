@@ -1,4 +1,5 @@
 import { createId } from "../../domain/foundation.js";
+import { buildCommissionCollectionSources } from "./commissionCollectionSources.js";
 
 export const MEMBER_EVENT_KINDS = Object.freeze({
   RECHARGE: "recharge",
@@ -499,31 +500,6 @@ function memberForEvent(workspace, event) {
     || null;
 }
 
-function memberForTransaction(workspace, transaction) {
-  const linkedEvent = (workspace.businessEvents || []).find((event) => (
-    event.id === transaction.businessEventId || (event.sourceIds || []).includes(transaction.id)
-  ));
-  const directMemberId = transaction.memberId || linkedEvent?.memberId;
-  const byId = (workspace.members || []).find((member) => member.id === directMemberId);
-  if (byId) return byId;
-
-  const allocationBillIds = new Set((transaction.allocations || [])
-    .filter((allocation) => allocation.status !== "reversed")
-    .map((allocation) => allocation.billId));
-  const billNames = (workspace.bills || [])
-    .filter((bill) => allocationBillIds.has(bill.id))
-    .map((bill) => bill.counterparty || "");
-  const sourceText = [
-    transaction.memberName,
-    linkedEvent?.memberName,
-    transaction.counterparty,
-    transaction.summary,
-    transaction.memo,
-    ...billNames,
-  ].filter(Boolean).join(" ");
-  return (workspace.members || []).find((member) => member.name && sourceText.includes(member.name)) || null;
-}
-
 function commissionSourceRecords(workspace, rule, period) {
   if (rule.basis === COMMISSION_RULE_BASES.SALES_RECHARGE || rule.basis === COMMISSION_RULE_BASES.MEMBER_CONSUMPTION) {
     const expectedKind = rule.basis === COMMISSION_RULE_BASES.SALES_RECHARGE
@@ -555,45 +531,49 @@ function commissionSourceRecords(workspace, rule, period) {
       .filter((source) => source.coach === rule.coach);
   }
 
-  if (rule.basis === COMMISSION_RULE_BASES.ACTUAL_COLLECTION) {
-    return (workspace.transactions || [])
-      .filter((transaction) => (
-        Number(transaction.amount || 0) > 0
-        && String(transaction.date || "").startsWith(period)
-        && !["ignored", "void", "reversed"].includes(transaction.status)
-        && !transaction.internalTransferLink
-        && transaction.classification?.eventType !== "internalTransfer"
-      ))
-      .map((transaction) => {
-        const member = memberForTransaction(workspace, transaction);
-        const linkedEvent = (workspace.businessEvents || []).find((event) => (
-          event.id === transaction.businessEventId || (event.sourceIds || []).includes(transaction.id)
-        ));
-        const dimensions = businessDimensions(workspace, {
-          storeId: transaction.storeId ?? linkedEvent?.storeId,
-          storeName: transaction.storeName ?? linkedEvent?.storeName,
-          coach: transaction.coach ?? linkedEvent?.coach,
-          department: transaction.department ?? linkedEvent?.department,
-          project: transaction.project ?? linkedEvent?.project,
-        }, member);
-        const coach = dimensions.coach;
-        return {
-          sourceId: transaction.id,
-          sourceType: "bankTransaction",
-          date: transaction.date,
-          ...dimensions,
-          memberId: member?.id || transaction.memberId || null,
-          memberName: member?.name || transaction.memberName || transaction.counterparty || "未识别收款方",
-          label: `${member?.name || transaction.memberName || transaction.counterparty || "银行"}收款`,
-          baseAmount: round(transaction.amount),
-          units: 1,
-          sourceQuantity: 1,
-        };
-      })
-      .filter((source) => source.coach === rule.coach);
-  }
-
   return [];
+}
+
+function collectionAccrualState(workspace, period, rows) {
+  const currentByKey = new Map(rows.map((row) => [row.sourceKey, row]));
+  const claimedKeys = new Set();
+  const changes = [];
+  const events = (workspace.businessEvents || []).filter((event) => memberEventKind(event) === MEMBER_EVENT_KINDS.COMMISSION
+    && normalizedEventStatus(event) !== "void"
+    && (event.commissionBasis || event.commissionRuleSnapshot?.basis) === COMMISSION_RULE_BASES.ACTUAL_COLLECTION);
+  for (const event of events) {
+    const previousLines = event.commissionCalculationLines?.length ? event.commissionCalculationLines
+      : (event.commissionSourceIds || []).map((id) => ({ sourceId: id, transactionId: id, coach: event.coach }));
+    for (const previous of previousLines) {
+      const key = previous.sourceKey || (event.commissionSourceKeys || []).find((item) => item === previous.sourceId);
+      if (key) claimedKeys.add(key);
+      const current = key ? currentByKey.get(key) : null;
+      const fingerprint = previous.sourceFingerprint || previous.fingerprint;
+      const transactionId = previous.transactionId || (previous.sourceType === "bankTransaction" ? previous.sourceId : null);
+      if (event.calculationPeriod !== period && !current && !rows.some((row) => row.transactionId === transactionId)) continue;
+      if (current && fingerprint && fingerprint === current.fingerprint) continue;
+      const voucherIds = (workspace.vouchers || []).filter((voucher) => voucher.memberEventId === event.id
+        && !["superseded", "invalidated", "replaced"].includes(voucher.status)).map((voucher) => voucher.id);
+      changes.push({
+        code: !key || !fingerprint ? "commission_legacy_source" : current ? "commission_source_changed" : "commission_source_missing",
+        message: !key || !fingerprint ? "旧计提只有整笔流水依据，需核对明确收款份额后处理原计提"
+          : current ? "已计提收款的金额或归属已变化，请复核原计提及关联凭证" : "已计提的收款份额已撤回、退款或不再明确，请处理原计提及关联凭证",
+        eventId: event.id, voucherIds, sourceKey: key || null, transactionId,
+        previous: structuredClone(previous), current: current ? structuredClone(current) : null,
+        knownSourceKeys: event.commissionCollectionSourceKeysAtAccrual || [],
+        actionable: false,
+      });
+    }
+  }
+  // A replaced/ambiguous old share must not be claimed through a new key. Other shares already
+  // known on that receipt remain independent, including another coach's confirmed allocation.
+  const blockedByKey = new Map();
+  for (const row of rows) {
+    const change = changes.find((item) => item.sourceKey === row.sourceKey || (item.transactionId === row.transactionId
+      && !item.knownSourceKeys.includes(row.sourceKey)));
+    if (change) blockedByKey.set(row.sourceKey, change);
+  }
+  return { claimedKeys, changes, blockedByKey };
 }
 
 function claimedCommissionSourceIds(workspace) {
@@ -654,7 +634,11 @@ export function buildCommissionRuleCalculation(workspace = {}, ruleOrId, options
   const period = String(options.period || workspace.currentPeriod || "").trim();
   if (!period) throw new Error("当前工作台没有可计算的账期");
   const claimedSourceIds = claimedCommissionSourceIds(workspace);
-  const lines = commissionSourceRecords(workspace, rule, period)
+  const collections = rule.basis === COMMISSION_RULE_BASES.ACTUAL_COLLECTION
+    ? buildCommissionCollectionSources(workspace, { period }) : null;
+  const collectionState = collections ? collectionAccrualState(workspace, period, collections.rows) : null;
+  const sources = collections ? collections.rows.filter((source) => source.coach === rule.coach) : commissionSourceRecords(workspace, rule, period);
+  const lines = sources
     .map((source) => {
       const commissionAmount = rule.method === COMMISSION_RULE_METHODS.PERCENTAGE
         ? round(source.baseAmount * Number(rule.rate || 0) / 100)
@@ -662,12 +646,21 @@ export function buildCommissionRuleCalculation(workspace = {}, ruleOrId, options
       return {
         ...source,
         commissionAmount,
-        alreadyAccrued: claimedSourceIds.has(source.sourceId),
+        ...(collections ? {
+          sourceId: source.sourceKey,
+          sourceFingerprint: source.fingerprint,
+          alreadyAccrued: collectionState.claimedKeys.has(source.sourceKey),
+          sourceChanged: collectionState.blockedByKey.has(source.sourceKey),
+          status: collectionState.blockedByKey.has(source.sourceKey) ? "source_changed" : collectionState.claimedKeys.has(source.sourceKey) ? "accrued" : "pending",
+        } : { alreadyAccrued: claimedSourceIds.has(source.sourceId) }),
       };
     })
     .filter((line) => line.commissionAmount > 0)
     .sort(eventOrder);
-  const pendingLines = lines.filter((line) => !line.alreadyAccrued);
+  const pendingLines = lines.filter((line) => !line.alreadyAccrued && !line.sourceChanged);
+  const excludedSources = collections ? [...collections.pending, ...collections.excluded].map((source) => ({ ...source, message: source.message || source.reason })) : [];
+  const sourceChanges = collectionState ? collectionState.changes.filter((change) => change.previous.coach === rule.coach || change.current?.coach === rule.coach
+    || lines.some((line) => collectionState.blockedByKey.get(line.sourceKey) === change)) : [];
   const accruedEvents = (workspace.businessEvents || []).filter((event) => (
     memberEventKind(event) === MEMBER_EVENT_KINDS.COMMISSION
     && event.commissionRuleId === rule.id
@@ -679,8 +672,13 @@ export function buildCommissionRuleCalculation(workspace = {}, ruleOrId, options
     period,
     lines,
     pendingLines,
+    excludedSources,
+    sourceChanges,
+    pendingReasons: [...excludedSources, ...sourceChanges],
+    sourceIssueCount: excludedSources.length + sourceChanges.length,
+    collectionSourceScopes: collections?.rows.map((source) => ({ sourceKey: source.sourceKey, transactionId: source.transactionId })) || [],
     sourceCount: pendingLines.length,
-    alreadyAccruedSourceCount: lines.length - pendingLines.length,
+    alreadyAccruedSourceCount: lines.filter((line) => line.alreadyAccrued).length,
     baseAmount: round(pendingLines.reduce((sum, line) => sum + line.baseAmount, 0)),
     units: round(pendingLines.reduce((sum, line) => sum + line.units, 0)),
     commissionAmount: round(pendingLines.reduce((sum, line) => sum + line.commissionAmount, 0)),
@@ -697,6 +695,7 @@ export function confirmCommissionAccrual(workspace, values, context = {}) {
   if (missing) throw new Error(`找不到提成来源：${missing}`);
   const repeated = calculation.lines.find((line) => requestedSet.has(line.sourceId) && line.alreadyAccrued);
   if (repeated) throw new Error(`${repeated.label}已经计提，不能重复计提`);
+  if (calculation.lines.some((line) => requestedSet.has(line.sourceId) && line.sourceChanged)) throw new Error("所选收款份额涉及已计提来源变更，请先处理原计提及关联凭证");
   const selectedLines = calculation.pendingLines.filter((line) => requestedSet.has(line.sourceId));
   if (!selectedLines.length) throw new Error("本期没有尚未计提的来源");
   const at = timestamp(context);
@@ -739,15 +738,21 @@ export function confirmCommissionAccrual(workspace, values, context = {}) {
       note: `${calculation.period} ${basisDefinition.label}提成 · ${lines.length} 项来源`,
       status: "accrued",
       source: "commission-rule",
-      sourceIds: [...new Set([...(dimensions.storeId ? [dimensions.storeId] : []), ...lines.map((line) => line.sourceId)])],
+      sourceIds: [...new Set([...(dimensions.storeId ? [dimensions.storeId] : []), ...lines.flatMap((line) => line.sourceIds || [line.sourceId])])],
       dimensionSourceIds: dimensions.storeId ? [dimensions.storeId] : [],
-      commissionSourceIds: lines.map((line) => line.sourceId),
+      commissionSourceIds: calculation.rule.basis === COMMISSION_RULE_BASES.ACTUAL_COLLECTION
+        ? [...new Set(lines.map((line) => line.transactionId))] : lines.map((line) => line.sourceId),
+      ...(calculation.rule.basis === COMMISSION_RULE_BASES.ACTUAL_COLLECTION ? {
+        commissionSourceKeys: lines.map((line) => line.sourceKey),
+        commissionCollectionSourceKeysAtAccrual: calculation.collectionSourceScopes
+          .filter((source) => lines.some((line) => line.transactionId === source.transactionId)).map((source) => source.sourceKey),
+      } : {}),
       commissionRuleId: calculation.rule.id,
       commissionBasis: calculation.rule.basis,
       commissionMethod: calculation.rule.method,
       calculationPeriod: calculation.period,
-      commissionRuleSnapshot: { ...calculation.rule },
-      commissionCalculationLines: lines.map((line) => ({ ...line })),
+      commissionRuleSnapshot: structuredClone(calculation.rule),
+      commissionCalculationLines: structuredClone(lines),
       history: [{ at, actor: context.actor || "本地用户", from: null, to: "accrued" }],
       createdAt: at,
       updatedAt: at,

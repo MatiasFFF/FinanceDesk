@@ -279,10 +279,13 @@ test("三种教练提成口径会保存规则、展示明细并阻止来源重�
   let workspace = {
     ...baseWorkspace(),
     currentPeriod: "2026-09",
-    bills: [],
+    bills: [
+      { id: "collection-bill-500", kind: "receivable", counterparty: "李女士", amount: 500, status: "active" },
+      { id: "collection-bill-200", kind: "receivable", counterparty: "李女士", amount: 200, status: "active" },
+    ],
     transactions: [
-      { id: "txn-linked", date: "2026-09-06", amount: 500, memberId: "member-1", status: "reconciled" },
-      { id: "txn-name", date: "2026-09-07", amount: 200, counterparty: "会员李女士", status: "reconciled" },
+      { id: "txn-linked", date: "2026-09-06", amount: 500, memberId: "member-1", status: "reconciled", allocations: [{ id: "collection-allocation-500", transactionId: "txn-linked", billId: "collection-bill-500", amount: 500, status: "confirmed" }] },
+      { id: "txn-name", date: "2026-09-07", amount: 200, counterparty: "会员李女士", status: "reconciled", allocations: [{ id: "collection-allocation-200", transactionId: "txn-name", billId: "collection-bill-200", amount: 200, status: "confirmed" }] },
       { id: "txn-ignored", date: "2026-09-08", amount: 300, memberId: "member-1", status: "ignored" },
       { id: "txn-unattributed", date: "2026-09-09", amount: 900, counterparty: "聚合收款", status: "reconciled" },
     ],

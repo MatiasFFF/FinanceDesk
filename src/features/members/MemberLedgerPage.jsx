@@ -221,7 +221,7 @@ function commissionLineFormula(rule, line) {
   return `${line.units} ${COMMISSION_RULE_BASE_DEFINITIONS[rule.basis].fixedUnit} × ${formatCurrency(rule.fixedAmount)}`;
 }
 
-function CommissionRulesPanel({ workspace }) {
+function CommissionRulesPanel({ workspace, onPage }) {
   const { actions, state, store } = useFinanceDesk();
   const terminology = workspaceTerminology(workspace);
   const coaches = useMemo(() => [...new Set([
@@ -313,14 +313,22 @@ function CommissionRulesPanel({ workspace }) {
           {calculations.length ? calculations.map((calculation) => {
             const { rule } = calculation;
             const basis = COMMISSION_RULE_BASE_DEFINITIONS[rule.basis];
+            const actualCollection = rule.basis === COMMISSION_RULE_BASES.ACTUAL_COLLECTION;
+            const excludedSources = actualCollection ? (calculation.excludedSources || []) : [];
+            const sourceChanges = actualCollection ? (calculation.sourceChanges || []) : [];
+            const hasCollectionActivity = calculation.lines.length > 0 || calculation.accruedAmount > 0;
             return <article className={rule.enabled === false ? "disabled" : ""} key={rule.id}>
               <div className="commission-rule-head"><div><span>{memberRoleCopy(basis.label, terminology)}</span><strong>{rule.coach}</strong><small>{memberRoleCopy(commissionRuleSummary(rule), terminology)}</small></div><div><button className="soft-button" type="button" onClick={() => editRule(rule)}>编辑</button><button className="soft-button" type="button" onClick={() => toggleRule(rule)}>{rule.enabled === false ? "启用" : "停用"}</button></div></div>
-              <div className="commission-rule-metrics"><span><small>待计提来源</small><strong>{calculation.sourceCount} 项</strong></span><span><small>计提基数</small><strong>{formatCurrency(calculation.baseAmount)}</strong></span><span><small>本期应计</small><strong>{formatCurrency(calculation.commissionAmount)}</strong></span><span><small>本期已计提</small><strong>{formatCurrency(calculation.accruedAmount)}</strong></span></div>
-              <details>
+              {(!actualCollection || hasCollectionActivity) && <div className="commission-rule-metrics"><span><small>{actualCollection ? "待计提收款份额" : "待计提来源"}</small><strong>{calculation.sourceCount} 项</strong></span><span><small>{actualCollection ? "有效收款基数" : "计提基数"}</small><strong>{formatCurrency(calculation.baseAmount)}</strong></span><span><small>本期应计</small><strong>{formatCurrency(calculation.commissionAmount)}</strong></span><span><small>本期已计提</small><strong>{formatCurrency(calculation.accruedAmount)}</strong></span></div>}
+              {actualCollection && !hasCollectionActivity && <p className="commission-collection-empty">本期暂无可计提的明确{terminology.member}收款。</p>}
+              {(!actualCollection || calculation.lines.length > 0) && <details>
                 <summary>查看本期计算明细 · {calculation.lines.length} 项</summary>
-                <div className="commission-calculation-list">{calculation.lines.length ? calculation.lines.map((line) => <div key={line.sourceId}><span><strong>{line.date} · {memberRoleCopy(line.label, terminology)}</strong><small>{memberRoleCopy(commissionLineFormula(rule, line), terminology)}</small></span><span><strong>{formatCurrency(line.commissionAmount)}</strong><small>{line.alreadyAccrued ? "已计提" : "待确认"}</small></span></div>) : <p>本期暂无可归属到该{terminology.coach}的真实来源。</p>}</div>
-              </details>
-              <button className="primary-button wide" type="button" disabled={rule.enabled === false || !calculation.pendingLines.length} onClick={() => accrueRule(rule, calculation)}>确认计提 {formatCurrency(calculation.commissionAmount)}</button>
+                <div className="commission-calculation-list">{calculation.lines.length ? calculation.lines.map((line) => <div key={line.sourceKey || line.sourceId}><span><strong>{line.date} · {actualCollection ? `${line.memberName || line.memberId} · ${line.coach}` : memberRoleCopy(line.label, terminology)}</strong>{actualCollection && <small>有效收款份额 {formatCurrency(line.baseAmount)}{line.transactionId ? ` · 流水 ${line.transactionId}` : ""}{line.allocationId ? ` · 分配 ${line.allocationId}` : ""}{line.eventId ? ` · 业务 ${line.eventId}` : ""}</small>}{actualCollection && line.sourceIds?.length > 0 && <small>来源：{line.sourceIds.join("、")}</small>}<small>{memberRoleCopy(commissionLineFormula(rule, line), terminology)}</small></span><span><strong>{formatCurrency(line.commissionAmount)}</strong><small>{line.sourceChanged || line.status === "source_changed" ? "来源已变化 · 待复核" : line.alreadyAccrued ? "已计提" : "待确认"}</small></span></div>) : <p>本期暂无可归属到该{terminology.coach}的真实来源。</p>}</div>
+              </details>}
+              {sourceChanges.length > 0 && <details className="commission-source-issues"><summary><WarningCircle size={16} /> {sourceChanges.length} 项已计提来源发生变化，需复核</summary><div>{sourceChanges.map((change, index) => <p key={`${change.eventId || change.sourceKey}-${index}`}><strong>{memberRoleCopy(change.message || change.reason, terminology)}</strong><small>{[change.transactionId && `流水 ${change.transactionId}`, change.eventId && `计提记录 ${change.eventId}`, change.voucherIds?.length && `凭证 ${change.voucherIds.join("、")}`].filter(Boolean).join(" · ")}</small></p>)}</div></details>}
+              {excludedSources.length > 0 && <details className="commission-source-issues"><summary>查看未纳入计提的来源 · {excludedSources.length} 项</summary><div>{excludedSources.map((source, index) => <p key={`${source.sourceKey || source.transactionId || source.code}-${index}`}><strong>{memberRoleCopy(source.message || source.reason, terminology)}</strong><small>{[source.memberName || source.memberId, source.coach, source.transactionId && `流水 ${source.transactionId}`].filter(Boolean).join(" · ")}</small></p>)}</div></details>}
+              {actualCollection && excludedSources.some((source) => source.actionable === true) && onPage && <button className="soft-button" type="button" onClick={() => onPage("reconcile", { panel: "transactions" })}>前往核销处理收款<ArrowRight size={16} /></button>}
+              {(!actualCollection || calculation.pendingLines.length > 0) && <button className="primary-button wide" type="button" disabled={rule.enabled === false || !calculation.pendingLines.length} onClick={() => accrueRule(rule, calculation)}>确认计提 {formatCurrency(calculation.commissionAmount)}</button>}
             </article>;
           }) : <div className="member-empty"><CurrencyCircleDollar size={26} /><strong>还没有提成规则</strong><span>先设置{terminology.coach}、计提口径与比例或固定金额。</span></div>}
         </div>
@@ -493,7 +501,7 @@ function MemberForm({ workspace, onSubmit }) {
   );
 }
 
-export function MemberLedgerPage({ workspace, onAddMember, onMemberStatus, onAddEvent, onEventStatus }) {
+export function MemberLedgerPage({ workspace, onAddMember, onMemberStatus, onAddEvent, onEventStatus, onPage }) {
   const { actions, store } = useFinanceDesk();
   const terminology = workspaceTerminology(workspace);
   const ledger = useMemo(() => buildMemberLedger(workspace, { period: workspace.currentPeriod }), [workspace]);
@@ -524,7 +532,7 @@ export function MemberLedgerPage({ workspace, onAddMember, onMemberStatus, onAdd
 
       <MembershipPackagesPanel workspace={workspace} />
 
-      <CommissionRulesPanel workspace={workspace} />
+      <CommissionRulesPanel workspace={workspace} onPage={onPage} />
 
       <div className="member-entry-layout">
         <EventForm workspace={workspace} members={ledger.members} onSubmit={onAddEvent} />

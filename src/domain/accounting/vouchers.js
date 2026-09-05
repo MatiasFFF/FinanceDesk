@@ -1046,6 +1046,7 @@ export function createMemberEventVoucherDraft(workspace, { eventId, summary, not
       event.originalRechargeId,
       event.commissionEventId,
       event.commissionSourceIds || [],
+      event.commissionSourceKeys ? event.sourceIds || [] : [],
     ),
     evidenceIds: collectSourceIds(event.evidenceIds || [], relatedBill?.evidenceIds || []),
     judgement: {
