@@ -1,0 +1,286 @@
+.document-intake-panel {
+  container-name: document-intake;
+  container-type: inline-size;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  min-width: 0;
+}
+
+.document-intake-panel > * {
+  min-width: 0;
+}
+
+.document-intake-panel > .foundation-section-heading {
+  margin-bottom: 0;
+}
+
+.document-intake-panel .foundation-section-heading {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+}
+
+.document-intake-panel .foundation-section-heading > div,
+.document-intake-panel .foundation-section-heading h3,
+.document-intake-panel .foundation-section-heading span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.document-intake-upload-zone,
+.document-intake-panel > .bank-import-workspace,
+.document-intake-panel > .document-filter-controls {
+  box-sizing: border-box;
+  min-width: 0;
+  margin: 0;
+  padding: clamp(12px, 1.5vw, 18px);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: var(--canvas);
+}
+
+.document-intake-upload-zone,
+.document-intake-panel > .bank-import-workspace {
+  display: grid;
+  gap: 12px;
+}
+
+.document-intake-upload-zone > .foundation-hint,
+.document-intake-upload-zone > .foundation-notice,
+.document-intake-upload-zone > .foundation-error,
+.document-intake-panel > .bank-import-workspace > .foundation-hint,
+.document-intake-panel > .bank-import-workspace > .foundation-notice,
+.document-intake-panel > .bank-import-workspace > .foundation-error {
+  margin: 0;
+}
+
+.document-intake-panel > .bank-import-workspace > .foundation-section-heading:first-child {
+  margin: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.document-intake-panel .document-intake-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  align-items: end;
+  gap: 10px 12px;
+  min-width: 0;
+}
+
+.document-intake-panel .document-structured-fields {
+  grid-template-columns: repeat(auto-fit, minmax(205px, 1fr));
+}
+
+.document-intake-panel .document-intake-controls > *,
+.document-intake-panel .foundation-field,
+.document-intake-panel .foundation-field input,
+.document-intake-panel .foundation-field select,
+.document-intake-panel .foundation-field textarea,
+.document-intake-panel .search-field {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.document-intake-panel .foundation-field > span:first-child {
+  display: flex;
+  min-height: 2.7em;
+  align-items: flex-end;
+  line-height: 1.35;
+  overflow-wrap: break-word;
+}
+
+.document-intake-panel .document-intake-controls > button {
+  width: 100%;
+  min-height: var(--control-height, 40px);
+  justify-content: center;
+  white-space: normal;
+}
+
+.document-intake-panel .foundation-inline-actions,
+.document-intake-panel .document-action-confirmation-actions {
+  display: flex;
+  flex-flow: row wrap;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 0;
+}
+
+.document-intake-panel .foundation-inline-actions > button,
+.document-intake-panel .document-action-confirmation-actions > button {
+  flex: 0 1 auto;
+  min-width: 120px;
+  justify-content: center;
+  white-space: normal;
+}
+
+.document-intake-panel .document-preview-actions > button,
+.document-intake-panel .document-editor-actions > button {
+  flex: 1 1 150px;
+}
+
+.document-intake-panel > .document-filter-controls {
+  padding-top: 14px;
+}
+
+.document-preview-panel {
+  min-width: 0;
+}
+
+.document-preview-image,
+.document-preview-frame,
+.document-preview-video,
+.document-preview-audio {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  max-width: 100%;
+}
+
+.document-preview-image,
+.document-preview-video {
+  max-height: min(62vh, 640px);
+  margin: 0 auto;
+  border-radius: 8px;
+  background: var(--paper-strong);
+  object-fit: contain;
+}
+
+.document-preview-frame {
+  height: min(62vh, 680px);
+  min-height: 420px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--paper-strong);
+}
+
+.document-preview-text {
+  max-height: min(60vh, 620px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.document-preview-pre {
+  min-width: 0;
+  margin: 0;
+  padding: 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.document-preview-audio {
+  min-height: 40px;
+}
+
+.document-intake-panel .document-record-grid {
+  max-height: min(62vh, 720px);
+  margin-top: 0;
+  padding-right: 4px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.document-intake-panel .document-record-grid.is-editing {
+  max-height: none;
+  padding-right: 0;
+  overflow: visible;
+}
+
+.document-intake-panel .document-record,
+.document-intake-panel .document-record > div {
+  min-width: 0;
+}
+
+.document-intake-panel .document-record strong,
+.document-intake-panel .document-record small,
+.document-intake-panel .document-record p {
+  overflow-wrap: anywhere;
+}
+
+.document-intake-panel .document-record > .foundation-record-actions {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.document-editor-panel {
+  box-sizing: border-box;
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 12px;
+  margin: 12px 0 0;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--paper-strong);
+}
+
+.document-intake-panel .permission-chip-list {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.document-intake-panel .permission-chip-list > span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.document-intake-panel .document-action-confirmation {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+}
+
+.document-intake-panel .document-action-confirmation-copy {
+  min-width: 0;
+}
+
+.document-intake-panel .document-action-confirmation-actions {
+  grid-column: 2;
+}
+
+@container document-intake (max-width: 560px) {
+  .document-intake-panel {
+    gap: 12px;
+  }
+
+  .document-intake-panel .document-intake-controls,
+  .document-intake-panel .document-structured-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .document-intake-panel .foundation-field > span:first-child {
+    min-height: 0;
+  }
+
+  .document-intake-panel .foundation-inline-actions,
+  .document-intake-panel .document-action-confirmation-actions {
+    flex-direction: column;
+  }
+
+  .document-intake-panel .foundation-inline-actions > button,
+  .document-intake-panel .document-action-confirmation-actions > button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .document-intake-panel .document-action-confirmation-actions {
+    grid-column: 1 / -1;
+  }
+
+  .document-preview-frame {
+    height: 52vh;
+    min-height: 340px;
+  }
+}
+
+@media (max-width: 720px) {
+  .document-intake-panel .document-intake-controls,
+  .document-intake-panel .document-structured-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

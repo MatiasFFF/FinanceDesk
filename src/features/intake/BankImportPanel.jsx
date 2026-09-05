@@ -19,6 +19,7 @@ import {
   reconcileBankAccountPeriod,
 } from "./bankStatementImport.js";
 import { hashLocalFile, removeLocalDocument, saveLocalDocument } from "./documentIntake.js";
+import "./bank-import-panel.css";
 
 const MAPPING_FIELDS = ["date", "amount", "credit", "debit", "direction", "counterparty", "counterpartyAccount", "summary", "serial", "balance", "channel", "currency"];
 const SETTLEMENT_MAPPING_FIELDS = ["settlementDate", "settlementNo", "grossAmount", "feeAmount", "refundAmount", "netAmount"];
@@ -637,7 +638,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
       {notice && <div className="foundation-notice import-feedback" role="status" aria-live="polite"><CheckCircle size={18} weight="fill" /><span>{notice}</span></div>}
 
       {period && accountReconciliationSummary.accountCount > 0 && (
-        <div className="bank-import-workspace">
+        <div className="bank-import-workspace bank-reconciliation-overview">
           <div className="bank-file-summary">
             <span><strong>{period} 逐账户勾稽总览</strong><small>{accountReconciliationSummary.completedCount} / {accountReconciliationSummary.accountCount} 个账户已完成</small></span>
             <span className={accountReconciliationSummary.passed ? "mapping-badge" : "mapping-badge warning"}>{accountReconciliationSummary.passed ? "全部完成" : `${accountReconciliationSummary.incompleteCount} 个待完成`}</span>
@@ -646,7 +647,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
             <span>{accountReconciliationSummary.passed ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} />}</span>
             <div><strong>{accountReconciliationSummary.message}</strong><p>逐个核对账户身份、导入批次、流水日期范围和余额差额；未完成账户可直接切换后继续导入。</p></div>
           </div>
-          <div className="bank-preview-scroll">
+          <div className="bank-preview-scroll bank-reconciliation-table">
             <table>
               <thead><tr><th>银行账户</th><th>批次 / 流水</th><th>数据起止日期</th><th>余额差额</th><th>状态</th><th>操作</th></tr></thead>
               <tbody>{accountReconciliationSummary.accounts.map((row) => (
@@ -665,7 +666,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
       )}
 
       {account && period && (
-        <div className="bank-import-workspace">
+        <div className="bank-import-workspace bank-reconciliation-current">
           <div className="bank-file-summary"><span><strong>{displayAccountIdentity(account)} · {period} 月度勾稽</strong><small>{monthlyReconciliation.batchCount} 个导入批次 · {monthlyReconciliation.transactionCount} 笔账户流水{monthlyReconciliation.dateFrom ? ` · ${monthlyReconciliation.dateFrom} 至 ${monthlyReconciliation.dateTo}` : ""}</small></span><div className="foundation-inline-actions"><span className={monthlyReconciliation.passed ? "mapping-badge" : "mapping-badge warning"}>{monthlyReconciliation.passed ? "已完成" : "未完成"}</span><button className="secondary-button" disabled={busy || reconciling} type="button" onClick={recheckMonthlyReconciliation}>{reconciling ? "正在重新勾稽…" : "重新勾稽"}</button></div></div>
           <div className={`import-report ${monthlyReconciliation.passed ? "passed" : "warning"}`}><span>{monthlyReconciliation.passed ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} />}</span><div><strong>{monthlyReconciliation.message}</strong><p>期初 {displayMoney(monthlyReconciliation.openingBalance)} ＋ 收入 {displayMoney(monthlyReconciliation.income)} − 支出 {displayMoney(monthlyReconciliation.expense)} ＝ 计算期末 {displayMoney(monthlyReconciliation.calculatedClosing)}；对账单期末 {displayMoney(monthlyReconciliation.statementClosing)}；差额 {displayMoney(monthlyReconciliation.difference)}</p>{monthlyReconciliation.balanceSource === "account_recheck" && <small>余额口径：基础资料中的账户余额；最后重新勾稽 {displayDateTime(monthlyReconciliation.balanceReviewedAt)}{monthlyReconciliation.balanceReviewedBy ? ` · ${monthlyReconciliation.balanceReviewedBy}` : ""}</small>}</div></div>
           {monthlyReconciliation.imports.length > 0 && <div className="bank-preview-scroll"><table><thead><tr><th>导入文件</th><th>数据起止日期</th><th>导入时间</th><th>操作者</th><th>新增</th><th>重复</th><th>流水异常</th><th>导入时勾稽</th></tr></thead><tbody>{monthlyReconciliation.imports.map((record) => <tr key={record.id}><td>{record.fileName}</td><td>{record.dateFrom || "—"} 至 {record.dateTo || "—"}</td><td>{displayDateTime(record.importedAt)}</td><td>{record.actor}</td><td>{record.importableRowCount} 笔</td><td>{record.duplicateCount} 笔</td><td>{record.anomalousRowCount} 笔</td><td>{record.reconciliation?.passed ? "已通过" : record.reconciliation?.message || "未完成"}</td></tr>)}</tbody></table></div>}
@@ -673,10 +674,10 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
       )}
 
       {parsed && inspection && (
-        <div className="bank-import-workspace">
+        <div className="bank-import-workspace bank-import-file-workspace">
           <div className="bank-file-summary"><span><strong>{parsed.fileName}</strong><small>{parsed.sheetName ? `工作表：${parsed.sheetName} · ` : ""}${inspection.rowCount} 行</small></span><span className={inspection.missingFields.length ? "mapping-badge warning" : "mapping-badge"}>{inspection.missingFields.length ? `缺 ${inspection.missingFields.length} 项映射` : "必要字段已识别"}</span></div>
 
-          <div className="mapping-grid">
+          <div className="mapping-grid bank-field-mapping-grid">
             {MAPPING_FIELDS.map((field) => (
               <label className="foundation-field" key={field}><span>{BANK_FIELD_DEFINITIONS[field].label}{BANK_FIELD_DEFINITIONS[field].required ? " *" : ""}</span><select value={mapping[field] ?? ""} onChange={(event) => changeMapping(field, event.target.value)}><option value="">不导入此字段</option>{inspection.headers.map((header, index) => <option value={index} key={`${field}-${index}`}>{header}</option>)}</select></label>
             ))}
@@ -704,7 +705,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
                       <span><strong>{group.rawName || "未提供对方名称"}</strong><small>{group.counterpartyAccount ? `账号 ${group.counterpartyAccount} · ` : ""}${group.rowCount} 笔流水</small></span>
                       <span className={group.mappingSource ? "mapping-badge" : "mapping-badge warning"}>{group.mappingSource ? `已套用：${group.standardName}` : "尚未标准化"}</span>
                     </div>
-                    <div className="mapping-grid">
+                    <div className="mapping-grid bank-counterparty-fields">
                       <label className="foundation-field"><span>映射到标准对象</span><select value={selected?.targetKey || ""} onChange={(event) => chooseCounterpartyTarget(group, event.target.value)}><option value="">暂不映射</option>{counterpartyTargetGroups.map((targetGroup) => <optgroup label={targetGroup.label} key={targetGroup.label}>{targetGroup.items.map((target) => <option value={target.key} key={target.key}>{target.name}</option>)}</optgroup>)}<option value="manual">手工标准名称</option></select></label>
                       {selected?.targetKey === "manual" && <><label className="foundation-field"><span>标准名称</span><input value={selected.standardName || ""} onChange={(event) => updateManualCounterparty(group, { standardName: event.target.value })} placeholder="例如：上海青禾科技有限公司" /></label><label className="foundation-field"><span>对象类型</span><select value={selected.kind || "other"} onChange={(event) => updateManualCounterparty(group, { kind: event.target.value })}><option value="customer">{terminology.customer}</option><option value="supplier">{terminology.supplier}</option><option value="employee">{terminology.personnel}</option><option value="related_party">关联方</option><option value="other">其他</option></select></label></>}
                     </div>

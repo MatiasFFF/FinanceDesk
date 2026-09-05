@@ -137,6 +137,13 @@ test("app wiring uses workspace modules for creation, navigation, operator ident
   assert.match(appSource, /showMemberBusiness=\{workspaceModuleEnabled\(workspace, "members"\)\}/);
   assert.match(appSource, /management-report-empty/);
   assert.match(appSource, /去基础资料恢复显示项/);
+  assert.match(appSource, /BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS/);
+  assert.match(appSource, /initialUserName: form\.initialUserName\.trim\(\)/);
+  assert.match(appSource, /initialUserRoleId: form\.initialUserRoleId/);
+  assert.match(appSource, /financeContact: form\.financeContact\.trim\(\)/);
+  assert.match(appSource, /onDownloadDocument=\{downloadArchiveDocument\}/);
+  assert.match(appSource, /getStoredDocumentRecord\(\{ fileVault, workspaceId: current\.id, document \}\)/);
+  assert.match(appSource, /downloadStoredDocument\(record\)/);
   assert.match(managerSource, /actions\.updateWorkspaceModules/);
   assert.match(accountingSource, /showMemberBusiness && memberBusinessEnabled\(activeWorkspace\) && <MemberBusinessAccountingQueue/);
   assert.match(accountingSource, /workspaceAccountOptions\(activeWorkspace\)/);

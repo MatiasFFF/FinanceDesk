@@ -31,6 +31,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { transactionStatus, uid } from "./financeData.js";
+import { BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS } from "./domain/foundation.js";
 import {
   attachEvidenceDocument,
   buildManagementMetrics,
@@ -1153,7 +1154,7 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
   );
 }
 
-function ArchivePage({ workspace, onPage, onDocuments, onReceipt, onArchive, onNextPeriod, onExportIndex }) {
+function ArchivePage({ workspace, onPage, onDocuments, onDownloadDocument, onReceipt, onArchive, onNextPeriod, onExportIndex }) {
   const terminology = workspaceTerminology(workspace);
   const [tab, setTab] = useState("documents");
   const [query, setQuery] = useState("");
@@ -1188,7 +1189,33 @@ function ArchivePage({ workspace, onPage, onDocuments, onReceipt, onArchive, onN
       <section className="archive-hero"><div><p className="eyebrow">S13 · {taxEnabled ? "回执、归档与下一期" : "归档与下一期"}</p><h2>{archived ? `${formatPeriod(workspace.currentPeriod)} 已归档` : "让本期交付真正闭环"}</h2><p>{archived ? `归档于 ${formatDateTime(archived.archivedAt)}，${taxEnabled ? "报表、确认、回执" : "报表、资料、操作记录"}与期末余额已经建立索引。` : taxEnabled ? "必须先导入真实外部办理回执，再把本地申报包、确认记录和操作日志一起归档。" : "把当前冻结报表、本期资料和操作记录建立本地归档索引。"}</p></div><div className="archive-hero-actions"><button className="secondary-button" onClick={onExportIndex} type="button"><DownloadSimple size={17} />导出归档索引</button>{archived ? <button className="primary-button" onClick={onNextPeriod} type="button">进入下一期<ArrowRight size={17} /></button> : <button className="primary-button" disabled={!archiveReady} onClick={onArchive} type="button"><Archive size={17} />完成本期归档</button>}</div></section>
       <section className="metric-grid four archive-status-grid"><MetricCard label="冻结报表" value={flow.version?.label || "未完成"} note={flow.version ? formatDateTime(flow.version.createdAt) : "先去报表中心"} icon={ChartBar} tone={flow.version ? "sage" : "clay"} onClick={() => onPage("reports")} />{taxEnabled ? <><MetricCard label="两次确认" value={workspace.tax.ownerConfirmedAt ? "已完成" : "未完成"} note={workspace.tax.confirmedBy || `等待${terminology.customer}`} icon={ShieldCheck} tone={workspace.tax.ownerConfirmedAt ? "sage" : "clay"} onClick={() => onPage("tax")} /><MetricCard label="本地申报包" value={filing.exportedAt ? "已导出" : "未导出"} note={formatDateTime(filing.exportedAt)} icon={DownloadSimple} tone={filing.exportedAt ? "sage" : "clay"} onClick={() => onPage("tax")} /><MetricCard label="真实回执" value={filing.receipt ? "已导入" : "待导入"} note={filing.receipt?.name || "来自外部办理"} icon={Receipt} tone={filing.receipt ? "sage" : "clay"} onClick={openReceiptStatus} /></> : <><MetricCard label="本期资料" value={`${workspace.documents.length} 份`} note="浏览器本地记录" icon={FileText} onClick={() => showArchiveTab("documents")} /><MetricCard label="操作记录" value={`${workspace.auditLog.length} 条`} note="当前工作台" icon={Clock} onClick={() => showArchiveTab("logs")} /></>}</section>
       {taxEnabled && !filing.receipt && <section className="receipt-upload-card"><span><Receipt size={25} /></span><div><strong>导入真实外部办理回执</strong><p>选择在电子税务局或本地安全执行器中取得的 PDF、XML、JSON 或文本回执。文件只在本地读取并记录哈希。</p></div><input ref={receiptInput} hidden type="file" accept=".pdf,.json,.xml,.txt,.csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) onReceipt(file); event.target.value = ""; }} /><button className="primary-button" disabled={!filing.exportedAt} onClick={() => receiptInput.current?.click()} type="button"><UploadSimple size={17} />选择回执</button></section>}
-      <section className="panel archive-content-panel"><div className="archive-toolbar"><div className="report-tabs" role="tablist"><button aria-selected={tab === "documents"} className={tab === "documents" ? "active" : ""} onClick={() => showArchiveTab("documents")} role="tab" type="button">本地资料</button><button aria-selected={tab === "logs"} className={tab === "logs" ? "active" : ""} onClick={() => showArchiveTab("logs")} role="tab" type="button">操作日志</button><button aria-selected={tab === "periods"} className={tab === "periods" ? "active" : ""} onClick={() => showArchiveTab("periods")} role="tab" type="button">历史归档</button></div>{tab === "documents" && <div className="archive-tools"><label className="search-field"><MagnifyingGlass size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件" /><button aria-label="清空资料搜索" className={query ? "visible" : ""} onClick={() => setQuery("")} type="button"><X size={15} /></button></label><input ref={docsInput} hidden type="file" multiple onChange={(event) => { onDocuments(Array.from(event.target.files || [])); event.target.value = ""; }} /><button className="secondary-button" onClick={() => docsInput.current?.click()} type="button"><FileArrowUp size={17} />添加本地资料</button></div>}</div>{tab === "documents" && (documents.length ? <div className="document-grid">{documents.map((document) => <article className="document-card" key={document.id}><span className="document-icon"><FileText size={22} /></span><div><small>{document.type || document.category || "本地资料"} · {document.period || "未分期"}</small><strong>{document.name}</strong><p>{fileSize(document.size)} · {document.hash ? "已记录校验标识" : "本地元数据"}</p></div><TonePill tone={document.status?.includes("待") ? "warning" : "success"}>{document.status || "已获取"}</TonePill></article>)}</div> : <EmptyState title="没有符合条件的资料" description="添加本地文件或清空搜索条件。" />)}{tab === "logs" && (workspace.auditLog.length ? <div className="audit-list">{workspace.auditLog.map((item) => <div key={item.id}><span className="audit-dot" /><span><strong>{item.action}</strong><small>{item.detail}</small></span><span><strong>{item.actor}</strong><small>{formatDateTime(item.at)}</small></span></div>)}</div> : <EmptyState title="还没有操作日志" description="确认、导出、导入和归档动作都会记录在这里。" />)}{tab === "periods" && (workspace.delivery.archives.length ? <div className="period-archive-list">{workspace.delivery.archives.map((item) => <article key={item.id}><span className="archive-badge"><Archive size={20} /></span><div><strong>{formatPeriod(item.period)}</strong><small>{item.reportVersionLabel} · {item.confirmations.confirmedBy || terminology.customer} · {formatDateTime(item.archivedAt)}</small></div><span><strong>{formatCurrency(item.summary.profit)}</strong><small>本期利润</small></span><TonePill tone="success">已归档</TonePill></article>)}</div> : <EmptyState title="还没有历史归档" description={taxEnabled ? "本期回执导入并通过校验后，可以形成第一条归档记录。" : "冻结报表和本地资料通过校验后，可以形成第一条归档记录。"} />)}</section>
+      <section className="panel archive-content-panel">
+        <div className="archive-toolbar">
+          <div className="report-tabs" role="tablist">
+            <button aria-selected={tab === "documents"} className={tab === "documents" ? "active" : ""} onClick={() => showArchiveTab("documents")} role="tab" type="button">本地资料</button>
+            <button aria-selected={tab === "logs"} className={tab === "logs" ? "active" : ""} onClick={() => showArchiveTab("logs")} role="tab" type="button">操作日志</button>
+            <button aria-selected={tab === "periods"} className={tab === "periods" ? "active" : ""} onClick={() => showArchiveTab("periods")} role="tab" type="button">历史归档</button>
+          </div>
+          {tab === "documents" && <div className="archive-tools">
+            <label className="search-field"><MagnifyingGlass size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件" /><button aria-label="清空资料搜索" className={query ? "visible" : ""} onClick={() => setQuery("")} type="button"><X size={15} /></button></label>
+            <input ref={docsInput} hidden type="file" multiple onChange={(event) => { onDocuments(Array.from(event.target.files || [])); event.target.value = ""; }} />
+            <button className="secondary-button" onClick={() => docsInput.current?.click()} type="button"><FileArrowUp size={17} />添加本地资料</button>
+          </div>}
+        </div>
+        {tab === "documents" && (documents.length ? <div className="document-grid">{documents.map((document) => {
+          const originalAvailable = document.storage?.availableLocally === true;
+          return <article className="document-card" key={document.id}>
+            <span className="document-icon"><FileText size={22} /></span>
+            <div><small>{document.type || document.category || "本地资料"} · {document.period || "未分期"}</small><strong>{document.name}</strong><p>{fileSize(document.size)} · {document.hash ? "已记录校验标识" : "本地元数据"}</p></div>
+            <div className="archive-document-actions">
+              <TonePill tone={document.status?.includes("待") ? "warning" : "success"}>{document.status || "已获取"}</TonePill>
+              <button className="secondary-button archive-document-download" disabled={!originalAvailable} title={originalAvailable ? "下载当前设备保存的原文件" : "当前设备没有这份资料的原文件"} onClick={() => onDownloadDocument?.(document.id)} type="button"><DownloadSimple size={15} />{originalAvailable ? "下载原文件" : "原文件不可用"}</button>
+            </div>
+          </article>;
+        })}</div> : <EmptyState title="没有符合条件的资料" description="添加本地文件或清空搜索条件。" />)}
+        {tab === "logs" && (workspace.auditLog.length ? <div className="audit-list">{workspace.auditLog.map((item) => <div key={item.id}><span className="audit-dot" /><span><strong>{item.action}</strong><small>{item.detail}</small></span><span><strong>{item.actor}</strong><small>{formatDateTime(item.at)}</small></span></div>)}</div> : <EmptyState title="还没有操作日志" description="确认、导出、导入和归档动作都会记录在这里。" />)}
+        {tab === "periods" && (workspace.delivery.archives.length ? <div className="period-archive-list">{workspace.delivery.archives.map((item) => <article key={item.id}><span className="archive-badge"><Archive size={20} /></span><div><strong>{formatPeriod(item.period)}</strong><small>{item.reportVersionLabel} · {item.confirmations.confirmedBy || terminology.customer} · {formatDateTime(item.archivedAt)}</small></div><span><strong>{formatCurrency(item.summary.profit)}</strong><small>本期利润</small></span><TonePill tone="success">已归档</TonePill></article>)}</div> : <EmptyState title="还没有历史归档" description={taxEnabled ? "本期回执导入并通过校验后，可以形成第一条归档记录。" : "冻结报表和本地资料通过校验后，可以形成第一条归档记录。"} />)}
+      </section>
       {!archived && <div className="archive-check-panel panel"><div className="panel-heading"><div><p className="eyebrow">归档校验</p><h2>{archiveReady ? "全部条件已满足" : "还不能完成归档"}</h2></div><TonePill tone={archiveReady ? "success" : "warning"}>{flow.archive.filter((item) => item.ok).length} / {flow.archive.length}</TonePill></div><CheckRows items={flow.archive} onNavigate={onPage} /></div>}
       <BoundaryNote />
     </div>
@@ -1201,6 +1228,9 @@ function blankWorkspaceForm() {
     legalName: "",
     industry: "其他服务业",
     taxpayerType: "小规模纳税人",
+    initialUserName: "",
+    initialUserRoleId: BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS[0]?.id || "role-owner",
+    financeContact: "",
     mode: "blank",
     modules: defaultWorkspaceModules("blank"),
   };
@@ -1235,7 +1265,38 @@ function WorkspaceDialog({ mode, workspace, onClose, onSubmit }) {
     }));
   }
   return (
-    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><form className="modal-card workspace-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-dialog-title" onSubmit={submit}><div className="modal-heading"><div><p className="eyebrow">{PRODUCT_NAME}</p><h2 id="workspace-dialog-title">{title}</h2></div><button className="icon-button compact" onClick={onClose} type="button" aria-label="关闭"><X size={19} /></button></div>{mode === "create" && <><p className="modal-intro">默认从不带样例数据的空白工作台开始；“山岚健身工作室”仅作为可选本地示例模板。</p><div className="choice-cards workspace-mode-cards"><label className={form.mode === "blank" ? "active" : ""}><input type="radio" name="mode" value="blank" checked={form.mode === "blank"} onChange={(event) => selectMode(event.target.value)} /><span><strong>创建空白工作台</strong><small>不带{terminology.member}、{terminology.personnel}或行业样例数据</small></span></label><label className={form.mode === "template" ? "active" : ""}><input type="radio" name="mode" value="template" checked={form.mode === "template"} onChange={(event) => selectMode(event.target.value)} /><span><strong>复制健身示例模板</strong><small>复制山岚样例数据，用于体验完整流程</small></span></label></div><div className="form-grid"><label><span>工作台名称 *</span><input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：微光设计事务所" /></label><label><span>企业法定名称</span><input value={form.legalName} onChange={(event) => setForm({ ...form, legalName: event.target.value })} placeholder="可稍后补充" /></label><label><span>行业</span><input value={form.industry} onChange={(event) => setForm({ ...form, industry: event.target.value })} /></label><label><span>纳税人类型</span><select value={form.taxpayerType} onChange={(event) => setForm({ ...form, taxpayerType: event.target.value })}><option>小规模纳税人</option><option>一般纳税人</option></select></label></div><div className="workspace-module-grid">{WORKSPACE_MODULE_OPTIONS.map((module) => <label className={form.modules[module.id] ? "active" : ""} key={module.id}><input type="checkbox" checked={Boolean(form.modules[module.id])} onChange={(event) => setForm((current) => ({ ...current, modules: { ...current.modules, [module.id]: event.target.checked } }))} /><span><strong>{businessTermCopy(module.label, terminology)}</strong><small>{businessTermCopy(module.description, terminology)}</small></span></label>)}</div><p className="modal-intro">月结总览、报表中心、资料归档和基础资料始终保留。</p></>}{mode === "rename" && <label className="field-label"><span>新的工作台名称</span><input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>}{mode === "delete" && <div className="delete-warning"><WarningCircle size={24} /><div><strong>确认删除“{workspace?.name}”？</strong><p>这会移除当前浏览器中的本地工作台数据，无法从本页面恢复。其他工作台不会受影响。</p></div></div>}<div className="modal-actions"><button className="secondary-button" onClick={onClose} type="button">取消</button><button className={mode === "delete" ? "danger-button" : "primary-button"} type="submit">{mode === "create" ? "创建并进入" : mode === "rename" ? "保存名称" : "确认删除"}</button></div></form></div>
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <form className="modal-card workspace-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-dialog-title" onSubmit={submit}>
+        <div className="modal-heading">
+          <div><p className="eyebrow">{PRODUCT_NAME}</p><h2 id="workspace-dialog-title">{title}</h2></div>
+          <button className="icon-button compact" onClick={onClose} type="button" aria-label="关闭"><X size={19} /></button>
+        </div>
+        {mode === "create" && <>
+          <p className="modal-intro">默认从不带样例数据的空白工作台开始；“山岚健身工作室”仅作为可选本地示例模板。</p>
+          <div className="choice-cards workspace-mode-cards">
+            <label className={form.mode === "blank" ? "active" : ""}><input type="radio" name="mode" value="blank" checked={form.mode === "blank"} onChange={(event) => selectMode(event.target.value)} /><span><strong>创建空白工作台</strong><small>不带{terminology.member}、{terminology.personnel}或行业样例数据</small></span></label>
+            <label className={form.mode === "template" ? "active" : ""}><input type="radio" name="mode" value="template" checked={form.mode === "template"} onChange={(event) => selectMode(event.target.value)} /><span><strong>复制健身示例模板</strong><small>复制山岚样例数据，用于体验完整流程</small></span></label>
+          </div>
+          <div className="form-grid workspace-create-grid">
+            <label><span>工作台名称 *</span><input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：微光设计事务所" /></label>
+            <label><span>企业法定名称</span><input value={form.legalName} onChange={(event) => setForm({ ...form, legalName: event.target.value })} placeholder="可稍后补充" /></label>
+            <label><span>行业</span><input value={form.industry} onChange={(event) => setForm({ ...form, industry: event.target.value })} /></label>
+            <label><span>纳税人类型</span><select value={form.taxpayerType} onChange={(event) => setForm({ ...form, taxpayerType: event.target.value })}><option>小规模纳税人</option><option>一般纳税人</option></select></label>
+            {form.mode === "blank" && <>
+              <label><span>首位本地操作人员（可选）</span><input value={form.initialUserName} onChange={(event) => setForm({ ...form, initialUserName: event.target.value })} placeholder="填写实际姓名" /></label>
+              <label><span>首位人员角色</span><select value={form.initialUserRoleId} onChange={(event) => setForm({ ...form, initialUserRoleId: event.target.value })} disabled={!form.initialUserName.trim()}>{BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS.map((role) => <option value={role.id} key={role.id}>{role.name}</option>)}</select></label>
+              <label className="full"><span>财务负责人（可选）</span><input value={form.financeContact} onChange={(event) => setForm({ ...form, financeContact: event.target.value })} placeholder="填写实际姓名或岗位" /></label>
+              <p className="workspace-create-note full">人员和财务负责人均可留空；留空时不会写入山岚人员或其他示例身份。</p>
+            </>}
+          </div>
+          <div className="workspace-module-grid">{WORKSPACE_MODULE_OPTIONS.map((module) => <label className={form.modules[module.id] ? "active" : ""} key={module.id}><input type="checkbox" checked={Boolean(form.modules[module.id])} onChange={(event) => setForm((current) => ({ ...current, modules: { ...current.modules, [module.id]: event.target.checked } }))} /><span><strong>{businessTermCopy(module.label, terminology)}</strong><small>{businessTermCopy(module.description, terminology)}</small></span></label>)}</div>
+          <p className="modal-intro">月结总览、报表中心、资料归档和基础资料始终保留。</p>
+        </>}
+        {mode === "rename" && <label className="field-label"><span>新的工作台名称</span><input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>}
+        {mode === "delete" && <div className="delete-warning"><WarningCircle size={24} /><div><strong>确认删除“{workspace?.name}”？</strong><p>这会移除当前浏览器中的本地工作台数据，无法从本页面恢复。其他工作台不会受影响。</p></div></div>}
+        <div className="modal-actions"><button className="secondary-button" onClick={onClose} type="button">取消</button><button className={mode === "delete" ? "danger-button" : "primary-button"} type="submit">{mode === "create" ? "创建并进入" : mode === "rename" ? "保存名称" : "确认删除"}</button></div>
+      </form>
+    </div>
   );
 }
 
@@ -1379,7 +1440,16 @@ function App() {
         const template = state.workspaces.find((item) => item.isDemo || item.templateId === "fitness-studio");
         const input = form.mode === "template" && template
           ? { name: form.name.trim(), legalName: form.legalName.trim(), industry: form.industry, taxpayerType: form.taxpayerType, modules: form.modules, sourceWorkspaceId: template.id }
-          : { ...form, name: form.name.trim(), legalName: form.legalName.trim(), templateId: undefined };
+          : {
+            name: form.name.trim(),
+            legalName: form.legalName.trim(),
+            industry: form.industry,
+            taxpayerType: form.taxpayerType,
+            modules: form.modules,
+            initialUserName: form.initialUserName.trim(),
+            initialUserRoleId: form.initialUserRoleId,
+            financeContact: form.financeContact.trim(),
+          };
         const created = actions.createWorkspace(input);
         if (input.sourceWorkspaceId) {
           await copyWorkspaceLocalFiles({
@@ -2003,6 +2073,21 @@ function App() {
       setToast({ tone: "danger", message: error.message || "本地资料保存失败" });
     }
   }
+  async function downloadArchiveDocument(documentId) {
+    let documentName = "这份资料";
+    try {
+      const current = store.getActiveWorkspace();
+      const document = current?.documents?.find((item) => item.id === documentId);
+      documentName = document?.name || document?.title || documentName;
+      if (!current || !document) throw new Error("找不到当前工作台中的资料索引");
+      if (document.storage?.availableLocally !== true) throw new Error("当前设备没有保存这份资料的原文件");
+      const record = await getStoredDocumentRecord({ fileVault, workspaceId: current.id, document });
+      downloadStoredDocument(record);
+      setToast({ tone: "success", message: `已开始下载“${documentName}”的本地原文件` });
+    } catch (error) {
+      setToast({ tone: "danger", message: `无法下载“${documentName}”：${error.message || "当前设备中不存在该原文件"}` });
+    }
+  }
   function completeArchive() {
     try {
       const missing = workflowChecks(workspace).archive.filter((item) => !item.ok);
@@ -2044,7 +2129,7 @@ function App() {
         {activePage === "reconcile" && <ReconcilePage workspace={workspace} onPage={navigateToPage} onStatus={setTransactionStatus} onReview={reviewTransactions} onSaveReview={saveTransactionReview} onEvidence={addEvidence} onLinkEvidence={linkExistingEvidence} onDownloadEvidence={downloadLinkedEvidence} onUnlinkEvidence={unlinkEvidenceFromTransaction} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} />}
         {activePage === "reports" && <ReportsPage workspace={workspace} onPage={navigateToPage} onFreeze={freezeReport} onExportExcel={exportReportExcel} />}
         {activePage === "tax" && <TaxPage workspace={workspace} onPage={navigateToPage} onTaxChange={changeTax} onTaxCommit={commitTax} onSectionDecision={recordInitialConfirmationSection} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} />}
-        {activePage === "archive" && <ArchivePage workspace={workspace} onPage={navigateToPage} onDocuments={addDocuments} onReceipt={receiveReceipt} onArchive={completeArchive} onNextPeriod={goNextPeriod} onExportIndex={exportArchiveIndex} />}
+        {activePage === "archive" && <ArchivePage workspace={workspace} onPage={navigateToPage} onDocuments={addDocuments} onDownloadDocument={downloadArchiveDocument} onReceipt={receiveReceipt} onArchive={completeArchive} onNextPeriod={goNextPeriod} onExportIndex={exportArchiveIndex} />}
         {activePage === "setup" && <FoundationRecordsPanel onToast={(message) => setToast({ tone: "success", message })} />}
       </div>
       <BottomNav workspace={workspace} page={activePage} onPage={navigateToPage} />

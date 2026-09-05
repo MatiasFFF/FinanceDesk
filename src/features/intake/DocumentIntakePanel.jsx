@@ -63,6 +63,7 @@ import {
   saveLocalDocument,
   updateLocalDocumentMetadata,
 } from "./documentIntake.js";
+import "./document-intake-panel.css";
 
 const CATEGORIES = ["主体资料", "合同", "银行流水", "业务资料", "发票", "审批资料", "人员资料", "会计资料", "申报回执", "其他资料"];
 
@@ -900,16 +901,18 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     <section className={`foundation-section document-intake-panel ${compact ? "compact" : "intake-wide"}`}>
       <div className="foundation-section-heading"><div><small>IndexedDB · 不上传</small><h3><FileText size={18} />本地资料库</h3></div><span>{filteredDocuments.length} / {activeWorkspace.documents.length} 份</span></div>
       {!fileVault && <div className="foundation-error"><WarningCircle size={18} />当前环境不支持浏览器本地文件保险箱，只能查看已有资料元数据。</div>}
-      <div className="document-intake-controls document-upload-controls">
-        <label className="foundation-field"><span>资料类别</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{CATEGORIES.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
-        <label className="foundation-field"><span>业务期间</span><input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} /></label>
-        <label className="foundation-field"><span>关联业务对象（可选）</span><select value={relatedObjectId} onChange={(event) => setRelatedObjectId(event.target.value)}><option value="">暂不关联</option>{relatedGroups.map((group) => <optgroup label={group.label} key={group.collection}>{group.items.map((item) => <option value={item.id} key={item.id}>{relatedLabel(item)} · {item.id}</option>)}</optgroup>)}</select></label>
-        <button className="secondary-button" type="button" disabled={!fileVault || busy} onClick={() => inputRef.current?.click()}><FileArrowUp size={17} />{busy ? "正在保存…" : "上传原文件"}</button>
-        <input ref={inputRef} type="file" multiple hidden onChange={addFiles} />
+      <div className="document-intake-upload-zone">
+        <div className="document-intake-controls document-upload-controls">
+          <label className="foundation-field"><span>资料类别</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{CATEGORIES.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
+          <label className="foundation-field"><span>业务期间</span><input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} /></label>
+          <label className="foundation-field"><span>关联业务对象（可选）</span><select value={relatedObjectId} onChange={(event) => setRelatedObjectId(event.target.value)}><option value="">暂不关联</option>{relatedGroups.map((group) => <optgroup label={group.label} key={group.collection}>{group.items.map((item) => <option value={item.id} key={item.id}>{relatedLabel(item)} · {item.id}</option>)}</optgroup>)}</select></label>
+          <button className="secondary-button" type="button" disabled={!fileVault || busy} onClick={() => inputRef.current?.click()}><FileArrowUp size={17} />{busy ? "正在保存…" : "上传原文件"}</button>
+          <input ref={inputRef} type="file" multiple hidden onChange={addFiles} />
+        </div>
+        <p className="foundation-hint">合同、发票、审批单等原文件保存在当前浏览器 IndexedDB；分类、期间、校验哈希和业务关联保存在当前工作台，不会上传外部服务。</p>
+        {uploadFeedback && <div className={`${uploadFeedback.tone === "error" ? "foundation-error" : "foundation-notice"} import-feedback document-upload-feedback`} role={uploadFeedback.tone === "error" ? "alert" : "status"} aria-live="polite">{uploadFeedback.tone === "error" ? <WarningCircle size={18} /> : <CheckCircle size={18} weight="fill" />}<span>{displayText(uploadFeedback.message)}</span></div>}
+        <div className="foundation-notice"><WarningCircle size={18} /><span><strong>OCR 未连接。</strong> 合同、发票和审批字段必须由本地用户人工录入并核对，系统不会假装从原文件自动识别。</span></div>
       </div>
-      <p className="foundation-hint">合同、发票、审批单等原文件保存在当前浏览器 IndexedDB；分类、期间、校验哈希和业务关联保存在当前工作台，不会上传外部服务。</p>
-      {uploadFeedback && <div className={`${uploadFeedback.tone === "error" ? "foundation-error" : "foundation-notice"} import-feedback document-upload-feedback`} role={uploadFeedback.tone === "error" ? "alert" : "status"} aria-live="polite">{uploadFeedback.tone === "error" ? <WarningCircle size={18} /> : <CheckCircle size={18} weight="fill" />}<span>{displayText(uploadFeedback.message)}</span></div>}
-      <div className="foundation-notice" style={{ marginTop: 12 }}><WarningCircle size={18} /><span><strong>OCR 未连接。</strong> 合同、发票和审批字段必须由本地用户人工录入并核对，系统不会假装从原文件自动识别。</span></div>
       <div className="bank-import-workspace">
         <div className="foundation-section-heading">
           <div><small>结构化合同 · 预览后确认</small><h3>合同账单计划</h3></div>
@@ -1243,7 +1246,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           </>
         ) : <p className="foundation-empty">当前工作台没有可导出的财务期间。</p>}
       </div>
-      <div className="document-intake-controls document-filter-controls" style={{ marginTop: 14 }}>
+      <div className="document-intake-controls document-filter-controls">
         <label className="foundation-field"><span>搜索资料</span><span className="search-field"><MagnifyingGlass size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="文件名、哈希或关联对象" /></span></label>
         <label className="foundation-field"><span>类别筛选</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="all">全部类别</option>{categories.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
         <label className="foundation-field"><span>状态筛选</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">全部状态</option><option value="active">未归档</option><option value="archived">已归档</option><option value="linked">已关联</option><option value="unlinked">未使用，可删除</option><option value="available">原文件可用</option><option value="missing">原文件缺失</option></select></label>
@@ -1251,13 +1254,13 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
       </div>
       {error && <div className="foundation-error" role="alert"><WarningCircle size={18} /><span>{displayText(error)}</span></div>}
       {preview && (
-        <div className="bank-import-workspace">
+        <div className="bank-import-workspace document-preview-panel">
           <div className="foundation-section-heading"><div><small>浏览器本地预览</small><h3>{preview.document.name}</h3></div><button className="foundation-icon-button" type="button" aria-label="关闭预览" onClick={closePreview}><X size={17} /></button></div>
-          {preview.kind === "image" && <img src={preview.url} alt={preview.document.name} style={{ display: "block", maxWidth: "100%", maxHeight: 560, margin: "0 auto", objectFit: "contain" }} />}
-          {preview.kind === "pdf" && <iframe src={preview.url} title={`预览 ${preview.document.name}`} style={{ width: "100%", minHeight: 520, border: "1px solid var(--line-soft)", borderRadius: 8 }} />}
-          {preview.kind === "text" && <div className="bank-preview-scroll"><pre style={{ margin: 0, padding: 14, maxHeight: 520, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 12 }}>{preview.text}</pre>{preview.truncated && <p className="foundation-hint">内容较长，页面仅显示前 300,000 个字符；下载可查看完整原文件。</p>}</div>}
-          {preview.kind === "audio" && <audio src={preview.url} controls style={{ width: "100%" }} />}
-          {preview.kind === "video" && <video src={preview.url} controls style={{ width: "100%", maxHeight: 560 }} />}
+          {preview.kind === "image" && <img className="document-preview-image" src={preview.url} alt={preview.document.name} />}
+          {preview.kind === "pdf" && <iframe className="document-preview-frame" src={preview.url} title={`预览 ${preview.document.name}`} />}
+          {preview.kind === "text" && <div className="bank-preview-scroll document-preview-text"><pre className="document-preview-pre">{preview.text}</pre>{preview.truncated && <p className="foundation-hint">内容较长，页面仅显示前 300,000 个字符；下载可查看完整原文件。</p>}</div>}
+          {preview.kind === "audio" && <audio className="document-preview-audio" src={preview.url} controls />}
+          {preview.kind === "video" && <video className="document-preview-video" src={preview.url} controls />}
           {preview.kind === "unsupported" && <div className="foundation-notice"><WarningCircle size={18} />该格式无法由浏览器直接预览，原文件仍可完整下载。</div>}
           <div className="foundation-inline-actions document-preview-actions"><button className="secondary-button" type="button" onClick={() => download(preview.document)}><DownloadSimple size={16} />下载原文件</button><button className="secondary-button" type="button" onClick={closePreview}>关闭预览</button></div>
         </div>
@@ -1281,7 +1284,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                 {structuredDetailLines(document, activeWorkspace).map((line) => <p key={line}>{line}</p>)}
                 {documentStructuredKind(document.category) && <p>字段来源：人工录入 · OCR 未连接</p>}
                 {isEditing && (
-                  <div className="bank-import-workspace">
+                  <div className="bank-import-workspace document-editor-panel">
                     <div className="document-intake-controls document-edit-controls">
                       <label className="foundation-field"><span>文件名称</span><input value={editing.name} onChange={(event) => setEditing((current) => ({ ...current, name: event.target.value }))} /></label>
                       <label className="foundation-field"><span>资料类别</span><select value={editing.category} onChange={(event) => changeEditCategory(event.target.value)}>{CATEGORIES.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
@@ -1290,7 +1293,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                     </div>
                     <StructuredDataFields category={editing.category} value={editing.structuredData} onChange={(structuredData) => setEditing((current) => ({ ...current, structuredData }))} workspace={activeWorkspace} currentDocumentId={editing.id} />
                     <div className="permission-chip-list">{editing.relatedObjectIds.map((objectId) => <span key={objectId}>{relatedLabels.get(objectId) || objectId} <button type="button" aria-label={`解除 ${relatedLabels.get(objectId) || objectId} 关联`} onClick={() => removeEditRelation(objectId)}>×</button></span>)}</div>
-                    <div className="foundation-inline-actions"><button className="primary-button" type="button" onClick={saveEdit}>保存资料详情</button><button className="secondary-button" type="button" onClick={closeEditing}>取消</button></div>
+                    <div className="foundation-inline-actions document-editor-actions"><button className="primary-button" type="button" onClick={saveEdit}>保存资料详情</button><button className="secondary-button" type="button" onClick={closeEditing}>取消</button></div>
                   </div>
                 )}
                 {pendingAction && (

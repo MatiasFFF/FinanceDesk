@@ -1,0 +1,441 @@
+.bank-import-panel {
+  min-width: 0;
+  container: bank-import-panel / inline-size;
+}
+
+.bank-import-panel,
+.bank-import-panel > *,
+.bank-import-panel .bank-import-workspace,
+.bank-import-panel .bank-import-workspace > *,
+.bank-import-panel .bank-file-summary > *,
+.bank-import-panel .import-report > *,
+.bank-import-panel .foundation-inline-actions > * {
+  min-width: 0;
+}
+
+.bank-import-panel > .foundation-section-heading {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.bank-import-panel .bank-import-source-controls {
+  grid-template-columns: minmax(280px, 1.45fr) minmax(170px, 0.55fr) minmax(190px, auto);
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--canvas);
+}
+
+.bank-import-panel .bank-import-source-controls > .secondary-button {
+  width: 100%;
+  min-width: 190px;
+  justify-content: center;
+}
+
+.bank-import-panel > .foundation-hint {
+  margin: 8px 2px 0;
+  line-height: 1.55;
+}
+
+.bank-import-panel > .foundation-error,
+.bank-import-panel > .import-feedback {
+  margin-top: 10px;
+}
+
+.bank-import-panel .bank-import-workspace {
+  gap: 12px;
+  margin-top: 14px;
+  padding: 15px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--canvas);
+}
+
+.bank-import-panel .bank-reconciliation-overview,
+.bank-import-panel .bank-reconciliation-current {
+  background: var(--paper);
+}
+
+.bank-import-panel .bank-import-file-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(270px, 0.65fr);
+  grid-template-areas:
+    "summary summary"
+    "mapping balance"
+    "preview preview"
+    "counterparty counterparty"
+    "report report"
+    "actions actions";
+  align-items: start;
+  column-gap: 14px;
+  row-gap: 12px;
+  border-color: rgba(217, 119, 87, 0.26);
+  background: var(--paper);
+}
+
+.bank-import-file-workspace > .bank-file-summary {
+  grid-area: summary;
+  padding-bottom: 11px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.bank-import-file-workspace > .bank-field-mapping-grid {
+  grid-area: mapping;
+}
+
+.bank-import-file-workspace > .balance-inputs {
+  grid-area: balance;
+}
+
+.bank-import-file-workspace > .bank-preview-scroll {
+  grid-area: preview;
+}
+
+.bank-import-file-workspace > .counterparty-mapping-list {
+  grid-area: counterparty;
+}
+
+.bank-import-file-workspace > .import-report {
+  grid-area: report;
+}
+
+.bank-import-file-workspace > .bank-import-actions {
+  grid-area: actions;
+}
+
+.bank-import-panel .bank-field-mapping-grid {
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  align-content: start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--paper-strong);
+}
+
+.bank-import-panel .bank-import-file-workspace > .balance-inputs {
+  display: grid;
+  grid-template-columns: 1fr;
+  align-items: stretch;
+  align-content: start;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--paper-strong);
+}
+
+.bank-import-file-workspace > .balance-inputs > span {
+  padding: 1px 0;
+  color: var(--quiet);
+  line-height: 1.45;
+  text-align: center;
+}
+
+.bank-import-panel .counterparty-mapping-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.bank-import-panel .counterparty-mapping-list > .bank-file-summary {
+  grid-column: 1 / -1;
+  padding: 11px 12px;
+  border-radius: 9px;
+  background: var(--sand);
+}
+
+.bank-import-panel .counterparty-mapping-card {
+  align-content: start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--paper-strong);
+}
+
+.bank-import-panel .bank-counterparty-fields {
+  grid-template-columns: 1fr;
+}
+
+.bank-import-panel .bank-file-summary {
+  gap: 10px 14px;
+}
+
+.bank-import-panel .bank-file-summary > span:first-child {
+  min-width: 0;
+  flex: 1 1 320px;
+}
+
+.bank-import-panel .bank-file-summary strong,
+.bank-import-panel .bank-file-summary small,
+.bank-import-panel .import-report strong,
+.bank-import-panel .import-report p,
+.bank-import-panel .import-report small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.bank-import-panel .bank-file-summary > .foundation-inline-actions {
+  align-items: center;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.bank-import-panel .mapping-badge {
+  flex: 0 0 auto;
+  max-width: 100%;
+  white-space: normal;
+  text-align: center;
+}
+
+.bank-import-panel .import-report {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+
+.bank-import-panel .import-report > div {
+  min-width: 0;
+}
+
+.bank-import-panel .import-decision-line {
+  align-items: flex-start;
+}
+
+.bank-import-panel .bank-preview-scroll {
+  width: 100%;
+  max-width: 100%;
+  max-height: 280px;
+  overflow: auto;
+  border-color: var(--line);
+  background: var(--paper-strong);
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.bank-import-panel .bank-preview-scroll table {
+  width: max-content;
+  min-width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+.bank-import-panel .bank-preview-scroll th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--sand);
+}
+
+.bank-import-panel .bank-preview-scroll th,
+.bank-import-panel .bank-preview-scroll td {
+  min-width: 92px;
+  max-width: 320px;
+  padding: 9px 10px;
+  vertical-align: top;
+}
+
+.bank-import-panel .bank-preview-scroll th:first-child,
+.bank-import-panel .bank-preview-scroll td:first-child {
+  min-width: 76px;
+}
+
+.bank-import-panel .bank-preview-scroll td strong,
+.bank-import-panel .bank-preview-scroll td small {
+  display: block;
+  min-width: 0;
+}
+
+.bank-import-panel .bank-reconciliation-table table,
+.bank-import-panel .bank-reconciliation-history table {
+  min-width: 940px;
+}
+
+.bank-import-panel .bank-import-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 -3px -3px;
+  padding: 11px 3px 3px;
+  border-top: 1px solid var(--line-soft);
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0), var(--paper) 18px);
+}
+
+.bank-import-panel .bank-import-actions > button {
+  min-width: 150px;
+  max-width: 100%;
+  flex: 0 1 auto;
+  white-space: normal;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.bank-import-panel .bank-import-actions > .primary-button {
+  min-width: 210px;
+}
+
+.bank-import-panel .bank-import-actions > .text-danger-button {
+  min-width: auto;
+  margin-left: 0;
+}
+
+.bank-import-panel > .bank-import-workspace:has(> .foundation-section-heading) {
+  padding: 17px;
+  border-color: rgba(114, 128, 106, 0.26);
+  background: var(--paper);
+}
+
+.bank-import-panel > .bank-import-workspace:has(> .foundation-section-heading) > .foundation-section-heading {
+  padding-bottom: 11px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.bank-import-panel > .bank-import-workspace:has(> .foundation-section-heading) > .bank-import-start {
+  grid-template-columns: minmax(240px, 1fr) minmax(220px, auto);
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--canvas);
+}
+
+.bank-import-panel > .bank-import-workspace:has(> .foundation-section-heading) > .mapping-grid {
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--paper-strong);
+}
+
+.bank-import-panel > .bank-import-workspace:has(> .foundation-section-heading) > .foundation-inline-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.bank-import-panel > .bank-import-workspace:has(> .foundation-section-heading) > .foundation-inline-actions > button {
+  min-width: 180px;
+  max-width: 100%;
+  white-space: normal;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.bank-import-panel .platform-import-feedback {
+  gap: 9px;
+}
+
+@container bank-import-panel (max-width: 980px) {
+  .bank-import-panel .bank-import-source-controls {
+    grid-template-columns: minmax(0, 1fr) minmax(170px, 0.55fr);
+  }
+
+  .bank-import-panel .bank-import-source-controls > .secondary-button {
+    grid-column: 1 / -1;
+    width: auto;
+    min-width: 190px;
+    justify-self: start;
+  }
+
+  .bank-import-panel .bank-import-file-workspace {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "summary"
+      "mapping"
+      "balance"
+      "preview"
+      "counterparty"
+      "report"
+      "actions";
+  }
+
+  .bank-import-panel .bank-field-mapping-grid,
+  .bank-import-panel > .bank-import-workspace:has(> .foundation-section-heading) > .mapping-grid {
+    grid-template-columns: repeat(2, minmax(160px, 1fr));
+  }
+}
+
+@container bank-import-panel (max-width: 720px) {
+  .bank-import-panel .bank-import-source-controls,
+  .bank-import-panel > .bank-import-workspace:has(> .foundation-section-heading) > .bank-import-start {
+    grid-template-columns: 1fr;
+  }
+
+  .bank-import-panel .bank-import-source-controls > .secondary-button {
+    grid-column: auto;
+    width: 100%;
+    min-width: 0;
+    justify-self: stretch;
+  }
+
+  .bank-import-panel .counterparty-mapping-list {
+    grid-template-columns: 1fr;
+  }
+
+  .bank-import-panel .bank-file-summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .bank-import-panel .bank-file-summary > .foundation-inline-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .bank-import-panel .bank-import-actions {
+    position: static;
+    align-items: stretch;
+    flex-direction: column;
+    margin: 0;
+    padding: 11px 0 0;
+    background: transparent;
+  }
+
+  .bank-import-panel .bank-import-actions > button,
+  .bank-import-panel > .bank-import-workspace:has(> .foundation-section-heading) > .foundation-inline-actions > button {
+    width: 100%;
+    min-width: 0;
+    flex-basis: auto;
+  }
+
+  .bank-import-panel .bank-import-actions > .text-danger-button {
+    margin-left: 0;
+  }
+}
+
+@container bank-import-panel (max-width: 560px) {
+  .bank-import-panel .bank-field-mapping-grid,
+  .bank-import-panel > .bank-import-workspace:has(> .foundation-section-heading) > .mapping-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .bank-import-panel .bank-import-workspace,
+  .bank-import-panel > .bank-import-workspace:has(> .foundation-section-heading) {
+    padding: 11px;
+  }
+
+  .bank-import-panel .import-report {
+    grid-template-columns: 1fr;
+  }
+
+  .bank-import-panel .import-report > span:first-child {
+    display: none;
+  }
+
+  .bank-import-panel .mapping-badge {
+    align-self: flex-start;
+  }
+
+  .bank-import-panel .bank-preview-scroll {
+    max-height: 240px;
+  }
+}
