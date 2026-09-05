@@ -671,7 +671,7 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
   ));
 
   return (
-    <section className={`foundation-section entity-editor foundation-entity-editor${collection === "users" ? " foundation-user-editor" : ""}`}>
+    <section className={`foundation-section entity-editor foundation-entity-editor${collection === "users" ? " foundation-user-editor" : ""}${editorOpen ? " is-editing" : ""}`}>
       <div className="foundation-section-heading"><div><small>{collection === "users" ? "可新增、改名、调整角色、停用或删除" : "本地资料"}</small><h3><Icon size={18} />{config.title}</h3></div><span>{items.length} 条</span></div>
       {collection === "users" && !hasActiveUsers && <p className="foundation-hint">当前没有启用{terminology.personnel}操作用户。首位启用用户需选择具备“管理工作台”权限的启用角色；保存后会自动成为当前本地操作身份。</p>}
       {collection === "personnelRecords" && <p className="foundation-hint">关联后两处共用同一姓名；{terminology.personnel}资料状态与操作用户权限状态仍分别管理。</p>}
@@ -798,7 +798,7 @@ function AccountCatalogEditor({ onToast }) {
   }
 
   return (
-    <section className="foundation-section entity-editor">
+    <section className={`foundation-section entity-editor${editorOpen ? " is-editing" : ""}`}>
       <div className="foundation-section-heading"><div><small>当前工作台科目表</small><h3><FileText size={18} />会计科目</h3></div><span>{accounts.filter((account) => account.status !== "inactive").length} 个已启用</span></div>
       <div className="foundation-record-list">
         {accounts.map((account) => {
@@ -1004,7 +1004,7 @@ function AccountingRuleEditor({ onToast }) {
   }
 
   return (
-    <section className="foundation-section entity-editor">
+    <section className={`foundation-section entity-editor${editorOpen ? " is-editing" : ""}`}>
       <div className="foundation-section-heading"><div><small>当前有效规则集</small><h3><ShieldCheck size={18} />账务规则</h3></div><span>{active?.name || "使用默认值"}</span></div>
       <div className="foundation-summary-grid">
         <article className="foundation-summary-card"><small>判断阈值</small><h4>人工复核 {effective.confidenceThreshold}</h4><p>自动建议 {effective.automaticPostingThreshold}</p></article>
@@ -1313,7 +1313,7 @@ function CompanyProfile({ onToast, onBeginEditing }) {
     }
   }
   return (
-    <section className="foundation-section company-profile">
+    <section className={`foundation-section company-profile${editorOpen ? " is-editing" : ""}`}>
       <div className="foundation-section-heading"><div><small>企业初始化</small><h3><Buildings size={18} />企业主体</h3></div><span>{activeWorkspace.company.verificationStatus === "verified" ? "已核验" : "本地录入"}</span></div>
       <div className="foundation-summary-grid">
         <article className="foundation-summary-card"><small>企业身份</small><h4>{activeWorkspace.company.legalName || "未填写主体名称"}</h4><p>统一社会信用代码：{activeWorkspace.company.taxId || "未填写"}</p></article>
@@ -1413,7 +1413,7 @@ function AuthorizationEditor({ onToast, onBeginEditing }) {
         ? "未连接"
         : "有效记录";
   return (
-    <section className="foundation-section">
+    <section className={`foundation-section authorization-editor${editorOpen ? " is-editing" : ""}`}>
       <div className="foundation-section-heading"><div><small>不连接外部系统</small><h3><ShieldCheck size={18} />本地授权记录</h3></div><span>{activeWorkspace.authorizations.length} 条</span></div>
       <div className="foundation-notice"><WarningCircle size={17} />此处只记录{terminology.customer}允许处理的范围，不会保存银行或税务密码，也不会连接银行、税务、AI 或 OCR。</div>
       <div className="foundation-record-list authorization-list">

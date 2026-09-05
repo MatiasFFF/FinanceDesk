@@ -229,12 +229,12 @@
 }
 
 .engine-voucher-line-account-field {
-  grid-column: 2 / 7;
+  grid-column: 2 / 6;
   grid-row: 1;
 }
 
 .engine-voucher-line-auxiliary-field {
-  grid-column: 7 / 10;
+  grid-column: 6 / 10;
   grid-row: 1;
 }
 
@@ -269,12 +269,12 @@
 }
 
 .engine-voucher-line-tax-field {
-  grid-column: 8 / 10;
+  grid-column: 8 / 11;
   grid-row: 2;
 }
 
 .engine-voucher-line-source-field {
-  grid-column: 10 / 15;
+  grid-column: 11 / 15;
   grid-row: 2;
 }
 
@@ -405,6 +405,20 @@
   grid-column: 1 / -1;
 }
 
+.engine-voucher-form-actions {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.engine-voucher-form-actions > button {
+  min-width: 0;
+  flex: 1 1 180px;
+  justify-content: center;
+}
+
 .engine-form label,
 .engine-exceptions label,
 .engine-allocation-history > label,
@@ -467,8 +481,15 @@
 
 .engine-inline {
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 7px;
   min-width: 0;
+}
+
+.engine-voucher-card > .engine-inline > button {
+  min-width: 0;
+  flex: 1 1 170px;
+  justify-content: center;
 }
 
 .engine-inline > span {
@@ -670,12 +691,20 @@
 
 .settlement-bill-row {
   display: grid;
-  grid-template-columns: minmax(280px, 0.95fr) minmax(480px, 1.45fr);
-  gap: 12px 24px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
   padding: 14px 16px;
   border: 1px solid var(--line-soft);
   border-radius: 12px;
   background: var(--paper-strong);
+}
+
+.settlement-bill-overview {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.85fr) minmax(540px, 1.5fr);
+  align-items: center;
+  gap: 20px;
+  min-width: 0;
 }
 
 .settlement-bill-main {
@@ -708,16 +737,18 @@
 
 .settlement-bill-amounts {
   display: grid;
-  grid-template-columns: minmax(92px, 0.75fr) repeat(2, minmax(132px, 1fr));
-  align-items: center;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  align-items: stretch;
   gap: 0;
   min-width: 0;
 }
 
 .settlement-bill-amounts > span {
   display: grid;
+  align-content: center;
   gap: 2px;
   min-width: 0;
+  min-height: 50px;
   padding: 2px 14px;
   border-left: 1px solid var(--line-soft);
   text-align: left;
@@ -735,6 +766,7 @@
 .settlement-bill-amounts strong {
   line-height: 1.4;
   overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .settlement-bill-amounts > span:first-child strong {
@@ -742,7 +774,9 @@
 }
 
 .settlement-bill-row details {
-  grid-column: 1 / -1;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   padding-top: 10px;
   border-top: 1px solid var(--line-soft);
   color: var(--muted);
@@ -752,6 +786,17 @@
 .settlement-bill-row summary {
   cursor: pointer;
   font-weight: 700;
+  list-style-position: inside;
+}
+
+.settlement-bill-row details[open] > summary {
+  margin-bottom: 10px;
+}
+
+.settlement-bill-details > .engine-voucher-card,
+.settlement-bill-details > .engine-inline {
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .settlement-source-list {
@@ -1077,6 +1122,7 @@
 .settlement-panel,
 .settlement-form > *,
 .settlement-bill-row > *,
+.settlement-bill-overview > *,
 .accounting-ledger-panel,
 .ledger-filters > * {
   min-width: 0;
@@ -1389,8 +1435,70 @@
 /* Voucher cards can live in a wide settlement page or a narrow desktop detail rail. */
 @container voucher-card (max-width: 920px) {
   .engine-voucher-line.is-editable {
-    grid-template-columns: 32px repeat(2, minmax(180px, 1fr));
+    grid-template-columns: 32px repeat(4, minmax(0, 1fr));
     align-items: start;
+  }
+
+  .engine-voucher-line.is-editable > .engine-voucher-line-index {
+    grid-column: 1;
+    grid-row: 1 / span 4;
+  }
+
+  .engine-voucher-line-account-field {
+    grid-column: 2 / 4;
+    grid-row: 1;
+  }
+
+  .engine-voucher-line-auxiliary-field {
+    grid-column: 4 / 6;
+    grid-row: 1;
+  }
+
+  .engine-voucher-line-store-field {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .engine-voucher-line-department-field {
+    grid-column: 3;
+    grid-row: 2;
+  }
+
+  .engine-voucher-line-project-field {
+    grid-column: 4;
+    grid-row: 2;
+  }
+
+  .engine-voucher-line-tax-field {
+    grid-column: 5;
+    grid-row: 2;
+  }
+
+  .engine-voucher-line-source-field {
+    grid-column: 2 / 4;
+    grid-row: 3;
+  }
+
+  .engine-voucher-line-debit-field {
+    grid-column: 4;
+    grid-row: 3;
+  }
+
+  .engine-voucher-line-credit-field {
+    grid-column: 5;
+    grid-row: 3;
+  }
+
+  .engine-voucher-line.is-editable > .engine-voucher-line-remove {
+    grid-column: 2 / -1;
+    grid-row: 4;
+    justify-self: end;
+  }
+}
+
+@container voucher-card (max-width: 700px) {
+  .engine-voucher-line.is-editable {
+    grid-template-columns: 32px repeat(2, minmax(0, 1fr));
   }
 
   .engine-voucher-line.is-editable > .engine-voucher-line-index {
@@ -1450,7 +1558,7 @@
   }
 }
 
-@container voucher-card (max-width: 560px) {
+@container voucher-card (max-width: 480px) {
   .engine-voucher-line.is-editable {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1478,6 +1586,10 @@
   .engine-voucher-line-add {
     width: 100%;
     justify-self: stretch;
+  }
+
+  .engine-voucher-form-actions {
+    flex-direction: column;
   }
 
   .engine-form {
@@ -1516,6 +1628,10 @@
   .settlement-metrics,
   .settlement-form {
     grid-template-columns: repeat(2, minmax(180px, 1fr));
+  }
+
+  .settlement-bill-overview {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .settlement-form .full {

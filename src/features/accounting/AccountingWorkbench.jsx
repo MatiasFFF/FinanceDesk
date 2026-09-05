@@ -859,9 +859,11 @@ function MemberBusinessAccountingQueue({ onToast }) {
           ) : null;
           return (
             <article className="settlement-bill-row" key={event.id}>
-              <div className="settlement-bill-main"><span className="settlement-kind">{displayText(definition.label)}</span><strong>{event.memberName || event.coach}</strong><small>{event.date} · {memberEventStatusLabel(event)} · {event.note || displayText(definition.accountingLabel)}</small></div>
-              <div className="settlement-bill-amounts"><span><small>业务金额</small><strong>¥{money(event.amount)}</strong></span><span><small>会计状态</small><strong>{voucherLabel}</strong></span><span><small>报表影响</small><strong>{localizedMemberReportEffect(kind, activeWorkspace)}</strong></span></div>
-              <details open={Boolean(voucher && voucher.status !== "posted")}>
+              <div className="settlement-bill-overview">
+                <div className="settlement-bill-main"><span className="settlement-kind">{displayText(definition.label)}</span><strong>{event.memberName || event.coach}</strong><small>{event.date} · {memberEventStatusLabel(event)} · {event.note || displayText(definition.accountingLabel)}</small></div>
+                <div className="settlement-bill-amounts"><span><small>业务金额</small><strong>¥{money(event.amount)}</strong></span><span><small>会计状态</small><strong>{voucherLabel}</strong></span><span><small>报表影响</small><strong>{localizedMemberReportEffect(kind, activeWorkspace)}</strong></span></div>
+              </div>
+              <details className="settlement-bill-details" open={Boolean(voucher && voucher.status !== "posted")}>
                 <summary>{voucher ? "查看凭证分录与复核" : displayText(definition.suggestedEntry)}</summary>
                 {voucher ? <div className="engine-voucher-card">
                   <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借方 ¥{money(validation?.debit)} · 贷方 ¥{money(validation?.credit)} · {validation?.amountsBalanced ? "借贷平衡" : "借贷不平"}{validation?.balanced ? "" : " · 分录待修正"}</small><small className="engine-voucher-tax-total">税额合计 ¥{money(validation?.taxTotal)} · 仅作信息，不参与借贷平衡</small></span><em>{voucher.status}</em></div>
@@ -884,8 +886,7 @@ function MemberBusinessAccountingQueue({ onToast }) {
                   {editable && <VoucherLineValidation validation={validation} />}
                   {voucher.status === "posted" ? <div className="engine-inline"><span className="engine-badge"><CheckCircle size={14} weight="fill" />已进入 {localizedMemberReportEffect(kind, activeWorkspace)}</span></div> : <form className="engine-form" onSubmit={(submitEvent) => { submitEvent.preventDefault(); postDraft(event, voucher); }}>
                     <label className="full"><span>复核意见 *</span><textarea value={reviewNotes[event.id] || ""} onChange={(changeEvent) => setReviewNotes((current) => ({ ...current, [event.id]: changeEvent.target.value }))} placeholder={`例如：已核对${terminology.member}台账、金额和会计科目`} /></label>
-                    <button className="secondary-button wide" disabled={!validation?.balanced || !voucherLineDrafts[voucher.id]} type="button" onClick={() => reviseDraft(event, voucher)}>保存修订</button>
-                    <button className="primary-button wide" disabled={!validation?.balanced} type="submit"><CheckCircle size={16} />复核入账并更新报表</button>
+                    <div className="engine-voucher-form-actions"><button className="secondary-button" disabled={!validation?.balanced || !voucherLineDrafts[voucher.id]} type="button" onClick={() => reviseDraft(event, voucher)}>保存修订</button><button className="primary-button" disabled={!validation?.balanced} type="submit"><CheckCircle size={16} />复核入账并更新报表</button></div>
                   </form>}
                 </div> : <div className="engine-inline"><span><strong>{displayText(definition.accountingLabel)}</strong><small>{displayText(definition.suggestedEntry)}</small></span><button className="secondary-button" type="button" onClick={() => createDraft(event.id)}><Plus size={16} />生成平衡凭证</button></div>}
               </details>

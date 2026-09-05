@@ -2730,3 +2730,244 @@
     width: 100%;
   }
 }
+
+/* Foundation records workspace: stable desktop cards, editors and responsive fields. */
+.foundation-page > .foundation-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(460px, 100%), 1fr));
+  align-items: start;
+  gap: 20px;
+}
+
+.foundation-page > .foundation-grid > .foundation-section {
+  min-width: 0;
+  align-self: start;
+}
+
+.foundation-page > .foundation-grid > .foundation-section.is-editing {
+  grid-column: 1 / -1;
+}
+
+.foundation-page .foundation-section-heading {
+  min-width: 0;
+  align-items: flex-start;
+  column-gap: 18px;
+}
+
+.foundation-page .foundation-section-heading > div,
+.foundation-page .foundation-section-heading h3,
+.foundation-page .foundation-section-heading h4,
+.foundation-page .foundation-section-heading > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.foundation-page .foundation-record-list {
+  min-width: 0;
+}
+
+.foundation-page .foundation-entity-record,
+.foundation-page .entity-editor > .foundation-record-list > .foundation-record,
+.foundation-page .authorization-editor > .foundation-record-list > .foundation-record {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px 16px;
+}
+
+.foundation-page .foundation-record-main,
+.foundation-page .foundation-entity-record-copy,
+.foundation-page .foundation-record > div:first-child,
+.foundation-page .foundation-record > div:first-child > strong,
+.foundation-page .foundation-record > div:first-child > small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.foundation-page .foundation-record-actions,
+.foundation-page .foundation-entity-record-actions {
+  min-width: 0;
+  max-width: min(100%, 360px);
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.foundation-page .foundation-record-actions > button,
+.foundation-page .foundation-entity-record-actions > button {
+  flex: 0 0 auto;
+}
+
+.foundation-page .foundation-entity-record-actions > .compact-select {
+  width: auto;
+  min-width: 168px;
+  max-width: 240px;
+}
+
+.foundation-page .foundation-record > .foundation-record-delete-confirm,
+.foundation-page .foundation-entity-record > .foundation-record-delete-confirm {
+  width: 100%;
+  min-width: 0;
+  grid-column: 1 / -1;
+}
+
+.foundation-page .foundation-editor-panel {
+  min-width: 0;
+  margin-top: 14px;
+  padding: 18px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--canvas);
+  box-shadow: inset 0 0 0 1px rgba(61, 50, 41, 0.08);
+  overflow: visible;
+}
+
+.foundation-page .foundation-editor-panel > .foundation-section-heading {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.foundation-page .foundation-editor-panel > .entity-form,
+.foundation-page .foundation-entity-editor-panel > .foundation-entity-form {
+  min-width: 0;
+  align-items: start;
+  gap: 12px 14px;
+}
+
+.foundation-page .foundation-field,
+.foundation-page .foundation-field > span,
+.foundation-page .foundation-field > input,
+.foundation-page .foundation-field > select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.foundation-page .foundation-field > span {
+  min-height: 34px;
+  align-content: end;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.foundation-page .foundation-editor-panel > .entity-form > .foundation-divider,
+.foundation-page .foundation-editor-panel > .entity-form > .foundation-section-heading,
+.foundation-page .foundation-editor-panel > .entity-form > .foundation-hint,
+.foundation-page .foundation-editor-panel > .entity-form > .foundation-record-list,
+.foundation-page .foundation-editor-panel > .entity-form > .category-rule-preview,
+.foundation-page .foundation-editor-panel > .entity-form > .foundation-inline-actions,
+.foundation-page .foundation-editor-panel > .entity-form > .entity-error,
+.foundation-page .foundation-entity-form > .permission-field,
+.foundation-page .foundation-entity-form > .foundation-entity-form-actions,
+.foundation-page .foundation-entity-form > .entity-error {
+  grid-column: 1 / -1;
+}
+
+.foundation-page .foundation-editor-toggle {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+.foundation-page .foundation-summary-card h4,
+.foundation-page .foundation-summary-card p,
+.foundation-page .management-report-display-toggle strong,
+.foundation-page .management-report-display-toggle small,
+.foundation-page .management-report-display-item .foundation-field > span,
+.foundation-page .foundation-hint,
+.foundation-page .foundation-notice {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.foundation-page .foundation-terminology-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.foundation-page .management-report-display-grid {
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 10px;
+}
+
+.foundation-page .management-report-display-item {
+  grid-template-columns: minmax(150px, 0.8fr) minmax(190px, 1.2fr);
+  align-items: end;
+  gap: 12px;
+  padding: 12px;
+}
+
+.foundation-page .management-report-display-actions,
+.foundation-page .foundation-terminology-actions {
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@container foundation-section (min-width: 760px) {
+  .foundation-page .foundation-editor-panel > .entity-form,
+  .foundation-page .foundation-entity-editor-panel > .foundation-entity-form,
+  .foundation-page .company-form {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@container foundation-page (max-width: 1040px) {
+  .foundation-page > .foundation-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container foundation-section (max-width: 620px) {
+  .foundation-page .foundation-editor-panel > .entity-form,
+  .foundation-page .foundation-entity-editor-panel > .foundation-entity-form,
+  .foundation-page .company-form,
+  .foundation-page .management-report-display-grid,
+  .foundation-page .management-report-display-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foundation-page .foundation-entity-record,
+  .foundation-page .entity-editor > .foundation-record-list > .foundation-record,
+  .foundation-page .authorization-editor > .foundation-record-list > .foundation-record {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .foundation-page .foundation-record-actions,
+  .foundation-page .foundation-entity-record-actions {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    justify-content: flex-start;
+  }
+
+  .foundation-page .foundation-entity-record-actions > .compact-select {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    flex-basis: 100%;
+  }
+}
+
+@container foundation-page (max-width: 560px) {
+  .foundation-page .foundation-section,
+  .foundation-page .foundation-editor-panel,
+  .foundation-page .management-report-display-item {
+    padding: 14px;
+  }
+
+  .foundation-page .foundation-inline-actions,
+  .foundation-page .foundation-entity-form-actions,
+  .foundation-page .management-report-display-actions,
+  .foundation-page .foundation-terminology-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .foundation-page .foundation-inline-actions > button,
+  .foundation-page .foundation-entity-form-actions > button,
+  .foundation-page .management-report-display-actions > button,
+  .foundation-page .foundation-terminology-actions > button {
+    width: 100%;
+  }
+}
