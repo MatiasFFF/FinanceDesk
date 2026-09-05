@@ -25,18 +25,25 @@ export function createBrowserFileVault(options = {}) {
     return requestResult(request);
   }
 
-  async function transaction(mode, callback) {
+  async function transaction(mode, callback, signal) {
+    signal?.throwIfAborted();
     const database = await open();
     try {
+      signal?.throwIfAborted();
       const tx = database.transaction(FILE_VAULT_STORE, mode);
+      const abort = () => tx.abort();
+      signal?.addEventListener("abort", abort, { once: true });
       const completed = new Promise((resolve, reject) => {
         tx.oncomplete = resolve;
         tx.onerror = () => reject(tx.error || new Error("本地文件事务失败"));
         tx.onabort = () => reject(tx.error || new Error("本地文件事务已取消"));
       });
-      const result = await callback(tx.objectStore(FILE_VAULT_STORE));
-      await completed;
-      return result;
+      try {
+        const [result] = await Promise.all([callback(tx.objectStore(FILE_VAULT_STORE)), completed]);
+        return result;
+      } finally {
+        signal?.removeEventListener("abort", abort);
+      }
     } finally {
       database.close();
     }
@@ -56,6 +63,15 @@ export function createBrowserFileVault(options = {}) {
       if (!record || record.workspaceId !== workspaceId) return null;
       if (hash && record.hash && record.hash !== hash) return null;
       return record;
+    },
+    async setRecognition(id, workspaceId, hash, recognition, { signal, expectedResultId } = {}) {
+      await transaction("readwrite", async (store) => {
+        const record = await requestResult(store.get(id));
+        if (!record || record.workspaceId !== workspaceId || record.hash !== hash) throw new Error("原件已变化，识别结果未保存");
+        if (expectedResultId !== undefined && record.recognition?.id !== expectedResultId) return;
+        signal?.throwIfAborted();
+        await requestResult(store.put({ ...record, recognition }));
+      }, signal);
     },
     async delete(id) {
       await transaction("readwrite", (store) => requestResult(store.delete(id)));
@@ -83,6 +99,13 @@ export function createMemoryFileVault() {
       if (!record || record.workspaceId !== workspaceId) return null;
       if (hash && record.hash && record.hash !== hash) return null;
       return record;
+    },
+    async setRecognition(id, workspaceId, hash, recognition, { signal, expectedResultId } = {}) {
+      signal?.throwIfAborted();
+      const record = records.get(id);
+      if (!record || record.workspaceId !== workspaceId || record.hash !== hash) throw new Error("原件已变化，识别结果未保存");
+      if (expectedResultId !== undefined && record.recognition?.id !== expectedResultId) return;
+      records.set(id, { ...record, recognition });
     },
     async delete(id) { records.delete(id); },
     async listByWorkspace(workspaceId) { return [...records.values()].filter((record) => record.workspaceId === workspaceId); },

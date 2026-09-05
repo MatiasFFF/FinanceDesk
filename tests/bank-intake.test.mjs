@@ -1152,7 +1152,7 @@ test("合同与审批结构化字段写回当前工作台资料记录且明确�
     refundTerms: "提前 30 日书面通知，按未履行月份退款",
     commissionTerms: "不适用",
   });
-  assert.deepEqual(persisted.contentRecognition, { mode: "manual", ocrStatus: "not_connected" });
+  assert.deepEqual(persisted.contentRecognition, { mode: "manual", ocrStatus: "not_started" });
 
   const approval = await saveLocalDocument({
     store,
@@ -1190,7 +1190,7 @@ test("合同与审批结构化字段写回当前工作台资料记录且明确�
     businessEventId: "",
     linkStatus: "unlinked",
   });
-  assert.deepEqual(persisted.contentRecognition, { mode: "manual", ocrStatus: "not_connected" });
+  assert.deepEqual(persisted.contentRecognition, { mode: "manual", ocrStatus: "not_started" });
 });
 
 test("五类已批准审批单按类型、申请人或供应商、金额和日期建议对象，未批准与金额不一致保持待处理", async () => {

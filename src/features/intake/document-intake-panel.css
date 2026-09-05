@@ -12,6 +12,33 @@
   min-width: 0;
 }
 
+.document-recognition {
+  display: grid;
+  gap: 10px;
+  margin-block: 14px;
+  padding-block: 12px;
+  border-block: 1px solid var(--line-soft);
+}
+
+.document-recognition-actions,
+.document-recognition-candidates > li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.document-recognition p { margin: 0; }
+.document-recognition-actions > strong { margin-right: auto; }
+.document-recognition-progress { display: grid; gap: 6px; }
+.document-recognition-progress progress { width: 100%; accent-color: var(--accent, #ae624a); }
+.document-recognition-candidates { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.document-recognition-candidates > li > div { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.document-recognition-candidates small { display: block; margin-top: 4px; }
+.document-recognition-text pre { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; line-height: 1.7; }
+.document-recognition-text select { margin: 8px; }
+
 .document-intake-panel [hidden] {
   display: none !important;
 }

@@ -255,7 +255,7 @@ function BoundaryNote({ compact = false }) {
       <CloudSlash size={18} />
       <div>
         <strong>本地模式</strong>
-        <span>银行、税务、AI 与 OCR 均未连接；当前只处理本地文件和浏览器数据。</span>
+        <span>资料在本机处理；银行、税务与外部 AI 未连接。</span>
       </div>
     </div>
   );
@@ -1327,7 +1327,7 @@ function ArchivePage({ workspace, onPage, onDocuments, onDownloadDocument, onRec
           {tab === "documents" && <div className="archive-tools">
             <label className="search-field"><MagnifyingGlass size={17} /><input aria-label="搜索资料" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件" />{query && <button aria-label="清空资料搜索" className="visible" onClick={() => setQuery("")} type="button"><X size={15} /></button>}</label>
             <input ref={docsInput} hidden type="file" multiple onChange={(event) => { onDocuments(Array.from(event.target.files || [])); event.target.value = ""; }} />
-            <button className="secondary-button" onClick={() => docsInput.current?.click()} type="button"><FileArrowUp size={17} />添加本地资料</button>
+            <button className="secondary-button" onClick={() => onPage("setup", { stage: "documents" })} type="button"><FileArrowUp size={17} />添加本地资料</button>
           </div>}
         </div>
         {tab === "documents" && (documents.length ? <div className="document-grid">{documents.map((document) => {

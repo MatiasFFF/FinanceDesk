@@ -1,0 +1,43 @@
+{
+  "assetsVersion": 1,
+  "sources": [
+    {
+      "name": "tesseract.js",
+      "version": "7.0.0",
+      "repository": "https://github.com/naptha/tesseract.js.git",
+      "declaredPackageLicense": "Apache-2.0"
+    },
+    {
+      "name": "tesseract.js-core",
+      "version": "7.0.0",
+      "repository": "https://github.com/naptha/tesseract.js-core.git",
+      "declaredPackageLicense": "Apache-2.0"
+    },
+    {
+      "name": "pdfjs-dist",
+      "version": "6.3.289",
+      "repository": "git+https://github.com/mozilla/pdf.js.git",
+      "declaredPackageLicense": "Apache-2.0"
+    },
+    {
+      "name": "@tesseract.js-data/chi_sim",
+      "version": "1.0.0",
+      "repository": "https://github.com/naptha/tessdata.git",
+      "declaredPackageLicense": "MIT"
+    },
+    {
+      "name": "@tesseract.js-data/eng",
+      "version": "1.0.0",
+      "repository": "https://github.com/naptha/tessdata.git",
+      "declaredPackageLicense": "MIT"
+    }
+  ],
+  "distributionBytes": {
+    "tesseract-7.0.0": 11836212,
+    "languages-1.0.0": 4684062,
+    "pdfjs-6.3.289": 5260176
+  },
+  "languageDataSource": "https://github.com/naptha/tessdata/tree/gh-pages/4.0.0_best_int",
+  "languageDataLicense": "Apache-2.0; see languages-1.0.0/LICENSE.tessdata (upstream repository license). Package metadata is retained separately.",
+  "loading": "No recognition assets are loaded on the homepage. PDF module and parser worker load only for PDF recognition; fonts/maps/decoders load as needed. One selected LSTM core and the two language files load only when an OCR page is reached. All URLs remain same-origin; no CDN fallback."
+}

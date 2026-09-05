@@ -1,4 +1,4 @@
-import { createId, normalizeWorkspaceModules } from "../../domain/foundation.js";
+import { assertWorkspacePermission, createId, normalizeWorkspaceModules } from "../../domain/foundation.js";
 import { buildFinancialStatements, buildManagementMetrics, buildTaxWorkpaper } from "../../domain/accounting/reporting.js";
 import { attachEvidenceDocument, reviewTransactionEvidence } from "../evidence/evidenceEngine.js";
 import { normalizeMoney, parseDelimitedText } from "./bankStatementImport.js";
@@ -1722,7 +1722,7 @@ export async function createDocumentMetadata(file, options = {}) {
     structuredData: normalizeDocumentStructuredData(category, options.structuredData),
     contentRecognition: {
       mode: "manual",
-      ocrStatus: "not_connected",
+      ocrStatus: "not_started",
     },
     storage: {
       mode: "indexeddb",
@@ -2431,6 +2431,65 @@ export async function saveLocalDocument(input) {
   }
 }
 
+export async function saveLocalDocumentRecognition({ store, fileVault, workspaceId, documentId, sourceHash, category, result, signal, isCurrent = () => true }) {
+  const currentDocument = () => {
+    signal?.throwIfAborted();
+    if (!isCurrent() || store.getState().activeWorkspaceId !== workspaceId) throw new DOMException("识别已取消", "AbortError");
+    const workspace = store.getState().workspaces.find((item) => item.id === workspaceId);
+    const document = workspace?.documents?.find((item) => item.id === documentId);
+    if (!document || !sourceHash || document.hash !== sourceHash || document.category !== category) throw new Error("资料或原件已变化，识别结果未保存");
+    if (document.archiveStatus === "archived" || ["archived", "已归档"].includes(document.lifecycleStatus)) throw new Error("已归档资料不能更新识别结果");
+    assertWorkspacePermission(store.getState(), workspaceId, "documents.add");
+    return { workspace, document };
+  };
+  const { document } = currentDocument();
+  if (!fileVault?.setRecognition) throw new Error("当前文件存储不支持保存识别结果");
+  if (result?.mode !== "local" || typeof result.text !== "string" || !Array.isArray(result.pages)) throw new Error("识别结果不完整");
+  const id = createId("recognition");
+  const envelope = { id, sourceHash, category, result };
+  const previous = await getStoredDocumentRecord({ fileVault, workspaceId, document });
+  currentDocument();
+  // The original and full derived text share one IndexedDB record; only small candidates enter workspace JSON.
+  const blobId = document.storage?.blobId || document.id;
+  try {
+    await fileVault.setRecognition(blobId, workspaceId, sourceHash, envelope, { signal });
+    const latest = currentDocument();
+    const allowedFields = normalizeDocumentStructuredData(category, {}) || {};
+    const suggestedFields = Object.fromEntries(Object.entries(result.suggestedFields || {})
+      .filter(([key, candidate]) => key !== "kind" && Object.hasOwn(allowedFields, key) && candidate && ["string", "number"].includes(typeof candidate.value))
+      .map(([key, candidate]) => [key, { value: typeof candidate.value === "string" ? candidate.value.slice(0, 2000) : candidate.value, sourceText: String(candidate.sourceText || "").slice(0, 300), pageNumber: candidate.pageNumber }]));
+    const contentRecognition = {
+      mode: "local", ocrStatus: "completed", resultId: id, sourceHash, category,
+      recognizedAt: result.recognizedAt || new Date().toISOString(),
+      pageCount: result.pages.length, suggestedFields,
+      confirmation: latest.document.contentRecognition?.confirmation || null,
+    };
+    store.actions.replaceWorkspace(workspaceId, {
+      ...latest.workspace,
+      documents: latest.workspace.documents.map((item) => item.id === documentId ? { ...item, contentRecognition } : item),
+    }, { requiredPermission: "documents.add", audit: { action: "保存本地识别候选", detail: `${latest.document.name} · 未修改业务字段` } });
+    return envelope;
+  } catch (error) {
+    const persisted = store.getState().workspaces.find((item) => item.id === workspaceId)?.documents?.find((item) => item.id === documentId);
+    if (persisted?.contentRecognition?.resultId !== id) {
+      try {
+        await fileVault.setRecognition(blobId, workspaceId, sourceHash, previous.recognition, { expectedResultId: id });
+      } catch (restoreError) {
+        throw new Error(`${error.message}；先前识别正文未能恢复：${restoreError.message}`, { cause: restoreError });
+      }
+    }
+    throw error;
+  }
+}
+
+export async function getLocalDocumentRecognition({ fileVault, workspaceId, document }) {
+  const metadata = document.contentRecognition;
+  if (!metadata?.resultId || metadata.sourceHash !== document.hash) return null;
+  const record = await getStoredDocumentRecord({ fileVault, workspaceId, document });
+  const saved = record.recognition;
+  return saved?.id === metadata.resultId && saved.sourceHash === document.hash ? saved : null;
+}
+
 export function updateLocalDocumentMetadata(input) {
   const { store, workspaceId, documentId } = input;
   if (!store?.actions) throw new Error("资料修改需要工作台 store");
@@ -2471,12 +2530,17 @@ export function updateLocalDocumentMetadata(input) {
     period: patch.period === undefined ? document.period : (patch.period || null),
     relatedObjectIds,
     structuredData: normalizeDocumentStructuredData(category, structuredInput),
-    contentRecognition: {
-      mode: "manual",
-      ocrStatus: "not_connected",
-    },
+    contentRecognition: document.contentRecognition || { mode: "manual", ocrStatus: "not_started" },
     updatedAt: timestamp,
   };
+  if (patch.recognitionConfirmation) {
+    const recognition = document.contentRecognition;
+    if (!recognition?.resultId || patch.recognitionConfirmation.resultId !== recognition.resultId || recognition.sourceHash !== document.hash || recognition.category !== category) throw new Error("识别候选已变化，请重新核对后保存");
+    const fields = Object.fromEntries((patch.recognitionConfirmation.fields || [])
+      .filter((key) => Object.hasOwn(recognition.suggestedFields || {}, key) && Object.hasOwn(updatedDocument.structuredData || {}, key))
+      .map((key) => [key, updatedDocument.structuredData[key]]));
+    updatedDocument.contentRecognition = { ...recognition, confirmation: { resultId: recognition.resultId, sourceHash: document.hash, category, fields, confirmedAt: timestamp, actor } };
+  }
   assertUniqueInvoiceNumber(workspace, updatedDocument, documentId);
   const evidenceLinks = (workspace.evidenceLinks || []).flatMap((link) => {
     if (!link.documentIds?.includes(documentId)) return [link];

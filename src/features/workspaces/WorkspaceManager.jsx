@@ -542,7 +542,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
         </div>
 
         <footer className="foundation-manager-footer">
-          <span><WarningCircle size={16} />银行、税务、AI 与 OCR 均未连接；当前只处理本地数据。</span>
+          <span><WarningCircle size={16} />资料在本机处理；银行、税务与外部 AI 未连接。</span>
           <button className="text-danger-button" type="button" onClick={(event) => requestConfirmation("clear-business", event.currentTarget)}>清空当前业务数据</button>
         </footer>
       </section>

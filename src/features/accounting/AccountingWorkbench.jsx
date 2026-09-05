@@ -45,6 +45,7 @@ import {
   createReconciliationCorrection,
   createVoucherDraft,
   effectiveBankTransactionClassification,
+  effectivePostedVouchers,
   handleReconciliationException,
   linkInternalTransfer,
   linkRefundToOriginal,
@@ -1314,6 +1315,22 @@ function TransactionAccountingWorkbench({ transactionId, onToast }) {
   const allocations = transaction ? activeAllocations(transaction) : [];
   const vouchers = transaction ? vouchersForSource(activeWorkspace, transaction.id) : [];
   const activeVouchers = vouchers.filter((voucher) => ["posted", "draft", "changes_requested"].includes(voucher.status));
+  const directlyPosted = Boolean(businessEvent?.status === "confirmed"
+    && businessEvent.accountingStatus === "posted"
+    && ["customerReceipt", "supplierPayment", "purchaseExpense", "payroll", "rentAndProperty", "bankFee"].includes(businessEvent.businessType)
+    && !businessEvent.relatedBillId
+    && allocations.length === 0
+    && effectivePostedVouchers(activeWorkspace).some((voucher) => {
+      if (voucher.bankBusinessEventId !== businessEvent.id) return false;
+      const lines = (voucher.lines || []).filter((line) => Number(line.debit) || Number(line.credit));
+      const businessLines = lines.filter((line) => !accountDefinition(line.account, activeWorkspace).cash);
+      const cashMovement = lines.filter((line) => accountDefinition(line.account, activeWorkspace).cash)
+        .reduce((total, line) => total + Number(line.debit || 0) - Number(line.credit || 0), 0);
+      const categories = Number(transaction.amount) > 0 ? ["revenue"] : ["expense", "cost"];
+      return businessLines.length > 0
+        && businessLines.every((line) => categories.includes(accountDefinition(line.account, activeWorkspace).category))
+        && Math.abs(cashMovement - Number(transaction.amount)) <= accountingPolicy.amountTolerance;
+    }));
   const periodWritable = transaction && String(transaction.date).slice(0, 7) === activeWorkspace.currentPeriod
     && !activeWorkspace.delivery?.archives?.some((archive) => archive.period === activeWorkspace.currentPeriod)
     && !activeWorkspace.delivery?.filing?.archivedAt;
@@ -1777,6 +1794,7 @@ function TransactionAccountingWorkbench({ transactionId, onToast }) {
       : exceptionCases.length ? { label: `处理 ${exceptionCases.length} 项待办`, run: () => openStep("exceptions") }
         : canCreateDraft ? { label: "生成凭证草稿", run: createDraft }
           : activeVouchers.some((voucher) => ["draft", "changes_requested"].includes(voucher.status)) ? { label: "复核待入账凭证", run: () => openStep("vouchers") }
+            : directlyPosted ? { label: "查看已入账凭证", run: () => openStep("vouchers") }
             : suggestions.some((suggestion) => !suggestion.requiresManualReview) ? { label: "确认匹配建议", run: () => openStep("suggestions") }
               : eligibleBills.length && settlement.remaining > 0.01 && ![EVENT_TYPES.REFUND, EVENT_TYPES.INTERNAL_TRANSFER, EVENT_TYPES.UNKNOWN].includes(classification.eventType) ? { label: "选择账单核销", run: () => openStep("allocations") }
                 : transaction.status !== "posted" && !businessEvent ? { label: "更新判断与资料状态", run: inspect } : null;
@@ -1792,8 +1810,8 @@ function TransactionAccountingWorkbench({ transactionId, onToast }) {
 
       <div className="engine-summary">
         <span><small>业务判断</small><strong>{localizedEventLabel(classification.eventType, activeWorkspace)}</strong></span>
-        <span><small>核销状态</small><strong>{statusLabel(settlement.status)}</strong></span>
-        <span><small>未核销</small><strong>¥{money(settlement.remaining)}</strong></span>
+        <span><small>{directlyPosted ? "账务状态" : "核销状态"}</small><strong>{directlyPosted ? "已直接入账" : statusLabel(settlement.status)}</strong></span>
+        <span><small>{directlyPosted ? "账单核销" : "未核销"}</small><strong>{directlyPosted ? "本笔无需核销" : `¥${money(settlement.remaining)}`}</strong></span>
       </div>
       {assessment.missing.length > 0 && <p className="engine-next-note">待补：{assessment.missing.map((item) => displayText(item.label)).join("、")}。请在本笔资料区关联原件后继续复核。</p>}
       {nextAction && <button className="primary-button wide" type="button" onClick={nextAction.run}>{nextAction.label}</button>}
@@ -1921,11 +1939,11 @@ function TransactionAccountingWorkbench({ transactionId, onToast }) {
       )}
 
       {eligibleBills.length > 0 && ![EVENT_TYPES.REFUND, EVENT_TYPES.INTERNAL_TRANSFER, EVENT_TYPES.UNKNOWN].includes(classification.eventType) && (
-        <details className="engine-section" ref={(node) => { stepRefs.current.allocations = node; }}><summary>选择账单核销 · 未核销 ¥{money(settlement.remaining)}</summary>
+        <details className="engine-section" ref={(node) => { stepRefs.current.allocations = node; }}><summary>{directlyPosted ? "选择账单核销" : `选择账单核销 · 未核销 ¥${money(settlement.remaining)}`}</summary>
         <div className="engine-allocation">
           <div className="engine-subheading"><strong>拆分 / 部分核销</strong><small>可一次填写多张账单，合计不超过流水未核销金额</small></div>
           <div className="engine-summary">
-            <span><small>流水当前未核销</small><strong>¥{money(allocationDraft.transactionRemaining)}</strong></span>
+            <span><small>{directlyPosted ? "尚未分配到账单" : "流水当前未核销"}</small><strong>¥{money(allocationDraft.transactionRemaining)}</strong></span>
             <span><small>本次已分配</small><strong>¥{money(allocationDraft.requested)}</strong></span>
             <span><small>确认后流水剩余</small><strong>¥{money(allocationDraft.remainingAfter)}</strong></span>
           </div>

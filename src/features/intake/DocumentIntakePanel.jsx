@@ -51,6 +51,7 @@ import {
   getDocumentRelatedObjectIds,
   getDocumentTaskRequirements,
   getLocalDocumentUsage,
+  getLocalDocumentRecognition,
   getMonthlyFinancialArchivePeriods,
   getStoredDocumentRecord,
   generateMonthlyFinancialArchivePackage,
@@ -61,12 +62,30 @@ import {
   refreshDocumentMissingTasks,
   removeLocalDocument,
   saveLocalDocument,
+  saveLocalDocumentRecognition,
   updateLocalDocumentMetadata,
 } from "./documentIntake.js";
 import "./document-intake-panel.css";
 
 const CATEGORIES = ["主体资料", "合同", "银行流水", "业务资料", "发票", "审批资料", "人员资料", "工资表", "社保数据", "会计资料", "申报回执", "其他资料"];
 const PAYROLL_DOCUMENT_CATEGORIES = new Set(["工资表", "社保表", "社保数据", "工资社保数据", "payroll", "socialSecurity"]);
+const RECOGNITION_FIELD_LABELS = {
+  partyA: "合同甲方", partyB: "合同乙方", amount: "金额", invoiceNumber: "发票号码", invoiceDate: "发票日期",
+  counterparty: "往来单位", taxAmount: "税额", taxRate: "税率（%）", applicant: "申请人", supplier: "收付款对象",
+  approvalDate: "审批日期", serviceStartDate: "服务开始日期", serviceEndDate: "服务结束日期",
+  refundTerms: "退款条款", commissionTerms: "佣金条款", firstBillDate: "首次账单日", periodAmount: "每期金额", settlementCycle: "结算周期",
+};
+
+function documentEditDraft(document, workspace) {
+  return { id: document.id, name: document.name || "", category: document.category || "其他资料", period: document.period || "",
+    relatedObjectIds: getDocumentRelatedObjectIds(workspace, document.id),
+    structuredData: normalizeDocumentStructuredData(document.category, document.structuredData || {}) };
+}
+
+function recognitionProgressLabel(progress) {
+  const stage = { loading: "正在加载本地识别引擎", extracting: "正在读取 PDF 文字", recognizing: "正在识别文字" }[progress?.stage] || "正在准备原件";
+  return `${stage}${progress?.pageNumber ? ` · 第 ${progress.pageNumber}/${progress.totalPages || "?"} 页` : ""}`;
+}
 
 function isPayrollDocumentCategory(category) {
   return PAYROLL_DOCUMENT_CATEGORIES.has(String(category || "").trim());
@@ -293,6 +312,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const selectedSection = activeSection ?? localSection;
   const [uploadOpen, setUploadOpen] = useState(false);
   function selectSection(nextSection) {
+    if (nextSection !== "files") cancelRecognition();
     setLocalSection(nextSection);
     onSectionChange?.(nextSection);
   }
@@ -308,6 +328,16 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const hasFilters = Boolean(query.trim() || categoryFilter !== "all" || statusFilter !== "all");
   const [editing, setEditing] = useState(null);
   const [preview, setPreview] = useState(null);
+  const [detailDocumentId, setDetailDocumentId] = useState(null);
+  const [recognitionProgress, setRecognitionProgress] = useState(null);
+  const [recognitionView, setRecognitionView] = useState(null);
+  const [recognitionNotice, setRecognitionNotice] = useState("");
+  const [recognitionPage, setRecognitionPage] = useState(0);
+  const recognitionJobRef = useRef(null);
+  const recognitionContextRef = useRef(null);
+  recognitionContextRef.current = { workspaceId: activeWorkspace.id, period: activeWorkspace.currentPeriod, section: selectedSection, documentId: detailDocumentId };
+  const detailDocument = activeWorkspace.documents.find((document) => document.id === detailDocumentId);
+  const standaloneFile = typeof window !== "undefined" && window.location.protocol === "file:";
   const [pendingDocumentAction, setPendingDocumentAction] = useState(null);
   const [confirmingSuggestionId, setConfirmingSuggestionId] = useState("");
   const [selectedVoucherId, setSelectedVoucherId] = useState(activeWorkspace.vouchers?.[0]?.id || "");
@@ -438,6 +468,83 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     ? [...(activeWorkspace.documents || []).filter((document) => document.id === editing.id), ...filteredDocuments]
     : filteredDocuments;
 
+  function cancelRecognition() {
+    recognitionJobRef.current?.controller.abort();
+    recognitionJobRef.current = null;
+    setRecognitionProgress(null);
+  }
+
+  useEffect(() => {
+    return () => {
+      recognitionJobRef.current?.controller.abort();
+      recognitionJobRef.current = null;
+    };
+  }, [activeWorkspace.id, activeWorkspace.currentPeriod, selectedSection, detailDocumentId]);
+
+  useEffect(() => {
+    setRecognitionProgress(null);
+    setRecognitionView(null);
+    setRecognitionNotice("");
+    setRecognitionPage(0);
+    if (selectedSection !== "files" || !detailDocument?.contentRecognition?.resultId) return;
+    let cancelled = false;
+    getLocalDocumentRecognition({ fileVault, workspaceId: activeWorkspace.id, document: detailDocument }).then((saved) => {
+      if (cancelled) return;
+      setRecognitionView(saved);
+      if (!saved) setRecognitionNotice("本机缺少这份资料的识别正文，可重新识别。已保存的字段与人工确认仍保留。");
+    }).catch((caught) => { if (!cancelled) setRecognitionNotice(caught.message || "本机识别正文暂不可用，可重新识别。"); });
+    return () => { cancelled = true; };
+  }, [activeWorkspace.id, activeWorkspace.currentPeriod, selectedSection, detailDocumentId, detailDocument?.hash, detailDocument?.contentRecognition?.resultId, fileVault]);
+
+  useEffect(() => {
+    if (detailDocumentId && !visibleDocuments.some((document) => document.id === detailDocumentId)) {
+      cancelRecognition();
+      setDetailDocumentId(null);
+    }
+  }, [detailDocumentId, visibleDocuments]);
+
+  async function recognizeDocument(document) {
+    if (standaloneFile) { setRecognitionNotice("请从本地网页打开 FinanceDesk 后使用文字识别。"); return; }
+    if (recognitionJobRef.current) return;
+    const controller = new AbortController();
+    const job = { controller, ...recognitionContextRef.current };
+    recognitionJobRef.current = job;
+    const isCurrent = () => {
+      const context = recognitionContextRef.current;
+      return recognitionJobRef.current === job && !controller.signal.aborted
+        && context.workspaceId === job.workspaceId && context.period === job.period
+        && context.documentId === document.id && context.section === "files";
+    };
+    setRecognitionNotice("");
+    setRecognitionProgress({ stage: "preparing", progress: 0 });
+    try {
+      const record = await getStoredDocumentRecord({ fileVault, workspaceId: job.workspaceId, document });
+      if (!isCurrent()) return;
+      const { recognizeLocalDocument } = await import("./localDocumentRecognition.js");
+      if (!isCurrent()) return;
+      const result = await recognizeLocalDocument({ blob: record.blob, name: document.name, mimeType: document.mimeType, category: document.category,
+        signal: controller.signal, onProgress: (progress) => { if (isCurrent()) setRecognitionProgress(progress); } });
+      if (!isCurrent()) return;
+      const saved = await saveLocalDocumentRecognition({ store, fileVault, workspaceId: job.workspaceId, documentId: document.id,
+        sourceHash: document.hash, category: document.category, result, signal: controller.signal, isCurrent });
+      if (isCurrent()) { setRecognitionView(saved); setRecognitionPage(0); }
+    } catch (caught) {
+      if (isCurrent() && caught.name !== "AbortError") setRecognitionNotice(caught.message || "本地识别失败，请保留原件并人工填写。");
+    } finally {
+      if (recognitionJobRef.current === job) { recognitionJobRef.current = null; setRecognitionProgress(null); }
+    }
+  }
+
+  function fillRecognitionCandidate(document, key, candidate) {
+    if (editing && editing.id !== document.id) { setError("请先保存或取消当前资料的编辑。"); return; }
+    const draft = editing || documentEditDraft(document, activeWorkspace);
+    if (draft.category !== document.category || document.contentRecognition?.sourceHash !== document.hash) return;
+    const existing = draft.structuredData?.[key];
+    if (existing !== null && existing !== undefined && existing !== "") return;
+    setEditing({ ...draft, structuredData: { ...draft.structuredData, [key]: candidate.value },
+      recognitionConfirmation: { resultId: document.contentRecognition.resultId, fields: [...new Set([...(draft.recognitionConfirmation?.fields || []), key])] } });
+  }
+
   useEffect(() => {
     setCategory(payrollEnabled || !isPayrollDocumentCategory(defaultCategory) ? defaultCategory : "其他资料");
     setPeriod(activeWorkspace.currentPeriod || "");
@@ -447,6 +554,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     setStatusFilter("all");
     setEditing(null);
     setPreview(null);
+    setDetailDocumentId(null);
     setPendingDocumentAction(null);
     documentActionTriggerRef.current = null;
     setSelectedVoucherId(activeWorkspace.vouchers?.[0]?.id || "");
@@ -561,6 +669,8 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   }
 
   async function showPreview(document) {
+    if (detailDocumentId !== document.id) cancelRecognition();
+    setDetailDocumentId(document.id);
     clearPendingDocumentAction();
     setError("");
     try {
@@ -599,6 +709,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   }
 
   function requestDocumentAction(document, action, trigger) {
+    cancelRecognition();
     const usage = getLocalDocumentUsage(activeWorkspace, document.id);
     if (action === "delete" && usage.length) {
       clearPendingDocumentAction();
@@ -651,24 +762,21 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     }
     clearPendingDocumentAction();
     setError("");
-    setEditing({
-      id: document.id,
-      name: document.name || "",
-      category: document.category || "其他资料",
-      period: document.period || "",
-      relatedObjectIds: getDocumentRelatedObjectIds(activeWorkspace, document.id),
-      structuredData: normalizeDocumentStructuredData(document.category, document.structuredData || {}),
-    });
+    if (detailDocumentId !== document.id) cancelRecognition();
+    setDetailDocumentId(document.id);
+    setEditing(documentEditDraft(document, activeWorkspace));
   }
 
   function changeEditCategory(nextCategory) {
     if (!payrollEnabled && isPayrollDocumentCategory(nextCategory)) return;
+    cancelRecognition();
     setEditing((current) => {
       const currentKind = documentStructuredKind(current.category);
       const nextKind = documentStructuredKind(nextCategory);
       return {
         ...current,
         category: nextCategory,
+        recognitionConfirmation: null,
         structuredData: currentKind === nextKind
           ? current.structuredData
           : normalizeDocumentStructuredData(nextCategory, {}),
@@ -698,6 +806,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           period: editing.period,
           relatedObjectIds: editing.relatedObjectIds,
           structuredData: editing.structuredData,
+          recognitionConfirmation: editing.recognitionConfirmation,
         },
       });
       closeEditing();
@@ -1020,7 +1129,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         </div>
         <p className="foundation-hint">选择类别和期间后上传文件。原文件保存在当前浏览器；换设备前请导出含原件的资料包。</p>
         {uploadFeedback && <div className={`${uploadFeedback.tone === "error" ? "foundation-error" : "foundation-notice"} import-feedback document-upload-feedback`} role={uploadFeedback.tone === "error" ? "alert" : "status"} aria-live="polite">{uploadFeedback.tone === "error" ? <WarningCircle size={18} /> : <CheckCircle size={18} weight="fill" />}<span>{displayText(uploadFeedback.message)}</span></div>}
-        <p className="foundation-hint">合同、发票和审批字段需要手工录入，文字识别尚未接入。</p>
+        <p className="foundation-hint">字段可人工录入；PDF 与图片可在资料详情中本地识别。</p>
       </div>
       <div className="document-intake-controls document-filter-controls" hidden={selectedSection !== "files"}>
         <div className="document-filter-search">
@@ -1052,6 +1161,11 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           const isEditing = editing?.id === document.id;
           const pendingAction = pendingDocumentAction?.documentId === document.id ? pendingDocumentAction.action : null;
           const confirmationId = `document-action-${document.id}`;
+          const recognition = document.contentRecognition;
+          const recognitionCurrent = recognition?.sourceHash === document.hash && recognition?.category === document.category;
+          const recognitionBusy = detailDocumentId === document.id && Boolean(recognitionProgress);
+          const recognisable = document.mimeType === "application/pdf" || /^image\/(png|jpeg|webp|bmp|tiff|gif)$/.test(document.mimeType || "") || /\.(pdf|png|jpe?g|webp|bmp|tiff?|gif)$/i.test(document.name || "");
+          const candidates = recognitionCurrent ? Object.entries(recognition.suggestedFields || {}).filter(([key]) => RECOGNITION_FIELD_LABELS[key]) : [];
           return (
             <article className="document-record" key={document.id}>
               <span className="document-record-icon"><FileText size={20} /></span>
@@ -1059,7 +1173,11 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                 <strong>{document.name}</strong>
                 <small>{categoryDisplayLabel(document.category, activeWorkspace)} · {document.period || "未分期"} · {fileSize(document.size)}</small>
                 <div className="document-state-row"><span>{archived ? "已归档" : "未归档"}</span><span className={locallyAvailable ? "original-available" : "original-missing"}>原件：{locallyAvailable ? "本机可用" : "本机缺失"}</span></div>
-                <details className="document-trace-details"><summary>资料详情与追溯</summary>
+                <details className="document-trace-details" open={detailDocumentId === document.id}><summary onClick={(event) => {
+                  event.preventDefault();
+                  cancelRecognition();
+                  setDetailDocumentId((current) => current === document.id ? null : document.id);
+                }}>资料详情与追溯</summary>
                   {!archived && <div className="document-secondary-actions">
                     {!isEditing && <button className="secondary-button" type="button" onClick={() => beginEdit(document)}><PencilSimple size={15} />编辑资料</button>}
                     <button className="secondary-button" type="button" aria-haspopup="dialog" aria-expanded={pendingAction === "archive"} aria-controls={confirmationId} onClick={(event) => requestDocumentAction(document, "archive", event.currentTarget)}><Archive size={15} />归档</button>
@@ -1070,7 +1188,44 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                   {archived ? <p>已归档资料不能直接修改或删除。</p> : usage.length > 0 && <p>资料已被业务使用，不能删除。</p>}
                   <p>{usage.length ? `关联：${usage.map((item) => displayText(item.label)).join("、")}` : "暂无业务关联"}</p>
                   {structuredDetailLines(document, activeWorkspace).map((line) => <p key={line}>{line}</p>)}
-                  {documentStructuredKind(document.category) && <p>业务字段由人工录入，文字识别尚未接入。</p>}
+                  {(recognisable || recognition?.resultId) && <div className="document-recognition">
+                    <div className="document-recognition-actions">
+                      <strong>本地文字识别</strong>
+                      {recognisable && !archived && <button type="button" className="secondary-button" disabled={!canReadOriginal || Boolean(recognitionProgress) || isEditing || standaloneFile}
+                        onClick={() => recognizeDocument(document)}>{recognition?.resultId ? "重新识别" : "识别文字"}</button>}
+                      {recognitionBusy && <button type="button" className="secondary-button" onClick={() => { cancelRecognition(); setRecognitionNotice("已取消，原件和已有字段已保留。"); }}>取消识别</button>}
+                    </div>
+                    {standaloneFile ? <p>请从本地网页打开 FinanceDesk 后使用文字识别。</p> : !recognition?.resultId && <p>首次使用需加载本地引擎。最多 30 MB、30 页；文件在本机处理，候选需人工核对。</p>}
+                    {recognitionBusy && <div className="document-recognition-progress" role="status">
+                      <span>{recognitionProgressLabel(recognitionProgress)}</span>
+                      <progress aria-label="当前识别步骤进度" max="1" value={Math.max(0, Math.min(1, recognitionProgress.progress || 0))} />
+                    </div>}
+                    {detailDocumentId === document.id && recognitionNotice && <p role="status">{recognitionNotice}</p>}
+                    {recognition?.resultId && !recognitionCurrent && <p>资料类别或原件已变化，请重新识别后再使用候选。</p>}
+                    {candidates.length > 0 && <>
+                      <p>候选只填入空白草稿，核对后保存；已有内容可在“编辑资料”中调整。</p>
+                      <ul className="document-recognition-candidates">{candidates.map(([key, candidate]) => {
+                        const draftValue = (isEditing ? editing.structuredData : document.structuredData)?.[key];
+                        const occupied = draftValue !== null && draftValue !== undefined && draftValue !== "";
+                        const applied = isEditing && editing.recognitionConfirmation?.fields?.includes(key);
+                        return <li key={key}><div><span>{RECOGNITION_FIELD_LABELS[key]}：<strong>{String(candidate.value)}</strong></span>
+                          <small>第 {candidate.pageNumber || 1} 页 · {candidate.sourceText}</small></div>
+                          {!archived && (key === "settlementCycle" || occupied
+                            ? <small>{key === "settlementCycle" ? "请人工选择结算方式" : applied ? "已填入草稿" : "已有内容"}</small>
+                            : (!editing || (isEditing && editing.category === document.category)) && <button type="button" className="secondary-button" onClick={() => fillRecognitionCandidate(document, key, candidate)}>填入草稿</button>)}
+                        </li>;
+                      })}</ul>
+                    </>}
+                    {recognition?.confirmation && <p>上次人工确认：{recognition.confirmation.actor} · {recognition.confirmation.confirmedAt?.slice(0, 10)}</p>}
+                    {detailDocumentId === document.id && recognitionView?.sourceHash === document.hash && <>
+                      {recognitionView.result.warnings?.map((warning, index) => <p key={index}>{warning}</p>)}
+                      {!candidates.length && recognitionCurrent && <p>未找到可直接填写的字段，请参照正文人工录入。</p>}
+                      <details className="document-recognition-text"><summary>查看识别正文（{recognitionView.result.pages.length} 页）</summary>
+                        {recognitionView.result.pages.length > 1 && <label>页码 <select aria-label="识别正文页码" value={recognitionPage} onChange={(event) => setRecognitionPage(Number(event.target.value))}>{recognitionView.result.pages.map((page, index) => <option key={index} value={index}>第 {page.pageNumber} 页</option>)}</select></label>}
+                        <pre>{recognitionView.result.pages[recognitionPage]?.text || "本页未识别到文字。"}</pre>
+                      </details>
+                    </>}
+                  </div>}
                   <p>文档编号：<code>{document.id}</code></p><p>原件哈希：<code>{document.hash || "尚无可核验的原件记录"}</code></p>
                 </details>
                 {isEditing && (
@@ -1083,7 +1238,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                     </div>
                     <StructuredDataFields category={editing.category} value={editing.structuredData} onChange={(structuredData) => setEditing((current) => ({ ...current, structuredData }))} workspace={activeWorkspace} currentDocumentId={editing.id} />
                     <div className="permission-chip-list">{editing.relatedObjectIds.map((objectId) => <span key={objectId}>{relatedLabels.get(objectId) || objectId} <button type="button" aria-label={`解除 ${relatedLabels.get(objectId) || objectId} 关联`} onClick={() => removeEditRelation(objectId)}>×</button></span>)}</div>
-                    <div className="foundation-inline-actions document-editor-actions"><button className="primary-button" type="button" onClick={saveEdit}>保存资料详情</button><button className="secondary-button" type="button" onClick={closeEditing}>取消</button></div>
+                    <div className="foundation-inline-actions document-editor-actions"><button className="primary-button" type="button" onClick={saveEdit}>{editing.recognitionConfirmation?.fields?.length ? "确认所填候选并保存" : "保存资料详情"}</button><button className="secondary-button" type="button" onClick={closeEditing}>取消</button></div>
                   </div>
                 )}
                 {pendingAction && (
