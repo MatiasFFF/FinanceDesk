@@ -21,6 +21,7 @@ export const WORKSPACE_ENTITY_COLLECTIONS = Object.freeze([
   "invoices",
   "approvals",
   "personnelRecords",
+  "inventoryItems",
 ]);
 
 export const WORKSPACE_OPERATIONAL_COLLECTIONS = Object.freeze([
@@ -34,12 +35,14 @@ export const WORKSPACE_OPERATIONAL_COLLECTIONS = Object.freeze([
   "exceptionTasks",
   "confirmations",
   "reportVersions",
+  "inventoryMovements",
 ]);
 
 export const WORKSPACE_MODULE_DEFAULTS = Object.freeze({
   overview: true,
   members: false,
   payroll: false,
+  inventory: false,
   reconcile: true,
   reports: true,
   tax: true,
@@ -75,6 +78,8 @@ export const MANAGEMENT_REPORT_DISPLAY_ITEMS = Object.freeze([
   { id: "ownerPrepayment", label: "供应商预付" },
   { id: "ownerRefund", label: "本月退款" },
   { id: "ownerCommission", label: "销售费用 · 业务提成", accountId: "expenseCommission" },
+  { id: "ownerInventory", label: "库存金额", accountId: "inventory" },
+  { id: "ownerInventoryLoss", label: "本期库存损耗" },
   { id: "ownerTax", label: "预计税款（本地估算）" },
   { id: "ownerGap", label: "未来现金缺口" },
 ].map((item) => Object.freeze(item)));
@@ -117,7 +122,7 @@ export function normalizeWorkspaceTerminology(terminology) {
 }
 
 const ALWAYS_ENABLED_WORKSPACE_MODULES = Object.freeze(["overview", "reports", "archive", "setup"]);
-const CONFIGURABLE_WORKSPACE_MODULES = Object.freeze(["members", "payroll", "reconcile", "tax"]);
+const CONFIGURABLE_WORKSPACE_MODULES = Object.freeze(["members", "payroll", "inventory", "reconcile", "tax"]);
 
 export function normalizeWorkspaceModules(modules, options = {}) {
   const defaults = options.fitnessTemplate ? FITNESS_WORKSPACE_MODULE_DEFAULTS : WORKSPACE_MODULE_DEFAULTS;
@@ -407,6 +412,7 @@ export function normalizeWorkspace(input, options = {}) {
     invoices: uniqueById((workspace.invoices || []).map((item) => timestamped(item, timestamp))),
     approvals: uniqueById((workspace.approvals || []).map((item) => timestamped(item, timestamp))),
     personnelRecords: uniqueById((workspace.personnelRecords || []).map((item) => timestamped(item, timestamp))),
+    inventoryItems: uniqueById((workspace.inventoryItems || []).map((item) => timestamped(item, timestamp))),
     bankAccounts: uniqueById(bankAccounts.map((item) => timestamped(item, timestamp))),
     accounts: uniqueById(bankAccounts.map((item) => timestamped(item, timestamp))),
     bankImports: uniqueById((workspace.bankImports || []).map((item) => timestamped(item, timestamp))),
@@ -419,6 +425,7 @@ export function normalizeWorkspace(input, options = {}) {
     exceptionTasks: uniqueById((workspace.exceptionTasks || []).map((item) => timestamped(item, timestamp))),
     confirmations: uniqueById((workspace.confirmations || []).map((item) => timestamped(item, timestamp))),
     reportVersions: uniqueById((workspace.reportVersions || []).map((item) => timestamped(item, timestamp))),
+    inventoryMovements: uniqueById((workspace.inventoryMovements || []).map((item) => timestamped(item, timestamp))),
     auditLog: uniqueById((workspace.auditLog || []).map((item) => timestamped(item, timestamp))),
     tax: {
       period: currentPeriod,
@@ -547,6 +554,7 @@ export function createBlankWorkspace(input = {}, options = {}) {
     invoices: [],
     approvals: [],
     personnelRecords: [],
+    inventoryItems: [],
     bankAccounts: [],
     bankImports: [],
     transactions: [],
@@ -558,6 +566,7 @@ export function createBlankWorkspace(input = {}, options = {}) {
     exceptionTasks: [],
     confirmations: [],
     reportVersions: [],
+    inventoryMovements: [],
     openingLedger: {},
     tax: {},
   }, { timestamp });
@@ -805,7 +814,7 @@ export function updateWorkspaceModules(state, workspaceId, modules, options = {}
   return updateWorkspace(state, workspaceId, (current) => ({ ...current, modules: nextModules }), {
     actor: options.actor,
     action: "更新工作台模块",
-    detail: `会员业务${nextModules.members ? "启用" : "停用"}；工资与社保${nextModules.payroll ? "启用" : "停用"}；流水核销${nextModules.reconcile ? "启用" : "停用"}；确认与申报${nextModules.tax ? "启用" : "停用"}`,
+    detail: `会员业务${nextModules.members ? "启用" : "停用"}；工资与社保${nextModules.payroll ? "启用" : "停用"}；库存与损耗${nextModules.inventory ? "启用" : "停用"}；流水核销${nextModules.reconcile ? "启用" : "停用"}；确认与申报${nextModules.tax ? "启用" : "停用"}`,
   }, options);
 }
 

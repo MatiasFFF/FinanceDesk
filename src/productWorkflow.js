@@ -7,6 +7,7 @@ import {
 } from "./domain/accounting/index.js";
 import { buildPayrollSocialSummary, buildStructuredInvoiceVatSummary } from "./features/intake/documentIntake.js";
 import { buildBankAccountReconciliationSummary } from "./features/intake/bankStatementImport.js";
+import { buildInventorySummary } from "./features/inventory/inventoryLedger.js";
 import {
   FITNESS_WORKSPACE_MODULE_DEFAULTS,
   WORKSPACE_MODULE_DEFAULTS,
@@ -73,6 +74,7 @@ export const CLOSE_STAGES = [
 export const PRIMARY_NAV = [
   { id: "overview", moduleId: "overview", label: "月结总览", shortLabel: "总览" },
   { id: "members", moduleId: "members", label: "会员台账", shortLabel: "会员" },
+  { id: "inventory", moduleId: "inventory", label: "库存与损耗", shortLabel: "库存" },
   { id: "reconcile", moduleId: "reconcile", label: "批量核销", shortLabel: "核销" },
   { id: "reports", moduleId: "reports", label: "报表中心", shortLabel: "报表" },
   { id: "tax", moduleId: "tax", label: "确认与申报", shortLabel: "确认" },
@@ -83,6 +85,7 @@ export const PRIMARY_NAV = [
 export const WORKSPACE_MODULE_OPTIONS = Object.freeze([
   { id: "members", label: "会员业务", description: "会员台账、履约、退款与业务提成" },
   { id: "payroll", label: "工资与社保", description: "工资表、社保表、逐人核对与独立确认" },
+  { id: "inventory", label: "库存与损耗", description: "库存商品、出入库、盘点与损耗记录" },
   { id: "reconcile", label: "流水核销", description: "银行流水、往来账单与会计处理" },
   { id: "tax", label: "确认与申报", description: "客户确认、申报底稿与本地申报包" },
 ]);
@@ -262,6 +265,8 @@ export function ensureWorkspace(workspace) {
     vouchers: safeArray(workspace.vouchers),
     payrollImports: safeArray(workspace.payrollImports),
     payrollRecords: safeArray(workspace.payrollRecords),
+    inventoryItems: safeArray(workspace.inventoryItems),
+    inventoryMovements: safeArray(workspace.inventoryMovements),
     auditLog: safeArray(workspace.auditLog),
     tax: {
       period,
@@ -699,10 +704,34 @@ export function recordVatReconciliation(workspace, input, context = {}) {
 
 export function buildReportSnapshot(workspace) {
   const memberBusinessEnabled = workspaceModuleEnabled(workspace, "members");
+  const inventoryEnabled = workspaceModuleEnabled(workspace, "inventory");
   const statements = calculatePeriodLedger(workspace);
   const engine = statements.engine;
   const management = buildManagementMetrics(workspace, { period: workspace.currentPeriod });
   const managementById = Object.fromEntries(management.metrics.map((metric) => [metric.id, metric]));
+  const inventorySummary = inventoryEnabled ? buildInventorySummary(workspace, { period: workspace.currentPeriod }) : null;
+  const inventoryValue = roundMoney(inventorySummary?.inventoryValue ?? inventorySummary?.totals?.inventoryValue ?? inventorySummary?.totalValue ?? 0);
+  const inventoryLoss = roundMoney(inventorySummary?.lossAmount ?? inventorySummary?.totals?.lossAmount ?? inventorySummary?.periodLossAmount ?? 0);
+  const inventorySourceIds = uniqueSourceIds(safeArray(inventorySummary?.sourceIds), safeArray(inventorySummary?.inventorySourceIds));
+  const inventoryLossSourceIds = uniqueSourceIds(safeArray(inventorySummary?.lossSourceIds), inventorySourceIds);
+  const inventoryValueDetails = inventorySourceIds.length ? [{
+    id: `inventory-value-${workspace.currentPeriod}`,
+    date: `${workspace.currentPeriod}-01`,
+    title: "库存商品期末金额",
+    reference: "库存台账",
+    description: `${inventorySourceIds.length} 条库存来源`,
+    amount: inventoryValue,
+    sourceIds: inventorySourceIds,
+  }] : [];
+  const inventoryLossDetails = inventoryLossSourceIds.length ? [{
+    id: `inventory-loss-${workspace.currentPeriod}`,
+    date: `${workspace.currentPeriod}-01`,
+    title: "本期库存损耗",
+    reference: "库存变动记录",
+    description: `${inventoryLossSourceIds.length} 条库存来源`,
+    amount: inventoryLoss,
+    sourceIds: inventoryLossSourceIds,
+  }] : [];
   const engineTax = buildTaxWorkpaper(workspace, { period: workspace.currentPeriod });
   const invoiceVatSummary = buildStructuredInvoiceVatSummary(workspace, { period: workspace.currentPeriod });
   const vatReconciliation = buildVatReconciliationSummary(workspace, {
@@ -907,6 +936,10 @@ export function buildReportSnapshot(workspace) {
           makeTraceableRow("ownerPrepayment", "供应商预付", prepayment, prepaymentDetails, "预付款项科目期末借方余额"),
           makeTraceableRow("ownerRefund", "本月退款", engine.incomeStatement.salesReturns.value, refundDetails, `${salesReturnsLabel}本期借方净发生额`),
           makeTraceableRow("ownerCommission", commissionLabel, detailTotal(commissionDetails), commissionDetails, `${commissionLabel}本期借方净发生额`),
+          ...(inventoryEnabled ? [
+            { ...makeTraceableRow("ownerInventory", "库存金额", inventoryValue, inventoryValueDetails, "来自库存台账的期末库存金额"), sourceIds: inventorySourceIds },
+            { ...makeTraceableRow("ownerInventoryLoss", "本期库存损耗", inventoryLoss, inventoryLossDetails, "来自本期库存损耗变动"), sourceIds: inventoryLossSourceIds },
+          ] : []),
           makeTraceableRow("ownerTax", "预计税款（本地估算）", estimatedTax, taxEstimateDetails, "增值税估算 + 附加税费估算 + 所得税估算"),
           makeTraceableRow("ownerGap", "未来现金缺口", cashGapValue, cashGapDetails, "max(0，应付与预计税费 − 可用现金)"),
         ], workspace.managementReport),
@@ -1098,6 +1131,8 @@ const WORKFLOW_SOURCE_KEYS = [
   "bills",
   "documents",
   "payrollRecords",
+  "inventoryItems",
+  "inventoryMovements",
   "evidenceLinks",
   "vouchers",
   "exceptionTasks",
@@ -1112,6 +1147,11 @@ const WORKFLOW_SOURCE_KEYS = [
 ];
 
 function workflowSourceValue(workspace, key) {
+  if (key === "modules") {
+    const { inventory, ...modules } = workspace.modules || {};
+    return inventory ? { ...modules, inventory: true } : modules;
+  }
+  if (["inventoryItems", "inventoryMovements"].includes(key) && !workspaceModuleEnabled(workspace, "inventory")) return [];
   if (key === "documents") {
     return (workspace.documents || [])
       .filter((document) => document.category !== "申报回执" && document.deliveryArtifact !== true)

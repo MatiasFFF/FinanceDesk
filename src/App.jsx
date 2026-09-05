@@ -17,6 +17,7 @@ import {
   GearSix,
   HouseLine,
   MagnifyingGlass,
+  Package,
   PencilSimple,
   Plus,
   Receipt,
@@ -56,6 +57,7 @@ import {
   updateLocalDocumentMetadata,
 } from "./features/intake/documentIntake.js";
 import { MemberLedgerPage } from "./features/members/MemberLedgerPage.jsx";
+import { InventoryPage } from "./features/inventory/InventoryPage.jsx";
 import {
   MEMBER_EVENT_DEFINITIONS,
   MEMBER_STATUS_OPTIONS,
@@ -97,6 +99,7 @@ import { useFinanceDesk } from "./store/FinanceDeskProvider.jsx";
 const PAGE_ICONS = {
   overview: HouseLine,
   members: UsersThree,
+  inventory: Package,
   reconcile: SealCheck,
   reports: ChartBar,
   tax: ShieldCheck,
@@ -106,6 +109,7 @@ const PAGE_ICONS = {
 
 const PAGE_HEADINGS = {
   overview: ["月结总览", "一眼看清本期进度、风险和下一步。"],
+  inventory: ["库存与损耗", "记录库存商品、出入库、盘点差异与损耗。"],
   reconcile: ["批量核销", "先处理整月流水，再深入单笔证据。"],
   reports: ["报表中心", "三大报表、老板视角、版本冻结与差异都在这里。"],
   tax: ["确认与申报", "本地准备底稿、两次确认和申报包，不伪装连接税务局。"],
@@ -2282,6 +2286,7 @@ function App() {
         {loadReport.recovered && <div className="danger-banner recovery-banner"><WarningCircle size={18} /><span><strong>{loadReport.source === "backup" ? "本地数据已从上一次有效副本恢复。" : "本地主副本与备用副本均无法读取，当前已加载初始模板。"}</strong>{loadReport.errors?.length ? ` 原因：${loadReport.errors.join("；")}` : " 请先核对数据并导出备份。"}</span></div>}
         {activePage === "overview" && <OverviewPage workspace={workspace} onPage={navigateToPage} onResolveNotice={resolveNotice} />}
         {activePage === "members" && workspaceModuleEnabled(workspace, "members") && <MemberLedgerPage workspace={workspace} onAddMember={addLedgerMember} onMemberStatus={changeLedgerMemberStatus} onAddEvent={addLedgerEvent} onEventStatus={changeLedgerEventStatus} />}
+        {activePage === "inventory" && workspaceModuleEnabled(workspace, "inventory") && <InventoryPage workspace={workspace} onPage={navigateToPage} onToast={(message) => setToast({ tone: "success", message })} />}
         {activePage === "reconcile" && <ReconcilePage workspace={workspace} onPage={navigateToPage} onStatus={setTransactionStatus} onReview={reviewTransactions} onSaveReview={saveTransactionReview} onEvidence={addEvidence} onLinkEvidence={linkExistingEvidence} onDownloadEvidence={downloadLinkedEvidence} onUnlinkEvidence={unlinkEvidenceFromTransaction} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} />}
         {activePage === "reports" && <ReportsPage workspace={workspace} onPage={navigateToPage} onFreeze={freezeReport} onExportExcel={exportReportExcel} />}
         {activePage === "tax" && <TaxPage workspace={workspace} onPage={navigateToPage} onTaxChange={changeTax} onTaxCommit={commitTax} onSectionDecision={recordInitialConfirmationSection} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} />}

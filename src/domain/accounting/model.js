@@ -46,6 +46,7 @@ export const ACCOUNT_CATALOG = Object.freeze({
   cash: { label: "库存现金", category: "asset", normalSide: "debit", cash: true },
   receivable: { label: "应收账款", category: "asset", normalSide: "debit" },
   prepayment: { label: "预付账款", category: "asset", normalSide: "debit" },
+  inventory: { label: "库存商品", category: "asset", normalSide: "debit" },
   equipment: { label: "固定资产", category: "asset", normalSide: "debit" },
   payable: { label: "应付账款", category: "liability", normalSide: "credit" },
   contractLiability: { label: "合同负债", category: "liability", normalSide: "credit" },
