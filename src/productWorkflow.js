@@ -11,7 +11,7 @@ import {
   recordCustomerConfirmation,
 } from "./domain/accounting/index.js";
 import { buildPayrollSocialSummary, buildStructuredInvoiceVatSummary } from "./features/intake/documentIntake.js";
-import { buildBankAccountReconciliationSummary } from "./features/intake/bankStatementImport.js";
+import { buildBankAccountReconciliationSummary, buildBankMonthlyReconciliation } from "./features/intake/bankStatementImport.js";
 import { buildInventorySummary } from "./features/inventory/inventoryLedger.js";
 import {
   FITNESS_WORKSPACE_MODULE_DEFAULTS,
@@ -2041,10 +2041,45 @@ export function enterNextPeriod(workspace, actor = "本地用户", { equityAccou
   }
   const target = nextPeriod(workspace.currentPeriod);
   const carryForward = buildPeriodCarryForward(workspace, { closingLedger: archive.closingLedger || {}, equityAccountId });
+  const bankAccounts = (workspace.bankAccounts || []).map((account) => {
+    const monthly = buildBankMonthlyReconciliation(workspace, { accountId: account.id, period: archive.period });
+    const openingBalance = monthly.passed ? monthly.statementClosing : null;
+    return {
+      ...account,
+      openingBalance,
+      statementClosing: null,
+      balancePeriod: target,
+      balanceCarryForwards: {
+        ...(account.balanceCarryForwards || {}),
+        [target]: {
+          accountId: account.id,
+          period: target,
+          fromPeriod: archive.period,
+          archiveId: archive.id,
+          verified: monthly.passed,
+          openingBalance,
+          sourceImportIds: monthly.imports.map((record) => record.id),
+          sourceDocumentIds: [...new Set(monthly.imports.map((record) => record.sourceDocumentId).filter(Boolean))],
+          sourceBalanceReview: monthly.balanceReviewedAt,
+          sourceBalanceReviewer: monthly.balanceReviewedBy,
+          sourceReconciliation: {
+            openingBalance: monthly.openingBalance,
+            income: monthly.income,
+            expense: monthly.expense,
+            statementClosing: monthly.statementClosing,
+            difference: monthly.difference,
+            passed: monthly.passed,
+          },
+        },
+      },
+    };
+  });
   const next = {
     ...workspace,
     currentPeriod: target,
     periods: [...new Set([target, ...workspace.periods])],
+    bankAccounts,
+    accounts: bankAccounts,
     openingLedger: carryForward.openingLedger,
     openingCarryForward: {
       archiveId: archive.id,

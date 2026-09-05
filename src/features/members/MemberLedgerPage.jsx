@@ -177,7 +177,7 @@ function MembershipPackagesPanel({ workspace }) {
 
   return (
     <section className="panel membership-packages-panel">
-      <div className="panel-heading"><div><p className="eyebrow">{terminology.member}套餐与价格</p><h2>建立可复用的充值规则</h2><p>套餐修改只影响以后充值；每笔{terminology.member}充值都会保留当时的价格、{terminology.service}次数、折扣和有效期快照。</p></div><span>{packages.length} 个套餐</span></div>
+      <div className="panel-heading"><div><h2>{terminology.member}套餐与价格</h2><p>修改仅影响以后充值；已购套餐保留原价格、次数、折扣和有效期。</p></div><span>{packages.length} 个套餐</span></div>
       <form className={`member-entry-form membership-package-form${form.id ? " is-editing" : ""}`} onSubmit={submitPackage}>
         <label><span>套餐名称</span><input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required placeholder={`例如：${terminology.service}标准套餐`} /></label>
         <label><span>挂牌售价</span><input type="number" min="0.01" step="0.01" value={form.listPrice} onChange={(event) => setForm((current) => ({ ...current, listPrice: event.target.value }))} required /></label>
@@ -296,7 +296,7 @@ function CommissionRulesPanel({ workspace }) {
 
   return (
     <section className="panel commission-rules-panel">
-      <div className="panel-heading"><div><p className="eyebrow">{terminology.coach}提成规则</p><h2>按真实业务来源计算本期应计</h2><p>规则和计提结果保存在当前工作台；同一来源一经确认，不会再次进入待计提金额。</p></div><span>{workspace.currentPeriod}</span></div>
+      <div className="panel-heading"><div><h2>{terminology.coach}提成规则</h2><p>按本期业务计算应计金额，已确认来源不再重复计提。</p></div><span>{workspace.currentPeriod}</span></div>
       <div className="commission-rule-layout">
         <form className={`member-entry-form commission-rule-form${form.id ? " is-editing" : ""}`} onSubmit={submitRule}>
           <label><span>{terminology.coach}</span><input list="commission-coaches" value={form.coach} onChange={(event) => setForm((current) => ({ ...current, coach: event.target.value }))} required placeholder={`填写${terminology.coach}姓名或标识`} /><datalist id="commission-coaches">{coaches.map((coach) => <option value={coach} key={coach} />)}</datalist></label>
@@ -336,7 +336,7 @@ function MemberServiceReconciliationPanel({ reconciliation, terminology }) {
     : reconciliation.passed ? "勾稽通过" : "存在差额";
   return (
     <section className="panel member-reconciliation-panel">
-      <div className="panel-heading"><div><p className="eyebrow">{terminology.member}未履约{terminology.service}勾稽</p><h2>{terminology.member}台账与合同负债</h2><p>结果完全由{terminology.member}业务和已入账凭证计算；异常项不能手工改成通过。</p></div><span className={`tone-pill ${reconciliation.passed ? "success" : "warning"}`}>{statusLabel}</span></div>
+      <div className="panel-heading"><div><h2>{terminology.member}台账与合同负债</h2><p>核对未履约余额与已入账合同负债，差异需追溯业务或凭证处理。</p></div><span className={`tone-pill ${reconciliation.passed ? "success" : "warning"}`}>{statusLabel}</span></div>
       <div className="member-reconciliation-metrics">
         <span><small>{terminology.member}未履约余额</small><strong>{formatCurrency(reconciliation.memberBalance)}</strong></span>
         <span><small>已入账合同负债</small><strong>{formatCurrency(reconciliation.contractLiabilityBalance)}</strong></span>
@@ -365,7 +365,7 @@ function MemberServiceReconciliationPanel({ reconciliation, terminology }) {
 function MemberPackageBalancesPanel({ packageBalances, terminology }) {
   return (
     <section className="panel member-package-balances-panel">
-      <div className="panel-heading"><div><p className="eyebrow">{terminology.member}已购套餐</p><h2>逐笔查看{terminology.service}次数、有效期与未履约余额</h2></div><span>{packageBalances.length} 个</span></div>
+      <div className="panel-heading"><div><h2>{terminology.member}已购套餐</h2><p>逐笔查看{terminology.service}次数、有效期与未履约余额。</p></div><span>{packageBalances.length} 个</span></div>
       {packageBalances.length ? <div className="member-package-balance-table">
         <div className="member-package-balance-row heading"><span>{terminology.member} / 套餐</span><span>{terminology.service}总次数</span><span>已核销</span><span>剩余</span><span>到期日</span><span>未履约余额</span></div>
         {packageBalances.map((packageBalance) => <div className="member-package-balance-row" key={packageBalance.rechargeEventId}>
@@ -422,7 +422,7 @@ function EventForm({ workspace, members, onSubmit }) {
 
   return (
     <section className="panel member-entry-panel">
-      <div className="panel-heading"><div><p className="eyebrow">新增业务</p><h2>记录{terminology.member}动作</h2></div><Plus size={21} /></div>
+      <div className="panel-heading"><div><h2 className="card-title"><Plus size={18} /><span>记录{terminology.member}业务</span></h2></div></div>
       <form className="member-entry-form" onSubmit={submit}>
         <label><span>业务类型</span><select value={form.kind} onChange={(event) => changeKind(event.target.value)}>{Object.entries(MEMBER_EVENT_DEFINITIONS).filter(([, item]) => item.creatable !== false).map(([value, item]) => <option value={value} key={value}>{memberRoleCopy(item.label, terminology)}</option>)}</select></label>
         {needsMember && <label><span>{terminology.member}</span><select value={form.memberId} onChange={(event) => changeMember(event.target.value)} required><option value="">请选择{terminology.member}</option>{members.map((member) => <option value={member.id} key={member.id}>{member.name}</option>)}</select></label>}
@@ -479,7 +479,7 @@ function MemberForm({ workspace, onSubmit }) {
   }
   return (
     <section className="panel member-create-panel">
-      <div className="panel-heading"><div><p className="eyebrow">{terminology.member}资料</p><h2>新增{terminology.member}</h2></div><UserPlus size={21} /></div>
+      <div className="panel-heading"><div><h2 className="card-title"><UserPlus size={18} /><span>新增{terminology.member}</span></h2></div></div>
       <form className="member-entry-form compact" onSubmit={submit}>
         <label><span>{terminology.member}姓名</span><input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required placeholder={`填写${terminology.member}姓名或称呼`} /></label>
         <label><span>手机 / 联系方式</span><input value={form.phone} onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))} placeholder="选填" /></label>
@@ -512,8 +512,7 @@ export function MemberLedgerPage({ workspace, onAddMember, onMemberStatus, onAdd
   return (
     <div className="page-content member-ledger-page">
       <section className="member-ledger-hero">
-        <div><p className="eyebrow">本地{terminology.member}业务台账</p><h2>从充值到{terminology.service}核销、退款与提成</h2><p>先记录业务，再确认状态。确认后的记录会更新可用{terminology.service}次数与未履约余额，并成为待处理会计业务事件。</p></div>
-        <span><CheckCircle size={22} weight="fill" />数据保存在当前工作台</span>
+        <div><h2>{terminology.member}业务台账</h2><p>记录充值、{terminology.service}核销、退款与提成；确认后更新次数与余额，再复核凭证入账。</p></div>
       </section>
 
       <section className="member-metric-grid">
@@ -533,11 +532,11 @@ export function MemberLedgerPage({ workspace, onAddMember, onMemberStatus, onAdd
       </div>
 
       <section className="panel member-balance-panel">
-        <div className="panel-heading"><div><p className="eyebrow">{terminology.member}余额</p><h2>剩余{terminology.service}次数与未履约金额</h2></div><span>{ledger.members.length} 名</span></div>
+        <div className="panel-heading"><div><h2>{terminology.member}余额</h2><p>剩余{terminology.service}次数与未履约金额。</p></div><span>{ledger.members.length} 名</span></div>
         {ledger.members.length ? <div className="member-card-grid">{ledger.members.map((member) => <article className="member-balance-card" key={member.id}>
           <div className="member-card-head"><span className="member-avatar">{member.name.slice(0, 1)}</span><div><strong>{member.name}</strong><small>{member.phone || "未留联系方式"} · {member.storeName || workspace.stores?.find((store) => store.id === member.storeId)?.name || `未归属${terminology.location}`} · {member.coach || `未分配${terminology.coach}`}</small><small>{[member.department, member.project].filter(Boolean).join(" · ") || "未设置部门 / 项目"}</small></div></div>
           <div className="member-balance-values"><span><small>累计充值</small><strong>{formatCurrency(member.recharged)}</strong></span><span><small>已确认收入</small><strong>{formatCurrency(member.recognizedRevenue)}</strong></span><span><small>已退款</small><strong>{formatCurrency(member.refunded)}</strong></span><span><small>剩余{terminology.service}次数</small><strong>{member.remainingSessions} 次</strong></span><span className="primary"><small>未履约余额</small><strong>{formatCurrency(member.unfulfilledBalance)}</strong></span></div>
-          <div className="member-card-foot"><span>已核销 {member.consumedSessions} 次 · 已退 {formatCurrency(member.refunded)}</span><label><span>状态</span><select value={normalizedMemberStatus(member.status)} onChange={(event) => onMemberStatus(member.id, event.target.value)}>{MEMBER_STATUS_OPTIONS.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label></div>
+          <div className="member-card-foot"><span>已核销 {member.consumedSessions} 次</span><label><span>状态</span><select value={normalizedMemberStatus(member.status)} onChange={(event) => onMemberStatus(member.id, event.target.value)}>{MEMBER_STATUS_OPTIONS.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label></div>
         </article>)}</div> : <div className="member-empty"><UsersThree size={26} /><strong>还没有{terminology.member}</strong><span>先新增{terminology.member}，再记录充值或耗课。</span></div>}
       </section>
 
@@ -546,7 +545,7 @@ export function MemberLedgerPage({ workspace, onAddMember, onMemberStatus, onAdd
       <MemberServiceReconciliationPanel reconciliation={reconciliation} terminology={terminology} />
 
       <section className="panel member-events-panel">
-        <div className="panel-heading"><div><p className="eyebrow">业务流水</p><h2>{terminology.member}与{terminology.coach}事件</h2></div><span>{ledger.events.length} 笔</span></div>
+        <div className="panel-heading"><div><h2>{terminology.member}业务流水</h2></div><span>{ledger.events.length} 笔</span></div>
         {ledger.events.length ? <div className="member-event-list">{ledger.events.map((event) => {
           const kind = memberEventKind(event);
           const definition = MEMBER_EVENT_DEFINITIONS[kind];

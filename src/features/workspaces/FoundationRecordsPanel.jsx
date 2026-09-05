@@ -18,6 +18,7 @@ import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
 import {
   ACCOUNT_CATEGORIES,
   CATEGORY_RULE_BUSINESS_TYPES,
+  accountDefinition,
   accountingRules,
   activeAccountingRuleSet,
   categoryKeywordRules,
@@ -677,7 +678,7 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
 
   return (
     <section className={`foundation-section entity-editor foundation-entity-editor${collection === "users" ? " foundation-user-editor" : ""}${editorOpen ? " is-editing" : ""}`}>
-      <div className="foundation-section-heading"><div><small>{collection === "users" ? "可新增、改名、调整角色、停用或删除" : "本地资料"}</small><h3><Icon size={18} />{config.title}</h3></div><span>{items.length} 条</span></div>
+      <div className="foundation-section-heading"><div><h3><Icon size={18} /><span>{config.title}</span></h3></div><span>{items.length} 条</span></div>
       {collection === "users" && isInitialUserSetup && <p className="foundation-hint">尚未配置操作用户。首位用户需选择具备“管理工作台”权限的启用角色；保存后会成为当前本地操作身份。</p>}
       {collection === "personnelRecords" && <p className="foundation-hint">关联后共用姓名。{terminology.personnel}停用或离职会停用关联本地用户；恢复权限需明确启用用户。</p>}
       <div className="foundation-record-list foundation-entity-record-list">
@@ -710,7 +711,7 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
       </div>
       <button className="foundation-editor-toggle secondary-button" type="button" aria-expanded={editorOpen} aria-controls={`${collection}-editor`} onClick={create}><Plus size={16} />新增{config.title}</button>
       {editorOpen && <div className="foundation-editor-panel foundation-entity-editor-panel" id={`${collection}-editor`}>
-        <div className="foundation-section-heading foundation-entity-editor-heading"><div><small>{draft.id ? "编辑现有记录" : "新增本地记录"}</small><h4>{draft.id ? `编辑「${displayName(draft, collection, config.title, terminology)}」` : `新增${config.title}`}</h4></div></div>
+        <div className="foundation-section-heading foundation-entity-editor-heading"><div><h4>{draft.id ? `编辑「${displayName(draft, collection, config.title, terminology)}」` : `新增${config.title}`}</h4></div></div>
         <form className="entity-form foundation-entity-form" onSubmit={save}>
           {config.fields.map((field) => field.type === "permissions"
             ? <div className="foundation-field permission-field foundation-entity-field" key={field.key}><span>{field.label}</span><Field field={field} value={draft[field.key]} onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))} /></div>
@@ -804,7 +805,7 @@ function AccountCatalogEditor({ onToast }) {
 
   return (
     <section className={`foundation-section entity-editor${editorOpen ? " is-editing" : ""}`}>
-      <div className="foundation-section-heading"><div><small>当前工作台科目表</small><h3><FileText size={18} />会计科目</h3></div><span>{accounts.filter((account) => account.status !== "inactive").length} 个已启用</span></div>
+      <div className="foundation-section-heading"><div><h3><FileText size={18} />会计科目</h3></div><span>{accounts.filter((account) => account.status !== "inactive").length} 个已启用</span></div>
       <div className="foundation-record-list">
         {accounts.map((account) => {
           const categoryLabel = ACCOUNT_CATEGORIES.find((item) => item.id === account.category)?.label || "其他";
@@ -826,7 +827,7 @@ function AccountCatalogEditor({ onToast }) {
       </div>
       <button className="foundation-editor-toggle secondary-button" type="button" aria-expanded={editorOpen} aria-controls="account-catalog-editor" onClick={create}><Plus size={16} />新增科目</button>
       {editorOpen && <div className="foundation-editor-panel" id="account-catalog-editor">
-        <div className="foundation-section-heading"><div><small>{draft.id ? "编辑现有科目" : "新增会计科目"}</small><h4>{draft.id ? `编辑「${draft.name}」` : "新增科目"}</h4></div></div>
+        <div className="foundation-section-heading"><div><h4>{draft.id ? `编辑「${draft.name}」` : "新增科目"}</h4></div></div>
         <form className="entity-form" onSubmit={save}>
           {draft.id && <label className="foundation-field"><span>科目编码</span><input value={draft.id} readOnly /></label>}
           <label className="foundation-field"><span>科目名称</span><input required value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} placeholder="例如：主营业务收入" /></label>
@@ -1010,7 +1011,7 @@ function AccountingRuleEditor({ onToast }) {
 
   return (
     <section className={`foundation-section entity-editor${editorOpen ? " is-editing" : ""}`}>
-      <div className="foundation-section-heading"><div><small>当前有效规则集</small><h3><ShieldCheck size={18} />账务规则</h3></div><span>{active?.name || "使用默认值"}</span></div>
+      <div className="foundation-section-heading"><div><h3><ShieldCheck size={18} />账务规则</h3></div><span>{active?.name || "使用默认值"}</span></div>
       <div className="foundation-summary-grid">
         <article className="foundation-summary-card"><small>判断阈值</small><h4>人工复核 {effective.confidenceThreshold}</h4><p>自动建议 {effective.automaticPostingThreshold}</p></article>
         <article className="foundation-summary-card"><small>金额控制</small><h4>容差 ¥{effective.amountTolerance}</h4><p>超额核销：{effective.allowOverAllocation ? "允许" : "禁止"}</p></article>
@@ -1020,7 +1021,7 @@ function AccountingRuleEditor({ onToast }) {
       <div className="foundation-notice"><WarningCircle size={17} />自动建议阈值只决定是否形成自动处理建议；系统仍遵守现有复核与入账门槛，不会自动入账。</div>
       <button className="foundation-editor-toggle secondary-button" type="button" aria-expanded={editorOpen} aria-controls="accounting-rule-editor" onClick={edit}><PencilSimple size={16} />编辑规则</button>
       {editorOpen && <div className="foundation-editor-panel" id="accounting-rule-editor">
-        <div className="foundation-section-heading"><div><small>编辑当前有效规则集</small><h4>{draft.name}</h4></div></div>
+        <div className="foundation-section-heading"><div><h4>编辑「{draft.name}」</h4></div></div>
         <form className="entity-form" onSubmit={save}>
           <label className="foundation-field"><span>规则名称</span><input required value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} /></label>
           <label className="foundation-field"><span>人工复核阈值（0–100）</span><input required type="number" min="0" max="100" step="1" value={draft.confidenceThreshold} onChange={(event) => setDraft((current) => ({ ...current, confidenceThreshold: event.target.value }))} /></label>
@@ -1029,7 +1030,7 @@ function AccountingRuleEditor({ onToast }) {
           <label className="foundation-field"><span>费用必须有证据</span><select value={String(draft.requireEvidenceForExpenses)} onChange={(event) => setDraft((current) => ({ ...current, requireEvidenceForExpenses: event.target.value === "true" }))}><option value="true">是</option><option value="false">否</option></select></label>
           <label className="foundation-field"><span>允许超额核销</span><select value={String(draft.allowOverAllocation)} onChange={(event) => setDraft((current) => ({ ...current, allowOverAllocation: event.target.value === "true" }))}><option value="false">禁止</option><option value="true">允许</option></select></label>
           <div className="foundation-divider" />
-          <div className="foundation-section-heading"><div><small>按列表顺序匹配流水摘要与交易对方</small><h4>关键词分类规则</h4></div><button className="secondary-button" type="button" onClick={addCategoryRule}><Plus size={16} />新增规则</button></div>
+          <div className="foundation-section-heading"><div><h4>关键词分类规则</h4><small>按列表顺序匹配流水摘要与交易对方</small></div><button className="secondary-button" type="button" onClick={addCategoryRule}><Plus size={16} />新增规则</button></div>
           <p className="foundation-hint">关键词支持用“|”表示任一关键词；目标科目只列出当前工作台已启用的科目。规则只形成分类建议，不会自动入账。</p>
           <div className="foundation-record-list category-rule-list">
             {draft.categoryKeywords.map((rule, index) => {
@@ -1127,10 +1128,9 @@ function LocalUserControl({ onToast }) {
 
   return (
     <section className="foundation-section local-user-control">
-      <div className="foundation-section-heading"><div><small>审计与最小权限</small><h3><UsersThree size={18} />当前本地操作身份</h3></div>{role && <span>{role.name}</span>}</div>
-      <label className="foundation-field"><span>以哪位{terminology.personnel}操作</span><select value={currentUser?.id || ""} onChange={(event) => switchUser(event.target.value)} disabled={!switchableUsers.length}>{!currentUser && <option value="" disabled>{switchableUsers.length ? "请选择操作身份" : isInitialUserSetup ? "尚未配置操作身份" : "暂无可用操作身份"}</option>}{switchableUsers.map((user) => <option value={user.id} key={user.id}>{user.name} · {roleForUser(user)?.name || "未分配角色"}</option>)}</select></label>
+      <div className="foundation-section-heading"><h3>操作身份</h3></div>
+      <label className="foundation-field"><span>操作人</span><select value={currentUser?.id || ""} onChange={(event) => switchUser(event.target.value)} disabled={!switchableUsers.length}>{!currentUser && <option value="" disabled>{switchableUsers.length ? "请选择操作身份" : isInitialUserSetup ? "尚未配置操作身份" : "暂无可用操作身份"}</option>}{switchableUsers.map((user) => <option value={user.id} key={user.id}>{user.name} · {roleForUser(user)?.name || "未分配角色"}</option>)}</select></label>
       <div className="permission-chip-list">{(role?.permissions || []).map((permission) => <span key={permission}>{PERMISSION_LABELS[permission] || permission}</span>)}</div>
-      <p className="foundation-hint">操作权限和日志记录以此身份为准。这是本地身份，不代表已完成联网登录。</p>
       {unavailableUsers.length > 0 && <p className="foundation-hint">{unavailableUsers.map((user) => user.name).join("、")} 的角色已停用或不存在；请先在“{terminology.personnel}操作用户”中改为启用角色。</p>}
       {error && <p className="entity-error">{error}</p>}
     </section>
@@ -1173,7 +1173,7 @@ function TerminologyEditor({ onToast }) {
 
   return (
     <section className="foundation-section foundation-terminology-editor" data-unsaved-changes={JSON.stringify(draft) !== savedTerminology || undefined}>
-      <div className="foundation-section-heading"><div><small>当前工作台界面称呼</small><h3><FileText size={18} />业务术语</h3></div><span>{visibleFields.length} 项可编辑</span></div>
+      <div className="foundation-section-heading"><div><h3>业务术语</h3></div><span>{visibleFields.length} 项可编辑</span></div>
       <form className="foundation-terminology-form" onSubmit={save}>
         <div className="foundation-terminology-grid">
           {visibleFields.map((field) => <label className="foundation-field foundation-terminology-field" key={field.key}><span>{field.label}</span><input value={draft[field.key] || ""} placeholder={DEFAULT_WORKSPACE_TERMINOLOGY[field.key]} onChange={(event) => setDraft((current) => ({ ...current, [field.key]: event.target.value }))} /></label>)}
@@ -1256,7 +1256,7 @@ function ManagementReportDisplayEditor({ onToast }) {
 
   return (
     <section className="foundation-section management-report-display-editor" data-unsaved-changes={JSON.stringify(draft) !== savedDisplayConfig || undefined}>
-      <div className="foundation-section-heading"><div><small>当前工作台报表偏好</small><h3><FileText size={18} />管理报表显示项</h3></div><span>{visibleCount} / {MANAGEMENT_REPORT_DISPLAY_ITEMS.length} 项显示</span></div>
+      <div className="foundation-section-heading"><div><h3>管理报表显示项</h3></div><span>{visibleCount} / {MANAGEMENT_REPORT_DISPLAY_ITEMS.length} 项显示</span></div>
       <form className="management-report-display-form" onSubmit={save}>
         <p className="foundation-hint">这里只控制老板报表中的显示与名称；金额、计算公式、来源明细和下钻关系保持原样。</p>
         <div className="management-report-display-grid">
@@ -1323,7 +1323,7 @@ function CompanyProfile({ onToast, onBeginEditing }) {
   }
   return (
     <section className={`foundation-section company-profile${editorOpen ? " is-editing" : ""}`}>
-      <div className="foundation-section-heading"><div><h3><Buildings size={18} />{editorOpen ? "编辑企业资料" : "企业资料"}{activeWorkspace.company.verificationStatus === "verified" && <small>已核验</small>}</h3></div>{!editorOpen && <button className="secondary-button" type="button" aria-expanded={editorOpen} aria-controls="company-profile-editor" onClick={edit}><PencilSimple size={16} />编辑企业资料</button>}</div>
+      <div className="foundation-section-heading"><div><h3><Buildings size={18} />{editorOpen ? "编辑企业资料" : "企业资料"}</h3>{activeWorkspace.company.verificationStatus === "verified" && <small>已核验</small>}</div>{!editorOpen && <button className="secondary-button" type="button" aria-expanded={editorOpen} aria-controls="company-profile-editor" onClick={edit}><PencilSimple size={16} />编辑企业资料</button>}</div>
       {!editorOpen && <div className="foundation-summary-grid">
         <article className="foundation-summary-card"><small>企业身份</small><h4>{activeWorkspace.company.legalName || "未填写主体名称"}</h4><p>统一社会信用代码：{activeWorkspace.company.taxId || "未填写"}</p></article>
         <article className="foundation-summary-card"><small>负责人</small><h4>{activeWorkspace.company.ownerName || "未填写经营者"}</h4><p>财务负责人：{activeWorkspace.company.financeContact || "未填写"}</p></article>
@@ -1421,7 +1421,7 @@ function AuthorizationEditor({ onToast, onBeginEditing }) {
         : "有效记录";
   return (
     <section className={`foundation-section authorization-editor${editorOpen ? " is-editing" : ""}`}>
-      <div className="foundation-section-heading"><div><small>不连接外部系统</small><h3><ShieldCheck size={18} />本地授权记录</h3></div><span>{activeWorkspace.authorizations.length} 条</span></div>
+      <div className="foundation-section-heading"><div><h3>本地授权记录</h3></div><span>{activeWorkspace.authorizations.length} 条</span></div>
       <div className="foundation-notice"><WarningCircle size={17} />此处只记录{terminology.customer}允许处理的范围，不会保存银行或税务密码，也不会连接银行、税务、AI 或 OCR。</div>
       <div className="foundation-record-list authorization-list">
         {activeWorkspace.authorizations.map((authorization) => <article className="foundation-record" key={authorization.id}><div><strong>{authorization.label || authorization.system}</strong><small>{effectiveStatus(authorization)} · {authorization.scope || "未填写范围"}{authorization.expiresAt ? ` · 至 ${String(authorization.expiresAt).slice(0, 10)}` : ""}</small></div><span className="foundation-record-actions"><button type="button" aria-label={`编辑${authorization.label || authorization.system}授权`} onClick={() => edit(authorization)}><PencilSimple size={15} /></button>{authorization.status !== "revoked" && <button type="button" aria-label={`撤回${authorization.label || authorization.system}授权`} title="撤回授权" onClick={() => revoke(authorization)}><Power size={15} /></button>}</span></article>)}
@@ -1429,7 +1429,7 @@ function AuthorizationEditor({ onToast, onBeginEditing }) {
       </div>
       <button className="foundation-editor-toggle secondary-button" type="button" aria-expanded={editorOpen} aria-controls="authorization-editor" onClick={create}><Plus size={16} />新增授权记录</button>
       {editorOpen && <div className="foundation-editor-panel" id="authorization-editor">
-        <div className="foundation-section-heading"><div><small>{draft.id ? "编辑本地授权" : "新增本地授权"}</small><h4>{draft.id ? `编辑「${draft.label || draft.system}」` : "记录可处理的数据范围"}</h4></div></div>
+        <div className="foundation-section-heading"><div><h4>{draft.id ? `编辑「${draft.label || draft.system}」` : "记录可处理的数据范围"}</h4></div></div>
         <form className="entity-form" onSubmit={save}>
           <label className="foundation-field"><span>数据源</span><select value={draft.system} onChange={(event) => setDraft((current) => ({ ...current, system: event.target.value, label: event.target.selectedOptions[0].text }))}><option value="bank">银行数据</option><option value="tax">税务资料</option><option value="business">经营系统文件</option><option value="finance">现有财务软件文件</option></select></label>
           <label className="foundation-field"><span>允许范围</span><input value={draft.scope} onChange={(event) => setDraft((current) => ({ ...current, scope: event.target.value }))} /></label>

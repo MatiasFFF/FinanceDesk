@@ -290,11 +290,9 @@ export function InventoryPage({ onPage, onToast }) {
     <div className="inventory-page">
       <header className="inventory-hero">
         <div>
-          <p className="eyebrow">当前账期 · {activeWorkspace.currentPeriod}</p>
           <h2>库存与损耗</h2>
-          <p>用移动加权平均记录物料、入库、领用与盘点差异。页面只保存当前工作台数据；损耗凭证先生成草稿，仍需人工复核入账。</p>
+          <p>{activeWorkspace.currentPeriod} · 记录入库、领用与盘点差异，按移动加权平均计算成本。</p>
         </div>
-        <span><CheckCircle size={22} weight="fill" />数据保存在当前工作台</span>
       </header>
 
       {inventoryView.error && <div className="inventory-form-feedback error" role="alert"><WarningCircle size={18} /><span>{inventoryView.error}</span></div>}
@@ -309,8 +307,7 @@ export function InventoryPage({ onPage, onToast }) {
       <div className="inventory-entry-grid">
         <section className="panel inventory-editor-panel">
           <div className="panel-heading">
-            <div><p className="eyebrow">物料档案</p><h2>{itemForm.id ? "编辑物料" : "新增物料"}</h2><p>期初数量和单价共同形成期初库存金额；修改后会重新计算本期移动加权平均。</p></div>
-            <PencilSimple size={21} />
+            <div><h2 className="card-title"><PencilSimple size={18} /><span>{itemForm.id ? "编辑物料" : "新增物料"}</span></h2><p>期初金额 = 数量 × 单价；修改后重新计算本期成本。</p></div>
           </div>
           <form className={"inventory-form" + (itemForm.id ? " is-editing" : "")} onSubmit={saveItem}>
             <label><span>物料名称 *</span><input required value={itemForm.name} onChange={(event) => setItemForm((form) => ({ ...form, name: event.target.value }))} placeholder="请输入物料名称" /></label>
@@ -330,8 +327,7 @@ export function InventoryPage({ onPage, onToast }) {
 
         <section className="panel inventory-editor-panel">
           <div className="panel-heading">
-            <div><p className="eyebrow">本期实物流转</p><h2>记录库存流水</h2><p>领用、损耗和盘亏按当时移动加权平均成本出库；若会造成负库存，领域规则会拒绝保存并说明可用数量。</p></div>
-            <Plus size={21} />
+            <div><h2 className="card-title"><Plus size={18} /><span>记录库存流水</span></h2><p>出库按当时平均成本计价，数量不能超过可用库存。</p></div>
           </div>
           <form className="inventory-form" onSubmit={saveMovement}>
             <label><span>物料 *</span><select required value={movementForm.itemId} onChange={(event) => chooseMovementItem(event.target.value)}><option value="">请先选择物料</option>{inventoryItems.map((item) => <option disabled={item.status === "inactive"} value={item.id} key={item.id}>{item.name}{item.code ? " · " + item.code : ""}{item.status === "inactive" ? "（已停用）" : ""}</option>)}</select></label>
@@ -355,7 +351,7 @@ export function InventoryPage({ onPage, onToast }) {
       </div>
 
       <section className="panel inventory-table-panel">
-        <div className="panel-heading"><div><p className="eyebrow">移动加权平均</p><h2>当前库存表</h2><p>数量、平均单价与库存金额来自期初和本期全部库存流水。</p></div><span>{currentRows.length} 个物料</span></div>
+        <div className="panel-heading"><div><h2>当前库存表</h2><p>数量、平均单价与库存金额来自期初和本期全部库存流水。</p></div><span>{currentRows.length} 个物料</span></div>
         {currentRows.length ? <div className="inventory-table inventory-stock-table" role="table" aria-label="当前库存表">
           <div className="inventory-table-row heading" role="row"><span>物料</span><span>场所</span><span>当前数量</span><span>平均单价</span><span>库存金额</span><span>本期流转</span><span>操作</span></div>
           {currentRows.map((row) => <div className="inventory-table-row" role="row" key={row.itemId}>
@@ -371,7 +367,7 @@ export function InventoryPage({ onPage, onToast }) {
       </section>
 
       <section className="panel inventory-table-panel">
-        <div className="panel-heading"><div><p className="eyebrow">{activeWorkspace.currentPeriod}</p><h2>本期库存流水</h2><p>损耗与盘亏可生成手工凭证草稿；生成草稿不会自动入账。</p></div><span>{periodMovements.length} 笔流水</span></div>
+        <div className="panel-heading"><div><h2>本期库存流水</h2></div><span>{periodMovements.length} 笔流水</span></div>
         {accountingFeedback && <p className={"inventory-form-feedback " + accountingFeedback.tone} role={accountingFeedback.tone === "error" ? "alert" : "status"}>{accountingFeedback.tone === "error" ? <WarningCircle size={17} /> : <CheckCircle size={17} weight="fill" />}<span>{accountingFeedback.message}</span></p>}
         {periodMovements.length ? <div className="inventory-table inventory-flow-table" role="table" aria-label="本期库存流水">
           <div className="inventory-table-row heading" role="row"><span>日期</span><span>物料</span><span>类型</span><span>数量</span><span>单位成本</span><span>场所</span><span>原因与来源</span><span>会计处理</span></div>
@@ -391,7 +387,7 @@ export function InventoryPage({ onPage, onToast }) {
           })}
         </div> : <div className="inventory-table-empty"><Receipt size={24} /><strong>本期还没有库存流水</strong><p>新增入库、领用、损耗或盘点记录后，会按日期显示在这里。</p></div>}
         <div className="inventory-accounting-note">
-          <span><strong>凭证草稿仍需人工复核</strong><small>损耗或盘亏生成的草稿只记录借贷分录，不会自动入账。请前往批量核销页核对资料、分录和金额后再完成入账。</small></span>
+          <span><strong>凭证草稿仍需人工复核</strong><small>损耗或盘亏草稿需在批量核销页核对资料、分录与金额后入账。</small></span>
           <button className="secondary-button" type="button" onClick={() => onPage?.("reconcile")}>去批量核销复核<ArrowRight size={16} /></button>
         </div>
       </section>

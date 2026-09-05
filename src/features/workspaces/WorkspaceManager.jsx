@@ -403,21 +403,18 @@ export function WorkspaceManager({ open, onClose, onToast }) {
 
   const confirmationDetails = pendingConfirmation ? {
     "delete-workspace": {
-      eyebrow: "删除工作台",
       title: `删除「${activeWorkspace.name}」？`,
       summary: "这个工作台及其本地文件将被删除。",
       description: "业务数据、资料元数据和浏览器本地原文件会一并删除，且无法从本页面恢复。其他工作台不受影响。",
       confirmLabel: "确认删除",
     },
     "clear-business": {
-      eyebrow: "清空业务数据",
       title: `清空「${activeWorkspace.name}」？`,
       summary: "企业设置会保留，业务记录会被清空。",
       description: "流水、资料、证据和凭证将被删除，且无法从本页面恢复。",
       confirmLabel: "确认清空",
     },
     "replace-backup": {
-      eyebrow: "替换导入",
       title: "用这份备份替换本地数据？",
       summary: "当前所有工作台的业务数据和元数据会被覆盖。",
       description: "完整备份会恢复包内原件；旧 JSON 只恢复数据与原件索引。",
@@ -429,7 +426,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
     <div className="modal-backdrop foundation-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeManager()}>
       <section className="modal-card foundation-manager workspace-manager-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-manager-title">
         <header className="modal-heading">
-          <div><p className="eyebrow">浏览器本地</p><h2 id="workspace-manager-title">管理财务工作台</h2></div>
+          <div><h2 id="workspace-manager-title">管理财务工作台</h2></div>
           <button className="icon-button" type="button" aria-label="关闭" onClick={closeManager}><X size={19} /></button>
         </header>
 
@@ -437,7 +434,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
 
         <div className="foundation-manager-grid">
           <section className="foundation-section">
-            <div className="foundation-section-heading"><div><small>切换</small><h3>我的工作台</h3></div><span>{state.workspaces.length} 个</span></div>
+            <div className="foundation-section-heading"><div><h3>我的工作台</h3></div><span>{state.workspaces.length} 个</span></div>
             <div className="workspace-list">
               {state.workspaces.map((workspace) => (
                 <button
@@ -462,7 +459,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
             </div>
             {state.workspaces.length === 1 && <p className="foundation-hint">至少保留一个工作台；先创建新工作台后即可删除当前模板。</p>}
             <div className="foundation-divider" />
-            <div className="foundation-section-heading"><div><small>当前配置</small><h3>启用模块</h3></div></div>
+            <div className="foundation-section-heading"><div><h3>启用模块</h3></div></div>
             <div className="workspace-module-grid" role="group" aria-label="当前工作台启用模块">
               {WORKSPACE_MODULE_OPTIONS.map((module) => {
                 const enabled = Boolean(activeWorkspace.modules?.[module.id]);
@@ -559,7 +556,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
             aria-busy={confirmationBusy}
           >
             <header className="modal-heading">
-              <div><p className="eyebrow">{confirmationDetails.eyebrow}</p><h2 id="workspace-confirm-title">{confirmationDetails.title}</h2></div>
+              <div><h2 id="workspace-confirm-title">{confirmationDetails.title}</h2></div>
             </header>
             <div className="delete-warning" id="workspace-confirm-description">
               <WarningCircle size={24} />

@@ -412,7 +412,7 @@ export function ManualVoucherPanel({ onToast }) {
   return (
     <section className="manual-voucher-panel">
       <header className="manual-voucher-panel-heading">
-        <div><p>本地会计处理</p><h2>手工凭证</h2><span>可先保存待补件草稿；入账须关联真实来源、核验原文件并填写复核意见。</span></div>
+        <div><h2>手工凭证</h2><span>可先存草稿；入账前须补齐来源、核验原件并填写复核意见。</span></div>
         <button className="secondary-button" type="button" aria-expanded={editorOpen} disabled={busy} onClick={() => setEditorOpen((current) => !current)}><Plus size={16} />{editorOpen ? "收起录入 · 保留输入" : hasUnsavedInput || editor.voucherId ? "继续编辑" : "录入手工凭证"}</button>
       </header>
 
@@ -420,7 +420,7 @@ export function ManualVoucherPanel({ onToast }) {
 
       <form className="manual-voucher-editor" onSubmit={saveDraft} ref={editorRef} hidden={!editorOpen}>
         <div className="manual-voucher-section-heading">
-          <div><small>{editor.voucherId ? "修订已保存草稿" : "新建本期草稿"}</small><h3>{editor.voucherId ? "修改手工凭证" : "录入手工凭证"}</h3></div>
+          <div><h3>{editor.voucherId ? "修改手工凭证" : "录入手工凭证"}</h3></div>
           {editor.voucherId && <span className="manual-voucher-editing-badge"><NotePencil size={15} />已保存草稿</span>}
         </div>
 
@@ -490,7 +490,7 @@ export function ManualVoucherPanel({ onToast }) {
       </form>
 
       <section className="manual-voucher-records">
-        <div className="manual-voucher-section-heading"><div><small>{activeWorkspace.currentPeriod}</small><h3>本期手工凭证</h3></div><span>{manualVouchers.length} 张</span></div>
+        <div className="manual-voucher-section-heading"><div><h3>本期手工凭证</h3><small>{activeWorkspace.currentPeriod}</small></div><span>{manualVouchers.length} 张</span></div>
         {manualVouchers.length ? <div className="manual-voucher-record-list">{manualVouchers.map((voucher) => {
           const status = voucherStatus(voucher.status);
           const voucherValidation = validateVoucherBalance(voucher, accountingRules(activeWorkspace).amountTolerance, activeWorkspace);
@@ -503,7 +503,7 @@ export function ManualVoucherPanel({ onToast }) {
           return (
             <article className={`manual-voucher-record is-${status.tone}`} key={voucher.id}>
               <div className="manual-voucher-record-heading">
-                <div><span className={`manual-voucher-status is-${status.tone}`}>{status.label}</span><small>{voucher.no || "未编号草稿"} · V{voucher.version || 1}</small><h4>{voucher.summary}</h4><p>{voucher.date} · 借贷各 ¥{money(voucherValidation.debit)} · {voucher.lines?.length || 0} 行分录</p></div>
+                <div><h4>{voucher.summary}</h4><small>{voucher.no || "未编号草稿"} · V{voucher.version || 1}</small><span className={`manual-voucher-status is-${status.tone}`}>{status.label}</span><p>{voucher.date} · 借贷各 ¥{money(voucherValidation.debit)} · {voucher.lines?.length || 0} 行分录</p></div>
                 {editable && <button className="secondary-button" type="button" disabled={busy} onClick={() => editing ? setEditorOpen(true) : loadDraft(voucher)}><NotePencil size={15} />{editing ? "继续修改" : "载入修改"}</button>}
               </div>
               <details className="manual-voucher-record-details">

@@ -1141,7 +1141,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
       </div>
       {preview && (
         <div className="bank-import-workspace document-preview-panel" hidden={selectedSection !== "files"}>
-          <div className="foundation-section-heading"><div><small>浏览器本地预览</small><h3>{preview.document.name}</h3></div><button className="foundation-icon-button" type="button" aria-label="关闭预览" onClick={closePreview}><X size={17} /></button></div>
+          <div className="foundation-section-heading"><div><h3>{preview.document.name}</h3></div><button className="foundation-icon-button" type="button" aria-label="关闭预览" onClick={closePreview}><X size={17} /></button></div>
           {preview.kind === "image" && <img className="document-preview-image" src={preview.url} alt={preview.document.name} />}
           {preview.kind === "pdf" && <iframe className="document-preview-frame" src={preview.url} title={`预览 ${preview.document.name}`} />}
           {preview.kind === "text" && <div className="bank-preview-scroll document-preview-text"><pre className="document-preview-pre">{preview.text}</pre>{preview.truncated && <p className="foundation-hint">内容较长，页面仅显示前 300,000 个字符；下载可查看完整原文件。</p>}</div>}
@@ -1281,10 +1281,10 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
       </div>
       <div className="bank-import-workspace" hidden={selectedSection !== "business"}>
         <div className="foundation-section-heading">
-          <div><small>结构化合同 · 预览后确认</small><h3>合同账单计划</h3></div>
+          <div><h3>合同账单计划</h3></div>
           <span>{contractBillingPlans.length} 份合同 · 待生成 {contractBillingPlans.reduce((sum, plan) => sum + plan.items.length, 0)} 张</span>
         </div>
-        <p className="foundation-hint">{workspaceModuleEnabled(activeWorkspace, "members") ? `销售、${terminology.member}和平台合同生成应收账单` : "销售和平台合同生成应收账单"}；采购和租赁合同生成应付账单。预览不会写入任何账单，只有点击确认后才写入现有账单列表并关联合同资料。</p>
+        <p className="foundation-hint">{workspaceModuleEnabled(activeWorkspace, "members") ? `销售、${terminology.member}和平台合同生成应收账单` : "销售和平台合同生成应收账单"}；采购和租赁合同生成应付账单。确认后生成账单并关联合同。</p>
         <div className="foundation-record-list">
           {contractBillingPlans.map((plan) => (
             <article className="foundation-record" key={plan.documentId}>
@@ -1308,10 +1308,10 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
       </div>
       <div className="bank-import-workspace" hidden={selectedSection !== "business"}>
         <div className="foundation-section-heading">
-          <div><small>五类审批 · 人工确认</small><h3>审批单与业务链</h3></div>
+          <div><h3>审批单与业务链</h3></div>
           <span>{approvalConnections.filter((item) => item.details.linkStatus === "linked").length} / {approvalConnections.length} 已关联</span>
         </div>
-        <p className="foundation-hint">报销、付款申请、借款／还款、采购和退款仅在“已批准”后参与建议。系统按申请人／{terminology.supplier}、金额、日期与类型寻找账单或银行流水；只有人工确认才补充业务事件审批来源，不会自动付款、核销、制证或入账。</p>
+        <p className="foundation-hint">仅已批准的审批单参与匹配；请核对对象、金额和日期后确认关联。付款与入账仍需另行处理。</p>
         <div className="foundation-record-list">
           {approvalConnections.map((item) => {
             const { document, details, linkedTarget, businessEvent, pendingTask, suggestions } = item;
@@ -1341,12 +1341,12 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
       </div>
       <div className="bank-import-workspace" hidden={selectedSection !== "business"}>
         <div className="foundation-section-heading">
-          <div><small>{activeWorkspace.currentPeriod} · 结构化发票</small><h3>增值税发票来源</h3></div>
+          <div><h3>增值税发票来源</h3><p>{activeWorkspace.currentPeriod}</p></div>
           <span>{invoiceVatSummary.usesStructuredInvoices ? "发票汇总口径" : "仍用原估算口径"}</span>
         </div>
-        <p className="foundation-hint">只有人工选择销项/进项、属于本期并已关联业务或凭证的有效发票才进入汇总。作废发票排除，已开红字按负数；未认证进项单独列示且不抵扣。查验状态完全来自人工录入，没有连接税务平台。</p>
+        <p className="foundation-hint">本期已分类、已关联业务或凭证的有效发票参与汇总。作废排除、红字扣减；未认证进项不抵扣。查验状态需人工录入。</p>
         <div className="foundation-section-heading" style={{ marginTop: 18 }}>
-          <div><small>人工确认 · 不自动写账</small><h3>发票与应收应付账单</h3></div>
+          <div><h3>发票与应收应付账单</h3></div>
           <span>{invoiceBillConnections.filter((item) => item.linkedBill).length} / {invoiceBillConnections.length} 已关联</span>
         </div>
         <p className="foundation-hint">销项按{terminology.customer}、价税合计和日期建议应收账单，进项按{terminology.supplier}、价税合计和日期建议应付账单。建议本身不写数据；人工确认后才关联，确认没有合适账单后才可新建。红字只冲减已关联的原账单。</p>
@@ -1415,10 +1415,10 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           {!invoiceVatSummary.rows.length && <p className="foundation-empty">本期还没有结构化发票；税务页暂时继续使用原有本地估算口径。</p>}
         </div>
         <div className="foundation-section-heading" style={{ marginTop: 18 }}>
-          <div><small>发票数 − 账面数 · 本地核对</small><h3>增值税差异核对</h3></div>
+          <div><h3>增值税差异核对</h3></div>
           <span>{vatReconciliation.unresolvedItems.length ? `待解释 ${vatReconciliation.unresolvedItems.length} 项` : "两项已核对"}</span>
         </div>
-        <p className="foundation-hint">本地调整金额只计入这份税务底稿的发票口径，不修改原凭证或原发票。存在差额时必须填写真实原因；来源发生变化后，旧说明仍保留在历史记录，但最终本地申报包会再次被阻止，直到重新核对。</p>
+        <p className="foundation-hint">调整仅用于税务底稿，请填写差额原因。来源变化后需要重新核对。</p>
         <div className="foundation-record-list">
           {vatReconciliation.items.map((item) => {
             const draft = vatReconciliationDrafts[item.kind] || {};
@@ -1463,10 +1463,10 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
       </div>
       {payrollEnabled && <div className="bank-import-workspace" hidden={selectedSection !== "payroll"}>
         <div className="foundation-section-heading">
-          <div><small>{activeWorkspace.currentPeriod} · CSV / XLS / XLSX · 仅本地</small><h3>工资与社保导入核对</h3></div>
+          <div><h3>工资与社保导入核对</h3><p>{activeWorkspace.currentPeriod} · 支持 CSV、XLS 和 XLSX</p></div>
           <span>工资 {payrollSocialSummary.counts.payroll} 人 · 社保 {payrollSocialSummary.counts.socialSecurity} 人 · 差异 {payrollSocialSummary.counts.issues} 人</span>
         </div>
-        <p className="foundation-hint">每次选择工资表或社保表，字段确认后按“同类表＋{terminology.personnel}＋所属期”覆盖去重写入当前工作台。文件只在当前浏览器解析，不上传；这里不会连接社保、个税或税务平台。</p>
+        <p className="foundation-hint">确认字段后导入；同一{terminology.personnel}、同一期间的同类记录将被覆盖。</p>
         <div className="document-intake-controls document-import-controls">
         <label className="foundation-field"><span>导入类型</span><select value={payrollImportKind} onChange={(event) => setPayrollImportKind(event.target.value)}>{Object.entries(PAYROLL_SOCIAL_IMPORT_KINDS).map(([id, label]) => <option value={id} key={id}>{displayText(label)}</option>)}</select></label>
           <label className="foundation-field"><span>默认所属期</span><input type="month" value={payrollImportPeriod} onChange={(event) => setPayrollImportPeriod(event.target.value)} /></label>
@@ -1475,7 +1475,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         </div>
         {payrollFilePreview && payrollImportPlan && (
           <div className="bank-import-workspace">
-            <div className="foundation-section-heading"><div><small>{payrollFilePreview.sheetName ? `工作表 ${payrollFilePreview.sheetName}` : "CSV"}</small><h3>{payrollFilePreview.fileName}</h3></div><span>{payrollImportPlan.canApply ? `可写入 ${payrollImportPlan.rows.length} 人次` : "映射或数据待修正"}</span></div>
+            <div className="foundation-section-heading"><div><h3>{payrollFilePreview.fileName}</h3><p>{payrollFilePreview.sheetName ? `工作表 ${payrollFilePreview.sheetName}` : "CSV"}</p></div><span>{payrollImportPlan.canApply ? `可写入 ${payrollImportPlan.rows.length} 人次` : "映射或数据待修正"}</span></div>
             <div className="document-intake-controls document-structured-fields">
               {Object.entries(PAYROLL_SOCIAL_FIELD_DEFINITIONS).map(([field, definition]) => (
                 <label className="foundation-field" key={field}>
@@ -1497,7 +1497,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           </div>
         )}
         <div className="foundation-section-heading" style={{ marginTop: 18 }}>
-          <div><small>按{terminology.personnel}归属 · 工资表对社保表</small><h3>逐人差异</h3></div>
+          <div><h3>逐人差异</h3><p>工资表与社保表对照</p></div>
           <span>{payrollSocialSummary.hasDifferences ? `${payrollSocialSummary.counts.issues} 人待核对` : `${terminology.personnel}与金额一致`}</span>
         </div>
         <div className="foundation-record-list">
@@ -1516,10 +1516,10 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           {!payrollSocialSummary.rows.length && <p className="foundation-empty">当前期间没有工资或社保记录，也没有在职{terminology.personnel}可核对。</p>}
         </div>
         <div className="foundation-section-heading" style={{ marginTop: 18 }}>
-          <div><small>绑定当前冻结版本 · 两项独立确认</small><h3>{terminology.customer}确认</h3></div>
+          <div><h3>{terminology.customer}确认</h3></div>
           <span>{payrollSocialConfirmation.version ? payrollSocialConfirmation.version.label : "需先重新冻结报表"}</span>
         </div>
-        <p className="foundation-hint">工资表与社保表必须分别由{terminology.customer}勾选。确认后数据才满足申报底稿与最终本地申报包的流程条件；重新导入或修改数据会自动撤销旧确认。</p>
+        <p className="foundation-hint">工资和社保需由{terminology.customer}分别确认；重新导入或修改后需再次确认。</p>
         <div className="foundation-record-list">
           <article className="foundation-record">
             <label><input type="checkbox" checked={payrollSocialConfirmation.payroll.confirmed} disabled={!payrollSocialConfirmation.version || !payrollSocialConfirmation.payroll.available} onChange={(event) => togglePayrollSocialConfirmation("payroll", event.target.checked)} /> {terminology.customer}确认本期工资表</label>
@@ -1530,14 +1530,14 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
             <span><strong>{payrollSocialConfirmation.socialSecurity.confirmed ? "已确认" : "未确认"}</strong><small>{payrollSocialConfirmation.socialSecurity.available ? `${payrollSocialSummary.counts.socialSecurity} 人 · 社保合计 ${amountLabel(payrollSocialSummary.totals.socialSecurityPayable)}` : "请先导入社保表"}</small></span>
           </article>
         </div>
-        {!!(activeWorkspace.payrollImports || []).length && <p className="foundation-hint">当前工作台已记录 {(activeWorkspace.payrollImports || []).length} 个本地导入批次；最近一次为 {(activeWorkspace.payrollImports || []).at(-1).fileName}，原文件没有上传。</p>}
+        {!!(activeWorkspace.payrollImports || []).length && <p className="foundation-hint">当前工作台已记录 {(activeWorkspace.payrollImports || []).length} 个本地导入批次；最近一次为 {(activeWorkspace.payrollImports || []).at(-1).fileName}。</p>}
       </div>}
       <div className="bank-import-workspace" hidden={selectedSection !== "missing"}>
         <div className="foundation-section-heading">
-          <div><small>本地规则建议 · 必须人工确认</small><h3>资料匹配与缺件待办</h3></div>
+          <div><h3>资料匹配与缺件待办</h3></div>
           <span>建议 {matchSuggestions.length} · 待补 {openDocumentTasks.length} · 已关闭 {resolvedDocumentTaskCount}</span>
         </div>
-        <p className="foundation-hint">建议只比较资料名称、人工录入字段与业务的对方、金额、日期／期间；生成建议不会建立任何关联。</p>
+        <p className="foundation-hint">请核对资料、往来单位、金额和日期，再确认关联。</p>
         <div className="foundation-inline-actions"><button className="secondary-button" type="button" onClick={refreshMissingTasks}>刷新缺件待办</button></div>
         {matchFeedback && <div className={`${matchFeedback.tone === "error" ? "foundation-error" : "foundation-notice"} import-feedback document-match-feedback`} role={matchFeedback.tone === "error" ? "alert" : "status"} aria-live="polite">{matchFeedback.tone === "error" ? <WarningCircle size={18} /> : <CheckCircle size={18} weight="fill" />}<span>{displayText(matchFeedback.message)}</span></div>}
         {!!openDocumentTasks.length && (
@@ -1616,7 +1616,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
               })}
             </div>
             {!!voucherPackagePlan.missingItems.length && <div className="foundation-notice"><WarningCircle size={18} /><span><strong>当前缺失：</strong> {voucherPackagePlan.missingItems.map((item) => `${displayText(item.label)}（${displayText(item.reason)}）`).join("；")}</span></div>}
-            {!!selectedVoucher?.attachmentPackages?.length && <p className="foundation-hint">最近一次：{selectedVoucher.attachmentPackages.at(-1).generatedAt} · {selectedVoucher.attachmentPackages.at(-1).fileName} · 记录保存在当前工作台，ZIP 本体只下载到本机。</p>}
+            {!!selectedVoucher?.attachmentPackages?.length && <p className="foundation-hint">最近一次：{selectedVoucher.attachmentPackages.at(-1).generatedAt} · {selectedVoucher.attachmentPackages.at(-1).fileName}</p>}
           </>
         ) : <p className="foundation-empty">当前工作台还没有可选凭证。</p>}
       </div>

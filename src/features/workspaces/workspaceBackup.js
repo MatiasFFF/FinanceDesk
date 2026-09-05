@@ -1,4 +1,3 @@
-import JSZip from "jszip";
 import { createId } from "../../domain/foundation.js";
 import { exportBackupJson, importBackupJson } from "../../storage/localFoundationRepository.js";
 import { hashLocalFile } from "../intake/documentIntake.js";
@@ -23,6 +22,7 @@ export async function generateWorkspaceBackup({ store, fileVault, now = () => ne
   const data = store.actions.exportBackup({ now });
   const initialState = store.getState();
   const state = JSON.parse(data).state;
+  const { default: JSZip } = await import("jszip");
   const zip = new JSZip();
   const files = [];
   const missingFiles = [];
@@ -56,6 +56,7 @@ export async function restoreWorkspaceBackup({ store, fileVault, file, mode = "m
   if (!fileVault) throw new Error("当前浏览器无法保存备份原件");
   if (!["merge", "replace"].includes(mode)) throw new Error("请选择有效的导入方式");
   const initialState = store.getState();
+  const { default: JSZip } = await import("jszip");
   const zip = await JSZip.loadAsync(await file.arrayBuffer(), { checkCRC32: true });
   const manifestFile = zip.file("manifest.json");
   const dataFile = zip.file("data.json");

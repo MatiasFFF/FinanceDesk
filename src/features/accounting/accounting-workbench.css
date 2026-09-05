@@ -45,7 +45,7 @@
 .engine-allocation-history small,
 .engine-voucher-row small {
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-body, 14px);
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -55,8 +55,8 @@
   border-radius: 999px;
   background: var(--sage-soft);
   color: var(--sage);
-  font-size: 10px;
-  font-weight: 750;
+  font-size: var(--font-helper, 12px);
+  font-weight: 600;
 }
 
 .engine-badge.warning {
@@ -73,7 +73,7 @@
   border-radius: 8px;
   background: #fff3ef;
   color: #8f3e2b;
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
 }
 
 .engine-summary {
@@ -92,7 +92,7 @@
 }
 
 .engine-summary strong {
-  font-size: 11px;
+  font-size: var(--font-body, 14px);
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -142,7 +142,7 @@
 .engine-account-grid small,
 .engine-voucher-line small {
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -177,7 +177,7 @@
 .engine-voucher-line-amount strong,
 .engine-voucher-line-account strong,
 .engine-voucher-line-details strong {
-  font-size: 11px;
+  font-size: var(--font-body, 14px);
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -199,8 +199,8 @@
 
 .engine-voucher-line > label > span {
   color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
+  font-size: var(--font-label, 13px);
+  font-weight: 600;
 }
 
 .engine-voucher-line > label > small {
@@ -219,8 +219,8 @@
 .engine-voucher-line-index {
   align-self: center;
   color: var(--muted);
-  font-size: 10px;
-  font-weight: 800;
+  font-size: var(--font-helper, 12px);
+  font-weight: 600;
 }
 
 .engine-voucher-line.is-editable > .engine-voucher-line-index {
@@ -288,8 +288,8 @@
 
 .engine-voucher-line > .engine-voucher-line-field > span {
   color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
+  font-size: var(--font-helper, 12px);
+  font-weight: 600;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -309,7 +309,7 @@
   background: var(--paper);
   color: var(--espresso);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--font-body, 14px);
 }
 
 .engine-voucher-line-remove {
@@ -325,8 +325,8 @@
   background: var(--paper);
   color: #8f3e2b;
   font: inherit;
-  font-size: 10px;
-  font-weight: 700;
+  font-size: var(--font-helper, 12px);
+  font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
 }
@@ -351,7 +351,7 @@
   border-radius: 8px;
   background: var(--canvas);
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
 }
 
 .engine-voucher-balance strong {
@@ -376,12 +376,12 @@
   background: var(--paper);
   color: var(--espresso);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--font-body, 14px);
 }
 
 .engine-voucher-card details {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
 }
 
 .engine-voucher-card summary {
@@ -432,8 +432,8 @@
 .engine-allocation-history > label > span,
 .engine-vouchers > label > span {
   color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
+  font-size: var(--font-label, 13px);
+  font-weight: 600;
 }
 
 .engine-form select,
@@ -455,7 +455,7 @@
   background: var(--paper-strong);
   color: var(--espresso);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--font-body, 14px);
 }
 
 .engine-form textarea,
@@ -543,7 +543,7 @@
 
 .engine-suggestions b,
 .engine-allocation-history b {
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
 }
 
 .engine-allocation label {
@@ -565,7 +565,7 @@
   background: var(--paper);
   color: var(--clay-dark);
   cursor: pointer;
-  font-size: 10px;
+  font-size: var(--font-body, 14px);
 }
 
 .engine-voucher-row {
@@ -574,9 +574,9 @@
 
 .engine-voucher-row em {
   color: var(--sage);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
   font-style: normal;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .engine-voucher-row button {
@@ -611,7 +611,7 @@
 .settlement-heading p:last-child {
   max-width: 720px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.6;
 }
 
@@ -634,11 +634,11 @@
 .settlement-metrics small,
 .settlement-bill-row small {
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
 }
 
 .settlement-metrics strong {
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .settlement-form {
@@ -660,8 +660,8 @@
 
 .settlement-form label > span {
   color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
+  font-size: var(--font-label, 13px);
+  font-weight: 600;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -677,7 +677,7 @@
   background: var(--paper);
   color: var(--espresso);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-body, 14px);
 }
 
 .settlement-form .full {
@@ -731,8 +731,8 @@
   border-radius: 999px;
   background: var(--sage-soft);
   color: var(--sage);
-  font-size: 9px;
-  font-weight: 750;
+  font-size: var(--font-helper, 12px);
+  font-weight: 600;
 }
 
 .settlement-bill-amounts {
@@ -780,7 +780,7 @@
   padding-top: 10px;
   border-top: 1px solid var(--line-soft);
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
 }
 
 .settlement-bill-row summary {
@@ -827,7 +827,7 @@
   border-radius: 9px;
   color: var(--muted);
   text-align: center;
-  font-size: 12px;
+  font-size: var(--font-helper, 12px);
 }
 
 @media (max-width: 640px) {
@@ -904,7 +904,7 @@
 .ledger-result-summary small,
 .ledger-table small {
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-body, 14px);
 }
 
 .ledger-heading p {
@@ -935,8 +935,8 @@
   color: var(--muted);
   cursor: pointer;
   font: inherit;
-  font-size: 11px;
-  font-weight: 700;
+  font-size: var(--font-body, 14px);
+  font-weight: 600;
 }
 
 .ledger-tabs button.active {
@@ -963,8 +963,8 @@
 
 .ledger-filters label > span {
   color: var(--muted);
-  font-size: 9px;
-  font-weight: 750;
+  font-size: var(--font-label, 13px);
+  font-weight: 600;
 }
 
 .ledger-filters input,
@@ -978,7 +978,7 @@
   background: var(--paper);
   color: var(--espresso);
   font: inherit;
-  font-size: 10px;
+  font-size: var(--font-body, 14px);
 }
 
 .ledger-reset {
@@ -990,8 +990,8 @@
   color: var(--clay-dark);
   cursor: pointer;
   font: inherit;
-  font-size: 10px;
-  font-weight: 700;
+  font-size: var(--font-helper, 12px);
+  font-weight: 600;
 }
 
 .ledger-result-summary {
@@ -1002,12 +1002,12 @@
 
 .ledger-result-summary span {
   color: var(--clay-dark);
-  font-size: 10px;
-  font-weight: 750;
+  font-size: var(--font-body, 14px);
+  font-weight: 600;
 }
 
 .ledger-result-summary strong {
-  font-size: 13px;
+  font-size: var(--font-body, 14px);
 }
 
 .ledger-table-wrap {
@@ -1022,7 +1022,7 @@
   width: 100%;
   min-width: 760px;
   border-collapse: collapse;
-  font-size: 10px;
+  font-size: var(--font-body, 14px);
 }
 
 .ledger-table th,
@@ -1039,8 +1039,8 @@
   z-index: 1;
   background: var(--paper);
   color: var(--muted);
-  font-size: 9px;
-  font-weight: 750;
+  font-size: var(--font-label, 13px);
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -1073,8 +1073,8 @@
 .ledger-trace summary {
   color: var(--clay-dark);
   cursor: pointer;
-  font-size: 9px;
-  font-weight: 700;
+  font-size: var(--font-body, 14px);
+  font-weight: 600;
 }
 
 .ledger-trace span {
@@ -1091,7 +1091,7 @@
   padding: 20px;
   color: var(--muted);
   text-align: center;
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
 }
 
 @media (max-width: 1180px) {
@@ -1440,7 +1440,7 @@
   border-radius: 0;
   background: transparent;
   box-shadow: none;
-  font-size: 12px;
+  font-size: var(--font-body, 14px);
 }
 
 .transaction-accounting-workbench .accounting-heading { padding-bottom: 10px; }
@@ -1448,7 +1448,7 @@
 .transaction-accounting-workbench > .engine-summary { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 14px; }
 .transaction-accounting-workbench > .engine-summary > span:first-child { grid-column: 1 / -1; }
 .transaction-accounting-workbench .engine-summary > span { padding: 0; border: 0; background: transparent; box-shadow: none; }
-.transaction-accounting-workbench .engine-summary strong { font-size: 12px; }
+.transaction-accounting-workbench .engine-summary strong { font-size: var(--font-body, 14px); }
 .transaction-accounting-workbench .engine-form,
 .transaction-accounting-workbench .engine-account-grid { grid-template-columns: minmax(0, 1fr); }
 .transaction-accounting-workbench .engine-form .full { grid-column: auto; }
@@ -1468,7 +1468,7 @@
 .transaction-accounting-workbench .engine-allocation-history > div > button { grid-column: 1 / -1; justify-self: end; width: auto; }
 .transaction-accounting-workbench .engine-voucher-line-details { overflow-wrap: anywhere; }
 
-.engine-section { min-width: 0; border-top: 1px solid var(--line-soft); font-size: 12px; }
+.engine-section { min-width: 0; border-top: 1px solid var(--line-soft); font-size: var(--font-body, 14px); }
 .engine-section > summary { padding: 12px 0; color: var(--espresso); font-weight: 700; cursor: pointer; overflow-wrap: anywhere; }
 .engine-section[open] > summary { margin-bottom: 2px; }
 .engine-section > .engine-reasons { margin-bottom: 10px; }
@@ -1476,12 +1476,12 @@
 .transaction-accounting-workbench .engine-allocation-history select,
 .workspace-voucher-panel .settlement-heading select { width: 100%; min-width: 0; min-height: 38px; padding: 8px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--paper-strong); color: var(--espresso); font: inherit; }
 .engine-voucher-edit > input { margin: 8px 0; }
-.engine-next-note { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--clay-soft); color: var(--clay-dark); font-size: 12px; line-height: 1.6; }
+.engine-next-note { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--clay-soft); color: var(--clay-dark); font-size: var(--font-helper, 12px); line-height: 1.6; }
 
 .settlement-panel { gap: 12px; padding: 16px; box-shadow: none; }
 .settlement-panel .settlement-heading { align-items: center; gap: 12px; }
-.settlement-panel .settlement-heading h2 { font-size: 19px; }
-.settlement-panel .settlement-heading p { font-size: 12px; }
+.settlement-panel .settlement-heading h2 { font-size: var(--font-card-title, 16px); }
+.settlement-panel .settlement-heading p { font-size: var(--font-helper, 12px); }
 .settlement-panel .settlement-metrics { display: flex; flex-wrap: wrap; gap: 8px 24px; padding: 6px 0 12px; border-bottom: 1px solid var(--line-soft); }
 .settlement-panel .settlement-metrics > span { gap: 4px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
 .settlement-panel .settlement-metrics strong { font-size: 16px; }
@@ -1495,23 +1495,50 @@
 .settlement-panel .member-accounting-row .settlement-bill-amounts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .settlement-panel .settlement-bill-amounts > span { min-height: 36px; padding: 0 10px; }
 .settlement-panel .settlement-bill-amounts > span:first-child { padding-left: 0; }
-.settlement-panel .settlement-bill-amounts strong { font-size: 13px; }
-.settlement-panel .settlement-bill-row > details { padding-top: 0; border-top: 0; font-size: 12px; }
+.settlement-panel .settlement-bill-amounts strong { font-size: var(--font-body, 14px); }
+.settlement-panel .settlement-bill-row > details { padding-top: 0; border-top: 0; font-size: var(--font-helper, 12px); }
 .settlement-panel .settlement-source-list > div > span { min-width: 0; }
 .settlement-panel .engine-voucher-card { box-shadow: none; }
 
 .workspace-accounting-view { display: grid; gap: 20px; min-width: 0; }
 .workspace-voucher-panel { display: grid; gap: 12px; min-width: 0; padding: 18px; border: 1px solid var(--line-soft); border-radius: var(--radius-panel, 14px); background: var(--paper-strong); }
-.workspace-voucher-panel h2 { margin: 0; font-size: 20px; }
+.workspace-voucher-panel h2 { margin: 0; font-size: var(--font-card-title, 16px); }
 .workspace-voucher-list { display: grid; min-width: 0; }
 .workspace-voucher-record { min-width: 0; border-top: 1px solid var(--line-soft); }
 .workspace-voucher-record > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 16px; padding: 14px 0; cursor: pointer; }
 .workspace-voucher-record > summary > span { display: grid; gap: 4px; min-width: 0; }
-.workspace-voucher-record summary strong { overflow-wrap: anywhere; font-size: 13px; }
-.workspace-voucher-record summary small { color: var(--quiet); font-size: 11px; }
+.workspace-voucher-record summary strong { overflow-wrap: anywhere; font-size: var(--font-body, 14px); }
+.workspace-voucher-record summary small { color: var(--quiet); font-size: var(--font-body, 14px); }
 .workspace-voucher-record summary b { font-size: 14px; font-variant-numeric: tabular-nums; }
 .workspace-voucher-record summary em { font-style: normal; white-space: nowrap; }
 .workspace-voucher-content { display: grid; container: voucher-card / inline-size; gap: 12px; min-width: 0; padding-bottom: 18px; }
+
+.accounting-workbench,
+.workspace-accounting-view,
+.settlement-panel { min-width: 0; font-size: var(--font-body, 14px); line-height: 1.5; }
+.settlement-heading,
+.ledger-heading { align-items: flex-start; gap: 12px; }
+.settlement-heading > div,
+.ledger-heading > div { min-width: 0; }
+.settlement-heading h2,
+.workspace-voucher-panel h2,
+.ledger-heading h2 { margin: 0; font-size: var(--font-card-title, 16px); font-weight: 600; line-height: 1.5; }
+.ledger-heading p { margin: 6px 0 0; }
+.engine-subheading { align-items: flex-start; flex-wrap: wrap; gap: 4px 12px; }
+.engine-subheading > strong { min-width: 0; font-size: var(--font-card-title, 16px); font-weight: 600; overflow-wrap: anywhere; }
+.engine-subheading > small { flex-basis: 100%; }
+.engine-voucher-row { align-items: flex-start; gap: 8px; }
+.engine-voucher-row > span { min-width: 0; overflow-wrap: anywhere; }
+.engine-voucher-row > svg,
+.engine-voucher-row > em { flex-shrink: 0; }
+.engine-voucher-row > em { max-width: 100%; font-style: normal; }
+.settlement-bill-main > strong,
+.workspace-voucher-record summary strong { font-size: var(--font-card-title, 16px); font-weight: 600; }
+.settlement-heading p,
+.settlement-bill-main > small,
+.workspace-voucher-record summary small { overflow-wrap: anywhere; }
+.engine-badge { display: inline-flex; align-items: center; flex-shrink: 0; font-weight: 600; }
+.engine-section > summary { font-size: var(--font-body, 14px); font-weight: 600; }
 
 @container settlement-panel (max-width: 680px) {
   .settlement-panel .settlement-bill-row,

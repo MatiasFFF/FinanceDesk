@@ -45,8 +45,8 @@
 .manual-voucher-section-heading small {
   margin: 0;
   color: var(--clay-dark);
-  font-size: 9px;
-  font-weight: 800;
+  font-size: var(--font-helper, 12px);
+  font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -60,14 +60,14 @@
 
 .manual-voucher-panel-heading h2 {
   font-family: ui-serif, "Songti SC", serif;
-  font-size: 21px;
+  font-size: var(--font-card-title, 16px);
 }
 
 .manual-voucher-panel-heading > div > span,
 .manual-voucher-record-heading p {
   margin: 0;
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.5;
 }
 
@@ -84,8 +84,8 @@
   border-radius: 9px;
   background: var(--clay-soft);
   color: var(--clay-dark);
-  font-size: 10px;
-  font-weight: 650;
+  font-size: var(--font-helper, 12px);
+  font-weight: 600;
   line-height: 1.5;
 }
 
@@ -107,7 +107,7 @@
 }
 
 .manual-voucher-section-heading h3 {
-  font-size: 15px;
+  font-size: var(--font-card-title, 16px);
 }
 
 .manual-voucher-section-heading > span,
@@ -121,8 +121,8 @@
   border-radius: 999px;
   background: var(--sand);
   color: var(--muted);
-  font-size: 9px;
-  font-weight: 750;
+  font-size: var(--font-helper, 12px);
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
 
@@ -146,15 +146,15 @@
 .manual-voucher-posting label > span,
 .manual-voucher-documents legend {
   color: var(--muted);
-  font-size: 10px;
-  font-weight: 750;
+  font-size: var(--font-label, 13px);
+  font-weight: 600;
   line-height: 1.4;
 }
 
 .manual-voucher-header-fields label > small,
 .manual-voucher-line label > small {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -174,7 +174,7 @@
   background: var(--paper);
   color: var(--espresso);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--font-body, 14px);
 }
 
 .manual-voucher-header-fields input:focus,
@@ -207,12 +207,12 @@
 }
 
 .manual-voucher-lines-heading strong {
-  font-size: 12px;
+  font-size: var(--font-body, 14px);
 }
 
 .manual-voucher-lines-heading small {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.4;
 }
 
@@ -240,7 +240,7 @@
 }
 
 .manual-voucher-line-heading > strong {
-  font-size: 10px;
+  font-size: var(--font-body, 14px);
 }
 
 .manual-voucher-line-heading > button {
@@ -253,8 +253,8 @@
   background: transparent;
   color: #8f3e2b;
   font: inherit;
-  font-size: 9px;
-  font-weight: 700;
+  font-size: var(--font-body, 14px);
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -288,7 +288,7 @@
   border-radius: 9px;
   background: var(--canvas);
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
   font-variant-numeric: tabular-nums;
 }
 
@@ -313,7 +313,7 @@
   border-radius: 9px;
   background: var(--clay-soft);
   color: var(--clay-dark);
-  font-size: 9px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.45;
 }
 
@@ -336,7 +336,7 @@
 .manual-voucher-documents > p {
   margin: 0;
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.5;
 }
 
@@ -377,12 +377,12 @@
 }
 
 .manual-voucher-document-list strong {
-  font-size: 10px;
+  font-size: var(--font-body, 14px);
 }
 
 .manual-voucher-document-list small {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.4;
 }
 
@@ -419,7 +419,7 @@
 }
 
 .manual-voucher-record-heading > div {
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 4px 8px;
 }
@@ -431,13 +431,13 @@
 
 .manual-voucher-record-heading h4 {
   margin-top: 3px;
-  font-size: 12px;
+  font-size: var(--font-card-title, 16px);
 }
 
 .manual-voucher-record-heading > div > small {
   min-width: 0;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper, 12px);
   overflow-wrap: anywhere;
 }
 
@@ -458,7 +458,7 @@
 .manual-voucher-record-details {
   min-width: 0;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
 }
 
 .manual-voucher-record-details > summary {
@@ -500,7 +500,7 @@
 .manual-voucher-evidence-summary strong,
 .manual-voucher-review-record strong,
 .manual-voucher-readonly strong {
-  font-size: 10px;
+  font-size: var(--font-body, 14px);
   overflow-wrap: anywhere;
 }
 
@@ -509,7 +509,7 @@
 .manual-voucher-review-record small,
 .manual-voucher-readonly small {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-body, 14px);
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -550,7 +550,7 @@
   gap: 6px;
   margin: 0;
   color: var(--clay-dark);
-  font-size: 9px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.45;
 }
 
@@ -588,14 +588,14 @@
 }
 
 .manual-voucher-empty strong {
-  font-size: 12px;
+  font-size: var(--font-body, 14px);
 }
 
 .manual-voucher-empty p {
   max-width: 520px;
   margin: 0;
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.55;
 }
 
@@ -670,31 +670,49 @@
 .manual-voucher-editor[hidden] { display: none; }
 .manual-voucher-panel-heading { padding: 0 0 12px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
 .manual-voucher-panel-heading p { display: none; }
-.manual-voucher-panel-heading > div > span { font-size: 12px; }
-.manual-voucher-panel-heading h2 { font-size: 20px; }
+.manual-voucher-panel-heading > div > span { font-size: var(--font-helper, 12px); }
+.manual-voucher-panel-heading h2 { font-size: var(--font-card-title, 16px); }
 .manual-voucher-editor { box-shadow: none; }
 .manual-voucher-records { padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
 .manual-voucher-record-list { gap: 0; }
 .manual-voucher-record { padding: 14px 0; border: 0; border-top: 1px solid var(--line-soft); border-radius: 0; background: transparent; }
 .manual-voucher-record.is-posted { border-color: var(--line-soft); }
-.manual-voucher-record-heading h4 { font-size: 14px; }
+.manual-voucher-record-heading h4 { font-size: var(--font-card-title, 16px); }
 .manual-voucher-record-heading p,
 .manual-voucher-record-details,
-.manual-voucher-record-heading > div > small { font-size: 11px; }
-.manual-voucher-posting-details > summary { color: var(--clay-dark); font-size: 12px; font-weight: 700; cursor: pointer; }
+.manual-voucher-record-heading > div > small { font-size: var(--font-helper, 12px); }
+.manual-voucher-posting-details > summary { color: var(--clay-dark); font-size: var(--font-body, 14px); font-weight: 600; cursor: pointer; }
 .manual-voucher-posting > button { min-height: 40px; }
-.manual-voucher-posting > p { flex-wrap: wrap; align-items: center; font-size: 11px; }
+.manual-voucher-posting > p { flex-wrap: wrap; align-items: center; font-size: var(--font-helper, 12px); }
 .manual-voucher-header-fields select,
-.manual-voucher-documents > label input[type="file"] { width: 100%; min-width: 0; min-height: 40px; padding: 8px 9px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--paper); color: var(--espresso); font: inherit; font-size: 12px; }
+.manual-voucher-documents > label input[type="file"] { width: 100%; min-width: 0; min-height: 40px; padding: 8px 9px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--paper); color: var(--espresso); font: inherit; font-size: var(--font-body, 14px); }
 .manual-voucher-header-fields select[multiple],
 .manual-voucher-line select[multiple] { min-height: 88px; }
 .manual-voucher-header-fields select:focus { outline: 2px solid var(--sage-soft); outline-offset: 1px; border-color: var(--sage); }
-.manual-voucher-documents > label { display: grid; gap: 7px; margin-bottom: 12px; color: var(--muted); font-size: 12px; }
+.manual-voucher-documents > label { display: grid; gap: 7px; margin-bottom: 12px; color: var(--muted); font-size: var(--font-label, 13px); }
 .manual-voucher-documents > label:has(input[type="checkbox"]) { grid-template-columns: auto minmax(0, 1fr); align-items: start; }
 .manual-voucher-balance:not(.is-invalid):not(.is-balanced) strong { color: var(--muted); }
 .manual-voucher-empty { grid-template-columns: auto minmax(0, 1fr); justify-items: start; align-content: center; align-items: center; min-height: 80px; padding: 14px; border: 0; background: var(--canvas); text-align: left; }
-.manual-voucher-empty p { grid-column: 2; font-size: 12px; }
+.manual-voucher-empty p { grid-column: 2; font-size: var(--font-helper, 12px); }
 .manual-voucher-editor-actions { flex-wrap: wrap; }
 .manual-voucher-editor-actions > button { min-width: 0; }
 .manual-voucher-error,
-.manual-voucher-validation-errors { font-size: 12px; }
+.manual-voucher-validation-errors { font-size: var(--font-helper, 12px); }
+
+.manual-voucher-panel { font-size: var(--font-body, 14px); line-height: 1.5; }
+.manual-voucher-panel-heading,
+.manual-voucher-section-heading,
+.manual-voucher-record-heading { align-items: flex-start; }
+.manual-voucher-panel-heading > div,
+.manual-voucher-section-heading > div { gap: 6px; }
+.manual-voucher-panel-heading h2,
+.manual-voucher-section-heading h3,
+.manual-voucher-record-heading h4 { font-family: inherit; font-weight: 600; line-height: 1.5; }
+.manual-voucher-section-heading small { color: var(--quiet); font-weight: 400; letter-spacing: 0; text-transform: none; }
+.manual-voucher-panel-heading > button,
+.manual-voucher-record-heading > button,
+.manual-voucher-status { flex-shrink: 0; }
+.manual-voucher-status { justify-self: start; align-self: start; font-weight: 600; }
+.manual-voucher-record-heading h4 { margin: 0 0 2px; }
+.manual-voucher-lines-heading strong { font-size: var(--font-card-title, 16px); font-weight: 600; }
+.manual-voucher-documents > label { font-size: var(--font-label, 13px); }

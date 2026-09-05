@@ -1,6 +1,68 @@
 .bank-import-panel {
   min-width: 0;
   container: bank-import-panel / inline-size;
+  font-size: var(--font-body, 14px);
+  line-height: 1.6;
+}
+
+.bank-import-panel .foundation-section-heading {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+}
+
+.bank-import-panel .foundation-section-heading > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.bank-import-panel .foundation-section-heading h3 {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+  font-family: inherit;
+  font-size: var(--font-card-title, 16px);
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.bank-import-panel .foundation-section-heading h3 > svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+
+.bank-import-panel .foundation-section-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-helper, 12px);
+  line-height: 1.6;
+}
+
+.bank-import-panel label,
+.bank-import-panel .bank-preview-scroll th {
+  font-size: var(--font-label, 13px);
+}
+
+.bank-import-panel input,
+.bank-import-panel select,
+.bank-import-panel button,
+.bank-import-panel .bank-preview-scroll td,
+.bank-import-panel .import-report strong,
+.bank-import-panel .import-report p {
+  font-size: var(--font-body, 14px);
+  line-height: 1.6;
+}
+
+.bank-import-panel small,
+.bank-import-panel .foundation-hint,
+.bank-import-panel .foundation-muted,
+.bank-import-panel .mapping-badge {
+  font-size: var(--font-helper, 12px);
+  line-height: 1.6;
 }
 
 .bank-import-panel,
@@ -39,12 +101,14 @@
 
 .bank-import-template-bar strong {
   color: var(--espresso);
-  font-size: 10px;
+  font-size: var(--font-card-title, 16px);
+  font-weight: 600;
+  line-height: 1.5;
 }
 
 .bank-import-template-bar small {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -95,7 +159,7 @@
 
 .bank-account-empty-state small {
   color: inherit;
-  font-size: 9px;
+  font-size: var(--font-helper, 12px);
   font-weight: 500;
   line-height: 1.5;
 }
@@ -251,12 +315,32 @@
 }
 
 .bank-import-panel .bank-file-summary {
+  align-items: flex-start;
+  flex-wrap: wrap;
   gap: 10px 14px;
 }
 
 .bank-import-panel .bank-file-summary > span:first-child {
+  display: grid;
+  gap: 4px;
   min-width: 0;
   flex: 1 1 320px;
+}
+
+.bank-import-panel .bank-file-summary > span:first-child > strong,
+.bank-import-panel .bank-account-empty-state strong {
+  font-size: var(--font-card-title, 16px);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.bank-import-panel .import-report p {
+  margin: 6px 0 0;
+}
+
+.bank-import-panel .import-report small {
+  display: block;
+  margin-top: 4px;
 }
 
 .bank-import-panel .bank-file-summary strong,

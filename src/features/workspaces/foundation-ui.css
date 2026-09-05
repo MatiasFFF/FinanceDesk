@@ -383,6 +383,9 @@
 }
 
 .foundation-section-heading > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
   min-width: 0;
 }
 
@@ -2763,7 +2766,8 @@
 
 .foundation-page .foundation-section-heading > div {
   display: grid;
-  gap: 3px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
 }
 
 .foundation-page .foundation-section-heading h3,
@@ -3113,4 +3117,101 @@
   .foundation-page .foundation-terminology-actions > button {
     width: 100%;
   }
+}
+
+/* The same hierarchy applies in the foundation page and workspace dialog. */
+:is(.foundation-page, .foundation-manager) .foundation-section {
+  font-size: var(--font-body);
+  line-height: 1.6;
+}
+
+:is(.foundation-page, .foundation-manager) .foundation-section-heading {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  margin-bottom: 16px;
+}
+
+:is(.foundation-page, .foundation-manager) .foundation-section-heading :is(h3, h4),
+.foundation-disclosure > summary strong {
+  margin: 0;
+  min-width: 0;
+  font-family: inherit;
+  font-size: var(--font-card-title);
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+:is(.foundation-page, .foundation-manager) .foundation-section-heading h3 {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.foundation-section-heading h3 > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.foundation-section-heading h3 > svg,
+.foundation-disclosure > summary > svg {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+:is(.foundation-page, .foundation-manager) .foundation-section-heading > span {
+  max-width: 100%;
+  font-size: var(--font-helper);
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+:is(.foundation-page, .foundation-manager) :is(.foundation-field > span, .stage-status-control > span) {
+  font-size: var(--font-label);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+:is(.foundation-page, .foundation-manager) :is(.foundation-field input, .foundation-field select, .foundation-field textarea, .compact-select, .primary-button, .secondary-button, .danger-button) {
+  font-size: var(--font-body);
+}
+
+:is(.foundation-page, .foundation-manager) :is(.foundation-record, .foundation-entity-record, .workspace-list-item) strong,
+.foundation-summary-grid strong,
+.foundation-summary-grid h4,
+.foundation-manager :is(.workspace-module-card-title, .choice-cards strong),
+.permission-option strong {
+  font-size: var(--font-body);
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+:is(.foundation-page, .foundation-manager) :is(.foundation-hint, .foundation-section-heading small, .foundation-card small, .foundation-record small, .foundation-entity-record small, .workspace-list-item small),
+.foundation-summary-grid :is(p, small),
+.foundation-disclosure > summary small,
+.foundation-manager :is(.workspace-module-card-description, .choice-cards small),
+.permission-option small,
+.foundation-manager-footer {
+  font-size: var(--font-helper);
+  font-weight: 400;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.permission-chip-list span {
+  font-size: var(--font-helper);
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.foundation-page .local-user-control .foundation-field > span {
+  min-height: 0;
+}
+
+.foundation-manager-footer > span > svg,
+.workspace-list-item > svg {
+  flex: 0 0 auto;
 }

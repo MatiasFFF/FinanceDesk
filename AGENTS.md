@@ -23,6 +23,7 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - 网页版须统筹页面间异步加载、OCR/PDF 资源下载与调用的运行成本：大型识别依赖和语言资源按需加载并本地缓存，不进入普通页面首屏，也不膨胀单文件 HTML；逐文件、逐页处理并限制资源占用，支持取消，切页时避免重复任务和旧结果误写；长识别正文留在本地资料存储，工作台 JSON 只保留必要状态和字段。
 - Support normal responsive browser layouts on macOS, Windows, iPad, and mobile. The earlier 4:3 request was accidental and was explicitly withdrawn.
 - Use the selected Claude-like visual language: warm off-white, terracotta, deep brown, and sage; keep the UI concise, attractive, and practical, without filler copy.
+- 全项目卡片保持清楚一致的文字层级：普通标题 16px/600、正文 14px、辅助说明 12px、字段标签 13px，标题与必要图标独立一行并留 8px 间距，说明另起一行，删除重复角标和装饰性前缀，长名称与窄屏靠合理换行和间距处理，不靠缩小字号或堆叠说明。
 - Preserve capability while keeping the interface simple and clear. Show only information and actions needed for the current decision; remove unnecessary buttons, repeated status blocks, filler explanations, and implementation terminology from existing screens as well as new work. Reuse existing entry points, reveal necessary low-frequency details on demand, and do not default to adding more tabs, panels, or controls. Simplification must not discard financial evidence, required confirmations, or unsaved input.
 - 每轮整合后按当前本地功能范围汇报完成度区间、实际新增能力、验证层级和主要剩余项，第一阶段单列；旧的“完整 Markdown”比例仅作历史，不将延后范围或测试通过率纳入当前完成度。
 - 功能建设优先；新增功能仅做必要验证，每轮整合集中验收一次；已通过且未变更的部分不重复核验，只因新变化、失败或明确风险补查。

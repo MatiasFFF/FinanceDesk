@@ -26,7 +26,7 @@ import {
   buildStructuredInvoiceVatSummary,
   preparePayrollSocialImport,
 } from "../src/features/intake/documentIntake.js";
-import { reconcileBankAccountPeriod } from "../src/features/intake/bankStatementImport.js";
+import { buildBankMonthlyReconciliation, prepareBankImport, reconcileBankAccountPeriod } from "../src/features/intake/bankStatementImport.js";
 import {
   PRIMARY_NAV,
   PRODUCT_NAME,
@@ -220,6 +220,53 @@ function archiveWithoutTax(workspace = closeableWorkspace()) {
   const localClose = { ...workspace, modules: { ...workspace.modules, tax: false, payroll: false } };
   return archivePeriod(freezeReportVersion(localClose, "测试会计"), "测试会计");
 }
+
+test("跨期按银行账户承接已核实结存，新期对账单余额仍待提供", () => {
+  const workspace = closeableWorkspace();
+  workspace.bankAccounts.push(
+    { id: "carry-bank-two", name: "第二个账户", status: "active", openingBalance: 200, statementClosing: 200 },
+    { id: "carry-bank-unverified", name: "未核实账户", status: "inactive", openingBalance: 0, statementClosing: 999 },
+  );
+  workspace.bankImports.push({
+    id: "carry-bank-two-statement", accountId: "carry-bank-two", period: workspace.currentPeriod,
+    importedAt: "2026-09-04T07:58:00.000Z", sourceDocumentId: "carry-bank-two-document",
+    reconciliation: { openingBalance: 200, statementClosing: 200, passed: true },
+  });
+  const prior = workspace.bankAccounts.map((account) => buildBankMonthlyReconciliation(workspace, { accountId: account.id, period: workspace.currentPeriod }));
+  assert.ok(prior.filter((row) => row.passed).length >= 2);
+  const archived = archiveWithoutTax(workspace);
+  const archiveBefore = structuredClone(archived.delivery.archives);
+  const accountsBefore = structuredClone(archived.bankAccounts);
+  const next = enterNextPeriod(archived, "测试会计");
+  for (const previous of prior) {
+    const monthly = buildBankMonthlyReconciliation(next, { accountId: previous.accountId, period: next.currentPeriod });
+    assert.equal(monthly.openingBalance, previous.passed ? previous.statementClosing : null);
+    assert.equal(monthly.statementClosing, null);
+    assert.equal(monthly.difference, null);
+    assert.equal(monthly.status, "not_started");
+    assert.equal(monthly.passed, false);
+    assert.equal(monthly.openingCarryForward.verified, previous.passed);
+    assert.equal(monthly.openingCarryForward.fromPeriod, archived.currentPeriod);
+    assert.equal(monthly.openingCarryForward.archiveId, archiveBefore[0].id);
+    assert.deepEqual(monthly.openingCarryForward.sourceImportIds, previous.imports.map((record) => record.id));
+    if (previous.imports.length) assert.deepEqual(buildBankMonthlyReconciliation(next, { accountId: previous.accountId, period: archived.currentPeriod }), previous);
+  }
+  assert.equal(next.bankAccounts.find((account) => account.id === "carry-bank-two").openingBalance, 200);
+  assert.equal(next.bankAccounts.find((account) => account.id === "carry-bank-unverified").openingBalance, null);
+  assert.deepEqual(archived.delivery.archives, archiveBefore);
+  assert.deepEqual(next.delivery.archives, archiveBefore);
+  assert.deepEqual(archived.bankAccounts, accountsBefore);
+  const plan = prepareBankImport(next, {
+    accountId: "carry-bank-two", period: next.currentPeriod, fileName: "次月流水.csv",
+    table: [["交易日期", "金额", "余额"], [`${next.currentPeriod}-01`, 10, 210]],
+    mapping: { date: 0, amount: 1, balance: 2 },
+  });
+  assert.equal(plan.reconciliation.openingBalance, 200);
+  assert.equal(plan.reconciliation.statementClosing, 210);
+  assert.equal(plan.reconciliation.passed, true);
+  const normalized = normalizeWorkspace(next, { now: fixedNow });
+  assert.deepEqual(normalized.bankAccounts.find((account) => account.id === "carry-bank-two").balanceCarryForwards, next.bankAccounts.find((account) => account.id === "carry-bank-two").balanceCarryForwards);
+});
 
 for (const scenario of [
   { name: "profit", cost: 500, profit: 2080, equityAccountId: "equity", openingEquity: -25000, nextEquity: -27080 },

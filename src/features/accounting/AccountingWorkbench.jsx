@@ -637,7 +637,7 @@ function AccountingLedgerPanel({ workspace, onToast }) {
   return (
     <div className="accounting-ledger-panel">
       <div className="ledger-heading">
-        <div><small>当前有效已入账凭证</small><strong>序时账、总账与明细账</strong><p>每条账簿记录均可追溯凭证和原始资料。</p></div>
+        <div><h2>序时账、总账与明细账</h2><p>仅统计当前有效的已入账凭证，可追溯原始资料。</p></div>
         <button className="secondary-button" type="button" onClick={exportCsv} disabled={!ledger.rows.length}><FileText size={16} />导出 CSV</button>
       </div>
 
@@ -872,7 +872,7 @@ export function MemberBusinessAccountingQueue({ onToast }) {
                 <summary>{voucher ? voucher.status === "posted" ? "查看已入账凭证" : "复核凭证" : "生成凭证"}</summary>
                 <p>报表影响：{localizedMemberReportEffect(kind, activeWorkspace)}</p>
                 {voucher ? <div className="engine-voucher-card">
-                  <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借方 ¥{money(validation?.debit)} · 贷方 ¥{money(validation?.credit)} · {validation?.amountsBalanced ? "借贷平衡" : "借贷不平"}{validation?.balanced ? "" : " · 分录待修正"}</small><small className="engine-voucher-tax-total">税额合计 ¥{money(validation?.taxTotal)} · 仅作信息，不参与借贷平衡</small></span><em>{voucher.status}</em></div>
+                  <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借方 ¥{money(validation?.debit)} · 贷方 ¥{money(validation?.credit)} · {validation?.amountsBalanced ? "借贷平衡" : "借贷不平"}{validation?.balanced ? "" : " · 分录待修正"}</small><small className="engine-voucher-tax-total">税额合计 ¥{money(validation?.taxTotal)} · 仅作信息，不参与借贷平衡</small></span><em>{voucherStatusLabel(voucher.status)}</em></div>
                   <VoucherAccountJudgement
                     workspace={activeWorkspace}
                     accounts={accountOptions}
@@ -1133,7 +1133,7 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
 }
 
 function voucherStatusLabel(status) {
-  return { draft: "待复核", changes_requested: "待修订", posted: "已入账", superseded: "历史版本", invalidated: "已失效" }[status] || status;
+  return { unprocessed: "待处理", draft: "待复核", changes_requested: "待修订", posted: "已入账", superseded: "历史版本", invalidated: "已失效" }[status] || status;
 }
 
 function WorkspaceVoucherPanel({ onToast }) {
@@ -1859,7 +1859,7 @@ function TransactionAccountingWorkbench({ transactionId, onToast }) {
             <span><small>业务事件原判断</small><strong>{displayText(accountDefinition(businessEvent.accountingAttributes.primaryAccount, activeWorkspace).label)}</strong></span>
             <span><small>税务属性</small><strong>{BUSINESS_EVENT_TAX_TREATMENTS.find((item) => item.id === businessEvent.taxAttributes.treatment)?.label || businessEvent.taxAttributes.treatment}</strong></span>
             <span><small>证据 / 置信度</small><strong>{businessEvent.evidenceCompleteness}% / {businessEvent.confidence}%</strong></span>
-            <span><small>凭证状态</small><strong>{businessEvent.accountingStatus || "unprocessed"}</strong></span>
+            <span><small>凭证状态</small><strong>{voucherStatusLabel(businessEvent.accountingStatus || "unprocessed")}</strong></span>
           </div>
           <ul className="engine-reasons">{businessEvent.reasons.map((reason) => <li key={`${businessEvent.id}-${reason}`}>{displayText(reason)}</li>)}</ul>
           {memberBusinessEventBlocked && <div className="engine-missing"><span>{terminology.member}模块已关闭；这条历史{terminology.member}业务保留只读，不能继续生成、修改或入账凭证。重新启用{terminology.member}模块后才可继续处理。</span></div>}

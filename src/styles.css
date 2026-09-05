@@ -20,6 +20,10 @@
   --sage-soft: #e9ede5;
   --white: #fffdf9;
   --shadow: 0 18px 50px rgba(61, 50, 41, 0.1);
+  --font-card-title: 16px;
+  --font-body: 14px;
+  --font-label: 13px;
+  --font-helper: 12px;
 }
 * {
   box-sizing: border-box;
@@ -32,6 +36,7 @@ html {
 
 body {
   margin: 0;
+  font-size: var(--font-body);
   min-width: 320px;
   min-height: 100vh;
   background: var(--canvas);
@@ -237,7 +242,7 @@ button:disabled {
 .eyebrow {
   margin: 0 0 6px;
   color: var(--quiet);
-  font-size: 11px;
+  font-size: var(--font-helper); line-height: 1.5;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -571,7 +576,7 @@ button:disabled {
   align-items: center;
   gap: 7px;
   color: var(--clay-dark);
-  font-size: 11px;
+  font-size: var(--font-helper); line-height: 1.5;
   font-weight: 800;
   letter-spacing: 0.08em;
 }
@@ -617,9 +622,9 @@ button:disabled {
 .summary-card.sage .summary-icon { background: var(--sage-soft); color: var(--sage); }
 .summary-card.clay .summary-icon { background: var(--clay-soft); color: var(--clay); }
 .summary-card div { display: grid; grid-template-columns: 1fr auto; align-items: baseline; }
-.summary-card small { color: var(--muted); font-size: 11px; }
+.summary-card small { color: var(--muted); font-size: var(--font-helper); line-height: 1.5; }
 .summary-card strong { grid-column: 2; grid-row: 1 / span 2; font-family: ui-serif, "Songti SC", serif; font-size: 28px; font-weight: 650; }
-.summary-card p { grid-column: 1; margin: 4px 0 0; color: var(--quiet); font-size: 11px; }
+.summary-card p { grid-column: 1; margin: 4px 0 0; color: var(--quiet); font-size: var(--font-helper); line-height: 1.5; }
 
 .overview-grid {
   display: grid;
@@ -651,7 +656,7 @@ button:disabled {
 .carry-forward-list article:last-child { border-bottom: 0; }
 .carry-forward-list article.resolved { opacity: 0.65; }
 .carry-forward-list article > span { display: grid; gap: 4px; }
-.carry-forward-list small { color: var(--quiet); font-size: 10px; }
+.carry-forward-list small { color: var(--quiet); font-size: var(--font-helper); line-height: 1.5; }
 
 .panel {
   min-width: 0;
@@ -694,7 +699,7 @@ button:disabled {
 }
 
 .task-row strong { font-size: 13px; }
-.task-row small { color: var(--quiet); font-size: 11px; }
+.task-row small { color: var(--quiet); font-size: var(--font-helper); line-height: 1.5; }
 
 .task-check {
   display: grid;
@@ -751,7 +756,7 @@ button:disabled {
   border-radius: 8px;
   background: var(--clay-soft);
   color: var(--clay-dark);
-  font-size: 11px;
+  font-size: var(--font-helper);
   line-height: 1.5;
 }
 
@@ -764,7 +769,7 @@ button:disabled {
   gap: 7px;
   margin: 19px 0 0;
   color: var(--quiet);
-  font-size: 11px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .reconcile-layout {
@@ -859,7 +864,7 @@ button:disabled {
   outline: 0;
   background: transparent;
   color: var(--espresso);
-  font-size: 11px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .search-field input::placeholder { color: var(--quiet); }
@@ -879,7 +884,7 @@ button:disabled {
 
 .table-count {
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .table-scroll {
@@ -906,7 +911,7 @@ button:disabled {
 .voucher-table th {
   background: rgba(236, 229, 217, 0.35);
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-label); line-height: 1.5;
   font-weight: 700;
   letter-spacing: 0.04em;
 }
@@ -927,7 +932,7 @@ button:disabled {
 }
 
 .transaction-table td {
-  font-size: 11px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .transaction-table td strong,
@@ -946,7 +951,7 @@ button:disabled {
 .transaction-table td small {
   margin-top: 4px;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .date-cell { color: var(--muted); }
@@ -957,7 +962,7 @@ button:disabled {
   border-radius: 5px;
   background: var(--sand);
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .amount {
@@ -975,7 +980,7 @@ button:disabled {
   flex-direction: column;
   gap: 5px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .meter-track {
@@ -998,7 +1003,7 @@ button:disabled {
   gap: 5px;
   padding: 4px 7px;
   border-radius: 12px;
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
   font-weight: 700;
 }
 
@@ -1024,7 +1029,7 @@ button:disabled {
 }
 
 .empty-state strong { margin-top: 10px; color: var(--espresso); font-size: 13px; }
-.empty-state p { margin: 5px 0 0; font-size: 11px; }
+.empty-state p { margin: 5px 0 0; font-size: var(--font-helper); line-height: 1.5; }
 
 .detail-panel {
   position: sticky;
@@ -1079,7 +1084,7 @@ button:disabled {
   grid-template-columns: 88px minmax(0, 1fr);
   align-items: start;
   gap: 10px;
-  font-size: 11px;
+  font-size: var(--font-body);
   line-height: 1.5;
 }
 
@@ -1095,7 +1100,7 @@ button:disabled {
   border-radius: 8px;
   background: var(--sage-soft);
   color: var(--sage);
-  font-size: 10px;
+  font-size: var(--font-helper);
   line-height: 1.55;
 }
 
@@ -1115,7 +1120,7 @@ button:disabled {
 }
 
 .upload-box strong { margin-top: 8px; color: var(--espresso); font-size: 12px; }
-.upload-box p { max-width: 240px; margin: 5px 0 9px; color: var(--quiet); font-size: 9px; line-height: 1.5; }
+.upload-box p { max-width: 240px; margin: 5px 0 9px; color: var(--quiet); font-size: var(--font-helper); line-height: 1.5; }
 
 .complete-box {
   display: flex;
@@ -1128,7 +1133,7 @@ button:disabled {
 }
 
 .complete-box strong { color: var(--espresso); font-size: 12px; }
-.complete-box p { margin: 4px 0 0; color: var(--muted); font-size: 9px; }
+.complete-box p { margin: 4px 0 0; color: var(--muted); font-size: var(--font-helper); line-height: 1.5; }
 
 .detail-actions {
   position: sticky;
@@ -1144,7 +1149,7 @@ button:disabled {
 
 .detail-action-note {
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper);
   line-height: 1.4;
   text-align: right;
 }
@@ -1169,7 +1174,7 @@ button:disabled {
 
 .voucher-panel .soft-button { display: flex; }
 .voucher-table-wrap { overflow: auto; }
-.voucher-table td { color: var(--muted); font-size: 11px; }
+.voucher-table td { color: var(--muted); font-size: var(--font-body); line-height: 1.5; }
 .voucher-table td:first-child { color: var(--espresso); font-weight: 700; }
 
 .report-grid {
@@ -1183,7 +1188,7 @@ button:disabled {
   border-radius: 6px;
   background: var(--sand);
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
   font-weight: 700;
 }
 
@@ -1276,7 +1281,7 @@ button:disabled {
 .upload-hero p {
   margin: 6px 0 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .document-grid {
@@ -1308,16 +1313,16 @@ button:disabled {
 }
 
 .document-card div { min-width: 0; }
-.document-card small { display: block; color: var(--quiet); font-size: 9px; }
+.document-card small { display: block; color: var(--quiet); font-size: var(--font-helper); line-height: 1.5; }
 .document-card strong { display: block; margin-top: 3px; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.document-card p { margin: 4px 0 0; color: var(--muted); font-size: 9px; }
+.document-card p { margin: 4px 0 0; color: var(--muted); font-size: var(--font-helper); line-height: 1.5; }
 
 .doc-status {
   padding: 4px 7px;
   border-radius: 10px;
   background: var(--sage-soft);
   color: var(--sage);
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
   font-weight: 700;
 }
 
@@ -1351,7 +1356,7 @@ button:disabled {
 .modal-intro {
   margin: 14px 0 18px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-helper);
   line-height: 1.65;
 }
 
@@ -1371,7 +1376,7 @@ button:disabled {
 .drop-zone.dragging { border-color: var(--clay); background: var(--clay-soft); }
 .drop-zone span { display: grid; width: 48px; height: 48px; place-items: center; border-radius: 50%; background: var(--clay-soft); }
 .drop-zone strong { margin-top: 12px; color: var(--espresso); font-size: 13px; }
-.drop-zone small { margin-top: 5px; color: var(--quiet); font-size: 9px; }
+.drop-zone small { margin-top: 5px; color: var(--quiet); font-size: var(--font-helper); line-height: 1.5; }
 
 .modal-actions {
   display: flex;
@@ -1697,7 +1702,7 @@ textarea {
   margin: 20px auto 0;
   padding: 10px 13px;
   color: var(--quiet);
-  font-size: 11px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .boundary-note svg {
@@ -1734,7 +1739,7 @@ textarea {
   border-radius: 999px;
   background: var(--sand);
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-helper); line-height: 1.5;
   font-weight: 750;
   white-space: nowrap;
 }
@@ -1815,7 +1820,7 @@ button.metric-card:hover {
 .metric-copy > span {
   overflow: hidden;
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper); line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1893,7 +1898,7 @@ button.metric-card:hover {
 
 .batch-bar small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .batch-bar > div {
@@ -1914,7 +1919,7 @@ button.metric-card:hover {
   padding: 13px 16px;
   border-bottom: 1px solid var(--line-soft);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-label); line-height: 1.5;
   font-weight: 700;
 }
 
@@ -1934,7 +1939,7 @@ button.metric-card:hover {
   border-bottom: 1px solid var(--line);
   background: #f4efe5;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-label); line-height: 1.5;
   font-weight: 750;
 }
 
@@ -1968,7 +1973,7 @@ button.metric-card:hover {
   border-bottom: 1px solid var(--line-soft);
   background: var(--paper-strong);
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .transaction-row:last-of-type {
@@ -1995,7 +2000,7 @@ button.metric-card:hover {
 .suggestion-cell strong {
   overflow: hidden;
   color: var(--espresso);
-  font-size: 11px;
+  font-size: var(--font-body); line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2005,7 +2010,7 @@ button.metric-card:hover {
 .date-cell {
   overflow: hidden;
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper); line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2021,7 +2026,7 @@ button.metric-card:hover {
 }
 
 .evidence-meter > span {
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .detail-panel {
@@ -2087,7 +2092,7 @@ button.metric-card:hover {
 .drill-list strong,
 .allocation-list b,
 .drill-list b {
-  font-size: 11px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .allocation-list small,
@@ -2095,7 +2100,7 @@ button.metric-card:hover {
 .drill-list small,
 .quiet-copy {
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper);
   line-height: 1.55;
 }
 
@@ -2134,7 +2139,7 @@ button.metric-card:hover {
   padding: 4px 7px;
   border-radius: 6px;
   background: var(--canvas);
-  font-size: 10px;
+  font-size: var(--font-body);
   line-height: 1.35;
   white-space: normal;
 }
@@ -2177,7 +2182,7 @@ button.metric-card:hover {
 
 .missing-evidence small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-helper);
   line-height: 1.45;
 }
 
@@ -2204,12 +2209,12 @@ button.metric-card:hover {
 }
 
 .confirmation-check strong {
-  font-size: 11px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .confirmation-check small {
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper);
   line-height: 1.5;
 }
 
@@ -2248,8 +2253,8 @@ button.metric-card:hover {
   background: var(--sand);
 }
 
-.drill-formula small { color: var(--quiet); font-size: 9px; }
-.drill-formula strong { font-size: 11px; line-height: 1.55; }
+.drill-formula small { color: var(--quiet); font-size: var(--font-helper); line-height: 1.5; }
+.drill-formula strong { font-size: var(--font-body); line-height: 1.55; }
 
 .drill-list {
   margin: 0 18px 22px;
@@ -2278,7 +2283,7 @@ button.metric-card:hover {
 .final-confirm-panel > p {
   margin: 6px 0 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-helper);
   line-height: 1.55;
 }
 
@@ -2302,7 +2307,7 @@ button.metric-card:hover {
 
 .compact-select span {
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-label); line-height: 1.5;
 }
 
 .compact-select select {
@@ -2312,7 +2317,7 @@ button.metric-card:hover {
   outline: 0;
   background: transparent;
   color: var(--espresso);
-  font-size: 11px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .danger-banner {
@@ -2325,7 +2330,7 @@ button.metric-card:hover {
   border-radius: 9px;
   background: var(--clay-soft);
   color: var(--clay-dark);
-  font-size: 11px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .recovery-banner {
@@ -2375,7 +2380,7 @@ button.metric-card:hover {
   display: grid;
   gap: 5px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-label); line-height: 1.5;
 }
 
 .dispute-box select,
@@ -2414,13 +2419,13 @@ button.metric-card:hover {
   max-width: 720px;
   margin: 5px 0 0;
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper);
   line-height: 1.5;
 }
 
 .store-management-report > .panel-heading > span {
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .store-report-notice {
@@ -2432,7 +2437,7 @@ button.metric-card:hover {
   border-radius: 8px;
   background: var(--clay-soft);
   color: var(--clay-dark);
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .store-report-table {
@@ -2488,7 +2493,7 @@ button.metric-card:hover {
 
 .store-report-store > summary > span strong,
 .store-report-store > summary > strong {
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
   font-variant-numeric: tabular-nums;
 }
 
@@ -2542,7 +2547,7 @@ button.metric-card:hover {
 .store-member-list strong,
 .store-source-list strong {
   overflow: hidden;
-  font-size: 9px;
+  font-size: var(--font-body); line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2576,13 +2581,13 @@ button.metric-card:hover {
   max-width: 760px;
   margin: 5px 0 0;
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper);
   line-height: 1.5;
 }
 
 .owner-liquidity-report > .panel-heading > span {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .owner-liquidity-layout {
@@ -2646,7 +2651,7 @@ summary.forecast-week-row {
 .ageing-row > strong,
 .ageing-row > span:not(:first-child) {
   text-align: right;
-  font-size: 9px;
+  font-size: var(--font-body); line-height: 1.5;
   font-variant-numeric: tabular-nums;
 }
 
@@ -2672,7 +2677,7 @@ summary.forecast-week-row {
 }
 
 .owner-source-rows article strong {
-  font-size: 9px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .owner-source-rows article > strong {
@@ -2705,7 +2710,7 @@ summary.forecast-week-row {
   gap: 10px;
   padding: 10px;
   cursor: pointer;
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .owner-missing-sources > summary > span:first-child {
@@ -2732,7 +2737,7 @@ summary.forecast-week-row {
 }
 
 .advance-exclusion > div strong {
-  font-size: 9px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .advance-exclusion > div small {
@@ -2818,7 +2823,7 @@ summary.forecast-week-row {
 }
 
 .forecast-total-grid > details > summary strong {
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .forecast-week-row {
@@ -2844,7 +2849,7 @@ summary.forecast-week-row {
 .forecast-week-row > strong,
 .forecast-week-row > span:not(:first-child) {
   text-align: right;
-  font-size: 9px;
+  font-size: var(--font-body); line-height: 1.5;
   font-variant-numeric: tabular-nums;
 }
 
@@ -2897,7 +2902,7 @@ summary.forecast-week-row {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--font-body); line-height: 1.5;
   font-weight: 650;
   white-space: nowrap;
 }
@@ -2920,7 +2925,7 @@ summary.forecast-week-row {
   padding: 0 16px;
   background: #f4efe5;
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-label); line-height: 1.5;
   font-weight: 750;
 }
 
@@ -2951,12 +2956,12 @@ summary.forecast-week-row {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  font-size: 11px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .statement-rows small {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .statement-rows strong {
@@ -2975,7 +2980,7 @@ summary.forecast-week-row {
   grid-template-columns: 1fr 1fr;
   padding: 0 16px;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .statement-foot span:last-child {
@@ -3023,7 +3028,7 @@ summary.forecast-week-row {
 .version-list small,
 .version-list em {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
   font-style: normal;
 }
 
@@ -3045,7 +3050,7 @@ summary.forecast-week-row {
 
 .subheading {
   margin-bottom: 8px;
-  font-size: 10px;
+  font-size: var(--font-label); line-height: 1.5;
 }
 
 .subheading span {
@@ -3069,7 +3074,7 @@ summary.forecast-week-row {
 
 .version-diff strong,
 .version-diff b {
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .report-export-history {
@@ -3105,7 +3110,7 @@ summary.forecast-week-row {
 
 .report-export-history article strong {
   color: var(--espresso);
-  font-size: 9px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .report-export-history article small {
@@ -3190,7 +3195,7 @@ summary.forecast-week-row {
 .workpaper-grid span {
   overflow: hidden;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3210,7 +3215,7 @@ summary.forecast-week-row {
   border-radius: 8px;
   background: var(--clay-soft);
   color: var(--clay-dark);
-  font-size: 9px;
+  font-size: var(--font-helper);
   line-height: 1.45;
 }
 
@@ -3230,7 +3235,7 @@ summary.forecast-week-row {
   flex-direction: column;
   gap: 6px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-label); line-height: 1.5;
   font-weight: 650;
 }
 
@@ -3255,12 +3260,12 @@ summary.forecast-week-row {
 }
 
 .tax-rate-settings-heading strong {
-  font-size: 11px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .tax-rate-settings-heading small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--font-helper);
   font-weight: 500;
   line-height: 1.45;
   text-align: right;
@@ -3287,7 +3292,7 @@ summary.forecast-week-row {
   outline: 0;
   background: var(--paper-strong);
   color: var(--espresso);
-  font-size: 11px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .tax-input-grid textarea {
@@ -3304,7 +3309,7 @@ summary.forecast-week-row {
   border-radius: 8px;
   background: var(--clay-soft);
   color: var(--clay-dark);
-  font-size: 9px;
+  font-size: var(--font-helper);
   line-height: 1.45;
 }
 
@@ -3349,7 +3354,7 @@ summary.forecast-week-row {
 
 .confirmation-item-heading span {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-helper); line-height: 1.5;
   font-weight: 750;
 }
 
@@ -3365,7 +3370,7 @@ summary.forecast-week-row {
   gap: 7px;
   margin: 9px 0 0;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper);
   line-height: 1.5;
 }
 
@@ -3382,7 +3387,7 @@ summary.forecast-week-row {
 
 .confirmation-source strong {
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .confirmation-form {
@@ -3407,7 +3412,7 @@ summary.forecast-week-row {
 .confirmation-decisions legend {
   margin-bottom: 6px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--font-label); line-height: 1.5;
   font-weight: 700;
 }
 
@@ -3424,7 +3429,7 @@ summary.forecast-week-row {
   border: 1px solid var(--line);
   border-radius: 8px;
   color: var(--espresso);
-  font-size: 10px;
+  font-size: var(--font-label); line-height: 1.5;
   font-weight: 700;
 }
 
@@ -3435,7 +3440,7 @@ summary.forecast-week-row {
   flex-direction: column;
   gap: 6px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--font-label); line-height: 1.5;
   font-weight: 700;
 }
 
@@ -3458,7 +3463,7 @@ summary.forecast-week-row {
   outline: 0;
   background: #fffdf9;
   color: var(--espresso);
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .confirmation-note textarea {
@@ -3479,7 +3484,7 @@ summary.forecast-week-row {
 }
 
 .major-toggle strong {
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .major-toggle small {
@@ -3494,7 +3499,7 @@ summary.forecast-week-row {
   gap: 6px;
   margin: 0;
   color: var(--clay-dark);
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .confirmation-form > button {
@@ -3529,14 +3534,14 @@ summary.forecast-week-row {
 }
 
 .confirmation-record strong {
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .confirmation-record small,
 .confirmation-record p {
   margin: 0;
   color: inherit;
-  font-size: 9px;
+  font-size: var(--font-helper);
   line-height: 1.45;
 }
 
@@ -3546,7 +3551,7 @@ summary.forecast-week-row {
   border-radius: 8px;
   background: var(--sand);
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-helper); line-height: 1.5;
   font-weight: 700;
 }
 
@@ -3596,13 +3601,13 @@ summary.forecast-week-row {
 
 .final-context-strip span {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .final-context-strip strong {
   overflow: hidden;
   color: var(--espresso);
-  font-size: 11px;
+  font-size: var(--font-body); line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3680,7 +3685,7 @@ summary.forecast-week-row {
 }
 
 .final-statement-grid > article > strong {
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .final-statement-grid dl {
@@ -3693,7 +3698,7 @@ summary.forecast-week-row {
   gap: 10px;
   padding: 5px 0;
   border-top: 1px solid var(--line-soft);
-  font-size: 9px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .final-statement-grid dt {
@@ -3722,7 +3727,7 @@ summary.forecast-week-row {
   padding: 10px;
   border-radius: 8px;
   background: var(--paper);
-  font-size: 9px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .final-payroll-grid > div.total {
@@ -3749,12 +3754,12 @@ summary.forecast-week-row {
 
 .final-deduction-summary > span,
 .final-deduction-summary > small {
-  font-size: 9px;
+  font-size: var(--font-helper);
   line-height: 1.45;
 }
 
 .final-deduction-summary > strong {
-  font-size: 11px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .final-deduction-summary > b {
@@ -3799,7 +3804,7 @@ summary.forecast-week-row {
 
 .final-risk-list strong,
 .final-open-list strong {
-  font-size: 9px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .final-risk-list small,
@@ -3818,7 +3823,7 @@ summary.forecast-week-row {
   border-radius: 8px;
   background: var(--sage-soft);
   color: var(--sage);
-  font-size: 9px;
+  font-size: var(--font-body);
   line-height: 1.45;
 }
 
@@ -3864,7 +3869,7 @@ summary.forecast-week-row {
 
 .final-attestations strong,
 .final-deduction-choice strong {
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .final-attestations small,
@@ -3885,7 +3890,7 @@ summary.forecast-week-row {
 .final-deduction-choice legend {
   margin-bottom: 7px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--font-label); line-height: 1.5;
   font-weight: 700;
 }
 
@@ -3899,7 +3904,7 @@ summary.forecast-week-row {
   flex-direction: column;
   gap: 6px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--font-label); line-height: 1.5;
   font-weight: 700;
 }
 
@@ -3912,7 +3917,7 @@ summary.forecast-week-row {
   outline: 0;
   background: var(--paper-strong);
   color: var(--espresso);
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .final-confirm-form > button {
@@ -3938,14 +3943,14 @@ summary.forecast-week-row {
 }
 
 .final-confirmation-receipt strong {
-  font-size: 11px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .final-confirmation-receipt p,
 .final-confirmation-receipt small {
   margin: 0;
   color: inherit;
-  font-size: 9px;
+  font-size: var(--font-helper);
   line-height: 1.45;
 }
 
@@ -3982,12 +3987,12 @@ summary.forecast-week-row {
 }
 
 .check-rows strong {
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .check-rows small {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .check-icon {
@@ -4017,7 +4022,7 @@ summary.forecast-week-row {
 
 .report-check-state {
   flex: 0 0 auto;
-  font-size: 10px;
+  font-size: var(--font-helper); line-height: 1.5;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -4082,7 +4087,7 @@ summary.forecast-week-row {
   border-radius: 50%;
   background: var(--paper-strong);
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .filing-timeline li.active > span {
@@ -4103,12 +4108,12 @@ summary.forecast-week-row {
 }
 
 .filing-timeline strong {
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .filing-timeline small {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
 }
 
 .final-summary {
@@ -4121,7 +4126,7 @@ summary.forecast-week-row {
   gap: 12px;
   padding: 7px 0;
   border-bottom: 1px solid var(--line-soft);
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .final-summary dt {
@@ -4164,7 +4169,7 @@ summary.forecast-week-row {
 }
 
 .receipt-card strong {
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .receipt-card small {
@@ -4195,7 +4200,7 @@ summary.forecast-week-row {
 .receipt-upload-card p {
   margin: 4px 0 0;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-helper);
   line-height: 1.5;
 }
 
@@ -4275,7 +4280,7 @@ summary.forecast-week-row {
 .audit-list strong,
 .period-archive-list strong {
   overflow: hidden;
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4284,7 +4289,7 @@ summary.forecast-week-row {
 .period-archive-list small {
   overflow: hidden;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper); line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4346,12 +4351,12 @@ summary.forecast-week-row {
 }
 
 .choice-cards strong {
-  font-size: 11px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .choice-cards small {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper);
   line-height: 1.45;
 }
 
@@ -4370,7 +4375,7 @@ summary.forecast-week-row {
 .delete-warning p {
   margin: 5px 0 0;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-body);
   line-height: 1.5;
 }
 
@@ -4379,7 +4384,7 @@ summary.forecast-week-row {
   align-items: center;
   gap: 6px;
   color: var(--clay-dark);
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .empty-state {
@@ -5176,7 +5181,7 @@ summary.forecast-week-row {
   border-radius: 8px;
   background: var(--sage-soft);
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-helper);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -5253,13 +5258,13 @@ summary.forecast-week-row {
 
 .workspace-module-grid strong {
   color: inherit;
-  font-size: 11px;
+  font-size: var(--font-body);
   line-height: 1.35;
 }
 
 .workspace-module-grid small {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper);
   line-height: 1.45;
 }
 
@@ -5500,15 +5505,14 @@ summary.forecast-week-row {
 }
 
 .report-toolbar-actions .compact-select {
-  width: min(230px, 100%);
   border-color: var(--line-soft);
   border-radius: var(--radius-control);
 }
 
-.report-toolbar-actions .compact-select select {
+.reports-page .report-toolbar-actions .compact-select select {
   min-width: 0;
   width: 100%;
-  max-width: none;
+  max-width: 100%;
 }
 
 .report-reconciliation-panel {
@@ -5813,7 +5817,7 @@ summary.forecast-week-row {
   min-width: 118px;
   min-height: 34px;
   padding-inline: 10px;
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
   white-space: nowrap;
 }
 
@@ -6089,7 +6093,7 @@ summary.forecast-week-row {
 .transaction-review-meta small {
   min-width: 0;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--font-helper);
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -6123,7 +6127,7 @@ summary.forecast-week-row {
   padding: 10px 16px;
   background: rgba(236, 229, 217, 0.28);
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-body); line-height: 1.5;
 }
 
 .management-report-display-link > span {
@@ -7063,7 +7067,7 @@ summary.forecast-week-row {
 .transaction-detail-slot .detail-heading h2 { font-size: 21px; }
 .transaction-detail-slot .detail-section { padding: 16px; }
 .transaction-detail-slot .detail-actions { padding: 12px 16px; gap: 10px; }
-.transaction-detail-slot .detail-action-note { font-size: 11px; line-height: 1.5; white-space: normal; }
+.transaction-detail-slot .detail-action-note { font-size: var(--font-helper); line-height: 1.5; white-space: normal; }
 .with-transaction-detail .transaction-head { display: none; }
 .with-transaction-detail .transaction-list { padding: 0; }
 .with-transaction-detail .transaction-grid-row.transaction-row { grid-template-columns: 26px minmax(0, 1fr) auto; grid-template-areas: "check date status" "check main amount" "check suggestion evidence"; gap: 9px 12px; min-width: 0; min-height: 112px; margin: 0; padding: 14px; border: 0; border-bottom: 1px solid var(--line-soft); border-radius: 0; box-shadow: none; }
@@ -7081,17 +7085,16 @@ summary.forecast-week-row {
 .reports-page .report-toolbar h2 { font-size: 21px; margin: 0; }
 .reports-page .report-toolbar > div:first-child > p:not(.eyebrow) { display: none; }
 .reports-page .report-toolbar-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.reports-page .report-toolbar-actions .compact-select { flex: 1 1 180px; min-width: 160px; }
 .reports-page .report-toolbar-actions > button { min-width: 0; flex: 0 0 auto; min-height: 39px; padding-inline: 13px; }
 .toolbar-explanation { margin: 7px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .report-key-metrics { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 22px; padding: 2px 1px 14px; color: var(--muted); font-size: 12px; }
 .report-key-metrics strong { margin-left: 7px; color: var(--espresso); font-size: 17px; font-variant-numeric: tabular-nums; }
-.report-key-metrics > span:last-child { margin-left: auto; font-size: 11px; }
+.report-key-metrics > span:last-child { margin-left: auto; font-size: var(--font-helper); line-height: 1.5; }
 .reports-page .report-reconciliation-panel { margin-bottom: 16px; padding: 13px 16px; }
 .report-check-summary { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .report-check-summary > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
 .report-check-summary strong { font-size: 14px; }
-.report-check-summary span { color: var(--muted); font-size: 11px; }
+.report-check-summary span { color: var(--muted); font-size: var(--font-helper); line-height: 1.5; }
 .report-failed-checks { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 10px; }
 .report-failed-checks button { color: var(--clay-dark); text-align: left; }
 .inline-details > summary,
@@ -7113,7 +7116,7 @@ summary.forecast-week-row {
 .stage-blockers { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0 18px; margin-top: 12px; border-top: 1px solid var(--line-soft); }
 .stage-blockers > button { display: grid; grid-template-columns: 16px minmax(0, 1fr) 15px; gap: 9px; align-items: start; padding: 12px 0 3px; border: 0; background: transparent; color: var(--clay-dark); text-align: left; cursor: pointer; }
 .stage-blockers > button strong { display: block; font-size: 12px; }
-.stage-blockers > button small { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.stage-blockers > button small { display: block; margin-top: 4px; color: var(--muted); font-size: var(--font-helper); line-height: 1.5; overflow-wrap: anywhere; }
 .tax-page .tax-layout { grid-template-columns: minmax(0, 1fr) 260px; align-items: start; gap: 16px; }
 .tax-page .tax-main-column,
 .tax-page .tax-side-column { min-width: 0; gap: 16px; }
@@ -7152,7 +7155,7 @@ summary.forecast-week-row {
 .archive-page .archive-hero p:not(.eyebrow) { margin-bottom: 0; font-size: 12px; }
 .archive-page .archive-hero-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
 .archive-page .archive-hero-actions > button { min-height: 39px; padding-inline: 12px; }
-.archive-page .archive-hero-actions > label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
+.archive-page .archive-hero-actions > label { display: grid; gap: 5px; color: var(--muted); font-size: var(--font-label); line-height: 1.5; }
 .archive-page .archive-hero-actions select { height: 37px; max-width: 210px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper-strong); color: var(--espresso); font-size: 12px; }
 .archive-status-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding: 13px 2px; color: var(--muted); font-size: 12px; }
 .archive-status-strip > button { padding: 3px 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; }
@@ -7163,7 +7166,7 @@ summary.forecast-week-row {
 .archive-page .archive-tools .search-field { flex: 1 1 200px; }
 .archive-page .document-grid { gap: 0; padding: 0 16px; }
 .archive-page .document-card { border: 0; border-bottom: 1px solid var(--line-soft); border-radius: 0; box-shadow: none; padding: 15px 3px; background: transparent; }
-.archive-page .document-card p { margin: 5px 0 0; font-size: 11px; }
+.archive-page .document-card p { margin: 5px 0 0; font-size: var(--font-helper); line-height: 1.5; }
 .archive-page .receipt-upload-card { margin-top: 16px; padding: 14px 18px; box-shadow: none; }
 .archive-page .archive-check-panel { margin-top: 16px; }
 .boundary-note { padding: 12px 2px; border: 0; background: transparent; box-shadow: none; }
@@ -7208,3 +7211,128 @@ summary.forecast-week-row {
 .archive-history-tools { display: flex; justify-content: flex-end; padding: 12px 16px 0; }
 
 #tax-final-confirmation[hidden] { display: none !important; }
+
+/* Shared card typography; page titles and financial amounts keep their own scale. */
+.card-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  font-family: inherit;
+  font-size: var(--font-card-title);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.card-title > span,
+:is(.panel-heading, .section-heading, .detail-heading, .modal-heading) > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.card-title > svg,
+:is(.panel-heading, .section-heading, .detail-heading, .modal-heading) :is(h2, h3, h4) > svg {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+:is(.panel-heading, .section-heading, .detail-heading, .modal-heading) {
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px 16px;
+}
+
+:is(.panel-heading, .section-heading, .detail-heading, .modal-heading, .report-toolbar, .archive-hero) > div:has(> :is(h2, h3, h4)) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
+.app-main :is(.panel-heading, .section-heading, .detail-heading, .progress-card, .next-action-card, .report-toolbar, .archive-hero) :is(h2, h3, h4) {
+  margin: 0;
+  min-width: 0;
+  font-family: inherit;
+  font-size: var(--font-card-title);
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: normal;
+  overflow-wrap: anywhere;
+}
+
+.modal-card .modal-heading :is(h2, h3) {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.app-main :is(.panel-heading, .section-heading, .detail-heading, .report-toolbar, .archive-hero) :is(p, small),
+.modal-heading :is(p, small),
+.app-main :is(.progress-card, .next-action-card) > p,
+.app-main .eyebrow,
+.modal-card .eyebrow {
+  margin: 0;
+  font-size: var(--font-helper);
+  font-weight: 400;
+  line-height: 1.5;
+  letter-spacing: normal;
+  overflow-wrap: anywhere;
+}
+
+:is(.app-main, .modal-card) .field-label > span {
+  font-size: var(--font-label);
+  line-height: 1.5;
+}
+
+:is(.panel-heading, .section-heading, .detail-heading, .modal-heading) > button {
+  max-width: 100%;
+  flex-shrink: 0;
+  white-space: normal;
+  line-height: 1.5;
+}
+
+.reports-page .report-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+}
+
+.reports-page .report-toolbar > div:first-child {
+  flex: 1 1 160px;
+  min-width: 0;
+  max-width: none;
+}
+
+.reports-page .report-toolbar-actions {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  flex: 0 1 560px;
+  align-items: center;
+  justify-content: flex-end;
+  width: auto;
+  min-width: min(560px, 100%);
+  max-width: 100%;
+  gap: 8px;
+}
+
+.reports-page .report-toolbar-actions .compact-select {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 240px;
+}
+
+.reports-page .report-toolbar-actions > button {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 0 auto;
+  white-space: normal;
+  line-height: 1.5;
+}

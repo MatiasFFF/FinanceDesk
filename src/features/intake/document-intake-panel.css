@@ -6,6 +6,8 @@
   grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   min-width: 0;
+  font-size: var(--font-body, 14px);
+  line-height: 1.6;
 }
 
 .document-intake-panel > * {
@@ -30,13 +32,13 @@
 }
 
 .document-recognition p { margin: 0; }
-.document-recognition-actions > strong { margin-right: auto; }
+.document-recognition-actions > strong { margin-right: auto; font-size: var(--font-card-title, 16px); font-weight: 600; line-height: 1.5; }
 .document-recognition-progress { display: grid; gap: 6px; }
 .document-recognition-progress progress { width: 100%; accent-color: var(--accent, #ae624a); }
 .document-recognition-candidates { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
 .document-recognition-candidates > li > div { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
 .document-recognition-candidates small { display: block; margin-top: 4px; }
-.document-recognition-text pre { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; line-height: 1.7; }
+.document-recognition-text pre { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: var(--font-body, 14px); line-height: 1.7; }
 .document-recognition-text select { margin: 8px; }
 
 .document-intake-panel [hidden] {
@@ -66,7 +68,58 @@
 }
 
 .document-intake-panel .foundation-section-heading h3 {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   margin: 0;
+  font-family: inherit;
+  font-size: var(--font-card-title, 16px);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.document-intake-panel .foundation-section-heading h3 > svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+
+.document-intake-panel .foundation-section-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-helper, 12px);
+  line-height: 1.6;
+}
+
+.document-intake-panel .foundation-section-heading > span,
+.document-intake-panel small,
+.document-intake-panel .foundation-hint {
+  font-size: var(--font-helper, 12px);
+  line-height: 1.6;
+}
+
+.document-intake-panel input,
+.document-intake-panel select,
+.document-intake-panel textarea,
+.document-intake-panel button,
+.document-intake-panel .foundation-record p {
+  font-size: var(--font-body, 14px);
+  line-height: 1.6;
+}
+
+.document-intake-panel .foundation-record > div,
+.document-intake-panel .foundation-record > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.document-intake-panel .foundation-record > div > strong,
+.document-intake-panel .foundation-record small {
+  display: block;
+}
+
+.document-intake-panel .foundation-record small,
+.document-intake-panel .foundation-record p {
+  margin: 4px 0 0;
 }
 
 .document-intake-upload-zone,
@@ -137,6 +190,7 @@
   display: flex;
   min-height: 2.7em;
   align-items: flex-end;
+  font-size: var(--font-label, 13px);
   line-height: 1.35;
   overflow-wrap: break-word;
 }
@@ -199,7 +253,7 @@
   border: 0;
   background: transparent;
   color: var(--clay-dark);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -247,7 +301,7 @@
   padding: 14px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 12px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.55;
 }
 
@@ -314,17 +368,17 @@
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--font-body, 14px);
 }
 
 .document-section-nav button.active {
   background: var(--clay-soft);
   color: var(--clay-dark);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .document-section-nav button span {
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
   opacity: 0.8;
 }
 
@@ -345,7 +399,7 @@
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 10px;
-  font-size: 12px;
+  font-size: var(--font-helper, 12px);
 }
 
 .document-state-row {
@@ -354,7 +408,7 @@
   gap: 6px 12px;
   margin: 4px 0;
   color: var(--quiet);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
 }
 
 .document-state-row .original-available {
@@ -363,13 +417,13 @@
 
 .document-state-row .original-missing {
   color: var(--clay-dark);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .document-trace-details > summary {
   padding: 5px 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
   cursor: pointer;
 }
 
@@ -377,7 +431,7 @@
 .document-trace-details pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
 }
 
 .document-trace-details pre {
@@ -387,7 +441,7 @@
 
 .document-trace-details li {
   overflow-wrap: anywhere;
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.5;
 }
 
@@ -403,7 +457,9 @@
 }
 
 .document-intake-panel .document-record strong {
-  font-size: 13px;
+  font-size: var(--font-body, 14px);
+  font-weight: 600;
+  line-height: 1.5;
 }
 
 .document-intake-panel .document-primary-actions,
@@ -427,7 +483,7 @@
   min-height: 38px;
   padding: 6px 10px;
   gap: 6px;
-  font-size: 11px;
+  font-size: var(--font-body, 14px);
 }
 
 .archive-package-summary {
@@ -447,10 +503,16 @@
   gap: 5px;
 }
 
+.archive-package-summary > div > strong {
+  font-size: var(--font-card-title, 16px);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
 .archive-package-summary p {
   margin: 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.5;
 }
 
@@ -472,14 +534,14 @@
 }
 
 .archive-action-list strong {
-  font-size: 12px;
+  font-size: var(--font-body, 14px);
 }
 
 .archive-action-list p,
 .archive-action-list small {
   margin: 4px 0 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -492,13 +554,15 @@
   padding: 14px 0;
   cursor: pointer;
   color: var(--espresso);
-  font-size: 13px;
+  font-size: var(--font-card-title, 16px);
+  font-weight: 600;
+  line-height: 1.5;
 }
 
 .document-voucher-export > summary > span {
   margin-left: 10px;
   color: var(--quiet);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
 }
 
 .document-voucher-export > .bank-import-workspace {

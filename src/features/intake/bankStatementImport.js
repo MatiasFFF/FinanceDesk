@@ -999,6 +999,10 @@ export function buildBankMonthlyReconciliation(workspace, { accountId, period })
     balanceSource: hasReviewedBalances ? "account_recheck" : imports.length ? "import_records" : "account_master",
     balanceReviewedAt: hasReviewedBalances ? reviewedBalances.reconciledAt || null : null,
     balanceReviewedBy: hasReviewedBalances ? reviewedBalances.reconciledBy || null : null,
+    openingCarryForward: account?.balanceCarryForwards?.[period] ? {
+      ...account.balanceCarryForwards[period],
+      matchesOpeningBalance: openingBalance === account.balanceCarryForwards[period].openingBalance,
+    } : null,
   };
 }
 
