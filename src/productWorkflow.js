@@ -1593,6 +1593,25 @@ export function archivePeriod(workspace, actor = "本地用户") {
   return audit(next, "完成期间归档", `${workspace.currentPeriod} · ${flow.version.label}`, actor);
 }
 
+export function buildArchivedPeriodExport(workspace, archiveId, exportedAt = new Date().toISOString()) {
+  if (!workspace || typeof workspace !== "object") throw new Error("工作台不存在");
+  const archive = (workspace.delivery?.archives || []).find((item) => item.id === archiveId);
+  if (!archive) throw new Error("归档记录不存在");
+  return {
+    product: "FinanceDesk",
+    schemaVersion: PRODUCT_STATE_VERSION,
+    localOnly: true,
+    indexedDbFilesIncluded: false,
+    workspace: {
+      id: workspace.id,
+      name: workspace.name,
+      legalName: workspace.company?.legalName || "",
+    },
+    exportedAt,
+    archive: JSON.parse(JSON.stringify(archive)),
+  };
+}
+
 export function nextPeriod(period) {
   const [year, month] = String(period).split("-").map(Number);
   const date = new Date(Date.UTC(year, month, 1));

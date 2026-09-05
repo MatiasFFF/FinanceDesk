@@ -31,6 +31,7 @@ import {
   PRODUCT_NAME,
   archivePeriod,
   attachReceipt,
+  buildArchivedPeriodExport,
   buildVatReconciliationSummary,
   buildReportSnapshot,
   confirmPayrollSocialData,
@@ -720,6 +721,20 @@ test("the full frozen-version confirmation, package, receipt, archive and next-p
   const archived = archivePeriod(workspace, "测试会计");
   assert.equal(archived.delivery.archives[0].sourceFingerprint, fingerprint);
   assert.equal(archived.documents.find((document) => document.id === "receipt-document-test").archiveStatus, "archived");
+
+  const archivedPeriodExport = buildArchivedPeriodExport(
+    archived,
+    archived.delivery.archives[0].id,
+    "2026-09-04T08:16:00.000Z",
+  );
+  assert.equal(archivedPeriodExport.localOnly, true);
+  assert.equal(archivedPeriodExport.indexedDbFilesIncluded, false);
+  assert.equal(archivedPeriodExport.workspace.id, archived.id);
+  assert.equal(archivedPeriodExport.archive.reportVersionId, versionId);
+  assert.equal(archivedPeriodExport.exportedAt, "2026-09-04T08:16:00.000Z");
+  archivedPeriodExport.archive.summary.profit = 999999;
+  assert.notEqual(archived.delivery.archives[0].summary.profit, 999999);
+  assert.throws(() => buildArchivedPeriodExport(archived, "missing-archive"), /归档记录不存在/);
 
   const { store } = integratedStore(archived);
   assert.throws(() => store.actions.replaceWorkspace(archived.id, { ...store.getActiveWorkspace(), tax: { ...archived.tax, payroll: 1 } }), /已经归档/);

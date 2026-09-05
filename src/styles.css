@@ -6322,3 +6322,625 @@ summary.forecast-week-row {
     max-width: 112px;
   }
 }
+
+/* End-stage reports, filing confirmation, and archive alignment. */
+.reports-page .report-toolbar,
+.reports-page .report-toolbar-actions,
+.tax-page .confirmation-item-heading,
+.tax-page .confirmation-item-heading > div,
+.tax-page .confirmation-form,
+.tax-page .final-confirm-form,
+.archive-page .archive-hero,
+.archive-page .archive-toolbar,
+.archive-page .archive-tools {
+  min-width: 0;
+}
+
+.reports-page .report-toolbar {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(560px, auto);
+  align-items: center;
+  gap: 22px;
+}
+
+.reports-page .report-toolbar > div:first-child {
+  max-width: 680px;
+}
+
+.reports-page .report-toolbar-actions {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(190px, auto) minmax(150px, auto);
+  align-items: stretch;
+  justify-content: stretch;
+  gap: 9px;
+}
+
+.reports-page .report-toolbar-actions .compact-select,
+.reports-page .report-toolbar-actions > button {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-height);
+  justify-content: center;
+}
+
+.reports-page .report-toolbar-actions .compact-select {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.reports-page .report-check-rows button {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.reports-page .report-check-rows button > span:nth-child(2) {
+  min-width: 0;
+}
+
+.reports-page .report-check-state {
+  justify-self: end;
+  text-align: right;
+}
+
+.reports-page .report-check-rows button > svg:last-child {
+  justify-self: end;
+}
+
+.reports-page .reports-layout {
+  grid-template-columns: minmax(0, 1.5fr) minmax(350px, 0.74fr);
+  align-items: start;
+}
+
+.reports-page .version-list button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.reports-page .version-list button > span:first-child {
+  grid-row: 1 / span 2;
+}
+
+.reports-page .version-list button > .tone-pill,
+.reports-page .version-list button > em {
+  grid-column: 2;
+  justify-self: end;
+}
+
+.reports-page .version-diff > div:not(.subheading) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.reports-page .version-diff > div:not(.subheading) > b {
+  justify-self: end;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.reports-page .report-export-history article {
+  align-items: flex-start;
+}
+
+.reports-page .version-list small,
+.reports-page .report-export-history article strong,
+.reports-page .report-export-history article small {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.tax-page .tax-layout {
+  grid-template-columns: minmax(0, 1.5fr) minmax(350px, 0.72fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.tax-page .confirmation-item-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.tax-page .confirmation-item-heading > div {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, auto);
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.tax-page .confirmation-item-heading strong {
+  justify-self: end;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.tax-page .confirmation-heading-actions {
+  align-self: center;
+  white-space: nowrap;
+}
+
+.tax-page .confirmation-form {
+  grid-template-columns: minmax(240px, 1fr) minmax(210px, 0.75fr);
+  align-items: start;
+  gap: 11px 14px;
+}
+
+.tax-page .confirmation-decisions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+}
+
+.tax-page .confirmation-decisions legend {
+  grid-column: 1 / -1;
+}
+
+.tax-page .confirmation-decisions label {
+  min-width: 0;
+  justify-content: center;
+}
+
+.tax-page .confirmation-form > button {
+  min-width: min(220px, 100%);
+  max-width: 100%;
+  white-space: normal;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.tax-page .confirmation-source span,
+.tax-page .confirmation-record > div,
+.tax-page .confirmation-record strong,
+.tax-page .confirmation-record small,
+.tax-page .confirmation-record p,
+.tax-page .confirmation-note,
+.tax-page .confirmation-signer {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tax-page .final-context-strip strong {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.tax-page .final-review-grid {
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.7fr);
+  align-items: start;
+  gap: 14px;
+}
+
+.tax-page .final-tax-grid article,
+.tax-page .final-statement-grid > article,
+.tax-page .final-payroll-grid > div {
+  min-width: 0;
+}
+
+.tax-page .final-statement-grid dl > div,
+.tax-page .final-payroll-grid > div {
+  align-items: baseline;
+}
+
+.tax-page .final-statement-grid dt,
+.tax-page .final-statement-grid dd,
+.tax-page .final-payroll-grid span,
+.tax-page .final-payroll-grid strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tax-page .final-confirm-form {
+  grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr);
+  align-items: start;
+  gap: 12px 16px;
+}
+
+.tax-page .final-attestations label,
+.tax-page .final-deduction-choice label {
+  min-width: 0;
+}
+
+.tax-page .final-attestations span,
+.tax-page .final-deduction-choice span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tax-page .final-confirm-form > button {
+  min-width: min(320px, 100%);
+  max-width: 100%;
+  white-space: normal;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.tax-page .final-confirmation-receipt > div,
+.tax-page .final-confirmation-receipt strong,
+.tax-page .final-confirmation-receipt p,
+.tax-page .final-confirmation-receipt small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.archive-page .archive-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 22px;
+}
+
+.archive-page .archive-hero-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(150px, auto));
+  align-items: stretch;
+  gap: 8px;
+}
+
+.archive-page .archive-hero-actions > button {
+  min-width: 0;
+  max-width: 100%;
+  justify-content: center;
+  white-space: normal;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.archive-page .archive-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(300px, 1fr);
+  align-items: center;
+  gap: 14px;
+  padding-right: 14px;
+}
+
+.archive-page .archive-toolbar .report-tabs {
+  max-width: 100%;
+}
+
+.archive-page .archive-tools {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(160px, auto);
+  align-items: center;
+  justify-content: stretch;
+  gap: 8px;
+  padding: 0;
+}
+
+.archive-page .archive-tools .search-field,
+.archive-page .archive-tools > button {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.archive-page .archive-tools > button {
+  justify-content: center;
+  white-space: normal;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.archive-page .document-card {
+  grid-template-columns: 38px minmax(0, 1fr) minmax(126px, auto);
+  align-items: center;
+}
+
+.archive-page .document-card strong,
+.archive-page .document-card p,
+.archive-page .document-card small {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.archive-page .archive-document-actions {
+  min-width: 126px;
+}
+
+.archive-page .audit-list > div {
+  grid-template-columns: 18px minmax(0, 1fr) minmax(170px, auto);
+}
+
+.archive-page .period-archive-list article {
+  grid-template-columns: 36px minmax(0, 1fr) minmax(130px, auto) auto;
+}
+
+.archive-page .audit-list strong,
+.archive-page .audit-list small,
+.archive-page .period-archive-list strong,
+.archive-page .period-archive-list small {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.archive-page .archive-check-panel .check-rows button {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+@media (max-width: 1180px) {
+  .reports-page .report-toolbar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .reports-page .report-toolbar-actions {
+    width: 100%;
+  }
+
+  .reports-page .reports-layout,
+  .tax-page .tax-layout,
+  .tax-page .final-review-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tax-page .tax-side-column {
+    position: static;
+  }
+
+  .reports-page .version-panel {
+    display: grid;
+    grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.2fr);
+    align-items: start;
+  }
+
+  .reports-page .version-panel > .panel-heading,
+  .reports-page .version-panel > .wide {
+    grid-column: 1 / -1;
+  }
+
+  .reports-page .version-list {
+    grid-column: 1;
+    grid-row: 2 / span 2;
+    max-height: 360px;
+  }
+
+  .reports-page .version-diff {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .reports-page .report-export-history {
+    grid-column: 2;
+    grid-row: 3;
+  }
+}
+
+@media (max-width: 900px) {
+  .reports-page .report-toolbar-actions {
+    grid-template-columns: minmax(210px, 1fr) repeat(2, minmax(150px, auto));
+  }
+
+  .tax-page .final-context-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tax-page .final-tax-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .tax-page .final-statement-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .archive-page .archive-hero,
+  .archive-page .archive-toolbar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .archive-page .archive-hero-actions {
+    justify-content: start;
+  }
+
+  .archive-page .archive-toolbar {
+    gap: 0;
+    padding-right: 0;
+  }
+
+  .archive-page .archive-tools {
+    padding: 12px 14px 14px;
+  }
+}
+
+@media (max-width: 740px) {
+  .reports-page .report-toolbar-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .reports-page .report-toolbar-actions .compact-select {
+    grid-column: 1 / -1;
+  }
+
+  .reports-page .report-check-rows button {
+    grid-template-columns: 22px minmax(0, 1fr) 16px;
+    align-items: start;
+  }
+
+  .reports-page .report-check-state {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: start;
+    margin-left: 0;
+    text-align: left;
+  }
+
+  .reports-page .report-check-rows button > svg:last-child {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+
+  .reports-page .version-panel {
+    display: block;
+  }
+
+  .reports-page .version-list {
+    max-height: 280px;
+  }
+
+  .tax-page .confirmation-item-heading {
+    align-items: start;
+  }
+
+  .tax-page .confirmation-item-heading > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .tax-page .confirmation-item-heading strong {
+    justify-self: start;
+    text-align: left;
+  }
+
+  .tax-page .confirmation-heading-actions {
+    align-self: start;
+  }
+
+  .tax-page .confirmation-form,
+  .tax-page .final-confirm-form {
+    grid-template-columns: 1fr;
+  }
+
+  .tax-page .confirmation-note,
+  .tax-page .confirmation-reject-warning,
+  .tax-page .confirmation-form > button,
+  .tax-page .final-confirm-form > button {
+    grid-column: auto;
+  }
+
+  .tax-page .final-attestations {
+    grid-row: auto;
+  }
+
+  .tax-page .final-statement-grid,
+  .tax-page .final-payroll-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .archive-page .document-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .archive-page .audit-list > div,
+  .archive-page .period-archive-list article {
+    align-items: start;
+  }
+}
+
+@media (max-width: 560px) {
+  .reports-page .report-toolbar-actions,
+  .archive-page .archive-hero-actions,
+  .archive-page .archive-tools {
+    grid-template-columns: 1fr;
+  }
+
+  .reports-page .report-toolbar-actions .compact-select {
+    grid-column: auto;
+  }
+
+  .reports-page .report-toolbar-actions > button,
+  .archive-page .archive-hero-actions > button,
+  .archive-page .archive-tools > button {
+    width: 100%;
+  }
+
+  .tax-page .workpaper-grid,
+  .tax-page .final-tax-grid,
+  .tax-page .final-context-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .tax-page .confirmation-item-toggle {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 11px 12px;
+  }
+
+  .tax-page .confirmation-decisions {
+    grid-template-columns: 1fr;
+  }
+
+  .tax-page .confirmation-decisions legend {
+    grid-column: auto;
+  }
+
+  .tax-page .confirmation-form > button,
+  .tax-page .final-confirm-form > button {
+    width: 100%;
+    min-width: 0;
+    justify-self: stretch;
+  }
+
+  .tax-page .final-statement-grid dl > div,
+  .tax-page .final-payroll-grid > div {
+    gap: 8px;
+  }
+
+  .tax-page .final-confirmation-receipt {
+    align-items: flex-start;
+  }
+
+  .archive-page .archive-toolbar .report-tabs {
+    width: 100%;
+  }
+
+  .archive-page .archive-toolbar .report-tabs button {
+    flex: 1 0 auto;
+  }
+
+  .archive-page .document-card {
+    grid-template-columns: 36px minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .archive-page .document-card > .tone-pill,
+  .archive-page .document-card > .archive-document-actions {
+    grid-column: 2;
+    justify-self: stretch;
+  }
+
+  .archive-page .archive-document-actions {
+    width: 100%;
+    min-width: 0;
+    align-items: stretch;
+  }
+
+  .archive-page .archive-document-download {
+    width: 100%;
+    min-width: 0;
+    white-space: normal;
+  }
+
+  .archive-page .audit-list > div {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+
+  .archive-page .audit-list > div > span:last-child {
+    grid-column: 2;
+    justify-self: start;
+    text-align: left;
+  }
+
+  .archive-page .period-archive-list article {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .archive-page .period-archive-list article > span:nth-last-child(2),
+  .archive-page .period-archive-list article > .tone-pill {
+    grid-column: 2;
+    justify-self: start;
+    text-align: left;
+  }
+}

@@ -72,6 +72,7 @@ import {
   archivePeriod,
   attachReceipt,
   audit,
+  buildArchivedPeriodExport,
   buildReportSnapshot,
   confirmPayrollSocialData,
   ensureWorkspace,
@@ -840,6 +841,18 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
   const readyToFreeze = balanced && flow.bankReconciliationIssues.length === 0 && flow.unresolved.length === 0 && flow.pendingVouchers.length === 0;
   const currentFrozenVersion = flow.version;
   const excelExportReady = Boolean(currentFrozenVersion?.sourceFingerprint);
+  const selectedCurrentFrozenVersion = Boolean(
+    excelExportReady
+    && selectedVersion
+    && selectedVersion.id === currentFrozenVersion.id,
+  );
+  const excelExportTitle = !excelExportReady
+    ? "请先冻结当前数据；旧版本或已变化的数据不能导出"
+    : !selectedVersion
+      ? `当前正在查看实时草稿；请选择当前有效冻结版本 ${currentFrozenVersion.label}`
+      : selectedVersion.id !== currentFrozenVersion.id
+        ? `当前正在查看旧冻结版本 ${selectedVersion.label}；请选择当前有效冻结版本 ${currentFrozenVersion.label}`
+        : `导出当前有效冻结版本 ${currentFrozenVersion.label}，不上传网络`;
   const reportExports = (workspace.delivery.reportExports || []).filter((item) => item.period === workspace.currentPeriod && item.kind === "xlsx");
   const taxEnabled = workspaceModuleEnabled(workspace, "tax");
   function openReconciliationSource(check) {
@@ -853,7 +866,7 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
   return (
     <div className="page-content reports-page">
       <StageRail workspace={workspace} onPage={onPage} />
-      <section className="report-toolbar panel"><div><p className="eyebrow">S9 · 本地报表</p><h2>{selectedVersion ? `${selectedVersion.label} 冻结版本` : "实时草稿"}</h2><p>{selectedVersion ? `冻结于 ${formatDateTime(selectedVersion.createdAt)}，不会被后续修改覆盖。` : "数字会随本地凭证与税务调整更新。冻结后形成版本快照。"}</p></div><div className="report-toolbar-actions"><label className="compact-select"><span>查看版本</span><select value={versionId} onChange={(event) => setVersionId(event.target.value)}><option value="live">实时草稿</option>{versions.map((item) => <option key={item.id} value={item.id}>{item.label} · {formatDateTime(item.createdAt)}</option>)}</select><CaretDown size={13} /></label><button className="secondary-button" disabled={!excelExportReady} onClick={onExportExcel} title={excelExportReady ? `导出当前 ${currentFrozenVersion.label}，不上传网络` : "请先冻结当前数据；旧版本或已变化的数据不能导出"} type="button"><DownloadSimple size={17} />导出当前冻结版 Excel</button><button className="primary-button" disabled={!readyToFreeze} onClick={onFreeze} type="button"><SealCheck size={17} />冻结新版本</button></div></section>
+      <section className="report-toolbar panel"><div><p className="eyebrow">S9 · 本地报表</p><h2>{selectedVersion ? `${selectedVersion.label} 冻结版本` : "实时草稿"}</h2><p>{selectedVersion ? `冻结于 ${formatDateTime(selectedVersion.createdAt)}，不会被后续修改覆盖。` : "数字会随本地凭证与税务调整更新。冻结后形成版本快照。"}</p></div><div className="report-toolbar-actions"><label className="compact-select"><span>查看版本</span><select value={versionId} onChange={(event) => setVersionId(event.target.value)}><option value="live">实时草稿</option>{versions.map((item) => <option key={item.id} value={item.id}>{item.label} · {formatDateTime(item.createdAt)}</option>)}</select><CaretDown size={13} /></label><button className="secondary-button" disabled={!selectedCurrentFrozenVersion} onClick={onExportExcel} title={excelExportTitle} type="button"><DownloadSimple size={17} />{selectedCurrentFrozenVersion ? "导出当前冻结版 Excel" : selectedVersion ? "旧版本不可导出" : "请选择当前冻结版本"}</button><button className="primary-button" disabled={!readyToFreeze} onClick={onFreeze} type="button"><SealCheck size={17} />冻结新版本</button></div></section>
       {!balanced && <div className="danger-banner"><WarningCircle size={18} /><span><strong>报表尚未勾稽：</strong>{statementChecks.filter((check) => !check.passed).map((check) => `${check.label}差额 ${formatCurrency(check.difference)}`).join("；")}。先处理下方对应来源，再冻结报表。</span></div>}
       {balanced && !readyToFreeze && <div className="danger-banner"><WarningCircle size={18} /><span><strong>月结链路尚未完成：</strong>{flow.bankReconciliationIssues.length ? `${flow.bankReconciliationIssues.length} 份银行流水勾稽未通过。` : flow.unresolved.length ? `${flow.unresolved.length} 笔流水尚未入账或暂不处理。` : `${flow.pendingVouchers.length} 张凭证草稿或更正尚未入账。`}</span></div>}
       <section className="metric-grid four report-summary"><MetricCard label="资产合计" value={formatCurrency(snapshot.summary.assets)} note="资产负债表" icon={Bank} /><MetricCard label="营业收入" value={formatCurrency(snapshot.summary.revenue)} note="利润表" icon={TrendUp} tone="sage" /><MetricCard label="本月利润" value={formatCurrency(snapshot.summary.profit)} note="税前本地口径" icon={ChartBar} /><MetricCard label="三表勾稽" value={snapshotBalanced ? "通过" : "需处理"} note="试算 · 资产负债 · 现金变动" icon={CheckCircle} tone={snapshotBalanced ? "sage" : "clay"} /></section>
@@ -1003,7 +1016,9 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
   );
   const currentFinalSnapshot = buildFinalConfirmationSnapshot(workspace, flow);
   const displayedFinalSnapshot = finalConfirmationCurrent ? storedFinalConfirmation.snapshot : currentFinalSnapshot;
+  const defaultInitialConfirmer = workspace.company?.ownerName?.trim() || workspace.company?.financeContact?.trim() || "";
   const [sectionDrafts, setSectionDrafts] = useState({});
+  const [initialConfirmer, setInitialConfirmer] = useState(defaultInitialConfirmer);
   const [expandedConfirmationId, setExpandedConfirmationId] = useState("revenue");
   const [finalChecks, setFinalChecks] = useState({
     numbersReviewed: Boolean(finalConfirmationCurrent && storedFinalConfirmation.selections?.numbersReviewed),
@@ -1015,6 +1030,7 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
   const receiptInput = useRef(null);
   useEffect(() => {
     setSectionDrafts({});
+    setInitialConfirmer(defaultInitialConfirmer);
     setExpandedConfirmationId("revenue");
     setFinalChecks({
       numbersReviewed: Boolean(finalConfirmationCurrent && storedFinalConfirmation?.selections?.numbersReviewed),
@@ -1023,7 +1039,7 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
     });
     setDeductionAuthorization(finalConfirmationCurrent ? storedFinalConfirmation?.selections?.deductionAuthorization || "" : "");
     setConfirmer(finalConfirmationCurrent ? storedFinalConfirmation?.signature?.name || workspace.tax.confirmedBy || "" : "");
-  }, [workspace.id, workspace.currentPeriod, version?.id, filing.draftCreatedAt, finalConfirmationCurrent]);
+  }, [workspace.id, workspace.currentPeriod, version?.id, filing.draftCreatedAt, finalConfirmationCurrent, defaultInitialConfirmer]);
 
   const summarizeSources = (rows, fallback) => {
     const seen = new Set();
@@ -1078,6 +1094,7 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
             <div className="panel-heading"><div><p className="eyebrow">第一次{terminology.customer}确认</p><h2>八项数据逐项确认</h2></div><TonePill tone={initialDone ? "success" : activeConfirmation?.status === "disputed" ? "danger" : "warning"}>{initialDone ? "8 / 8 已确认" : `${approvedCount} / ${confirmationItems.length}`}</TonePill></div>
             <CheckRows items={localizedPrerequisiteChecks} onNavigate={onPage} />
             {!canConfirmSections && <p className="confirmation-gate"><WarningCircle size={16} />先完成上方五项前置条件，才能保存每一项{terminology.customer}结论。</p>}
+            <label className="final-signer"><span>本次确认人姓名 <b>必填</b></span><input disabled={!canConfirmSections} onChange={(event) => setInitialConfirmer(event.target.value)} placeholder={`输入实际${terminology.customer}确认人姓名`} value={initialConfirmer} /></label>
             <div className="confirmation-list">{confirmationItems.map((item) => {
               const savedSection = activeConfirmation?.sections?.[item.id];
               const savedDecision = [...(activeConfirmation?.decisions || [])].reverse().find((decision) => decision.section === item.id);
@@ -1090,7 +1107,8 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
               const responsibleName = draft.responsibleName || "";
               const expanded = expandedConfirmationId === item.id;
               const updateDraft = (fields) => setSectionDrafts((current) => ({ ...current, [item.id]: { ...(current[item.id] || {}), ...fields } }));
-              const canSave = canConfirmSections && !locked && Boolean(decision) && note.trim().length > 0 && (!isMajor || responsibleName.trim().length > 0);
+              const decisionActor = isMajor ? responsibleName.trim() : initialConfirmer.trim();
+              const canSave = canConfirmSections && !locked && Boolean(decision) && note.trim().length > 0 && decisionActor.length > 0;
               return (
                 <article className={`confirmation-item ${status} ${expanded ? "expanded" : "collapsed"}`} key={item.id}>
                   <button aria-expanded={expanded} className="confirmation-item-heading confirmation-item-toggle" onClick={() => setExpandedConfirmationId((current) => current === item.id ? null : item.id)} type="button"><div><span>{item.label}</span><strong>{item.amount}</strong></div><span className="confirmation-heading-actions"><TonePill tone={status === "approved" ? "success" : status === "rejected" ? "danger" : "neutral"}>{status === "approved" ? "已确认" : status === "rejected" ? "有异议" : "待确认"}</TonePill><CaretDown className="confirmation-caret" size={15} /></span></button>
@@ -1105,7 +1123,7 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
                       {isMajor && <label className="confirmation-signer"><span>负责人签字姓名 <b>必填</b></span><input disabled={!canConfirmSections} onChange={(event) => updateDraft({ responsibleName: event.target.value })} placeholder="输入本项负责人姓名" value={responsibleName} /></label>}
                       {decision === "reject" && <p className="confirmation-reject-warning"><WarningCircle size={15} />保存后将立即生成 S7 异常事项并返回异常处理。</p>}
                       <button className={decision === "reject" ? "danger-button" : "secondary-button"} disabled={!canSave} onClick={() => {
-                        const saved = onSectionDecision({ section: item.id, decision, note: note.trim(), isMajor, responsibleName: responsibleName.trim() });
+                        const saved = onSectionDecision({ section: item.id, decision, note: note.trim(), isMajor, responsibleName: responsibleName.trim(), confirmationName: initialConfirmer.trim() });
                         if (saved) setSectionDrafts((current) => ({ ...current, [item.id]: {} }));
                       }} type="button">{decision === "reject" ? "保存异议并退回 S7" : "保存本项确认"}</button>
                     </div>
@@ -1154,7 +1172,7 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
   );
 }
 
-function ArchivePage({ workspace, onPage, onDocuments, onDownloadDocument, onReceipt, onArchive, onNextPeriod, onExportIndex }) {
+function ArchivePage({ workspace, onPage, onDocuments, onDownloadDocument, onReceipt, onArchive, onNextPeriod, onExportIndex, onExportArchive }) {
   const terminology = workspaceTerminology(workspace);
   const [tab, setTab] = useState("documents");
   const [query, setQuery] = useState("");
@@ -1214,7 +1232,26 @@ function ArchivePage({ workspace, onPage, onDocuments, onDownloadDocument, onRec
           </article>;
         })}</div> : <EmptyState title="没有符合条件的资料" description="添加本地文件或清空搜索条件。" />)}
         {tab === "logs" && (workspace.auditLog.length ? <div className="audit-list">{workspace.auditLog.map((item) => <div key={item.id}><span className="audit-dot" /><span><strong>{item.action}</strong><small>{item.detail}</small></span><span><strong>{item.actor}</strong><small>{formatDateTime(item.at)}</small></span></div>)}</div> : <EmptyState title="还没有操作日志" description="确认、导出、导入和归档动作都会记录在这里。" />)}
-        {tab === "periods" && (workspace.delivery.archives.length ? <div className="period-archive-list">{workspace.delivery.archives.map((item) => <article key={item.id}><span className="archive-badge"><Archive size={20} /></span><div><strong>{formatPeriod(item.period)}</strong><small>{item.reportVersionLabel} · {item.confirmations.confirmedBy || terminology.customer} · {formatDateTime(item.archivedAt)}</small></div><span><strong>{formatCurrency(item.summary.profit)}</strong><small>本期利润</small></span><TonePill tone="success">已归档</TonePill></article>)}</div> : <EmptyState title="还没有历史归档" description={taxEnabled ? "本期回执导入并通过校验后，可以形成第一条归档记录。" : "冻结报表和本地资料通过校验后，可以形成第一条归档记录。"} />)}
+        {tab === "periods" && (workspace.delivery.archives.length ? <div className="period-archive-list">{workspace.delivery.archives.map((item) => (
+          <article key={item.id}>
+            <span className="archive-badge"><Archive size={20} /></span>
+            <div>
+              <strong>{formatPeriod(item.period)}</strong>
+              <small>{item.reportVersionLabel} · {item.confirmations.confirmedBy || terminology.customer} · {formatDateTime(item.archivedAt)}</small>
+              <details>
+                <summary>查看归档详情</summary>
+                <small>归档编号：{item.id}</small>
+                <small>冻结报表：{item.reportVersionLabel}（{item.reportVersionId}）</small>
+                <small>申报包：{item.package?.fileName || "未包含"} · 回执：{item.receipt?.name || "未包含"}</small>
+                <small>凭证 {item.vouchers?.length || 0} 张 · 资料 {item.documents?.length || 0} 份 · 确认包 {item.confirmationPackages?.length || 0} 份</small>
+                <small>异常记录 {item.exceptionRecords?.length || 0} 条 · 结转事项 {item.carryForwardItems?.length || 0} 条 · 操作快照 {item.auditSnapshot?.length || 0} 条</small>
+                <button className="secondary-button" onClick={() => onExportArchive(item.id)} type="button"><DownloadSimple size={15} />导出本期归档 JSON</button>
+              </details>
+            </div>
+            <span><strong>{formatCurrency(item.summary.profit)}</strong><small>本期利润</small></span>
+            <TonePill tone="success">已归档</TonePill>
+          </article>
+        ))}</div> : <EmptyState title="还没有历史归档" description={taxEnabled ? "本期回执导入并通过校验后，可以形成第一条归档记录。" : "冻结报表和本地资料通过校验后，可以形成第一条归档记录。"} />)}
       </section>
       {!archived && <div className="archive-check-panel panel"><div className="panel-heading"><div><p className="eyebrow">归档校验</p><h2>{archiveReady ? "全部条件已满足" : "还不能完成归档"}</h2></div><TonePill tone={archiveReady ? "success" : "warning"}>{flow.archive.filter((item) => item.ok).length} / {flow.archive.length}</TonePill></div><CheckRows items={flow.archive} onNavigate={onPage} /></div>}
       <BoundaryNote />
@@ -1791,12 +1828,13 @@ function App() {
       setToast({ tone: "danger", message: error.message || "申报底稿保存失败" });
     }
   }
-  function recordInitialConfirmationSection({ section, decision, note, isMajor, responsibleName }) {
+  function recordInitialConfirmationSection({ section, decision, note, isMajor, responsibleName, confirmationName }) {
     try {
       if (!note?.trim()) throw new Error("每一项确认都必须填写说明");
+      if (!isMajor && !confirmationName?.trim()) throw new Error("普通确认或异议必须填写本次确认人真实姓名");
       if (isMajor && !responsibleName?.trim()) throw new Error("重大事项必须填写本项负责人签字姓名");
       const at = new Date().toISOString();
-      const decisionActor = isMajor ? responsibleName.trim() : `${terminology.customer}负责人`;
+      const decisionActor = isMajor ? responsibleName.trim() : confirmationName.trim();
       mutateActive((current) => {
         const flow = workflowChecks(current);
         const missingPrerequisites = flow.checks.slice(0, 5).filter((item) => !item.ok);
@@ -2109,6 +2147,25 @@ function App() {
       setToast({ tone: "danger", message: error.message || "归档索引导出失败" });
     }
   }
+  function exportArchivedPeriod(archiveId) {
+    let downloaded = false;
+    try {
+      const current = store.getActiveWorkspace();
+      const archive = current?.delivery?.archives?.find((item) => item.id === archiveId);
+      if (!current || !archive) throw new Error("找不到要导出的历史归档记录");
+      const payload = buildArchivedPeriodExport(current, archiveId);
+      const fileName = `${PRODUCT_NAME}-${current.name}-${archive.period}-本期归档.json`;
+      downloadText(JSON.stringify(payload, null, 2), fileName, "application/json;charset=utf-8");
+      downloaded = true;
+      mutateActive((latest) => {
+        if (!latest.delivery?.archives?.some((item) => item.id === archiveId)) throw new Error("下载后无法在当前工作台定位这条归档记录");
+        return audit(latest, "导出本期归档 JSON", `${archive.period} · ${archive.reportVersionLabel} · ${fileName}`, actorName);
+      }, { allowArchivedTransition: true, requiredPermission: "data.read" });
+      setToast({ tone: "success", message: `${formatPeriod(archive.period)} 归档 JSON 已下载并写入操作日志` });
+    } catch (error) {
+      setToast({ tone: "danger", message: downloaded ? `归档 JSON 已下载，但操作日志写入失败：${error.message}` : error.message || "本期归档导出失败" });
+    }
+  }
   if (!workspace) {
     return (
       <div className="app-shell empty-shell">
@@ -2129,7 +2186,7 @@ function App() {
         {activePage === "reconcile" && <ReconcilePage workspace={workspace} onPage={navigateToPage} onStatus={setTransactionStatus} onReview={reviewTransactions} onSaveReview={saveTransactionReview} onEvidence={addEvidence} onLinkEvidence={linkExistingEvidence} onDownloadEvidence={downloadLinkedEvidence} onUnlinkEvidence={unlinkEvidenceFromTransaction} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} />}
         {activePage === "reports" && <ReportsPage workspace={workspace} onPage={navigateToPage} onFreeze={freezeReport} onExportExcel={exportReportExcel} />}
         {activePage === "tax" && <TaxPage workspace={workspace} onPage={navigateToPage} onTaxChange={changeTax} onTaxCommit={commitTax} onSectionDecision={recordInitialConfirmationSection} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} />}
-        {activePage === "archive" && <ArchivePage workspace={workspace} onPage={navigateToPage} onDocuments={addDocuments} onDownloadDocument={downloadArchiveDocument} onReceipt={receiveReceipt} onArchive={completeArchive} onNextPeriod={goNextPeriod} onExportIndex={exportArchiveIndex} />}
+        {activePage === "archive" && <ArchivePage workspace={workspace} onPage={navigateToPage} onDocuments={addDocuments} onDownloadDocument={downloadArchiveDocument} onReceipt={receiveReceipt} onArchive={completeArchive} onNextPeriod={goNextPeriod} onExportIndex={exportArchiveIndex} onExportArchive={exportArchivedPeriod} />}
         {activePage === "setup" && <FoundationRecordsPanel onToast={(message) => setToast({ tone: "success", message })} />}
       </div>
       <BottomNav workspace={workspace} page={activePage} onPage={navigateToPage} />

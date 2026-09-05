@@ -40,6 +40,14 @@ test("final confirmation persists its snapshot and becomes invalid when its bind
   assert.match(appSource, /const exportReady = finalConfirmationCurrent && flow\.export\.every/);
 });
 
+test("the first confirmation records a real editable person instead of a fixed role label", () => {
+  assert.match(appSource, /本次确认人姓名/);
+  assert.match(appSource, /const \[initialConfirmer, setInitialConfirmer\]/);
+  assert.match(appSource, /confirmationName: initialConfirmer\.trim\(\)/);
+  assert.match(appSource, /const decisionActor = isMajor \? responsibleName\.trim\(\) : confirmationName\.trim\(\)/);
+  assert.match(appSource, /普通确认或异议必须填写本次确认人真实姓名/);
+});
+
 test("final confirmation copy never represents a local record as submitted or paid", () => {
   assert.match(appSource, /尚未提交税务局，也未执行扣款/);
   assert.match(appSource, /仅保存本地记录，未提交税务局、未执行扣款/);
