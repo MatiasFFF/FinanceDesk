@@ -6,6 +6,7 @@
 - Absolutely prohibit unnecessary review, audit, approval gates, engineering infrastructure, fallbacks, compatibility work, abstraction, refactoring, and expansion. Do none of them unless they are genuinely indispensable to the current explicit requirement, preventing real data loss, or the minimum verification needed to prove that requirement works.
 - Never use those activities to replace, delay, or dilute functional construction. If one is truly necessary, explain its concrete necessity and smallest possible scope to the user before doing it.
 - Before running any test, check, or listener, tell the user exactly what will run and why. If work is blocked, report the concrete blocker once instead of retrying mechanically.
+- 每轮以已分派的明确问题为边界；收尾中新发现但非本轮必需的问题列入待办，不持续加项。完成必要定点验证后，由总控及时提交并 push，确认发布状态后报告已发布版本、剩余项与完成度。
 
 Run the local server yourself and open the preview in the browser available to this environment. Do not give the user server-start instructions when you can run it.
 
