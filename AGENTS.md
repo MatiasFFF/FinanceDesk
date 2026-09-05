@@ -18,7 +18,7 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 ## Durable FinanceDesk decisions
 
 - The only valid project path is `/Users/matias/Project/FinanceDesk`; do not recreate or use `FinanceSystem`.
-- Work local-first. Keep the localhost prototype and standalone HTML usable; do not configure GitHub, Vercel, or the custom domain until the user approves the local result.
+- 2026-09-05 用户明确要求：继续本地开发与必要验证，保持 localhost 原型和单文件 HTML 可用；用户主要通过 https://financedesk.cn 正式网页版验收。每轮已完成并通过必要验证的优化，由总控及时 commit 并 push `main`，核对生产部署成功后才报告已上线，不再等待用户专门确认本地预览而积压改动。三个实现任务继续共享 `main`，仅总控执行 commit、push 和 Computer Use。
 - 当前只把本地服务与功能做精；微信小程序、真实银行/税务/其他业务系统连接、外部账号密码、联网 API 和上传外部平台均延后，不纳入当前完成度。开发时允许研究 GitHub、下载开源依赖；产品资料处理应在本地，不依赖联网识别。
 - 网页版须统筹页面间异步加载、OCR/PDF 资源下载与调用的运行成本：大型识别依赖和语言资源按需加载并本地缓存，不进入普通页面首屏，也不膨胀单文件 HTML；逐文件、逐页处理并限制资源占用，支持取消，切页时避免重复任务和旧结果误写；长识别正文留在本地资料存储，工作台 JSON 只保留必要状态和字段。
 - Support normal responsive browser layouts on macOS, Windows, iPad, and mobile. The earlier 4:3 request was accidental and was explicitly withdrawn.
