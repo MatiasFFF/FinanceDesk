@@ -128,6 +128,7 @@ test("app wiring uses workspace modules for creation, navigation, operator ident
   const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
   const managerSource = readFileSync(new URL("../src/features/workspaces/WorkspaceManager.jsx", import.meta.url), "utf8");
   const accountingSource = readFileSync(new URL("../src/features/accounting/AccountingWorkbench.jsx", import.meta.url), "utf8");
+  const bankImportSource = readFileSync(new URL("../src/features/intake/BankImportPanel.jsx", import.meta.url), "utf8");
 
   assert.match(appSource, /mode: "blank"/);
   assert.match(appSource, /industry: "其他服务业"/);
@@ -144,8 +145,15 @@ test("app wiring uses workspace modules for creation, navigation, operator ident
   assert.match(appSource, /onDownloadDocument=\{downloadArchiveDocument\}/);
   assert.match(appSource, /getStoredDocumentRecord\(\{ fileVault, workspaceId: current\.id, document \}\)/);
   assert.match(appSource, /downloadStoredDocument\(record\)/);
+  assert.match(appSource, /setSetupInitialStage\("s3"\)/);
+  assert.match(appSource, /onRequestAccountSetup=\{requestBankAccountSetup\}/);
   assert.match(managerSource, /actions\.updateWorkspaceModules/);
   assert.match(accountingSource, /showMemberBusiness && memberBusinessEnabled\(activeWorkspace\) && <MemberBusinessAccountingQueue/);
   assert.match(accountingSource, /workspaceAccountOptions\(activeWorkspace\)/);
   assert.match(accountingSource, /accountDefinition\(account\.id, workspace\)/);
+  assert.match(bankImportSource, /去基础资料添加银行账户/);
+  assert.match(bankImportSource, /下载银行流水 CSV 模板/);
+  assert.match(bankImportSource, /下载平台结算 CSV 模板/);
+  assert.match(bankImportSource, /\["日期", "对方", "摘要", "收入", "支出", "流水号", "余额"\]/);
+  assert.match(bankImportSource, /\["结算日期", "结算单号", "交易总额", "手续费", "退款", "净结算额"\]/);
 });

@@ -67,6 +67,45 @@ test("工作台复制、重命名和切换保持数据隔离", () => {
   assert.equal(state.activeWorkspaceId, sourceId);
 });
 
+test("银行账户写入口拒绝无效或重复的账号资料，并允许负余额", () => {
+  const initial = createInitialState({ now: fixedNow });
+  let state = addWorkspace(initial, {
+    id: "workspace-bank-validation",
+    name: "银行账户校验工作台",
+  }, { now: fixedNow }).state;
+
+  state = upsertWorkspaceEntity(state, "workspace-bank-validation", "bankAccounts", {
+    id: "bank-valid",
+    name: "基本户",
+    accountNumber: "1234",
+    openingBalance: -100,
+    statementClosing: "-80.50",
+    status: "active",
+  }, { now: fixedNow }).state;
+  assert.equal(getWorkspace(state, "workspace-bank-validation").bankAccounts[0].openingBalance, -100);
+  assert.doesNotThrow(() => upsertWorkspaceEntity(state, "workspace-bank-validation", "bankAccounts", {
+    ...getWorkspace(state, "workspace-bank-validation").bankAccounts[0],
+    name: "基本户（已编辑）",
+  }, { now: fixedNow }));
+  assert.throws(() => upsertWorkspaceEntity(state, "workspace-bank-validation", "bankAccounts", {
+    name: " ",
+    accountNumber: "5678",
+  }, { now: fixedNow }), /银行账户名称不能为空/);
+  assert.throws(() => upsertWorkspaceEntity(state, "workspace-bank-validation", "bankAccounts", {
+    name: "一般户",
+    accountNumber: "12A4",
+  }, { now: fixedNow }), /恰好 4 位数字/);
+  assert.throws(() => upsertWorkspaceEntity(state, "workspace-bank-validation", "bankAccounts", {
+    name: "一般户",
+    accountNumber: "5678",
+    openingBalance: "不是数字",
+  }, { now: fixedNow }), /期初余额必须是有限数字/);
+  assert.throws(() => upsertWorkspaceEntity(state, "workspace-bank-validation", "bankAccounts", {
+    name: "重复账户",
+    accountNumber: "1234",
+  }, { now: fixedNow }), /已被其他银行账户使用/);
+});
+
 test("v3 数据迁移到当前模型并补足 S0-S4 集合", () => {
   const legacy = {
     version: 3,

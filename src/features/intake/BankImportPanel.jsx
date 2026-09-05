@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle, FileArrowUp, Table, WarningCircle, X } from "@phosphor-icons/react";
+import { CheckCircle, DownloadSimple, FileArrowUp, Table, WarningCircle, X } from "@phosphor-icons/react";
 
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
 import { normalizeWorkspaceTerminology } from "../../domain/foundation.js";
@@ -23,6 +23,21 @@ import "./bank-import-panel.css";
 
 const MAPPING_FIELDS = ["date", "amount", "credit", "debit", "direction", "counterparty", "counterpartyAccount", "summary", "serial", "balance", "channel", "currency"];
 const SETTLEMENT_MAPPING_FIELDS = ["settlementDate", "settlementNo", "grossAmount", "feeAmount", "refundAmount", "netAmount"];
+const BANK_CSV_TEMPLATE_HEADERS = ["日期", "对方", "摘要", "收入", "支出", "流水号", "余额"];
+const SETTLEMENT_CSV_TEMPLATE_HEADERS = ["结算日期", "结算单号", "交易总额", "手续费", "退款", "净结算额"];
+
+function downloadCsvTemplate(fileName, headers) {
+  const blob = new Blob(["\uFEFF" + headers.join(",") + "\r\n"], { type: "text/csv;charset=utf-8" });
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = fileName;
+  link.hidden = true;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+}
 
 function displayMoney(value) {
   if (value == null || !Number.isFinite(Number(value))) return "—";
@@ -44,7 +59,7 @@ function displayAccountIdentity(account) {
   ].join(" · ");
 }
 
-export function BankImportPanel({ compact = false, onToast, onComplete }) {
+export function BankImportPanel({ compact = false, onToast, onComplete, onRequestAccountSetup }) {
   const { activeWorkspace, actions, store, fileVault } = useFinanceDesk();
   const terminology = useMemo(() => normalizeWorkspaceTerminology(activeWorkspace.terminology), [activeWorkspace.terminology]);
   const inputRef = useRef(null);
@@ -620,8 +635,19 @@ export function BankImportPanel({ compact = false, onToast, onComplete }) {
   return (
     <section className={`foundation-section bank-import-panel ${compact ? "compact" : "intake-wide"}`}>
       <div className="foundation-section-heading"><div><small>CSV / Excel · 不联网</small><h3><Table size={18} />银行流水导入</h3></div>{parsed && <button className="foundation-icon-button" disabled={busy} type="button" aria-label="取消当前文件" onClick={cancelBankFile}><X size={16} /></button>}</div>
+      <div className="bank-import-template-bar">
+        <span><strong>先下载标准 CSV 模板</strong><small>模板只在当前设备生成，不上传文件，也不会连接外部服务。</small></span>
+        <div>
+          <button className="soft-button" type="button" onClick={() => downloadCsvTemplate("银行流水导入模板.csv", BANK_CSV_TEMPLATE_HEADERS)}><DownloadSimple size={16} />下载银行流水 CSV 模板</button>
+          <button className="soft-button" type="button" onClick={() => downloadCsvTemplate("平台结算导入模板.csv", SETTLEMENT_CSV_TEMPLATE_HEADERS)}><DownloadSimple size={16} />下载平台结算 CSV 模板</button>
+        </div>
+      </div>
       {!activeWorkspace.bankAccounts.length ? (
-        <div className="foundation-error"><WarningCircle size={18} />请先在上方新增银行账户，再导入该账户的流水。</div>
+        <div className="foundation-error bank-account-empty-state">
+          <WarningCircle size={18} />
+          <span><strong>还没有可用于导入的银行账户</strong><small>{onRequestAccountSetup ? "先到基础资料添加账户名称、账号和币种，保存后即可回来导入流水。" : "请先使用同页的银行账户卡片新增账户，保存后即可在这里选择账户并导入流水。"}</small></span>
+          {onRequestAccountSetup && <button className="secondary-button" type="button" onClick={onRequestAccountSetup}>去基础资料添加银行账户</button>}
+        </div>
       ) : (
         <>
           <div className="bank-import-start bank-import-source-controls">

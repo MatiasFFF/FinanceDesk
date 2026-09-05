@@ -18,6 +18,97 @@
   border-bottom: 1px solid var(--line-soft);
 }
 
+.bank-import-template-bar {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: center;
+  gap: 12px 18px;
+  margin-top: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--sand);
+}
+
+.bank-import-template-bar > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.bank-import-template-bar strong {
+  color: var(--espresso);
+  font-size: 10px;
+}
+
+.bank-import-template-bar small {
+  color: var(--quiet);
+  font-size: 9px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.bank-import-template-bar > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bank-import-template-bar button {
+  min-width: 190px;
+  max-width: 100%;
+  justify-content: center;
+  white-space: normal;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.bank-account-empty-state {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px 12px;
+  margin-top: 12px;
+  padding: 12px;
+}
+
+.bank-account-empty-state > svg {
+  flex: 0 0 auto;
+}
+
+.bank-account-empty-state > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.bank-account-empty-state strong,
+.bank-account-empty-state small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.bank-account-empty-state small {
+  color: inherit;
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.bank-account-empty-state > button {
+  min-width: 196px;
+  max-width: 100%;
+  justify-content: center;
+  white-space: normal;
+  line-height: 1.35;
+  text-align: center;
+}
+
 .bank-import-panel .bank-import-source-controls {
   grid-template-columns: minmax(280px, 1.45fr) minmax(170px, 0.55fr) minmax(190px, auto);
   gap: 12px;
@@ -365,6 +456,25 @@
 }
 
 @container bank-import-panel (max-width: 720px) {
+  .bank-import-template-bar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .bank-import-template-bar > div {
+    justify-content: flex-start;
+  }
+
+  .bank-account-empty-state {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .bank-account-empty-state > button {
+    grid-column: 2;
+    justify-self: start;
+  }
+
   .bank-import-panel .bank-import-source-controls,
   .bank-import-panel > .bank-import-workspace:has(> .foundation-section-heading) > .bank-import-start {
     grid-template-columns: 1fr;
@@ -413,6 +523,31 @@
 }
 
 @container bank-import-panel (max-width: 560px) {
+  .bank-import-template-bar > div {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .bank-import-template-bar button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .bank-account-empty-state {
+    grid-template-columns: 1fr;
+  }
+
+  .bank-account-empty-state > svg,
+  .bank-account-empty-state > button {
+    grid-column: auto;
+  }
+
+  .bank-account-empty-state > button {
+    width: 100%;
+    min-width: 0;
+    justify-self: stretch;
+  }
+
   .bank-import-panel .bank-field-mapping-grid,
   .bank-import-panel > .bank-import-workspace:has(> .foundation-section-heading) > .mapping-grid {
     grid-template-columns: 1fr;

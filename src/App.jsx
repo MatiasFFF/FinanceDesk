@@ -1383,7 +1383,7 @@ function ImportDialog({ open, workspace, onClose, onImport }) {
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="modal-card import-dialog" role="dialog" aria-modal="true"><div className="modal-heading"><div><p className="eyebrow">浏览器本地处理</p><h2>导入银行流水 CSV</h2></div><button className="icon-button compact" onClick={onClose} type="button" aria-label="关闭"><X size={19} /></button></div><p className="modal-intro">文件不会上传网络。导入后先进入待复核状态，不会因为“建议匹配”自动入账。</p><div className={`drop-zone ${dragging ? "dragging" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); readFile(event.dataTransfer.files?.[0]); }} onClick={() => inputRef.current?.click()}><input ref={inputRef} hidden type="file" accept=".csv,text/csv" onChange={(event) => readFile(event.target.files?.[0])} /><span><UploadSimple size={27} /></span><strong>拖入 CSV，或点击选择文件</strong><small>字段：日期、对方、摘要、金额</small></div>{error && <p className="form-error"><WarningCircle size={16} />{error}</p>}<div className="modal-actions"><button className="secondary-button" onClick={template} type="button"><DownloadSimple size={17} />下载模板</button><button className="primary-button" onClick={() => inputRef.current?.click()} type="button">选择 CSV</button></div></section></div>;
 }
 
-function LocalBankImportDialog({ open, onClose, onToast, onComplete }) {
+function LocalBankImportDialog({ open, onClose, onToast, onComplete, onRequestAccountSetup }) {
   useEffect(() => {
     if (!open) return undefined;
     function handleKeyDown(event) {
@@ -1402,7 +1402,7 @@ function LocalBankImportDialog({ open, onClose, onToast, onComplete }) {
           <div><p className="eyebrow">浏览器本地处理</p><h2 id="bank-import-title">导入银行流水</h2></div>
           <button className="icon-button compact" onClick={onClose} type="button" aria-label="关闭"><X size={19} /></button>
         </div>
-        <BankImportPanel onToast={onToast} onComplete={(plan) => { onComplete?.(plan); onClose(); }} />
+        <BankImportPanel onToast={onToast} onComplete={(plan) => { onComplete?.(plan); onClose(); }} onRequestAccountSetup={onRequestAccountSetup} />
       </section>
     </div>
   );
@@ -1418,6 +1418,7 @@ function App() {
   const [workspaceDialog, setWorkspaceDialog] = useState(null);
   const [managerOpen, setManagerOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [setupInitialStage, setSetupInitialStage] = useState("s0");
   const [toast, setToast] = useState(null);
   const workspace = activeWorkspace ? ensureWorkspace(activeWorkspace) : null;
   const terminology = workspaceTerminology(workspace);
@@ -1439,7 +1440,13 @@ function App() {
     return () => { document.body.style.overflow = previousOverflow; };
   }, [workspaceDialog, managerOpen, importOpen]);
   function navigateToPage(nextPage) {
+    if (nextPage === "setup") setSetupInitialStage("s0");
     setPage(enabledPageIds.has(nextPage) ? nextPage : "overview");
+  }
+  function requestBankAccountSetup() {
+    setImportOpen(false);
+    setSetupInitialStage("s3");
+    setPage(enabledPageIds.has("setup") ? "setup" : "overview");
   }
   function mutateActive(updater, actionOptions = {}) {
     const current = store.getActiveWorkspace();
@@ -2187,7 +2194,7 @@ function App() {
         {activePage === "reports" && <ReportsPage workspace={workspace} onPage={navigateToPage} onFreeze={freezeReport} onExportExcel={exportReportExcel} />}
         {activePage === "tax" && <TaxPage workspace={workspace} onPage={navigateToPage} onTaxChange={changeTax} onTaxCommit={commitTax} onSectionDecision={recordInitialConfirmationSection} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} />}
         {activePage === "archive" && <ArchivePage workspace={workspace} onPage={navigateToPage} onDocuments={addDocuments} onDownloadDocument={downloadArchiveDocument} onReceipt={receiveReceipt} onArchive={completeArchive} onNextPeriod={goNextPeriod} onExportIndex={exportArchiveIndex} onExportArchive={exportArchivedPeriod} />}
-        {activePage === "setup" && <FoundationRecordsPanel onToast={(message) => setToast({ tone: "success", message })} />}
+        {activePage === "setup" && <FoundationRecordsPanel initialStage={setupInitialStage} key={`${workspace.id}-${setupInitialStage}`} onToast={(message) => setToast({ tone: "success", message })} />}
       </div>
       <BottomNav workspace={workspace} page={activePage} onPage={navigateToPage} />
       <WorkspaceDialog mode={workspaceDialog} workspace={workspace} onClose={() => setWorkspaceDialog(null)} onSubmit={submitWorkspaceDialog} />
@@ -2197,6 +2204,7 @@ function App() {
         onClose={() => setImportOpen(false)}
         onToast={(message) => setToast({ tone: "success", message })}
         onComplete={() => navigateToPage("reconcile")}
+        onRequestAccountSetup={requestBankAccountSetup}
       />
       {toast && <div className={"toast " + toast.tone}><CheckCircle size={19} weight="fill" />{toast.message}</div>}
     </div>

@@ -981,6 +981,34 @@ export function upsertWorkspaceEntity(state, workspaceId, collection, values, op
   const currentWorkspace = getWorkspace(state, workspaceId);
   if (!currentWorkspace) throw new Error(`找不到工作台：${workspaceId}`);
   const existingItem = (currentWorkspace[collection] || []).find((candidate) => candidate.id === item.id);
+  if (collection === "bankAccounts") {
+    const bankAccount = { ...existingItem, ...item };
+    if (!String(bankAccount.name || "").trim()) throw new Error("银行账户名称不能为空");
+
+    const accountNumber = String(bankAccount.accountNumber ?? "").trim();
+    if (accountNumber && !/^\d{4}$/.test(accountNumber)) {
+      throw new Error("账号后四位必须是恰好 4 位数字");
+    }
+
+    [
+      ["openingBalance", "期初余额"],
+      ["statementClosing", "对账单期末余额"],
+    ].forEach(([key, label]) => {
+      const value = bankAccount[key];
+      const hasValue = value !== null && value !== undefined && !(typeof value === "string" && value.trim() === "");
+      const isNumericValue = typeof value === "number" || typeof value === "string";
+      if (hasValue && (!isNumericValue || !Number.isFinite(Number(value)))) {
+        throw new Error(`${label}必须是有限数字`);
+      }
+    });
+
+    const duplicateAccount = accountNumber && (currentWorkspace.bankAccounts || []).some((candidate) => {
+      if (candidate.id === item.id) return false;
+      const candidateNumber = String(candidate.accountNumber || candidate.number || "").trim();
+      return candidateNumber.match(/(\d{4})$/)?.[1] === accountNumber;
+    });
+    if (duplicateAccount) throw new Error(`账号后四位 ${accountNumber} 已被其他银行账户使用`);
+  }
   const effectiveStatus = item.status || existingItem?.status || "active";
   const hasActiveUser = (currentWorkspace.users || []).some((user) => user.status === "active");
   const bootstrappingFirstUser = collection === "users" && !hasActiveUser && effectiveStatus === "active";
