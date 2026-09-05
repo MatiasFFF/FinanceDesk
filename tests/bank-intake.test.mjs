@@ -1510,6 +1510,7 @@ test("结构化合同先预览再确认生成标准应收应付账单，并可�
       kind: "contract",
       partyA: "山岚健身工作室",
       partyB: "青禾场地管理有限公司",
+      counterpartyParty: "partyB",
       amount: 3600,
       contractType: "lease",
       settlementMode: "monthly",
@@ -1572,6 +1573,7 @@ test("合同账单计划明确阻止合同金额不足、已过期和生成总�
       structuredData: {
         partyA: "山岚健身工作室",
         partyB: "客户甲",
+        counterpartyParty: "partyB",
         amount: 1000,
         contractType: "sales",
         settlementMode: "one_time",

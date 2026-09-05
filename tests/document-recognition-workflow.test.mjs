@@ -153,7 +153,7 @@ test("四类条款候选经人工保存后成为合同与账单依据，金额�
   assert.equal(context.store.getActiveWorkspace().bills.length, beforeBillCount);
   const terms = Object.fromEntries(Object.entries(extracted.suggestedFields).map(([key, candidate]) => [key, candidate.value]));
   updateLocalDocumentMetadata({ ...context, documentId: context.document.id, actor: "核对人", patch: {
-    structuredData: { ...terms, partyB: "合同对方", contractType: "sales", amount: 1000, periodAmount: 1000, settlementMode: "one_time", firstBillDate: "2026-09-01", billingEndDate: "2026-09-30" },
+    structuredData: { ...terms, partyB: "合同对方", counterpartyParty: "partyB", contractType: "sales", amount: 1000, periodAmount: 1000, settlementMode: "one_time", firstBillDate: "2026-09-01", billingEndDate: "2026-09-30" },
     recognitionConfirmation: { resultId: saved.id, fields: Object.keys(terms) },
   } });
   const reloaded = createFinanceDeskStore({ repository: createLocalFoundationRepository({ storage: context.storage, now }) });
@@ -182,7 +182,7 @@ test("条款多处表述进入复核待办，人工整理保存后解除账单�
   const extracted = extractDocumentFieldSuggestions(pages, "合同");
   const result = { version: 1, mode: "local", pages, text: pages.map((page) => page.text).join("\n"), ...extracted, recognizedAt: now().toISOString() };
   const saved = await saveLocalDocumentRecognition(saveInput(context, { result }));
-  const contract = { partyB: "合同对方", contractType: "sales", amount: 1000, periodAmount: 1000, settlementMode: "one_time", firstBillDate: "2026-09-01", billingEndDate: "2026-09-30" };
+  const contract = { partyB: "合同对方", counterpartyParty: "partyB", contractType: "sales", amount: 1000, periodAmount: 1000, settlementMode: "one_time", firstBillDate: "2026-09-01", billingEndDate: "2026-09-30" };
   updateLocalDocumentMetadata({ ...context, documentId: context.document.id, patch: { structuredData: contract } });
   let workspace = context.store.getActiveWorkspace();
   assert.equal(workspace.exceptionTasks.filter((task) => task.code === "document_recognition_review" && task.status === "open").length, 2);

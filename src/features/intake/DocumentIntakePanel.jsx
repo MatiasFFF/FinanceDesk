@@ -68,6 +68,9 @@ import {
   updateLocalDocumentMetadata,
 } from "./documentIntake.js";
 import { getDocumentRecognitionTask, isRecognitionTaskPending } from "./documentRecognitionTask.js";
+import { calculateContractPeriodAmount } from "./contractBillingAmounts.js";
+import { buildContractDiscountSuggestion } from "./contractDiscountTerms.js";
+import { resolveContractCounterparty } from "./contractCounterparty.js";
 import "./document-intake-panel.css";
 import "../workspaces/foundation-ui.css";
 
@@ -162,7 +165,7 @@ function structuredDetailLines(document, workspace) {
     return [
       `合同主体：${details.partyA || "未填写"} ↔ ${details.partyB || "未填写"} · 金额 ${amountLabel(details.amount)}`,
       `合同类型：${displayText(CONTRACT_TYPES[details.contractType] || "未选择")} · ${CONTRACT_SETTLEMENT_MODES[details.settlementMode] ? displayText(CONTRACT_SETTLEMENT_MODES[details.settlementMode]) : (details.settlementCycle || "未设置结算")}`,
-      `账单计划：每期 ${amountLabel(details.periodAmount)} · 首次 ${details.firstBillDate || "未填写"} · 结束 ${details.billingEndDate || "未填写"} · ${displayText(CONTRACT_DUE_DATE_RULES[details.dueDateRule] || "未设置到期规则")}${details.dueDateRule === "days_after" ? ` ${details.dueDays || 0} 天` : ""}`,
+      `账单计划：每期${details.discountRule?.enabled ? "折前" : ""} ${amountLabel(details.periodAmount)}${details.discountRule?.enabled ? ` · 优惠后 ${amountLabel(calculateContractPeriodAmount(details).netAmount)}` : ""} · 首次 ${details.firstBillDate || "未填写"} · 结束 ${details.billingEndDate || "未填写"} · ${displayText(CONTRACT_DUE_DATE_RULES[details.dueDateRule] || "未设置到期规则")}${details.dueDateRule === "days_after" ? ` ${details.dueDays || 0} 天` : ""}`,
       `${terminology.service}期限：${details.serviceStartDate || "未填写"} 至 ${details.serviceEndDate || "未填写"}`,
       `退款条款：${details.refundTerms || "未填写"}`,
       `折扣条款：${details.discountTerms || "未填写"}`,
@@ -190,6 +193,31 @@ function structuredDetailLines(document, workspace) {
   return [];
 }
 
+function ContractDiscountFields({ details, onChange, document }) {
+  const rule = details.discountRule || { enabled: false, kind: "none", percent: null, fixedAmount: null };
+  const suggestion = buildContractDiscountSuggestion(document);
+  const termsChanged = String(details.discountTerms || "") !== String(document?.structuredData?.discountTerms || "");
+  const amounts = calculateContractPeriodAmount(details);
+  const updateRule = (patch) => onChange({ ...details, discountRule: { ...rule, ...patch } });
+  const updateManualRule = (patch) => updateRule({ ...patch, source: { kind: "manual", text: "" } });
+  return (
+    <div className="document-contract-discount">
+      <label className="document-contract-discount-toggle"><input type="checkbox" checked={rule.enabled === true} onChange={(event) => updateRule({ enabled: event.target.checked, kind: rule.kind === "none" ? "percent" : rule.kind })} /><span>启用每期优惠计算</span></label>
+      {termsChanged && <p className="foundation-hint">先保存条款，再获取折扣建议；也可手动填写优惠规则。</p>}
+      {!termsChanged && suggestion.status === "suggested" && <div className="document-contract-discount-suggestion"><span>条款建议：每期{suggestion.kind === "percent" ? `优惠 ${suggestion.value}%` : `减免 ${amountLabel(suggestion.value)}`}</span><button className="secondary-button" type="button" onClick={() => updateRule({ enabled: true, kind: suggestion.kind, percent: suggestion.kind === "percent" ? suggestion.value : null, fixedAmount: suggestion.kind === "fixed" ? suggestion.value : null, source: { kind: "saved_terms", text: suggestion.sourceText, documentId: suggestion.source.documentId, documentHash: suggestion.source.documentHash, documentVersion: suggestion.source.documentVersion } })}>采用建议并启用</button></div>}
+      {!termsChanged && suggestion.status === "needs_review" && <div className="document-contract-discount-review"><p><WarningCircle size={16} /> 条款待复核：{suggestion.reason}</p><p>{suggestion.sourceText}</p></div>}
+      {rule.enabled && <>
+        <p className="foundation-hint">每期金额现为折前基数。优惠按每期计算；依据：{rule.source?.kind === "saved_terms" ? "已采用的合同条款" : "人工填写"}。</p>
+        <div className="document-contract-discount-fields">
+          <label className="foundation-field"><span>优惠方式</span><select value={rule.kind} onChange={(event) => updateManualRule({ kind: event.target.value })}><option value="percent">每期比例优惠</option><option value="fixed">每期固定减免</option></select></label>
+          {rule.kind === "percent" ? <label className="foundation-field"><span>优惠比例（%，八折填 20）</span><input type="number" min="0" max="100" step="0.01" value={rule.percent ?? ""} onChange={(event) => updateManualRule({ percent: event.target.value })} /></label> : <label className="foundation-field"><span>每期减免金额（元）</span><input type="number" min="0" step="0.01" value={rule.fixedAmount ?? ""} onChange={(event) => updateManualRule({ fixedAmount: event.target.value })} /></label>}
+        </div>
+        {amounts.errors.length ? <p className="foundation-error"><WarningCircle size={16} /><span>{amounts.errors.join("；")}</span></p> : <div className="document-contract-discount-result" aria-live="polite"><span>折前 {amountLabel(amounts.grossAmount)}</span><span>优惠 {amountLabel(amounts.discountAmount)}</span><strong>最终每期 {amountLabel(amounts.netAmount)}</strong></div>}
+      </>}
+    </div>
+  );
+}
+
 function StructuredDataFields({ category, value, onChange, workspace, currentDocumentId }) {
   const kind = documentStructuredKind(category);
   if (!kind) return null;
@@ -199,6 +227,7 @@ function StructuredDataFields({ category, value, onChange, workspace, currentDoc
   const update = (key, nextValue) => onChange({ ...details, [key]: nextValue });
   if (kind === "contract") {
     const membershipEnabled = workspaceModuleEnabled(workspace, "members");
+    const counterparty = resolveContractCounterparty(workspace, details);
     const contractTypes = Object.entries(CONTRACT_TYPES).filter(([id]) => (
       id !== "membership" || membershipEnabled || details.contractType === "membership"
     ));
@@ -206,10 +235,11 @@ function StructuredDataFields({ category, value, onChange, workspace, currentDoc
       <div className="document-intake-controls document-structured-fields">
         <label className="foundation-field"><span>合同甲方</span><input value={details.partyA || ""} onChange={(event) => update("partyA", event.target.value)} /></label>
         <label className="foundation-field"><span>合同乙方</span><input value={details.partyB || ""} onChange={(event) => update("partyB", event.target.value)} /></label>
+        <label className="foundation-field"><span>账单往来对方</span><select value={details.counterpartyParty || "auto"} onChange={(event) => update("counterpartyParty", event.target.value)}><option value="auto">自动判定{counterparty.selection === "auto" && counterparty.counterparty ? ` · ${counterparty.counterparty}` : ""}</option><option value="partyA">甲方{details.partyA ? ` · ${details.partyA}` : "（未填写）"}</option><option value="partyB">乙方{details.partyB ? ` · ${details.partyB}` : "（未填写）"}</option></select><small className={counterparty.errors.length ? "document-contract-counterparty-error" : "foundation-hint"}>{counterparty.errors.length ? counterparty.errors.join("；") : `账单对方：${counterparty.counterparty}`}</small></label>
         <label className="foundation-field"><span>合同类型</span><select value={details.contractType || "unclassified"} onChange={(event) => update("contractType", event.target.value)}>{contractTypes.map(([id, label]) => <option value={id} key={id}>{displayText(label)}{id === "membership" && !membershipEnabled ? `（${terminology.member}模块已停用）` : ""}</option>)}</select></label>
         <label className="foundation-field"><span>合同金额</span><input type="number" min="0" step="0.01" value={details.amount ?? ""} onChange={(event) => update("amount", event.target.value)} /></label>
         <label className="foundation-field"><span>结算方式</span><select value={details.settlementMode || "unconfigured"} onChange={(event) => update("settlementMode", event.target.value)}>{Object.entries(CONTRACT_SETTLEMENT_MODES).map(([id, label]) => <option value={id} key={id}>{displayText(label)}</option>)}</select></label>
-        <label className="foundation-field"><span>每期金额</span><input type="number" min="0" step="0.01" value={details.periodAmount ?? ""} onChange={(event) => update("periodAmount", event.target.value)} /></label>
+        <label className="foundation-field"><span>{details.discountRule?.enabled ? "每期折前金额" : "每期金额"}</span><input type="number" min="0" step="0.01" value={details.periodAmount ?? ""} onChange={(event) => update("periodAmount", event.target.value)} /></label>
         <label className="foundation-field"><span>首次账单日</span><input type="date" value={details.firstBillDate || ""} onChange={(event) => update("firstBillDate", event.target.value)} /></label>
         <label className="foundation-field"><span>到期日规则</span><select value={details.dueDateRule || "on_bill_date"} onChange={(event) => update("dueDateRule", event.target.value)}>{Object.entries(CONTRACT_DUE_DATE_RULES).map(([id, label]) => <option value={id} key={id}>{displayText(label)}</option>)}</select></label>
         {details.dueDateRule === "days_after" && <label className="foundation-field"><span>账单后多少天到期</span><input type="number" min="0" step="1" value={details.dueDays ?? 0} onChange={(event) => update("dueDays", event.target.value)} /></label>}
@@ -221,6 +251,7 @@ function StructuredDataFields({ category, value, onChange, workspace, currentDoc
             <label className="foundation-field" key={key}><span>{label}</span><textarea rows={3} value={details[key] || ""} onChange={(event) => update(key, event.target.value)} /></label>
           ))}
         </div>
+        <ContractDiscountFields details={details} onChange={onChange} document={workspace.documents?.find((document) => document.id === currentDocumentId)} />
       </div>
     );
   }
@@ -1336,24 +1367,37 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           <span>{contractBillingPlans.length} 份合同 · 待生成 {contractBillingPlans.reduce((sum, plan) => sum + plan.items.length, 0)} 张</span>
         </div>
         <p className="foundation-hint">{workspaceModuleEnabled(activeWorkspace, "members") ? `销售、${terminology.member}和平台合同生成应收账单` : "销售和平台合同生成应收账单"}；采购和租赁合同生成应付账单。确认后生成账单并关联合同。</p>
-        <div className="foundation-record-list">
-          {contractBillingPlans.map((plan) => (
+        <div className="foundation-record-list document-contract-plan-list">
+          {contractBillingPlans.map((plan) => {
+            const discountSuggestion = buildContractDiscountSuggestion(plan.document);
+            const completed = !plan.items.length && plan.duplicatePeriods.length > 0 && plan.existingBills.length > 0
+              && plan.errors.every((message) => message.startsWith("同一合同同一期不得重复生成："));
+            const displayErrors = completed ? [] : plan.errors;
+            return (
             <article className="foundation-record" key={plan.documentId}>
               <div style={{ width: "100%" }}>
                 <strong>{plan.document?.name || plan.documentId}</strong>
-                <small>{displayText(CONTRACT_TYPES[plan.contractType] || "未选择合同类型")} · {plan.billKind === "receivable" ? "将生成应收" : (plan.billKind === "payable" ? "将生成应付" : "尚未确定账单方向")} · 对方 {plan.counterparty || "未填写"}</small>
-                <p>合同金额 {amountLabel(plan.contractAmount)} · 每期 {amountLabel(plan.periodAmount)} · 计划总额 {amountLabel(plan.plannedTotalAmount)} · 已生成 {amountLabel(plan.generatedTotalAmount)} · 本次待生成 {amountLabel(plan.pendingTotalAmount)}</p>
-                {!!plan.duplicatePeriods.length && <p>已存在、不会重复生成：{plan.duplicatePeriods.map((item) => `${item.period}（${item.bill.no || item.bill.id}）`).join("、")}</p>}
-                {!!plan.errors.length && <div className="foundation-error"><WarningCircle size={18} /><span>{plan.errors.map(displayText).join("；")}</span></div>}
-                <details open>
+                <small>{displayText(CONTRACT_TYPES[plan.contractType] || "未选择合同类型")} · {plan.billKind === "receivable" ? "应收账单" : (plan.billKind === "payable" ? "应付账单" : "尚未确定账单方向")} · 对方 {plan.counterparty || "未填写"}</small>
+                {!displayErrors.length && !completed && <>
+                  {plan.discountRule?.enabled && <div className="document-contract-discount-result"><span>每期折前 {amountLabel(plan.grossAmount)}</span><span>优惠 {amountLabel(plan.discountAmount)}</span><strong>最终每期 {amountLabel(plan.netAmount)}</strong></div>}
+                  <p>合同金额 {amountLabel(plan.contractAmount)}{!plan.discountRule?.enabled && <> · 每期 {amountLabel(plan.periodAmount)}</>} · 计划总额 {amountLabel(plan.plannedTotalAmount)} · 本次待生成 {plan.items.length} 张／{amountLabel(plan.pendingTotalAmount)}</p>
+                </>}
+                {!!plan.existingBills.length && <p>已生成 {plan.existingBills.length} 张／{amountLabel(plan.generatedTotalAmount)}{completed && " · 本次无待生成"}</p>}
+                {discountSuggestion.status === "needs_review" && <div className="document-contract-discount-review"><p><WarningCircle size={16} /> 折扣条款待复核：{discountSuggestion.reason}</p><details><summary>查看条款原文</summary><p>{discountSuggestion.sourceText}</p></details></div>}
+                {!!displayErrors.length && <><p>补齐合同资料后可生成</p><details><summary>查看待补齐与核对事项（{displayErrors.length}）</summary><ul>{displayErrors.map((message) => <li key={message}>{displayText(message)}</li>)}</ul></details></>}
+                {!!plan.existingBills.length && <details><summary>查看已生成账单（{plan.existingBills.length}）</summary>{plan.existingBills.map((bill) => <p key={bill.id}>{bill.no || bill.id} · {bill.billingPeriod || bill.date} · {bill.counterparty} · {amountLabel(bill.amount)}</p>)}</details>}
+                {!!plan.items.length && !displayErrors.length && <details open>
                   <summary>本次账单预览（{plan.items.length}）</summary>
-                  {plan.items.map((item) => <p key={`${plan.documentId}-${item.billingPeriod}`}>{item.billingPeriod} · {item.billKind === "receivable" ? "应收" : "应付"} · 账单日 {item.date} · 到期日 {item.dueDate} · {amountLabel(item.amount)} · {item.counterparty}</p>)}
-                  {!plan.items.length && <p>当前没有可生成的新账单。</p>}
-                </details>
+                  {plan.items.map((item) => <p key={`${plan.documentId}-${item.billingPeriod}`}>{item.billingPeriod} · {item.billKind === "receivable" ? "应收" : "应付"} · 账单日 {item.date} · 到期日 {item.dueDate} · {plan.discountRule?.enabled && <>折前 {amountLabel(item.grossAmount)} − 优惠 {amountLabel(item.discountAmount)} = </>}{amountLabel(item.amount)} · {item.counterparty}</p>)}
+                </details>}
               </div>
-              <button className="primary-button" type="button" disabled={!plan.canConfirm} onClick={() => confirmContractBillingPlan(plan)}>确认并写入账单</button>
+              <div className="document-contract-plan-actions">
+                {plan.document && plan.document.archiveStatus !== "archived" && <button className="secondary-button" type="button" onClick={() => { setQuery(plan.document.name || ""); setCategoryFilter("all"); setStatusFilter("all"); beginEdit(plan.document); }}>编辑合同</button>}
+                {!completed && <button className="primary-button" type="button" disabled={!plan.canConfirm} onClick={() => confirmContractBillingPlan(plan)}>确认并写入账单</button>}
+              </div>
             </article>
-          ))}
+            );
+          })}
           {!contractBillingPlans.length && <p className="foundation-empty">当前还没有结构化合同资料。上传或编辑合同并补齐账单计划字段后，会先在这里预览。</p>}
         </div>
       </div>

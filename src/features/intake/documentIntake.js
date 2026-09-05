@@ -3,6 +3,8 @@ import { buildFinancialStatements, buildManagementMetrics, buildTaxWorkpaper } f
 import { attachEvidenceDocument, reviewTransactionEvidence } from "../evidence/evidenceEngine.js";
 import { normalizeMoney, parseDelimitedText } from "./bankStatementImport.js";
 import { mergeAttachmentPdfs } from "./pdfAttachments.js";
+import { calculateContractPeriodAmount, normalizeContractDiscountRule, roundContractMoney, sumContractAmounts } from "./contractBillingAmounts.js";
+import { resolveContractCounterparty } from "./contractCounterparty.js";
 
 const LINKABLE_COLLECTIONS = [
   "vouchers",
@@ -495,17 +497,20 @@ export function normalizeDocumentStructuredData(category, input = {}) {
     const dueDateRule = enumValue(input.dueDateRule, Object.keys(CONTRACT_DUE_DATE_RULES), "on_bill_date", "到期日规则");
     const dueDays = optionalNumber(input.dueDays, "账单后到期天数", 3650);
     if (dueDays != null && !Number.isInteger(dueDays)) throw new Error("账单后到期天数必须是整数");
+    const contractAmount = optionalNumber(input.amount, "合同金额");
     return {
       kind,
       partyA: String(input.partyA || "").trim(),
       partyB: String(input.partyB || "").trim(),
-      amount: optionalNumber(input.amount, "合同金额"),
+      counterpartyParty: enumValue(input.counterpartyParty, ["auto", "partyA", "partyB"], "auto", "合同往来对方选择"),
+      amount: contractAmount == null ? null : roundContractMoney(contractAmount),
       serviceStartDate,
       serviceEndDate,
       contractType,
       settlementMode,
       settlementCycle: String(input.settlementCycle || CONTRACT_SETTLEMENT_MODES[settlementMode] || "").trim(),
       periodAmount: optionalNumber(input.periodAmount, "每期金额"),
+      discountRule: normalizeContractDiscountRule(input.discountRule),
       firstBillDate,
       dueDateRule,
       dueDays: dueDays ?? 0,
@@ -627,11 +632,20 @@ export function buildContractBillingPlan(workspace, options = {}) {
     errors.push("合同识别条款待复核，请在资料详情核对并保存复核说明");
   }
   const contractAmount = Math.round(Number(details.amount || 0) * 100) / 100;
-  const periodAmount = Math.round(Number(details.periodAmount || 0) * 100) / 100;
+  const calculation = calculateContractPeriodAmount(details);
+  const periodAmount = calculation.grossAmount ?? 0;
+  errors.push(...calculation.errors);
+  const { grossAmount, discountAmount, netAmount } = calculation;
+  if (details.discountRule.source.kind === "saved_terms" && (
+    !details.discountRule.source.text || details.discountRule.source.text !== details.discountTerms
+    || details.discountRule.source.documentId !== document.id || details.discountRule.source.documentHash !== document.hash
+  )) errors.push("已采用的优惠条款或原件已变化，请重新核对并采用建议，或明确改为人工配置");
   const firstBillDate = details.firstBillDate;
   const endDate = details.billingEndDate;
   const asOf = String(options.asOf || new Date().toISOString().slice(0, 10));
-  const counterparty = String(details.partyB || details.partyA || "").trim();
+  const counterpartyResolution = resolveContractCounterparty(workspace, details);
+  errors.push(...counterpartyResolution.errors);
+  const counterparty = counterpartyResolution.counterparty;
   const membersSetting = workspace?.modules?.members ?? workspace?.moduleSettings?.members;
   const membershipEnabled = typeof membersSetting === "object"
     ? membersSetting.enabled !== false
@@ -641,7 +655,7 @@ export function buildContractBillingPlan(workspace, options = {}) {
   if (!counterparty) errors.push("必须填写合同对方");
   if (!(contractAmount > 0)) errors.push("合同金额不足：请填写大于 0 的合同金额");
   if (!(periodAmount > 0)) errors.push("每期金额必须大于 0");
-  if (contractAmount > 0 && periodAmount > contractAmount) errors.push(`合同金额不足：每期金额 ${periodAmount.toFixed(2)} 超过合同金额 ${contractAmount.toFixed(2)}`);
+  if (contractAmount > 0 && netAmount > contractAmount) errors.push(`合同金额不足：每期最终金额 ${netAmount.toFixed(2)} 超过合同金额 ${contractAmount.toFixed(2)}`);
   if (!firstBillDate) errors.push("必须填写首次账单日");
   if (!endDate) errors.push("必须填写账单结束日期");
   if (details.settlementMode === "unconfigured") errors.push("必须选择一次性或按月结算");
@@ -658,11 +672,6 @@ export function buildContractBillingPlan(workspace, options = {}) {
     }
     if (scheduleDates.length === 600 && addMonthsToDate(firstBillDate, 600) <= endDate) errors.push("按月账单计划超过 600 期，请缩短结束日期");
   }
-  const plannedTotalAmount = Math.round(scheduleDates.length * periodAmount * 100) / 100;
-  if (contractAmount > 0 && plannedTotalAmount > contractAmount + 0.01) {
-    errors.push(`生成总额 ${plannedTotalAmount.toFixed(2)} 超出合同金额 ${contractAmount.toFixed(2)}`);
-  }
-
   const existingBills = (workspace.bills || []).filter((bill) => bill.contractDocumentId === documentId && bill.status !== "void");
   const existingByPeriod = new Map(existingBills.map((bill) => [bill.billingPeriod || String(bill.date || "").slice(0, 7), bill]));
   const duplicatePeriods = [];
@@ -676,18 +685,29 @@ export function buildContractBillingPlan(workspace, options = {}) {
       billingPeriod,
       billKind,
       counterparty,
-      amount: periodAmount,
+      amount: netAmount,
+      grossAmount,
+      discountAmount,
+      netAmount,
       date: billDate,
       dueDate: contractDueDate(billDate, details.dueDateRule, details.dueDays),
       no: contractBillNumber(documentId, billKind, billingPeriod),
       summary: `${CONTRACT_TYPES[details.contractType]} · ${billingPeriod} 结算`,
     }];
   });
-  const generatedTotalAmount = Math.round(existingBills.reduce((sum, bill) => sum + Number(bill.amount || 0), 0) * 100) / 100;
-  const pendingTotalAmount = Math.round(items.reduce((sum, item) => sum + item.amount, 0) * 100) / 100;
-  const combinedTotalAmount = Math.round((generatedTotalAmount + pendingTotalAmount) * 100) / 100;
-  if (contractAmount > 0 && combinedTotalAmount > contractAmount + 0.01) {
-    errors.push(`已生成与待生成账单合计 ${combinedTotalAmount.toFixed(2)} 超出合同金额 ${contractAmount.toFixed(2)}`);
+  let generatedTotalAmount = 0;
+  let pendingTotalAmount = 0;
+  let combinedTotalAmount = 0;
+  try {
+    generatedTotalAmount = sumContractAmounts(existingBills.map((bill) => bill.amount));
+    pendingTotalAmount = sumContractAmounts(items.map((item) => item.amount));
+    combinedTotalAmount = sumContractAmounts([generatedTotalAmount, pendingTotalAmount]);
+  } catch (error) {
+    errors.push(error.message);
+  }
+  const plannedTotalAmount = combinedTotalAmount;
+  if (contractAmount > 0 && combinedTotalAmount > contractAmount) {
+    errors.push(`${existingBills.length ? "已生成与待生成账单合计" : "生成总额"} ${combinedTotalAmount.toFixed(2)} 超出合同金额 ${contractAmount.toFixed(2)}`);
   }
   if (!items.length && duplicatePeriods.length && !errors.length) errors.push(`同一合同同一期不得重复生成：${duplicatePeriods.map((item) => item.period).join("、")}`);
   return {
@@ -698,10 +718,15 @@ export function buildContractBillingPlan(workspace, options = {}) {
     billKind,
     contractAmount,
     periodAmount,
+    discountRule: details.discountRule,
+    grossAmount,
+    discountAmount,
+    netAmount,
     firstBillDate,
     endDate,
     asOf,
     counterparty,
+    counterpartyResolution,
     scheduleDates,
     plannedTotalAmount,
     existingBills,
@@ -746,6 +771,11 @@ export function applyContractBillingPlan(workspace, input = {}, context = {}) {
         documentId: plan.documentId,
         documentHash: plan.document.hash,
         documentVersion: plan.document.version,
+        discountRule: structuredClone(plan.discountRule),
+        grossAmount: item.grossAmount,
+        discountAmount: item.discountAmount,
+        netAmount: item.netAmount,
+        counterpartySelection: structuredClone(plan.counterpartyResolution),
         terms: Object.fromEntries(["refundTerms", "discountTerms", "commissionTerms", "performanceTerms"].map((key) => [key, plan.details[key]])),
         recognitionConfirmation: plan.document.contentRecognition?.confirmation ? structuredClone(plan.document.contentRecognition.confirmation) : null,
         recognitionReview: plan.document.contentRecognition?.review ? structuredClone(plan.document.contentRecognition.review) : null,

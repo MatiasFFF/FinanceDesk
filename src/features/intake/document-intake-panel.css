@@ -60,6 +60,42 @@
 
 .document-contract-terms textarea { resize: vertical; min-height: 96px; }
 .document-intake-panel .document-contract-terms .foundation-field > span:first-child { min-height: 0; }
+.document-contract-discount {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  padding-block: 12px;
+  border-block: 1px solid var(--line-soft);
+}
+.document-contract-discount p { margin: 0; }
+.document-contract-discount-toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.document-contract-discount-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.document-contract-discount-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 12px; }
+.document-contract-discount-result { display: flex; flex-wrap: wrap; gap: 6px 20px; font-variant-numeric: tabular-nums; }
+.document-contract-discount-result strong { font-size: inherit; font-weight: 600; }
+.document-contract-discount-suggestion { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.document-contract-discount-review { display: grid; gap: 6px; }
+.document-contract-discount-review p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.document-contract-plan-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.document-contract-counterparty-error { color: var(--danger, #a64632); font-size: var(--font-helper, 12px); overflow-wrap: anywhere; }
+.document-intake-panel .document-contract-plan-list {
+  max-height: none;
+  overflow: visible;
+  grid-auto-rows: max-content;
+  gap: 12px;
+}
+.document-intake-panel .document-contract-plan-list > .foundation-record {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 10px;
+}
+.document-intake-panel .document-contract-plan-list .document-contract-plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 8px;
+}
 .document-clause-source { white-space: pre-wrap; overflow-wrap: anywhere; }
 .document-recognition-review > summary { cursor: pointer; font-weight: 600; }
 .document-recognition-review p { margin-top: 6px; }
