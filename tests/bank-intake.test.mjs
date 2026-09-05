@@ -2374,6 +2374,11 @@ test("完整月度财务档案包含全部快照、真实回执原文件与统�
       evidenceIds: [],
       documentIds: [],
       allocations: [],
+      manualReview: {
+        note: "已核对跨期原因，保留在 9 月处理",
+        updatedBy: "复核会计",
+        updatedAt: fixedTimestamp,
+      },
     }],
     businessEvents: [],
     bills: [],
@@ -2504,6 +2509,15 @@ test("完整月度财务档案包含全部快照、真实回执原文件与统�
   assert.equal(plan.isComplete, true);
   assert.equal(plan.sections.length, 10);
   assert.equal(plan.missingItems.length, 0);
+  assert.deepEqual(plan.transactionManualReviews, [{
+    transactionId: "txn-monthly-archive",
+    serial: "txn-monthly-archive",
+    counterparty: "",
+    note: "已核对跨期原因，保留在 9 月处理",
+    reviewedBy: "复核会计",
+    reviewedAt: fixedTimestamp,
+    status: "posted",
+  }]);
   assert.equal(store.getActiveWorkspace().delivery.financialArchiveExports, undefined);
   const previousOfficialArchives = store.getActiveWorkspace().delivery.archives.length;
 
@@ -2537,6 +2551,11 @@ test("完整月度财务档案包含全部快照、真实回执原文件与统�
   assert.ok(zip.file("06-客户确认/第一次客户确认.json"));
   assert.ok(zip.file("06-客户确认/第二次最终确认.json"));
   assert.ok(zip.file("08-异常处理/异常处理记录.json"));
+  const manualReviewArchive = JSON.parse(await zip.file("08-异常处理/S7人工复核记录.json").async("string"));
+  assert.equal(manualReviewArchive.records[0].transactionId, "txn-monthly-archive");
+  assert.match(await zip.file("08-异常处理/S7人工复核记录.csv").async("string"), /已核对跨期原因/);
+  assert.equal(result.manifest.recordSources[0].recordCount, 1);
+  assert.deepEqual(result.manifest.recordSources[0].sourceIds, ["txn-monthly-archive"]);
   assert.ok(zip.file("09-操作日志/操作日志.json"));
   const hashManifest = JSON.parse(await zip.file("统一哈希清单.json").async("string"));
   assert.equal(hashManifest.files.some((file) => file.path === "07-真实回执/电子税务局真实回执.pdf" && file.hash), true);

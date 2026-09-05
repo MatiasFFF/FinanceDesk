@@ -359,6 +359,11 @@
   color: #8f3e2b;
 }
 
+.engine-voucher-tax-total {
+  color: var(--quiet);
+  font-variant-numeric: tabular-nums;
+}
+
 .engine-voucher-balance.is-balanced strong {
   color: #42634f;
 }

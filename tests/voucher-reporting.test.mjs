@@ -39,6 +39,31 @@ import {
 
 const context = { actor: "测试会计", at: "2026-09-06T13:00:00.000Z" };
 
+test("voucher tax amount stays optional but rejects invalid or negative values", () => {
+  const baseLines = [
+    { account: "bank:operating", debit: 106, credit: 0, taxAmount: "" },
+    { account: "revenuePrivate", debit: 0, credit: 106, taxAmount: 6 },
+  ];
+  const valid = validateVoucherBalance({ lines: baseLines });
+  assert.equal(valid.balanced, true);
+  assert.equal(valid.amountsBalanced, true);
+  assert.equal(valid.taxTotal, 6);
+
+  const invalid = validateVoucherBalance({
+    lines: baseLines.map((line, index) => index === 0 ? { ...line, taxAmount: "不是数字" } : line),
+  });
+  assert.equal(invalid.balanced, false);
+  assert.equal(invalid.amountsBalanced, true);
+  assert.match(invalid.errors.join("；"), /税额必须是有效数字/);
+
+  const negative = validateVoucherBalance({
+    lines: baseLines.map((line, index) => index === 0 ? { ...line, taxAmount: -1 } : line),
+  });
+  assert.equal(negative.balanced, false);
+  assert.equal(negative.amountsBalanced, true);
+  assert.match(negative.errors.join("；"), /税额不能为负数/);
+});
+
 test("reconciled split receipt produces a balanced traceable draft and attachment package", () => {
   let workspace = createAccountingFixture({ withReconciliations: true, withPostedVouchers: false });
   workspace = createVoucherDraft(workspace, { transactionId: "txn-split" }, context);

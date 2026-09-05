@@ -135,6 +135,8 @@ test("app wiring uses workspace modules for creation, navigation, operator ident
   assert.match(appSource, /未设置\$\{terminology\.personnel\}操作人/);
   assert.doesNotMatch(appSource, /<strong>周会计<\/strong>/);
   assert.match(appSource, /showMemberBusiness=\{workspaceModuleEnabled\(workspace, "members"\)\}/);
+  assert.match(appSource, /management-report-empty/);
+  assert.match(appSource, /去基础资料恢复显示项/);
   assert.match(managerSource, /actions\.updateWorkspaceModules/);
   assert.match(accountingSource, /showMemberBusiness && memberBusinessEnabled\(activeWorkspace\) && <MemberBusinessAccountingQueue/);
   assert.match(accountingSource, /workspaceAccountOptions\(activeWorkspace\)/);

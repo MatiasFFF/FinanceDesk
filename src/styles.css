@@ -6004,6 +6004,42 @@ summary.forecast-week-row {
   white-space: normal;
 }
 
+.management-report-display-link {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  background: rgba(236, 229, 217, 0.28);
+  color: var(--quiet);
+  font-size: 10px;
+}
+
+.management-report-display-link > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.management-report-display-link > button {
+  flex: 0 0 auto;
+}
+
+.management-report-empty .empty-state {
+  min-height: 300px;
+  padding: 38px 24px;
+  text-align: center;
+}
+
+.management-report-empty .empty-state > p {
+  max-width: 460px;
+  line-height: 1.6;
+}
+
+.management-report-empty .empty-state > .secondary-button {
+  margin-top: 16px;
+}
+
 .tax-page .tax-input-grid label > span,
 .tax-page .final-tax-grid span,
 .tax-page .final-tax-grid small,

@@ -811,6 +811,9 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
   const live = buildReportSnapshot(workspace);
   const management = buildManagementMetrics(workspace, { period: workspace.currentPeriod });
   const storeReport = management.storeReport;
+  const managementReportItems = workspace.managementReport?.displayItems || [];
+  const managementReportAllHidden = managementReportItems.length > 0
+    && managementReportItems.every((item) => item?.visible === false);
   const versions = workspace.delivery.reportVersions.filter((item) => item.period === workspace.currentPeriod);
   const selectedVersion = versions.find((item) => item.id === versionId);
   const snapshot = selectedVersion?.snapshot || live;
@@ -865,10 +868,20 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
         ))}</div>
       </section>
       <div className="reports-layout">
-        <section className="panel statement-panel"><div className="report-tabs" role="tablist">{Object.entries(snapshot.sections).map(([id, value]) => <button aria-selected={sectionId === id} className={sectionId === id ? "active" : ""} key={id} onClick={() => { setSectionId(id); setDrill(null); }} role="tab" type="button">{businessTermCopy(value.label, terminology)}</button>)}</div><div className="statement-heading"><span>项目</span><span>本期金额</span></div><div className="statement-rows">{section.rows.map((row) => <button aria-expanded={drill?.id === row.id} className={`${/(合计|利润|净增加|期末|缺口)/.test(row.label) ? "total" : ""} ${drill?.id === row.id ? "active" : ""}`} key={row.id} onClick={() => setDrill(row)} type="button"><span>{businessTermCopy(row.label, terminology)}<small>{row.details?.length ? `${row.details.length} 条来源` : "查看口径"}</small></span><strong>{formatCurrency(row.value)}</strong><ArrowRight size={15} /></button>)}</div><div className="statement-foot"><span>{formatPeriod(snapshot.period)}</span><span>{selectedVersion ? `${selectedVersion.label} · 已冻结` : "实时草稿 · 未冻结"}</span></div></section>
+        <section className="panel statement-panel">
+          <div className="report-tabs" role="tablist">{Object.entries(snapshot.sections).map(([id, value]) => <button aria-selected={sectionId === id} className={sectionId === id ? "active" : ""} key={id} onClick={() => { setSectionId(id); setDrill(null); }} role="tab" type="button">{businessTermCopy(value.label, terminology)}</button>)}</div>
+          {sectionId === "owner" && managementReportAllHidden ? (
+            <div className="management-report-empty"><EmptyState icon={ChartBar} title="管理报表显示项已全部隐藏" description="当前工作台没有需要展示的老板指标。可到基础资料重新启用显示项，金额、公式和来源数据不会被删除。" action={<button className="secondary-button" onClick={() => onPage("setup")} type="button"><GearSix size={16} />去基础资料恢复显示项</button>} /></div>
+          ) : <>
+            {sectionId === "owner" && <div className="management-report-display-link"><span>当前显示 {section.rows.length} 项老板指标</span><button className="text-button" onClick={() => onPage("setup")} type="button"><GearSix size={15} />管理显示项</button></div>}
+            <div className="statement-heading"><span>项目</span><span>本期金额</span></div>
+            <div className="statement-rows">{section.rows.map((row) => <button aria-expanded={drill?.id === row.id} className={`${/(合计|利润|净增加|期末|缺口)/.test(row.label) ? "total" : ""} ${drill?.id === row.id ? "active" : ""}`} key={row.id} onClick={() => setDrill(row)} type="button"><span>{businessTermCopy(row.label, terminology)}<small>{row.details?.length ? `${row.details.length} 条来源` : "查看口径"}</small></span><strong>{formatCurrency(row.value)}</strong><ArrowRight size={15} /></button>)}</div>
+            <div className="statement-foot"><span>{formatPeriod(snapshot.period)}</span><span>{selectedVersion ? `${selectedVersion.label} · 已冻结` : "实时草稿 · 未冻结"}</span></div>
+          </>}
+        </section>
         <aside className="panel version-panel"><div className="panel-heading"><div><p className="eyebrow">版本与差异</p><h2>不可覆盖的报表记录</h2></div><Clock size={21} /></div>{versions.length ? <div className="version-list">{versions.map((version, index) => <button className={version.id === versionId ? "active" : ""} key={version.id} onClick={() => setVersionId(version.id)} type="button"><span><strong>{version.label}</strong><small>{formatDateTime(version.createdAt)} · {version.actor}</small></span><TonePill tone="success">已冻结</TonePill>{index === 0 && <em>当前</em>}</button>)}</div> : <EmptyState title="还没有冻结版本" description="勾稽通过后冻结 V1，后续修改会形成 V2、V3，而不是覆盖旧数字。" />}<div className="version-diff"><div className="subheading"><strong>{previous ? `${latest.label} 对比 ${previous.label}` : "版本差异"}</strong><span>{differences.length} 项变化</span></div>{previous ? (differences.length ? differences.slice(0, 8).map((item) => <div key={item.id}><span><small>{businessTermCopy(item.section, terminology)}</small><strong>{businessTermCopy(item.label, terminology)}</strong></span><b className={item.delta > 0 ? "income" : "expense"}>{formatCurrency(item.delta, { sign: true })}</b></div>) : <p className="quiet-copy">最新两个版本的报表数字一致，时间与确认记录仍分别保留。</p>) : <p className="quiet-copy">冻结第二个版本后，这里会逐项显示与上一版本的差异。</p>}</div><div className="report-export-history"><div className="subheading"><strong>Excel 本地导出</strong><span>{reportExports.length} 次</span></div>{reportExports.length ? reportExports.slice(0, 3).map((item) => <article key={item.id}><DownloadSimple size={17} /><span><strong>{item.reportVersionLabel} · {item.fileName}</strong><small>{formatDateTime(item.exportedAt)} · {fileSize(item.size)} · 仅本地，未上传</small></span></article>) : <p className="quiet-copy">当前期间还没有 Excel 导出记录。</p>}</div>{taxEnabled && <button className="secondary-button wide" onClick={() => onPage("tax")} type="button">进入确认与申报<ArrowRight size={16} /></button>}</aside>
       </div>
-      {sectionId === "owner" && <>{memberBusinessEnabled && <StoreManagementReport report={storeReport} terminology={terminology} />}<OwnerLiquidityReport management={management} terminology={terminology} /></>}
+      {sectionId === "owner" && !managementReportAllHidden && <>{memberBusinessEnabled && <StoreManagementReport report={storeReport} terminology={terminology} />}<OwnerLiquidityReport management={management} terminology={terminology} /></>}
       <BoundaryNote />
       <DrilldownPanel row={drill} sectionLabel={section.label} terminology={terminology} onClose={() => setDrill(null)} />
     </div>

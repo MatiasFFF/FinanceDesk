@@ -418,7 +418,8 @@ function VoucherLineValidation({ validation }) {
       <div className={`engine-voucher-balance ${validation.balanced ? "is-balanced" : "is-invalid"}`}>
         <span>借方 ¥{money(validation.debit)}</span>
         <span>贷方 ¥{money(validation.credit)}</span>
-        <strong>{validation.balanced ? "借贷平衡，可以保存" : `差额 ¥${money(Math.abs(validation.difference))}`}</strong>
+        <span className="engine-voucher-tax-total">税额合计 ¥{money(validation.taxTotal)} · 仅信息</span>
+        <strong>{validation.balanced ? "借贷平衡，可以保存" : validation.amountsBalanced ? "借贷平衡，但分录有误" : `差额 ¥${money(Math.abs(validation.difference))}`}</strong>
       </div>
       {!validation.balanced && <div className="engine-missing">{validation.errors.map((message) => <span key={message}>{message}</span>)}</div>}
     </>
@@ -500,7 +501,7 @@ function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChan
               </label>
               <label className="engine-voucher-line-field engine-voucher-line-tax-field">
                 <span>税额（可选）</span>
-                <input type="number" step="0.01" inputMode="decimal" value={line.taxAmount ?? ""} onChange={(event) => onChange(index, { taxAmount: event.target.value })} aria-label={`第 ${index + 1} 行税额`} placeholder="0.00" />
+                <input type="number" min="0" step="0.01" inputMode="decimal" value={line.taxAmount ?? ""} onChange={(event) => onChange(index, { taxAmount: event.target.value })} aria-label={`第 ${index + 1} 行税额`} placeholder="0.00" />
                 <small>不参与借贷平衡</small>
               </label>
               <label className="engine-voucher-line-field engine-voucher-line-source-field">
@@ -863,7 +864,7 @@ function MemberBusinessAccountingQueue({ onToast }) {
               <details open={Boolean(voucher && voucher.status !== "posted")}>
                 <summary>{voucher ? "查看凭证分录与复核" : displayText(definition.suggestedEntry)}</summary>
                 {voucher ? <div className="engine-voucher-card">
-                  <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借方 ¥{money(validation?.debit)} · 贷方 ¥{money(validation?.credit)} · {validation?.balanced ? "借贷平衡" : "借贷不平"}</small></span><em>{voucher.status}</em></div>
+                  <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借方 ¥{money(validation?.debit)} · 贷方 ¥{money(validation?.credit)} · {validation?.amountsBalanced ? "借贷平衡" : "借贷不平"}{validation?.balanced ? "" : " · 分录待修正"}</small><small className="engine-voucher-tax-total">税额合计 ¥{money(validation?.taxTotal)} · 仅作信息，不参与借贷平衡</small></span><em>{voucher.status}</em></div>
                   <VoucherAccountJudgement
                     workspace={activeWorkspace}
                     accounts={accountOptions}
@@ -1812,7 +1813,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
           );
           return (
             <article className="engine-voucher-card" key={voucher.id}>
-              <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借方 ¥{money(lineValidation.debit)} · 贷方 ¥{money(lineValidation.credit)} · 附件包 {attachments.status === "complete" ? "完整" : "待补"} · V{voucher.version}</small></span><em>{voucher.status}</em></div>
+              <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借方 ¥{money(lineValidation.debit)} · 贷方 ¥{money(lineValidation.credit)} · {lineValidation.amountsBalanced ? "借贷平衡" : "借贷不平"}{lineValidation.balanced ? "" : " · 分录待修正"} · 附件包 {attachments.status === "complete" ? "完整" : "待补"} · V{voucher.version}</small><small className="engine-voucher-tax-total">税额合计 ¥{money(lineValidation.taxTotal)} · 仅作信息，不参与借贷平衡</small></span><em>{voucher.status}</em></div>
               {editable && <input value={voucherSummaries[voucher.id] ?? voucher.summary} onChange={(event) => setVoucherSummaries((current) => ({ ...current, [voucher.id]: event.target.value }))} aria-label="凭证摘要" />}
               <VoucherAccountJudgement
                 workspace={activeWorkspace}

@@ -3377,6 +3377,20 @@ function periodAuditRecords(workspace, period, archiveRecord, sourceIds) {
   ));
 }
 
+function periodTransactionManualReviews(workspace, period) {
+  return (workspace.transactions || [])
+    .filter((transaction) => periodOfRecord(transaction) === period && String(transaction.manualReview?.note || "").trim())
+    .map((transaction) => ({
+      transactionId: transaction.id,
+      serial: transaction.serial || transaction.id,
+      counterparty: transaction.counterparty || "",
+      note: String(transaction.manualReview.note).trim(),
+      reviewedBy: transaction.manualReview.updatedBy || null,
+      reviewedAt: transaction.manualReview.updatedAt || null,
+      status: transaction.status || null,
+    }));
+}
+
 function monthlySection(section, status, detail, count = null) {
   return { ...section, status, detail, count };
 }
@@ -3478,6 +3492,7 @@ export function buildMonthlyFinancialArchivePlan(workspace, period = workspace?.
   const exceptionRecords = periodExceptionRecords(workspace, period, archiveRecord, periodSources);
   const notices = (workspace.delivery?.notices || []).filter((notice) => notice.period === period);
   const auditLog = periodAuditRecords(workspace, period, archiveRecord, periodSources);
+  const transactionManualReviews = periodTransactionManualReviews(workspace, period);
   const reportChecks = frozenSnapshot?.summary?.engineChecks
     || reportVersion?.statements?.checks
     || liveStatements?.checks
@@ -3527,7 +3542,7 @@ export function buildMonthlyFinancialArchivePlan(workspace, period = workspace?.
     monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[4], checkByKey.get("payroll").ok ? "collected" : "missing", `工资 ${payroll.payroll ?? "缺失"} · 社保 ${payroll.socialSecurity ?? "缺失"}`),
     monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[5], initialConfirmation.complete && finalConfirmation.complete ? "collected" : "missing", `首次确认 ${initialConfirmation.complete ? "已完成" : "缺失"} · 最终确认 ${finalConfirmation.complete ? "已完成" : "缺失"}`),
     monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[6], checkByKey.get("receipt").ok ? "collected" : "missing", receipt?.name || "尚未导入真实回执"),
-    monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[7], checkByKey.get("exceptions").ok ? "collected" : "missing", `${exceptionRecords.length} 条异常记录，未解决 ${unresolvedExceptions.length + unresolvedNotices.length} 项`, exceptionRecords.length),
+    monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[7], checkByKey.get("exceptions").ok ? "collected" : "missing", `${exceptionRecords.length} 条异常记录，未解决 ${unresolvedExceptions.length + unresolvedNotices.length} 项 · ${transactionManualReviews.length} 条 S7 人工复核备注`, exceptionRecords.length + transactionManualReviews.length),
     monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[8], checkByKey.get("audit").ok ? "collected" : "missing", `${auditLog.length} 条期间相关日志`, auditLog.length),
     monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[9], "pending_generation", "点击导出后为 ZIP 内每个文件生成哈希"),
   ];
@@ -3555,6 +3570,7 @@ export function buildMonthlyFinancialArchivePlan(workspace, period = workspace?.
     exceptionRecords,
     notices,
     auditLog,
+    transactionManualReviews,
     checks,
     missingItems,
     sections,
@@ -3567,6 +3583,18 @@ function archiveAuditCsv(entries) {
     return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
   };
   const rows = [["时间", "操作者", "动作", "详情"], ...entries.map((entry) => [entry.at || entry.createdAt, entry.actor, entry.action, entry.detail])];
+  return `\ufeff${rows.map((row) => row.map(cell).join(",")).join("\n")}`;
+}
+
+function archiveTransactionManualReviewCsv(entries) {
+  const cell = (value) => {
+    const text = String(value ?? "");
+    return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+  };
+  const rows = [
+    ["流水 ID", "流水号", "对方", "复核备注", "复核人", "复核时间", "流水状态"],
+    ...entries.map((entry) => [entry.transactionId, entry.serial, entry.counterparty, entry.note, entry.reviewedBy, entry.reviewedAt, entry.status]),
+  ];
   return `\ufeff${rows.map((row) => row.map(cell).join(",")).join("\n")}`;
 }
 
@@ -3650,6 +3678,10 @@ export async function generateMonthlyFinancialArchivePackage(input) {
   const status = isComplete ? "complete" : "incomplete_draft";
   const statusLabel = isComplete ? "完整财务档案" : "不完整财务档案草稿";
   const fileName = safeZipName(`FinanceDesk-${workspace.name}-${plan.period}-${statusLabel}.zip`, `FinanceDesk-${plan.period}-${statusLabel}.zip`);
+  const transactionManualReviewFiles = {
+    json: "08-异常处理/S7人工复核记录.json",
+    csv: "08-异常处理/S7人工复核记录.csv",
+  };
   const manifest = {
     packageId,
     product: "FinanceDesk",
@@ -3667,6 +3699,15 @@ export async function generateMonthlyFinancialArchivePackage(input) {
       : section),
     checks: plan.checks,
     missingItems,
+    recordSources: [{
+      key: "s7TransactionManualReviews",
+      label: "S7 人工复核备注",
+      source: "transactions.manualReview",
+      period: plan.period,
+      recordCount: plan.transactionManualReviews.length,
+      sourceIds: plan.transactionManualReviews.map((record) => record.transactionId),
+      files: [transactionManualReviewFiles.json, transactionManualReviewFiles.csv],
+    }],
     hashManifest: "统一哈希清单.json",
   };
   const contents = [
@@ -3685,6 +3726,8 @@ export async function generateMonthlyFinancialArchivePackage(input) {
     await archiveContentDescriptor("06-客户确认/客户确认包记录.json", jsonFile(plan.confirmationPackages)),
     await archiveContentDescriptor("07-真实回执/回执信息.json", jsonFile(plan.receipt)),
     await archiveContentDescriptor("08-异常处理/异常处理记录.json", jsonFile({ exceptions: plan.exceptionRecords, notices: plan.notices })),
+    await archiveContentDescriptor(transactionManualReviewFiles.json, jsonFile({ period: plan.period, source: "transactions.manualReview", records: plan.transactionManualReviews })),
+    await archiveContentDescriptor(transactionManualReviewFiles.csv, archiveTransactionManualReviewCsv(plan.transactionManualReviews), "text/csv"),
     await archiveContentDescriptor("09-操作日志/操作日志.json", jsonFile(plan.auditLog)),
     await archiveContentDescriptor("09-操作日志/操作日志.csv", archiveAuditCsv(plan.auditLog), "text/csv"),
     await archiveContentDescriptor("档案包清单.json", jsonFile(manifest)),

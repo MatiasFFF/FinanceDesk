@@ -631,16 +631,23 @@ export function validateVoucherBalance(voucher, tolerance = 0.01, workspace = nu
   const normalizedAmounts = lines.map((line) => {
     const debit = Number(line.debit ?? 0);
     const credit = Number(line.credit ?? 0);
+    const rawTaxAmount = line.taxAmount;
+    const taxAmountEmpty = rawTaxAmount == null || String(rawTaxAmount).trim() === "";
+    const taxAmount = taxAmountEmpty ? null : Number(rawTaxAmount);
     return {
       debit,
       credit,
+      taxAmount,
       validDebit: Number.isFinite(debit),
       validCredit: Number.isFinite(credit),
+      validTaxAmount: taxAmountEmpty || Number.isFinite(taxAmount),
     };
   });
   const debit = sumMoney(normalizedAmounts.map((line) => line.validDebit ? line.debit : 0));
   const credit = sumMoney(normalizedAmounts.map((line) => line.validCredit ? line.credit : 0));
+  const taxTotal = sumMoney(normalizedAmounts.map((line) => line.validTaxAmount && line.taxAmount != null ? line.taxAmount : 0));
   const difference = roundMoney(debit - credit);
+  const amountsBalanced = Math.abs(difference) <= tolerance;
   const errors = [];
   if (lines.length < 2) errors.push("凭证至少需要两行分录");
   lines.forEach((line, index) => {
@@ -655,14 +662,19 @@ export function validateVoucherBalance(voucher, tolerance = 0.01, workspace = nu
     } else if (amounts.debit <= 0 && amounts.credit <= 0) {
       errors.push(`第 ${index + 1} 行必须填写借方或贷方金额`);
     }
+    if (!amounts.validTaxAmount) {
+      errors.push(`第 ${index + 1} 行税额必须是有效数字`);
+    } else if (amounts.taxAmount != null && amounts.taxAmount < 0) {
+      errors.push(`第 ${index + 1} 行税额不能为负数`);
+    }
     if (!account) {
       errors.push(`第 ${index + 1} 行缺少会计科目`);
     } else if (workspace && !resolveWorkspaceAccountDefinition(workspace, account, { allowInactive: false })) {
       errors.push(`第 ${index + 1} 行会计科目不存在或已停用`);
     }
   });
-  if (Math.abs(difference) > tolerance) errors.push(`借贷不平，差额 ${difference.toFixed(2)}`);
-  return { balanced: errors.length === 0, debit, credit, difference, errors };
+  if (!amountsBalanced) errors.push(`借贷不平，差额 ${difference.toFixed(2)}`);
+  return { balanced: errors.length === 0, amountsBalanced, debit, credit, taxTotal, difference, errors };
 }
 
 function evidenceAndSources(workspace, transaction, allocations) {
