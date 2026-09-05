@@ -301,3 +301,135 @@ export function canManuallyPostTransaction(workspace, transaction) {
   const open = unresolvedExceptionTasks(workspace, transaction.id);
   return open.length === 0 && Boolean(transaction.evidenceAssessment?.canCreateDraft);
 }
+
+export const MANUAL_VOUCHER_BASIS_KINDS = Object.freeze({
+  business: "业务凭证",
+  adjustment: "更正 / 调整",
+  accrual: "暂估",
+  closing: "结转",
+});
+
+export function manualVoucherSourceOptions(workspace) {
+  const labels = { transactions: "银行流水", businessEvents: "业务事件", bills: "往来账单", contracts: "合同", invoices: "发票", approvals: "审批单", inventoryItems: "库存物料", inventoryMovements: "库存流水" };
+  const records = Object.entries(labels).flatMap(([collection, label]) => (workspace[collection] || [])
+    .filter((record) => !["deleted", "voided", "cancelled", "reversed", "rejected", "withdrawn"].includes(record.status)
+      && record.voidStatus !== "voided")
+    .map((record) => ({
+      id: record.id,
+      label: `${label} · ${record.no || record.businessEventNo || record.summary || record.name || (record.itemName && `${record.date} ${record.itemName} ${record.typeLabel || ""}`) || record.id}`,
+      record,
+    })));
+  return [...records, ...(workspace.transactions || []).flatMap((transaction) => (transaction.allocations || [])
+    .filter((allocation) => ["confirmed", "posted"].includes(allocation.status))
+    .map((allocation) => ({ id: allocation.id, label: `核销 · ${transaction.counterparty || transaction.date} · ${allocation.billId}`, record: allocation })))];
+}
+
+export function assessManualVoucherEvidence(workspace, voucher) {
+  const issues = [];
+  const add = (code, message) => issues.push({ code, message });
+  const basis = voucher.basis || {};
+  const kind = basis.kind || "business";
+  const sourceIds = collectSourceIds(voucher.sourceIds, (voucher.lines || []).map((line) => line.sourceIds));
+  const options = manualVoucherSourceOptions(workspace);
+  const plan = voucher.reconciliationCorrection;
+  if (plan?.status === "pending" && options.some((option) => option.id === plan.originalAllocation.id)
+    && (workspace.bills || []).some((bill) => bill.id === plan.replacement.billId)) {
+    options.push({ id: plan.replacement.id, record: plan.replacement });
+  }
+  const sources = sourceIds.map((id) => options.find((option) => option.id === id));
+  const invalidSources = sourceIds.filter((id, index) => !sources[index]);
+  if (invalidSources.length) add("voucher_source_invalid", `来源已不存在或不属于有效业务记录：${invalidSources.join("、")}；请载入草稿重新选择`);
+  if (voucher.inventoryMovementId) {
+    const movement = (workspace.inventoryMovements || []).find((item) => item.id === voucher.inventoryMovementId);
+    const item = (workspace.inventoryItems || []).find((item) => item.id === movement?.itemId);
+    const inventoryItemIds = sourceIds.filter((id) => (workspace.inventoryItems || []).some((item) => item.id === id));
+    if (!movement || !item || !["loss", "stockLoss"].includes(movement.type)
+      || !sourceIds.includes(movement.id) || !sourceIds.includes(item.id)
+      || inventoryItemIds.some((id) => id !== item.id)
+      || (voucher.lines || []).some((line) => !line.sourceIds?.includes(movement.id) || !line.sourceIds?.includes(item.id))) {
+      add("voucher_inventory_source_invalid", "库存损耗凭证的流水、物料与分录关联不一致；请依据正确的库存流水重新生成草稿");
+    }
+  }
+  const referenceIds = collectSourceIds(basis.voucherIds, voucher.revisionOf);
+  const references = referenceIds.map((id) => (workspace.vouchers || []).find((item) => (
+    item.id === id && item.id !== voucher.id && ["posted", "superseded"].includes(item.status)
+    && !item.voidedAt && !item.cancelledAt
+  )));
+  if (references.some((item) => !item)) add("voucher_reference_invalid", "原凭证不存在、未入账或已作废；请重新选择可追溯的已入账凭证");
+  if (!Object.hasOwn(MANUAL_VOUCHER_BASIS_KINDS, kind)) add("voucher_basis_invalid", "请选择业务、调整、暂估或结转依据");
+  if (kind === "business" && !sources.some(Boolean) && !voucher.revisionOf) {
+    add("voucher_source_missing", "尚未关联业务来源；请在分录中选择当前工作台的业务记录");
+  }
+  if (kind !== "business" && !String(basis.description || "").trim()) {
+    add("voucher_calculation_missing", "请填写调整或计算说明，并关联原凭证或上传计算文件");
+  }
+  if (kind !== "business" && !references.some(Boolean) && !basis.calculationDocumentId) {
+    add("voucher_basis_missing", "请关联已入账原凭证或选择已上传的计算文件；仅填写说明不能作为入账依据");
+  }
+
+  const documentIds = new Set(collectSourceIds(voucher.evidenceIds, basis.calculationDocumentId));
+  const visited = new Set([voucher.id]);
+  function addReferenceDocuments(reference) {
+    if (!reference || visited.has(reference.id)) return;
+    visited.add(reference.id);
+    collectSourceIds(reference.evidenceIds, reference.basis?.calculationDocumentId).forEach((id) => documentIds.add(id));
+    collectSourceIds(reference.basis?.voucherIds, reference.revisionOf).forEach((id) => {
+      addReferenceDocuments((workspace.vouchers || []).find((item) => item.id === id && ["posted", "superseded"].includes(item.status)));
+    });
+  }
+  if (!documentIds.size) {
+    references.forEach(addReferenceDocuments);
+    sources.filter(Boolean).forEach(({ record }) => {
+      collectSourceIds(record.evidenceIds, record.documentIds, record.documentId).forEach((id) => documentIds.add(id));
+    });
+  }
+  const documents = [...documentIds].map((id) => (workspace.documents || []).find((document) => document.id === id));
+  if (!documents.length) add("voucher_original_missing", "尚无原始依据；请上传并关联原始资料或计算文件，也可沿原凭证补齐依据");
+  [...documentIds].forEach((id, index) => {
+    const document = documents[index];
+    if (!document || ["deleted", "voided", "cancelled"].includes(document.status) || document.voidStatus === "voided") {
+      add(`voucher_document_missing:${id}`, `资料 ${id} 不存在或已作废；请取消此关联并补充有效原件`);
+    } else if (!document.hash || !document.storage?.availableLocally || Number(document.size) <= 0) {
+      add(`voucher_original_unavailable:${id}`, `${document.name || id} 缺少本地原文件；请重新上传并选择原件`);
+    }
+  });
+  return { complete: issues.length === 0, issues, sourceIds, referenceIds, documents: documents.filter(Boolean), documentIds: [...documentIds] };
+}
+
+export function syncManualVoucherEvidenceTasks(workspace, voucher, context, extraIssues = []) {
+  const assessment = assessManualVoucherEvidence(workspace, voucher);
+  const issues = [...assessment.issues, ...extraIssues];
+  voucher.blockers = issues;
+  const identity = `voucher:${voucher.id}:evidence`;
+  const tasks = workspace.exceptionTasks || (workspace.exceptionTasks = []);
+  let task = tasks.find((item) => item.identity === identity && item.status !== "resolved");
+  if (issues.length) {
+    if (!task) {
+      task = { id: nextRecordId(tasks, "exception"), identity, code: "voucher_evidence", sourceType: "voucher", sourceId: voucher.id, period: voucher.period, createdAt: context.at, history: [] };
+      tasks.push(task);
+    }
+    task.status = "open";
+    task.message = issues.map((issue) => issue.message).join("；");
+    task.action = "complete_voucher_evidence";
+    task.sourceIds = collectSourceIds(voucher.id, assessment.sourceIds, assessment.referenceIds, assessment.documentIds);
+    task.updatedAt = context.at;
+    task.history.push({ at: context.at, actor: context.actor, action: "needs_evidence", note: task.message });
+  } else if (task) {
+    task.status = "resolved";
+    task.resolvedAt = context.at;
+    task.resolvedBy = context.actor;
+    task.updatedAt = context.at;
+    task.history.push({ at: context.at, actor: context.actor, action: "evidence_completed", note: "草稿来源与资料已补齐，入账时仍须读取原件并复核" });
+  }
+  return assessment;
+}
+
+export function recordManualVoucherEvidenceFailure(workspace, voucherId, message, context = {}) {
+  const next = cloneAccountingState(workspace);
+  const voucher = (next.vouchers || []).find((item) => item.id === voucherId);
+  if (!voucher || !["draft", "changes_requested"].includes(voucher.status)) return next;
+  const resolvedContext = operationContext(context);
+  syncManualVoucherEvidenceTasks(next, voucher, resolvedContext, [{ code: "voucher_original_verification", message }]);
+  appendAuditEntry(next, { action: "voucher.evidence_missing", entityType: "voucher", entityId: voucher.id, detail: message, sourceIds: collectSourceIds(voucher.id, voucher.evidenceIds) }, resolvedContext);
+  return next;
+}

@@ -12,13 +12,20 @@ import {
 import {
   accountDefinition,
   accountingRules,
+  assessManualVoucherEvidence,
+  cancelReconciliationCorrection,
   createManualVoucherDraft,
-  postVoucher,
+  createPostedVoucherRevision,
+  MANUAL_VOUCHER_BASIS_KINDS,
+  manualVoucherSourceOptions,
+  postVoucherWithEvidence,
+  recordManualVoucherEvidenceFailure,
   reviseDraftVoucher,
   validateVoucherBalance,
   workspaceAccountDefinitions,
 } from "../../domain/accounting/index.js";
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
+import { saveLocalDocument } from "../intake/documentIntake.js";
 import "./manual-voucher-panel.css";
 
 let lineSequence = 0;
@@ -66,6 +73,7 @@ function emptyEditor(workspace) {
     summary: "",
     lines: [createEditableLine(), createEditableLine()],
     evidenceIds: [],
+    basis: { kind: "business", description: "", voucherIds: [], calculationDocumentId: "" },
     revisionReason: "",
   };
 }
@@ -158,6 +166,7 @@ function voucherStatus(status) {
     changes_requested: { label: "待修订", tone: "warning" },
     posted: { label: "已入账", tone: "posted" },
     superseded: { label: "已被替代", tone: "muted" },
+    invalidated: { label: "来源失效 / 已取消", tone: "muted" },
   }[status] || { label: status || "未知状态", tone: "muted" };
 }
 
@@ -173,15 +182,19 @@ function documentLabel(document) {
 }
 
 export function ManualVoucherPanel({ onToast }) {
-  const { activeWorkspace, actions, state, store } = useFinanceDesk();
+  const { activeWorkspace, actions, state, store, fileVault } = useFinanceDesk();
   const [editor, setEditor] = useState(() => emptyEditor(activeWorkspace));
+  const [editorOpen, setEditorOpen] = useState(false);
   const [reviewNotes, setReviewNotes] = useState({});
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
   const editorRef = useRef(null);
+  const editorBaseline = useRef(JSON.stringify(editor));
   const departmentListId = useId();
   const projectListId = useId();
 
   const accounts = useMemo(() => activeWorkspace ? accountOptions(activeWorkspace) : [], [activeWorkspace]);
+  const sourceOptions = useMemo(() => activeWorkspace ? manualVoucherSourceOptions(activeWorkspace) : [], [activeWorkspace]);
   const dimensions = useMemo(() => activeWorkspace ? dimensionOptions(activeWorkspace) : { stores: [], departments: [], projects: [] }, [activeWorkspace]);
   const documents = useMemo(() => activeWorkspace ? [...(activeWorkspace.documents || [])].sort((left, right) => {
     const leftCurrent = left.period === activeWorkspace.currentPeriod ? 1 : 0;
@@ -205,7 +218,10 @@ export function ManualVoucherPanel({ onToast }) {
   );
 
   useEffect(() => {
-    setEditor(emptyEditor(activeWorkspace));
+    const blank = emptyEditor(activeWorkspace);
+    setEditor(blank);
+    editorBaseline.current = JSON.stringify(blank);
+    setEditorOpen(false);
     setReviewNotes({});
     setError("");
   }, [activeWorkspace?.id, activeWorkspace?.currentPeriod]);
@@ -216,12 +232,18 @@ export function ManualVoucherPanel({ onToast }) {
   const dateBelongsToPeriod = /^\d{4}-\d{2}-\d{2}$/.test(editor.date)
     && editor.date.startsWith(`${activeWorkspace.currentPeriod}-`);
   const canSave = dateBelongsToPeriod
+    && !busy
     && editor.summary.trim().length > 0
     && validation.balanced
     && (!editor.voucherId || editor.revisionReason.trim().length > 0);
+  const hasUnsavedInput = JSON.stringify(editor) !== editorBaseline.current;
+  const hasLineInput = editor.lines.some((line) => line.account || line.debit || line.credit);
 
   function resetEditor({ scroll = false } = {}) {
-    setEditor(emptyEditor(activeWorkspace));
+    const blank = emptyEditor(activeWorkspace);
+    setEditor(blank);
+    editorBaseline.current = JSON.stringify(blank);
+    setEditorOpen(false);
     setError("");
     if (scroll) requestAnimationFrame(() => editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }
@@ -254,14 +276,23 @@ export function ManualVoucherPanel({ onToast }) {
 
   function loadDraft(voucher) {
     if (!["draft", "changes_requested"].includes(voucher.status)) return;
-    setEditor({
+    if (hasUnsavedInput) {
+      setEditorOpen(true);
+      if (editor.voucherId !== voucher.id) setError("正在编辑的内容尚未保存；请先保存，或明确放弃本次输入后再载入其他凭证。");
+      return;
+    }
+    const loaded = {
       voucherId: voucher.id,
       date: voucher.date,
       summary: voucher.summary || "",
       lines: (voucher.lines || []).map(createEditableLine),
       evidenceIds: [...(voucher.evidenceIds || [])],
+      basis: { kind: "business", description: "", voucherIds: [], calculationDocumentId: "", ...(voucher.basis || {}) },
       revisionReason: "",
-    });
+    };
+    setEditor(loaded);
+    editorBaseline.current = JSON.stringify(loaded);
+    setEditorOpen(true);
     setError("");
     requestAnimationFrame(() => editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }
@@ -287,6 +318,7 @@ export function ManualVoucherPanel({ onToast }) {
           summary: editor.summary.trim(),
           lines: preparedLines,
           evidenceIds: editor.evidenceIds,
+          basis: editor.basis,
           reason: editor.revisionReason.trim(),
         }, { actor, mode: "manual" })
         : createManualVoucherDraft(current, {
@@ -294,52 +326,117 @@ export function ManualVoucherPanel({ onToast }) {
           summary: editor.summary.trim(),
           lines: preparedLines,
           evidenceIds: editor.evidenceIds,
+          basis: editor.basis,
         }, { actor, mode: "manual" });
       actions.replaceWorkspace(current.id, next);
       onToast?.(editor.voucherId ? "手工凭证草稿修订已保存" : "手工凭证草稿已保存");
-      setEditor(emptyEditor(next));
+      const blank = emptyEditor(next);
+      setEditor(blank);
+      editorBaseline.current = JSON.stringify(blank);
+      setEditorOpen(false);
     } catch (caught) {
       setError(caught.message || "手工凭证草稿保存失败");
     }
   }
 
-  function postDraft(voucher) {
+  async function postDraft(voucher) {
+    if (busy) return;
     const reviewNote = String(reviewNotes[voucher.id] || "").trim();
     if (!reviewNote) {
       setError("人工入账前必须填写复核意见");
       return;
     }
     setError("");
+    setBusy(true);
     try {
       const current = store.getActiveWorkspace();
-      const next = postVoucher(current, { voucherId: voucher.id, reviewNote, mode: "manual" }, { actor, mode: "manual" });
+      const next = await postVoucherWithEvidence(current, { voucherId: voucher.id, reviewNote, mode: "manual" }, { actor, mode: "manual", fileVault });
+      if (store.getActiveWorkspace() !== current) throw new Error("原件核验期间工作台数据发生变化，请重新复核入账");
       actions.replaceWorkspace(current.id, next);
       setReviewNotes((notes) => ({ ...notes, [voucher.id]: "" }));
       onToast?.("手工凭证已完成人工复核并入账");
     } catch (caught) {
       setError(caught.message || "手工凭证入账失败");
+      if (["VOUCHER_EVIDENCE_REQUIRED", "VOUCHER_ORIGINAL_REQUIRED"].includes(caught.code)) {
+        const current = store.getActiveWorkspace();
+        if (current.id === activeWorkspace.id) {
+          try { actions.replaceWorkspace(current.id, recordManualVoucherEvidenceFailure(current, voucher.id, caught.message, { actor })); }
+          catch (recordError) { setError(`${caught.message}；补件任务未保存：${recordError.message}`); }
+        }
+      }
+    } finally {
+      setBusy(false);
     }
+  }
+
+  async function uploadOriginal(file) {
+    if (!file || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const document = await saveLocalDocument({ store, fileVault, workspaceId: activeWorkspace.id, file, metadata: { category: "会计资料", period: activeWorkspace.currentPeriod, actor } });
+      if (store.getActiveWorkspace().id !== activeWorkspace.id) return;
+      setEditor((current) => ({
+        ...current,
+        evidenceIds: [...new Set([...current.evidenceIds, document.id])],
+        basis: { ...current.basis, calculationDocumentId: current.basis.kind !== "business" && !current.basis.calculationDocumentId ? document.id : current.basis.calculationDocumentId },
+      }));
+      onToast?.("原文件已保存并勾选；保存草稿即可关联到凭证");
+    } catch (caught) {
+      setError(caught.message || "原文件上传失败");
+    } finally { setBusy(false); }
+  }
+
+  function createRevision(voucher) {
+    if (hasUnsavedInput) { setEditorOpen(true); setError("请先保存或放弃当前输入，再创建另一张更正草稿。"); return; }
+    const reason = String(reviewNotes[voucher.id] || "").trim();
+    try {
+      const current = store.getActiveWorkspace();
+      const next = createPostedVoucherRevision(current, { voucherId: voucher.id, reason }, { actor });
+      actions.replaceWorkspace(current.id, next);
+      loadDraft(next.vouchers[next.vouchers.length - 1]);
+      onToast?.("更正草稿已创建，原凭证在更正入账前继续有效");
+    } catch (caught) { setError(caught.message); }
+  }
+
+  function cancelRevision(voucher) {
+    try {
+      const current = store.getActiveWorkspace();
+      const next = cancelReconciliationCorrection(current, { voucherId: voucher.id, reason: reviewNotes[voucher.id] }, { actor });
+      actions.replaceWorkspace(current.id, next);
+      if (editor.voucherId === voucher.id) resetEditor();
+      onToast?.("更正草稿已取消，原凭证保持有效");
+    } catch (caught) { setError(caught.message); }
   }
 
   return (
     <section className="manual-voucher-panel">
       <header className="manual-voucher-panel-heading">
-        <div><p>本地会计处理</p><h2>手工凭证</h2><span>独立录入真实分录，保存草稿后必须填写复核意见才能人工入账。</span></div>
-        <button className="secondary-button" type="button" onClick={() => resetEditor({ scroll: true })}><Plus size={16} />新建空白凭证</button>
+        <div><p>本地会计处理</p><h2>手工凭证</h2><span>可先保存待补件草稿；入账须关联真实来源、核验原文件并填写复核意见。</span></div>
+        <button className="secondary-button" type="button" aria-expanded={editorOpen} disabled={busy} onClick={() => setEditorOpen((current) => !current)}><Plus size={16} />{editorOpen ? "收起录入 · 保留输入" : hasUnsavedInput || editor.voucherId ? "继续编辑" : "录入手工凭证"}</button>
       </header>
 
       {error && <div className="manual-voucher-error" role="alert"><WarningCircle size={18} /><span>{error}</span></div>}
 
-      <form className="manual-voucher-editor" onSubmit={saveDraft} ref={editorRef}>
+      <form className="manual-voucher-editor" onSubmit={saveDraft} ref={editorRef} hidden={!editorOpen}>
         <div className="manual-voucher-section-heading">
           <div><small>{editor.voucherId ? "修订已保存草稿" : "新建本期草稿"}</small><h3>{editor.voucherId ? "修改手工凭证" : "录入手工凭证"}</h3></div>
-          {editor.voucherId && <span className="manual-voucher-editing-badge"><NotePencil size={15} />{editor.voucherId}</span>}
+          {editor.voucherId && <span className="manual-voucher-editing-badge"><NotePencil size={15} />已保存草稿</span>}
         </div>
 
         <div className="manual-voucher-header-fields">
           <label><span>凭证日期 *</span><input required readOnly={Boolean(editor.voucherId)} type="date" min={`${activeWorkspace.currentPeriod}-01`} max={periodEndDate(activeWorkspace.currentPeriod)} value={editor.date} onChange={(event) => setEditor((current) => ({ ...current, date: event.target.value }))} /><small>{editor.voucherId ? "已保存草稿的日期保持不变；换日期请新建草稿" : `必须属于当前账期 ${activeWorkspace.currentPeriod}`}</small></label>
           <label><span>凭证摘要 *</span><input required value={editor.summary} onChange={(event) => setEditor((current) => ({ ...current, summary: event.target.value }))} placeholder="说明本次凭证反映的业务或调整" /></label>
           {editor.voucherId && <label className="manual-voucher-reason"><span>修改原因 *</span><textarea required value={editor.revisionReason} onChange={(event) => setEditor((current) => ({ ...current, revisionReason: event.target.value }))} placeholder="说明本次修改的原因和依据" /></label>}
+        </div>
+
+        <div className="manual-voucher-header-fields">
+          <label><span>凭证依据</span><select value={editor.basis.kind} onChange={(event) => setEditor((current) => ({ ...current, basis: { ...current.basis, kind: event.target.value } }))}>{Object.entries(MANUAL_VOUCHER_BASIS_KINDS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+          {editor.basis.kind !== "business" && <>
+            <label><span>调整 / 计算说明</span><textarea value={editor.basis.description} onChange={(event) => setEditor((current) => ({ ...current, basis: { ...current.basis, description: event.target.value } }))} placeholder="说明调整对象、计算方法与金额来源" /></label>
+            <label><span>关联原凭证（可多选）</span><select multiple value={editor.basis.voucherIds} onChange={(event) => setEditor((current) => ({ ...current, basis: { ...current.basis, voucherIds: Array.from(event.target.selectedOptions, (option) => option.value) } }))}>{(activeWorkspace.vouchers || []).filter((voucher) => voucher.id !== editor.voucherId && ["posted", "superseded"].includes(voucher.status)).map((voucher) => <option value={voucher.id} key={voucher.id}>{voucher.period} · {voucher.no || voucher.id} · {voucher.summary}{voucher.status === "superseded" ? "（历史）" : ""}</option>)}</select></label>
+            <label><span>计算依据文件</span><select value={editor.basis.calculationDocumentId} onChange={(event) => setEditor((current) => ({ ...current, basis: { ...current.basis, calculationDocumentId: event.target.value } }))}><option value="">选择已上传文件，或沿原凭证追溯</option>{documents.map((document) => <option value={document.id} key={document.id}>{documentLabel(document)}</option>)}</select><small>暂估、结转和历史调整可使用原凭证或计算文件，不要求银行流水。</small></label>
+          </>}
         </div>
 
         <div className="manual-voucher-lines-heading"><div><strong>凭证分录</strong><small>至少两行；每行只能填写借方或贷方一侧。</small></div><button className="soft-button" type="button" onClick={addLine}><Plus size={15} />增加分录</button></div>
@@ -363,20 +460,22 @@ export function ManualVoucherPanel({ onToast }) {
                   }}><option value="">不设置</option>{historicalStore && <option value={line.storeId}>{line.storeName || line.storeId}（历史）</option>}{dimensions.stores.map((store) => <option value={store.id} key={store.id}>{store.name || store.id}</option>)}</select></label>
                   <label><span>部门</span><input list={`${departmentListId}-${index}`} value={line.department} onChange={(event) => updateLine(line.clientId, { department: event.target.value })} placeholder="选择已有部门或手填" /><datalist id={`${departmentListId}-${index}`}>{dimensions.departments.map((department) => <option value={department} key={department} />)}</datalist></label>
                   <label><span>项目</span><input list={`${projectListId}-${index}`} value={line.project} onChange={(event) => updateLine(line.clientId, { project: event.target.value })} placeholder="选择已有项目或手填" /><datalist id={`${projectListId}-${index}`}>{dimensions.projects.map((project) => <option value={project} key={project} />)}</datalist></label>
-                  <label className="manual-voucher-source-field"><span>来源标识</span><input value={line.sourceIdsText} onChange={(event) => updateLine(line.clientId, { sourceIdsText: event.target.value })} placeholder="用逗号或分号分隔来源标识" /><small>{parseSourceIds(line.sourceIdsText).length ? `${parseSourceIds(line.sourceIdsText).length} 个来源标识` : "未设置分录来源"}</small></label>
+                  <label className="manual-voucher-source-field"><span>业务来源（可多选）</span><select multiple value={parseSourceIds(line.sourceIdsText)} onChange={(event) => updateLine(line.clientId, { sourceIdsText: Array.from(event.target.selectedOptions, (option) => option.value).join("，") })}>{parseSourceIds(line.sourceIdsText).filter((id) => !sourceOptions.some((option) => option.id === id)).map((id) => <option value={id} key={id}>{id}（来源失效，请取消选择）</option>)}{sourceOptions.map((option) => <option value={option.id} key={option.id}>{option.label}</option>)}</select><small>{parseSourceIds(line.sourceIdsText).length ? `${parseSourceIds(line.sourceIdsText).length} 项来源` : "业务凭证请选择实际来源；调整、暂估、结转可在上方关联依据"}</small></label>
                 </div>
               </article>
             );
           })}
         </div>
 
-        <div className={`manual-voucher-balance ${validation.balanced ? "is-balanced" : "is-invalid"}`}>
-          <span>借方 ¥{money(validation.debit)}</span><span>贷方 ¥{money(validation.credit)}</span><span>税额 ¥{money(validation.taxTotal)}</span><strong>{validation.balanced ? "借贷平衡，可以保存" : `差额 ¥${money(Math.abs(validation.difference))}`}</strong>
+        <div className={`manual-voucher-balance ${validation.balanced ? "is-balanced" : hasLineInput ? "is-invalid" : ""}`}>
+          <span>借方 ¥{money(validation.debit)}</span><span>贷方 ¥{money(validation.credit)}</span><span>税额 ¥{money(validation.taxTotal)}</span><strong>{!hasLineInput ? "填写分录后核对借贷" : validation.balanced ? "借贷平衡，可以保存" : `差额 ¥${money(Math.abs(validation.difference))}`}</strong>
         </div>
-        {!validation.balanced && <div className="manual-voucher-validation-errors">{validation.errors.map((message) => <span key={message}>{message}</span>)}</div>}
+        {hasLineInput && !validation.balanced && <div className="manual-voucher-validation-errors">{validation.errors.map((message) => <span key={message}>{message}</span>)}</div>}
 
         <fieldset className="manual-voucher-documents">
           <legend>关联当前工作台资料（可多选）</legend>
+          <label><span>{busy ? "正在处理原文件…" : "上传原始资料 / 计算文件"}</span><input type="file" disabled={busy} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; uploadOriginal(file); }} /></label>
+          {editor.evidenceIds.filter((id) => !documents.some((document) => document.id === id)).map((id) => <label key={id}><input type="checkbox" checked onChange={() => toggleEvidence(id, false)} /><span>资料 {id} 已不存在，请取消关联并上传有效原件</span></label>)}
           {documents.length ? <div className="manual-voucher-document-list">{documents.map((document) => {
             const archived = document.archiveStatus === "archived" || ["archived", "已归档"].includes(document.lifecycleStatus);
             return <label key={document.id}><input type="checkbox" checked={editor.evidenceIds.includes(document.id)} onChange={(event) => toggleEvidence(document.id, event.target.checked)} /><span><strong>{documentLabel(document)}</strong><small>{document.category || document.type || "资料"} · {document.period || "未分期"}{archived ? " · 已归档" : ""}</small></span></label>;
@@ -384,7 +483,8 @@ export function ManualVoucherPanel({ onToast }) {
         </fieldset>
 
         <div className="manual-voucher-editor-actions">
-          {editor.voucherId && <button className="secondary-button" type="button" onClick={() => resetEditor()}>取消修改</button>}
+          <button className="secondary-button" type="button" disabled={busy} onClick={() => setEditorOpen(false)}>收起并保留输入</button>
+          {(hasUnsavedInput || editor.voucherId) && <button className="soft-button" type="button" disabled={busy} onClick={() => resetEditor()}>放弃本次输入</button>}
           <button className="primary-button" type="submit" disabled={!canSave}><Receipt size={16} />{editor.voucherId ? "保存草稿修订" : "保存手工凭证草稿"}</button>
         </div>
       </form>
@@ -398,28 +498,33 @@ export function ManualVoucherPanel({ onToast }) {
           const editing = editor.voucherId === voucher.id;
           const evidence = (voucher.evidenceIds || []).map((id) => documents.find((document) => document.id === id));
           const latestReview = [...(voucher.reviews || [])].reverse()[0];
+          const evidenceAssessment = assessManualVoucherEvidence(activeWorkspace, voucher);
+          const evidenceTask = (activeWorkspace.exceptionTasks || []).find((task) => task.sourceId === voucher.id && task.code === "voucher_evidence" && task.status !== "resolved");
           return (
             <article className={`manual-voucher-record is-${status.tone}`} key={voucher.id}>
               <div className="manual-voucher-record-heading">
-                <div><span className={`manual-voucher-status is-${status.tone}`}>{status.label}</span><small>{voucher.no || voucher.id} · V{voucher.version || 1}</small><h4>{voucher.summary}</h4><p>{voucher.date} · 借贷各 ¥{money(voucherValidation.debit)} · {voucher.lines?.length || 0} 行分录</p></div>
-                {editable && <button className="secondary-button" type="button" disabled={editing} onClick={() => loadDraft(voucher)}><NotePencil size={15} />{editing ? "正在修改" : "载入修改"}</button>}
+                <div><span className={`manual-voucher-status is-${status.tone}`}>{status.label}</span><small>{voucher.no || "未编号草稿"} · V{voucher.version || 1}</small><h4>{voucher.summary}</h4><p>{voucher.date} · 借贷各 ¥{money(voucherValidation.debit)} · {voucher.lines?.length || 0} 行分录</p></div>
+                {editable && <button className="secondary-button" type="button" disabled={busy} onClick={() => editing ? setEditorOpen(true) : loadDraft(voucher)}><NotePencil size={15} />{editing ? "继续修改" : "载入修改"}</button>}
               </div>
               <details className="manual-voucher-record-details">
                 <summary>查看分录与关联资料</summary>
                 <div className="manual-voucher-read-lines">{(voucher.lines || []).map((line, index) => <div key={`${voucher.id}-line-${index}`}><span><strong>{accountLabel(activeWorkspace, accounts, line.account)}</strong><small>{[line.storeName, line.department, line.project].filter(Boolean).join(" · ") || "未设置经营维度"}</small><small>{line.sourceIds?.length ? `来源 ${line.sourceIds.join("、")}` : "未设置来源标识"}</small></span><span><small>借 ¥{money(line.debit)} · 贷 ¥{money(line.credit)}</small><strong>{line.taxAmount == null ? "无税额" : `税额 ¥${money(line.taxAmount)}`}</strong></span></div>)}</div>
                 <div className="manual-voucher-evidence-summary"><FileText size={16} /><span><strong>关联资料</strong><small>{evidence.length ? evidence.map((document, index) => document ? documentLabel(document) : voucher.evidenceIds[index]).join("、") : "未关联资料"}</small></span></div>
+                <p>{MANUAL_VOUCHER_BASIS_KINDS[voucher.basis?.kind || "business"]} · {voucher.basis?.description || "按所选业务来源记录"}{evidenceAssessment.referenceIds.length ? ` · 原凭证 ${evidenceAssessment.referenceIds.join("、")}` : ""}</p>
                 {latestReview && <div className="manual-voucher-review-record"><CheckCircle size={16} /><span><strong>{latestReview.actor || voucher.postedBy || "本地用户"} · {latestReview.decision === "approve" ? "已复核" : "已记录意见"}</strong><small>{latestReview.note} · {dateTime(latestReview.at || voucher.postedAt)}</small></span></div>}
               </details>
-              {editable && <div className="manual-voucher-posting">
+              {editable && <details className="manual-voucher-posting-details"><summary>{evidenceAssessment.complete ? "复核并入账" : "补齐依据后复核"}</summary><div className="manual-voucher-posting">
+                {(!evidenceAssessment.complete || evidenceTask) && <p><WarningCircle size={15} />{evidenceTask?.message || evidenceAssessment.issues.map((issue) => issue.message).join("；")}<button className="secondary-button" type="button" onClick={() => loadDraft(voucher)}>载入补件</button></p>}
                 {editing && <p><WarningCircle size={15} />当前凭证正在上方修改；请先保存或取消修改。</p>}
                 {!voucherValidation.balanced && <p><WarningCircle size={15} />当前草稿校验未通过，不能入账：{voucherValidation.errors.join("；")}</p>}
                 <label><span>复核意见 *</span><textarea value={reviewNotes[voucher.id] || ""} onChange={(event) => setReviewNotes((notes) => ({ ...notes, [voucher.id]: event.target.value }))} placeholder="写明已核对的分录、资料与入账结论" /></label>
-                <button className="primary-button" type="button" disabled={editing || !voucherValidation.balanced || !String(reviewNotes[voucher.id] || "").trim()} onClick={() => postDraft(voucher)}><CheckCircle size={16} />人工复核并入账</button>
-              </div>}
-              {!editable && <div className="manual-voucher-readonly"><CheckCircle size={16} /><span><strong>该凭证为只读记录</strong><small>{voucher.status === "posted" ? `${voucher.postedBy || "本地用户"} 于 ${dateTime(voucher.postedAt)} 入账` : "历史版本不会被直接覆盖"}</small></span></div>}
+                <button className="primary-button" type="button" disabled={busy || editing || !voucherValidation.balanced || !evidenceAssessment.complete || !String(reviewNotes[voucher.id] || "").trim()} onClick={() => postDraft(voucher)}><CheckCircle size={16} />{busy ? "正在核验原件…" : "核验原件并复核入账"}</button>
+                {voucher.revisionOf && <button className="secondary-button" type="button" disabled={busy || !String(reviewNotes[voucher.id] || "").trim()} onClick={() => cancelRevision(voucher)}>按所填意见取消更正草稿</button>}
+              </div></details>}
+              {voucher.status === "posted" && <details className="manual-voucher-posting-details"><summary>更正此凭证</summary><div className="manual-voucher-posting"><label><span>更正原因</span><textarea value={reviewNotes[voucher.id] || ""} onChange={(event) => setReviewNotes((notes) => ({ ...notes, [voucher.id]: event.target.value }))} placeholder="原凭证保留，新的更正草稿复核入账后替代原版本" /></label><button className="secondary-button" type="button" disabled={busy || !String(reviewNotes[voucher.id] || "").trim()} onClick={() => createRevision(voucher)}>创建更正草稿</button></div></details>}
             </article>
           );
-        })}</div> : <div className="manual-voucher-empty"><Receipt size={24} /><strong>本期还没有手工凭证</strong><p>在上方录入至少两行借贷平衡的分录并保存草稿后，会出现在这里等待人工复核。</p></div>}
+        })}</div> : <div className="manual-voucher-empty"><Receipt size={20} /><strong>本期还没有手工凭证</strong><p>点击“录入手工凭证”开始；可先保存草稿，再补齐依据。</p></div>}
       </section>
     </section>
   );

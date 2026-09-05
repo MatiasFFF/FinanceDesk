@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
+import { PDFDocument } from "pdf-lib";
+import { workflowSourceFingerprint } from "../src/productWorkflow.js";
 import {
   applyRedInvoiceBillAdjustment,
   applyContractBillingPlan,
@@ -2346,7 +2348,7 @@ test("附件包会明确列出未关联与本机缺失的资料，仍可生成�
   assert.equal(store.getActiveWorkspace().vouchers[0].attachmentPackages[0].missingItems.length, result.manifest.missingItems.length);
 });
 
-test("完整月度财务档案包含全部快照、真实回执原文件与统一哈希，但不改动正式归档", async () => {
+async function monthlyArchiveFixture() {
   const storage = createMemoryStorage();
   const repository = createLocalFoundationRepository({ storage, now: fixedNow });
   const store = createFinanceDeskStore({ repository });
@@ -2379,6 +2381,7 @@ test("完整月度财务档案包含全部快照、真实回执原文件与统�
     ...initial,
     currentPeriod: "2026-09",
     periods: ["2026-09"],
+    modules: { ...initial.modules, tax: true, payroll: true },
     transactions: [{
       id: "txn-monthly-archive",
       accountId: bankAccountId,
@@ -2485,7 +2488,7 @@ test("完整月度财务档案包含全部快照、真实回执原文件与统�
     },
   });
 
-  await saveLocalDocument({
+  const bankDocument = await saveLocalDocument({
     store,
     fileVault,
     workspaceId,
@@ -2521,6 +2524,11 @@ test("完整月度财务档案包含全部快照、真实回执原文件与统�
     },
   });
 
+  return { store, fileVault, workspaceId, bankDocument, receiptDocument };
+}
+
+test("完整月度财务档案包含全部快照、真实原件与统一哈希，但不改动正式归档", async () => {
+  const { store, fileVault, workspaceId, bankDocument, receiptDocument } = await monthlyArchiveFixture();
   const plan = buildMonthlyFinancialArchivePlan(store.getActiveWorkspace(), "2026-09");
   assert.equal(getMonthlyFinancialArchivePeriods(store.getActiveWorkspace()).includes("2026-09"), true);
   assert.equal(plan.isComplete, true);
@@ -2554,9 +2562,23 @@ test("完整月度财务档案包含全部快照、真实回执原文件与统�
   assert.doesNotMatch(result.fileName, /草稿/);
   assert.equal(result.manifest.localOnly, true);
   assert.equal(result.manifest.officialPeriodArchiveChanged, false);
+  assert.equal(result.manifest.originalFileCount, 2);
 
   const zip = await JSZip.loadAsync(await result.archive.arrayBuffer());
-  assert.equal(await zip.file("07-真实回执/电子税务局真实回执.pdf").async("string"), "official filing receipt");
+  const bankOriginal = result.manifest.originalFiles.find((file) => file.documentId === bankDocument.id);
+  const receiptOriginal = result.manifest.originalFiles.find((file) => file.documentId === receiptDocument.id);
+  assert.equal(bankOriginal.status, "included");
+  assert.equal(bankOriginal.voucherId, "voucher-monthly-archive");
+  assert.equal(bankOriginal.hash, bankDocument.hash);
+  assert.equal(receiptOriginal.status, "included");
+  assert.equal(receiptOriginal.hash, receiptDocument.hash);
+  assert.equal(await zip.file(bankOriginal.archivePath).async("string"), "bank receipt original");
+  assert.equal(await zip.file(receiptOriginal.archivePath).async("string"), "official filing receipt");
+  const originalMapping = JSON.parse(await zip.file("02-凭证附件/原件路径与哈希映射.json").async("string"));
+  assert.deepEqual(originalMapping, [bankOriginal]);
+  const voucherAttachments = JSON.parse(await zip.file("02-凭证附件/附件包与附件清单.json").async("string"));
+  assert.deepEqual(voucherAttachments.vouchers[0].manifest.originals, [bankOriginal]);
+  assert.equal(voucherAttachments.vouchers[0].manifest.status, "complete");
   assert.ok(zip.file("01-凭证与分录/凭证与分录.json"));
   assert.ok(zip.file("02-凭证附件/附件包与附件清单.json"));
   assert.ok(zip.file("03-财务与管理报表/资产负债表.json"));
@@ -2575,7 +2597,11 @@ test("完整月度财务档案包含全部快照、真实回执原文件与统�
   assert.deepEqual(result.manifest.recordSources[0].sourceIds, ["txn-monthly-archive"]);
   assert.ok(zip.file("09-操作日志/操作日志.json"));
   const hashManifest = JSON.parse(await zip.file("统一哈希清单.json").async("string"));
-  assert.equal(hashManifest.files.some((file) => file.path === "07-真实回执/电子税务局真实回执.pdf" && file.hash), true);
+  assert.equal(hashManifest.files.some((file) => file.path === receiptOriginal.archivePath && file.hash === receiptDocument.hash), true);
+  const bankHash = hashManifest.files.find((file) => file.path === bankOriginal.archivePath);
+  assert.equal(bankHash.hash, bankDocument.hash);
+  assert.deepEqual(bankHash.documentIds, [bankDocument.id]);
+  assert.deepEqual(bankHash.voucherIds, ["voucher-monthly-archive"]);
   assert.equal(hashManifest.files.every((file) => file.hash), true);
   assert.equal(hashManifest.selfExcluded.includes("自身哈希"), true);
 
@@ -2584,6 +2610,337 @@ test("完整月度财务档案包含全部快照、真实回执原文件与统�
   assert.equal(updatedWorkspace.delivery.financialArchiveExports.length, 1);
   assert.equal(updatedWorkspace.delivery.financialArchiveExports[0].status, "complete");
   assert.equal(updatedWorkspace.delivery.financialArchiveExports[0].officialPeriodArchiveChanged, false);
+});
+
+test("月度包对两张凭证共用原件和不同资料 ID 的相同内容去重，并保留全部引用", async () => {
+  const { store, fileVault, workspaceId, bankDocument } = await monthlyArchiveFixture();
+  const duplicateDocument = await saveLocalDocument({
+    store,
+    fileVault,
+    workspaceId,
+    file: Object.assign(new Blob(["bank receipt original"]), { name: "同一回单的另一份资料.pdf" }),
+    metadata: { category: "银行流水", period: "2026-09", relatedObjectIds: ["txn-monthly-archive"] },
+  });
+  assert.notEqual(duplicateDocument.id, bankDocument.id);
+  assert.equal(duplicateDocument.hash, bankDocument.hash);
+  const workspace = store.getActiveWorkspace();
+  const secondVoucherId = "voucher-monthly-shared-original";
+  store.actions.replaceWorkspace(workspaceId, {
+    ...workspace,
+    vouchers: [...workspace.vouchers, { ...workspace.vouchers[0], id: secondVoucherId, no: "记-091" }],
+    confirmations: workspace.confirmations.map((record) => ({ ...record, sourceIds: [...record.sourceIds, secondVoucherId] })),
+  });
+
+  const result = await generateMonthlyFinancialArchivePackage({ store, fileVault, workspaceId, period: "2026-09", at: fixedTimestamp, download: false });
+  const references = result.manifest.originalFiles.filter((file) => file.sectionKey === "voucherAttachments");
+  assert.equal(result.manifest.isComplete, true);
+  assert.equal(result.manifest.originalFileCount, 2, "两份相同回单共用一个原件文件，真实申报回执另保留一份");
+  assert.equal(references.length, 4);
+  assert.equal(new Set(references.map((file) => file.archivePath)).size, 1);
+  assert.deepEqual(new Set(references.map((file) => file.documentId)), new Set([bankDocument.id, duplicateDocument.id]));
+  assert.deepEqual(new Set(references.map((file) => file.voucherId)), new Set(["voucher-monthly-archive", secondVoucherId]));
+  assert.ok(references.every((file) => file.status === "included" && file.hash === bankDocument.hash));
+
+  const zip = await JSZip.loadAsync(await result.archive.arrayBuffer());
+  const originalEntries = Object.values(zip.files).filter((file) => !file.dir && file.name.startsWith("02-凭证附件/原文件/"));
+  assert.equal(originalEntries.length, 1);
+  assert.equal(await originalEntries[0].async("string"), "bank receipt original");
+  const mapping = JSON.parse(await zip.file("02-凭证附件/原件路径与哈希映射.json").async("string"));
+  assert.deepEqual(mapping, references);
+  const attachments = JSON.parse(await zip.file("02-凭证附件/附件包与附件清单.json").async("string"));
+  for (const voucher of attachments.vouchers) {
+    assert.equal(voucher.manifest.originals.length, 2);
+    assert.deepEqual(new Set(voucher.manifest.originals.map((file) => file.documentId)), new Set([bankDocument.id, duplicateDocument.id]));
+  }
+  const hashedOriginal = result.hashManifest.files.find((file) => file.path === references[0].archivePath);
+  assert.deepEqual(new Set(hashedOriginal.documentIds), new Set([bankDocument.id, duplicateDocument.id]));
+  assert.deepEqual(new Set(hashedOriginal.voucherIds), new Set(["voucher-monthly-archive", secondVoucherId]));
+});
+
+test("月度包保留同名但内容不同的两个原件，路径互不覆盖", async () => {
+  const { store, fileVault, workspaceId, bankDocument } = await monthlyArchiveFixture();
+  const otherDocument = await saveLocalDocument({
+    store,
+    fileVault,
+    workspaceId,
+    file: Object.assign(new Blob(["another bank receipt"]), { name: bankDocument.name }),
+    metadata: { category: "银行流水", period: "2026-09", relatedObjectIds: ["txn-monthly-archive"] },
+  });
+  assert.notEqual(otherDocument.hash, bankDocument.hash);
+  const result = await generateMonthlyFinancialArchivePackage({ store, fileVault, workspaceId, period: "2026-09", at: fixedTimestamp, download: false });
+  assert.equal(result.manifest.isComplete, true);
+  assert.equal(result.manifest.originalFileCount, 3);
+  const references = result.manifest.originalFiles.filter((file) => file.sectionKey === "voucherAttachments");
+  assert.equal(references.length, 2);
+  assert.equal(new Set(references.map((file) => file.archivePath)).size, 2);
+  const zip = await JSZip.loadAsync(await result.archive.arrayBuffer());
+  for (const [document, content] of [[bankDocument, "bank receipt original"], [otherDocument, "another bank receipt"]]) {
+    const reference = references.find((file) => file.documentId === document.id);
+    assert.equal(reference.hash, document.hash);
+    assert.equal(await zip.file(reference.archivePath).async("string"), content);
+  }
+});
+
+for (const failure of ["missing", "changed"]) {
+  test(`月度包在原件${failure === "missing" ? "丢失" : "内容被篡改"}后必须改为不完整，即使索引仍标记本机可用`, async () => {
+    const { store, fileVault, workspaceId, bankDocument } = await monthlyArchiveFixture();
+    const record = await fileVault.get(bankDocument.storage.blobId);
+    if (failure === "missing") {
+      await fileVault.delete(record.id);
+    } else {
+      const originalText = await record.blob.text();
+      const changedBlob = new Blob([`X${originalText.slice(1)}`]);
+      assert.equal(changedBlob.size, record.blob.size, "同字节数的篡改也必须由内容哈希识别");
+      await fileVault.put({ ...record, blob: changedBlob });
+    }
+    assert.equal(store.getActiveWorkspace().documents.find((document) => document.id === bankDocument.id).storage.availableLocally, true);
+    assert.equal(buildMonthlyFinancialArchivePlan(store.getActiveWorkspace(), "2026-09").isComplete, true);
+
+    const result = await generateMonthlyFinancialArchivePackage({ store, fileVault, workspaceId, period: "2026-09", at: fixedTimestamp, download: false });
+    assert.equal(result.manifest.isComplete, false);
+    assert.equal(result.manifest.status, "incomplete_draft");
+    assert.match(result.fileName, /不完整财务档案草稿\.zip$/);
+    assert.equal(result.manifest.originalFileCount, 1);
+    assert.equal(result.manifest.checks.find((check) => check.key === "voucherAttachments").ok, false);
+    const missing = result.manifest.missingItems.find((item) => item.kind === "original_file" && item.documentId === bankDocument.id);
+    assert.ok(missing);
+    if (failure === "changed") assert.match(missing.reason, /哈希.*不一致/);
+    const reference = result.manifest.originalFiles.find((file) => file.documentId === bankDocument.id);
+    assert.equal(reference.status, "missing");
+    assert.equal(reference.archivePath, null);
+    assert.equal(reference.hash, null);
+    assert.equal(reference.expectedHash, bankDocument.hash);
+    assert.equal(result.hashManifest.files.some((file) => file.documentIds.includes(bankDocument.id)), false);
+    assert.equal(result.manifest.mergedPreview.included.some((file) => file.documentId === bankDocument.id), false);
+
+    const zip = await JSZip.loadAsync(await result.archive.arrayBuffer());
+    assert.equal(Object.values(zip.files).filter((file) => !file.dir && file.name.startsWith("02-凭证附件/原文件/")).length, 0);
+    const attachments = JSON.parse(await zip.file("02-凭证附件/附件包与附件清单.json").async("string"));
+    assert.equal(attachments.vouchers[0].manifest.status, "incomplete");
+    assert.equal(attachments.vouchers[0].manifest.sections.find((section) => section.key === "bankReceipt").status, "missing");
+    assert.ok(attachments.vouchers[0].manifest.missingItems.some((item) => item.documentId === bankDocument.id));
+    const zippedManifest = JSON.parse(await zip.file("档案包清单.json").async("string"));
+    assert.deepEqual(zippedManifest.missingItems, result.manifest.missingItems);
+    assert.equal(result.packageRecord.status, "incomplete_draft");
+    assert.ok(store.getActiveWorkspace().delivery.financialArchiveExports.at(-1).missingItems.some((item) => item.documentId === bankDocument.id));
+  });
+}
+
+for (const [tax, payroll] of [[false, false], [false, true], [true, false], [true, true]]) {
+  test(`月度包按模块要求资料：确认申报${tax ? "启用" : "关闭"}、工资社保${payroll ? "启用" : "关闭"}`, async () => {
+    const { store, fileVault, workspaceId } = await monthlyArchiveFixture();
+    const completeWorkspace = store.getActiveWorkspace();
+    const version = completeWorkspace.delivery.reportVersions[0];
+    store.actions.replaceWorkspace(workspaceId, {
+      ...completeWorkspace,
+      modules: { ...completeWorkspace.modules, tax, payroll },
+      confirmations: [],
+      tax: { ...completeWorkspace.tax, financeConfirmedAt: null, payrollConfirmedAt: null, socialSecurityConfirmedAt: null, ownerConfirmedAt: null },
+      delivery: {
+        ...completeWorkspace.delivery,
+        reportVersions: [{ ...version, snapshot: { ...version.snapshot, taxWorkpaper: { rows: [] } } }],
+        filing: { period: "2026-09", draftCreatedAt: null, draftVersionId: null, initialConfirmationId: null, finalConfirmedVersionId: null, exportedPackage: null, receipt: null },
+      },
+    });
+    const plan = buildMonthlyFinancialArchivePlan(store.getActiveWorkspace(), "2026-09");
+    for (const key of ["taxWorkpaper", "filingPackage", "initialConfirmation", "finalConfirmation", "receipt"]) {
+      const check = plan.checks.find((item) => item.key === key);
+      assert.equal(check.applicable, tax, key);
+      assert.equal(check.ok, !tax, key);
+      assert.equal(plan.missingItems.some((item) => item.sectionKey === key), tax, key);
+    }
+    assert.equal(plan.checks.find((check) => check.key === "payroll").applicable, payroll);
+    assert.equal(plan.missingItems.some((item) => item.sectionKey === "payroll"), payroll);
+    assert.equal(plan.initialConfirmation.payrollRequired, tax && payroll);
+    assert.equal(plan.sections.find((section) => section.key === "taxFiling").status, tax ? "missing" : "not_required");
+    assert.equal(plan.sections.find((section) => section.key === "payroll").status, payroll ? "missing" : "not_required");
+    assert.equal(plan.isComplete, !tax && !payroll);
+    const missingResult = await generateMonthlyFinancialArchivePackage({ store, fileVault, workspaceId, period: "2026-09", at: fixedTimestamp, download: false });
+    assert.equal(missingResult.manifest.isComplete, !tax && !payroll);
+
+    const current = store.getActiveWorkspace();
+    store.actions.replaceWorkspace(workspaceId, {
+      ...current,
+      confirmations: tax ? completeWorkspace.confirmations : [],
+      tax: {
+        ...completeWorkspace.tax,
+        payrollConfirmedAt: payroll ? fixedTimestamp : null,
+        socialSecurityConfirmedAt: payroll ? fixedTimestamp : null,
+        payrollConfirmedVersionId: payroll ? version.id : null,
+        socialSecurityConfirmedVersionId: payroll ? version.id : null,
+      },
+      delivery: {
+        ...current.delivery,
+        reportVersions: [{ ...version, snapshot: { ...version.snapshot, taxWorkpaper: payroll ? version.snapshot.taxWorkpaper : { rows: [] } } }],
+        filing: tax ? completeWorkspace.delivery.filing : current.delivery.filing,
+      },
+    });
+    const completePlan = buildMonthlyFinancialArchivePlan(store.getActiveWorkspace(), "2026-09");
+    assert.equal(completePlan.isComplete, true, JSON.stringify(completePlan.missingItems));
+    const result = await generateMonthlyFinancialArchivePackage({ store, fileVault, workspaceId, period: "2026-09", at: fixedTimestamp, download: false });
+    assert.equal(result.manifest.isComplete, true);
+    assert.equal(result.manifest.moduleSnapshot.taxEnabled, tax);
+    assert.equal(result.manifest.moduleSnapshot.payrollEnabled, payroll);
+    assert.equal(result.manifest.originalFileCount, tax ? 2 : 1);
+    const zip = await JSZip.loadAsync(await result.archive.arrayBuffer());
+    const initialConfirmation = JSON.parse(await zip.file("06-客户确认/第一次客户确认.json").async("string"));
+    const payrollData = JSON.parse(await zip.file("05-工资社保/工资与社保数据.json").async("string"));
+    assert.equal(initialConfirmation.required, tax);
+    assert.equal(initialConfirmation.payrollRequired, tax && payroll);
+    assert.equal(payrollData.required, payroll);
+  });
+}
+
+for (const enabled of [true, false]) {
+  test(`历史归档按当时${enabled ? "启用" : "关闭"}的模块和原件快照导出，不跟随当前设置`, async () => {
+    const { store, fileVault, workspaceId, bankDocument } = await monthlyArchiveFixture();
+    const frozen = structuredClone(store.getActiveWorkspace());
+    frozen.modules = { ...frozen.modules, tax: enabled, payroll: enabled };
+    const version = frozen.delivery.reportVersions[0];
+    const archive = {
+      id: "archive-monthly-snapshot",
+      period: "2026-09",
+      archivedAt: fixedTimestamp,
+      reportVersionId: version.id,
+      sourceFingerprint: workflowSourceFingerprint(frozen),
+      reportSnapshot: version.snapshot,
+      vouchers: frozen.vouchers,
+      documents: frozen.documents,
+      confirmations: frozen.tax,
+      confirmationPackages: frozen.confirmations,
+      auditSnapshot: frozen.auditLog,
+      exceptionRecords: [],
+      filing: frozen.delivery.filing,
+    };
+    store.actions.replaceWorkspace(workspaceId, {
+      ...store.getActiveWorkspace(),
+      currentPeriod: "2026-10",
+      periods: ["2026-09", "2026-10"],
+      modules: { ...frozen.modules, tax: !enabled, payroll: !enabled },
+      transactions: [],
+      vouchers: [],
+      confirmations: [],
+      evidenceLinks: [],
+      documents: frozen.documents.map((document) => ({ ...document, hash: "new-period-different-hash", relatedObjectIds: [], storage: { blobId: "new-period-missing-blob", availableLocally: false } })),
+      tax: { period: "2026-10", payroll: 99999, socialSecurity: 99999 },
+      delivery: {
+        ...frozen.delivery,
+        archives: [archive],
+        filing: { period: "2026-10", receipt: null },
+        reportVersions: [...frozen.delivery.reportVersions, { ...version, id: "later-report-must-not-replace-archive", createdAt: "2026-10-04T08:00:00.000Z", snapshot: null }],
+      },
+    });
+    const plan = buildMonthlyFinancialArchivePlan(store.getActiveWorkspace(), "2026-09");
+    assert.equal(plan.isComplete, true, JSON.stringify(plan.missingItems));
+    assert.equal(plan.moduleSnapshot.source, "archive.sourceFingerprint.sources.modules");
+    assert.equal(plan.moduleSnapshot.taxEnabled, enabled);
+    assert.equal(plan.moduleSnapshot.payrollEnabled, enabled);
+    assert.equal(plan.initialConfirmation.required, enabled);
+    assert.equal(plan.payroll.required, enabled);
+    assert.equal(plan.payroll.payroll, 5000);
+    assert.equal(plan.reportVersion.id, version.id);
+    assert.equal(plan.vouchers[0].id, frozen.vouchers[0].id);
+    assert.ok(plan.voucherAttachments[0].manifest.sourceRelationships.sources.some((source) => source.id === "txn-monthly-archive"));
+
+    const result = await generateMonthlyFinancialArchivePackage({ store, fileVault, workspaceId, period: "2026-09", at: fixedTimestamp, download: false });
+    assert.equal(result.manifest.isComplete, true);
+    assert.equal(result.manifest.moduleSnapshot.taxEnabled, enabled);
+    assert.equal(result.manifest.moduleSnapshot.payrollEnabled, enabled);
+    assert.equal(result.manifest.originalFileCount, enabled ? 2 : 1);
+    const bankOriginal = result.manifest.originalFiles.find((file) => file.documentId === bankDocument.id);
+    assert.equal(bankOriginal.hash, bankDocument.hash);
+    const zip = await JSZip.loadAsync(await result.archive.arrayBuffer());
+    assert.equal(await zip.file(bankOriginal.archivePath).async("string"), "bank receipt original");
+    const archivedVouchers = JSON.parse(await zip.file("01-凭证与分录/凭证与分录.json").async("string"));
+    assert.deepEqual(archivedVouchers.vouchers, frozen.vouchers);
+  });
+}
+
+test("单张凭证包保留手工依据、原件核验结果和原凭证引用，失效历史不作为待入账凭证", async () => {
+  const { store, fileVault, workspaceId, bankDocument } = await monthlyArchiveFixture();
+  const workspace = store.getActiveWorkspace();
+  const originalId = "voucher-original-superseded";
+  const basis = { kind: "adjustment", description: "依据原凭证调整费用归属", voucherIds: [originalId], calculationDocumentId: bankDocument.id };
+  const evidenceVerification = { at: fixedTimestamp, actor: "复核会计", files: [{ documentId: bankDocument.id, hash: bankDocument.hash }], referenceVoucherIds: [originalId] };
+  const voucher = { ...workspace.vouchers[0], revisionOf: originalId, basis, evidenceVerification, evidenceIds: [bankDocument.id] };
+  store.actions.replaceWorkspace(workspaceId, {
+    ...workspace,
+    vouchers: [voucher, { ...workspace.vouchers[0], id: originalId, status: "superseded" }, { ...workspace.vouchers[0], id: "voucher-old-invalidated", status: "invalidated" }],
+  });
+  const plan = buildMonthlyFinancialArchivePlan(store.getActiveWorkspace(), "2026-09");
+  assert.equal(plan.checks.find((check) => check.key === "vouchers").ok, true);
+  assert.deepEqual(plan.vouchers.map((item) => item.status), ["posted", "superseded", "invalidated"]);
+  const result = await generateVoucherAttachmentPackage({ store, fileVault, workspaceId, voucherId: voucher.id, at: fixedTimestamp, download: false });
+  assert.deepEqual(result.manifest.voucher.basis, basis);
+  assert.deepEqual(result.manifest.voucher.evidenceVerification, evidenceVerification);
+  assert.deepEqual(result.manifest.sourceRelationships.originalVoucherIds, [originalId]);
+  const zip = await JSZip.loadAsync(await result.archive.arrayBuffer());
+  const voucherSnapshot = JSON.parse(await zip.file("凭证.json").async("string"));
+  const sourceSnapshot = JSON.parse(await zip.file("来源关系.json").async("string"));
+  assert.deepEqual(voucherSnapshot.basis, basis);
+  assert.deepEqual(voucherSnapshot.evidenceVerification, evidenceVerification);
+  assert.deepEqual(voucherSnapshot.evidenceIds, [bankDocument.id]);
+  assert.equal(voucherSnapshot.revisionOf, originalId);
+  assert.deepEqual(sourceSnapshot.originalVoucherIds, [originalId]);
+});
+
+test("凭证与月度 ZIP 含可读取的附件合并预览、页码说明，并原样保留真实 PDF", async () => {
+  const { store, fileVault, workspaceId, bankDocument } = await monthlyArchiveFixture();
+  const documents = [];
+  for (const [index, widths] of [[1, [200]], [2, [300, 400]]]) {
+    const pdf = await PDFDocument.create();
+    widths.forEach((width) => pdf.addPage([width, 500]));
+    const bytes = await pdf.save();
+    const document = await saveLocalDocument({
+      store,
+      fileVault,
+      workspaceId,
+      file: Object.assign(new Blob([bytes], { type: "application/pdf" }), { name: `真实银行回单-${index}.pdf` }),
+      metadata: { category: "银行流水", period: "2026-09", relatedObjectIds: ["txn-monthly-archive"] },
+    });
+    documents.push({ document, bytes });
+  }
+
+  const single = await generateVoucherAttachmentPackage({ store, fileVault, workspaceId, voucherId: "voucher-monthly-archive", at: fixedTimestamp, download: false });
+  const workspace = store.getActiveWorkspace();
+  const sharedVoucherId = "voucher-pdf-shared";
+  store.actions.replaceWorkspace(workspaceId, {
+    ...workspace,
+    vouchers: [...workspace.vouchers, { ...workspace.vouchers[0], id: sharedVoucherId, no: "记-092", attachmentPackages: [] }],
+    confirmations: workspace.confirmations.map((record) => ({ ...record, sourceIds: [...record.sourceIds, sharedVoucherId] })),
+  });
+  const monthly = await generateMonthlyFinancialArchivePackage({ store, fileVault, workspaceId, period: "2026-09", at: fixedTimestamp, download: false });
+  assert.equal(single.manifest.missingItems.length, 0, "无法合并的已有资料仍以原件保留，不新增财务缺件");
+  assert.equal(monthly.manifest.isComplete, true);
+  for (const result of [single, monthly]) {
+    const zip = await JSZip.loadAsync(await result.archive.arrayBuffer());
+    const preview = result.manifest.mergedPreview;
+    assert.equal(preview.archivePath, "附件合并预览.pdf");
+    assert.equal(preview.pageCount, 3);
+    assert.equal(preview.originalFilesPreserved, true);
+    assert.match(preview.note, /不是签章原件/);
+    assert.deepEqual(preview.included.map(({ documentId, startPage, endPage }) => ({ documentId, startPage, endPage })), [
+      { documentId: documents[0].document.id, startPage: 1, endPage: 1 },
+      { documentId: documents[1].document.id, startPage: 2, endPage: 3 },
+    ]);
+    assert.ok(preview.skipped.some((entry) => entry.documentId === bankDocument.id && entry.reason));
+    const merged = await PDFDocument.load(await zip.file(preview.archivePath).async("uint8array"));
+    assert.deepEqual(merged.getPages().map((page) => page.getWidth()), [200, 300, 400]);
+    assert.deepEqual(JSON.parse(await zip.file("附件合并说明.json").async("string")), preview);
+    const originals = result.manifest.originalFiles || result.manifest.files;
+    for (const { document, bytes } of documents) {
+      const original = originals.find((entry) => entry.documentId === document.id);
+      assert.equal(original.hash, document.hash);
+      assert.deepEqual(await zip.file(original.archivePath).async("uint8array"), bytes);
+    }
+    const skippedOriginal = originals.find((entry) => entry.documentId === bankDocument.id);
+    assert.equal(await zip.file(skippedOriginal.archivePath).async("string"), "bank receipt original");
+  }
+  const mergedHash = monthly.hashManifest.files.find((file) => file.path === monthly.manifest.mergedPreview.archivePath);
+  assert.ok(mergedHash.hash);
+  assert.equal(mergedHash.hash, monthly.manifest.mergedPreview.hash);
+  assert.equal(mergedHash.mimeType, "application/pdf");
+  assert.equal(mergedHash.hashAlgorithm, monthly.manifest.mergedPreview.hashAlgorithm);
 });
 
 test("月度档案缺少必需项目时只能导出名称和清单明确的不完整草稿包", async () => {
@@ -2616,12 +2973,16 @@ test("月度档案缺少必需项目时只能导出名称和清单明确的不�
   assert.equal(result.manifest.isComplete, false);
   assert.equal(result.manifest.status, "incomplete_draft");
   assert.match(result.fileName, /不完整财务档案草稿\.zip$/);
-  assert.equal(result.manifest.missingItems.length, plan.missingItems.length);
+  assert.ok(result.manifest.missingItems.length >= plan.missingItems.length);
+  for (const missing of plan.missingItems) {
+    assert.ok(result.manifest.missingItems.some((item) => item.key === missing.key), `静态缺件仍须保留：${missing.key}`);
+  }
+  assert.ok(result.manifest.missingItems.some((item) => item.kind === "original_file"));
 
   const zip = await JSZip.loadAsync(await result.archive.arrayBuffer());
   const zippedManifest = JSON.parse(await zip.file("档案包清单.json").async("string"));
   assert.equal(zippedManifest.isComplete, false);
-  assert.equal(zippedManifest.missingItems.length, plan.missingItems.length);
+  assert.deepEqual(zippedManifest.missingItems, result.manifest.missingItems);
   assert.ok(zip.file("统一哈希清单.json"));
   const after = store.getActiveWorkspace();
   assert.equal(after.delivery.archives.length, officialArchiveCount);

@@ -35,14 +35,15 @@ import { transactionStatus, uid } from "./financeData.js";
 import { BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS } from "./domain/foundation.js";
 import {
   attachEvidenceDocument,
+  buildCustomerConfirmationSections,
   buildManagementMetrics,
-  createCustomerConfirmationPackage,
+  customerConfirmationMatchesVersion,
   exportFrozenReportExcel,
   freezeReportVersion as freezeAccountingReportVersion,
-  recordCustomerConfirmation,
   recordFrozenReportExcelExport,
   recordReconciliationSuggestions,
   reviewTransactionEvidence,
+  workspaceAccountDefinitions,
 } from "./domain/accounting/index.js";
 import { AccountingWorkbench, ReceivablesPayablesPanel } from "./features/accounting/AccountingWorkbench.jsx";
 import { ManualVoucherPanel } from "./features/accounting/ManualVoucherPanel.jsx";
@@ -76,8 +77,8 @@ import {
   attachReceipt,
   audit,
   buildArchivedPeriodExport,
+  buildFinalConfirmationSnapshot,
   buildReportSnapshot,
-  confirmPayrollSocialData,
   ensureWorkspace,
   enterNextPeriod,
   defaultWorkspaceModules,
@@ -89,6 +90,8 @@ import {
   importLocalReceipt,
   markPackageExported,
   prepareFilingDraft,
+  recordFinalConfirmation,
+  recordInitialConfirmationSection as saveInitialConfirmationSection,
   primaryNavigationForWorkspace,
   reportVersionDiff,
   workspaceModuleEnabled,
@@ -484,7 +487,7 @@ function StageRail({ workspace, onPage }) {
   const activeIndex = firstPending < 0 ? stages.length - 1 : firstPending;
   return (
     <div className="stage-rail" aria-label="月结阶段">
-      {stages.map((stage, index) => <button className={`stage-step ${done[stage.id] ? "done" : ""} ${index === activeIndex ? "active" : ""}`} key={stage.id} onClick={() => onPage(stage.page)} type="button"><span className="stage-dot">{done[stage.id] ? <Check size={12} weight="bold" /> : index + 1}</span><span>{stage.label}</span></button>)}
+      {stages.map((stage, index) => <button className={`stage-step ${done[stage.id] ? "done" : ""} ${index === activeIndex ? "active" : ""}`} key={stage.id} onClick={() => onPage(stage.page, stage.id === "vouchers" ? { panel: "vouchers" } : undefined)} type="button"><span className="stage-dot">{done[stage.id] ? <Check size={12} weight="bold" /> : index + 1}</span><span>{stage.label}</span></button>)}
     </div>
   );
 }
@@ -500,7 +503,9 @@ function OverviewPage({ workspace, onPage, onResolveNotice }) {
   const reconciliationEnabled = workspaceModuleEnabled(workspace, "reconcile");
   const taxEnabled = workspaceModuleEnabled(workspace, "tax");
   const payrollEnabled = workspaceModuleEnabled(workspace, "payroll");
-  const payrollConfirmationDone = !payrollEnabled || Boolean(workspace.tax.payrollConfirmedAt && workspace.tax.socialSecurityConfirmedAt);
+  const payrollConfirmationDone = !payrollEnabled || ["payroll", "socialSecurity"].every((id) => flow.checks.find((item) => item.id === id)?.ok);
+  const financeConfirmationDone = Boolean(flow.checks.find((item) => item.id === "finance")?.ok && payrollConfirmationDone);
+  const exceptionCheck = flow.checks.find((item) => item.id === "exceptions");
   const snapshot = flow.snapshot;
   const periodTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
   const periodNotices = (workspace.delivery.notices || []).filter((notice) => notice.period === workspace.currentPeriod);
@@ -510,50 +515,54 @@ function OverviewPage({ workspace, onPage, onResolveNotice }) {
     openNotices.length === 0,
     ...(reconciliationEnabled ? [periodTransactions.length > 0, flow.unresolved.length === 0, workspace.vouchers.length > 0] : []),
     Boolean(flow.version),
-    ...(taxEnabled ? [Boolean(workspace.tax.ownerConfirmedAt)] : []),
+    ...(taxEnabled ? [Boolean(flow.checks.find((item) => item.id === "owner")?.ok)] : []),
   ];
   const progress = Math.round((completionItems.filter(Boolean).length / completionItems.length) * 100);
+  const preFreezeBlocker = flow.checks.find((item) => ["balanced", "bank", "exceptions", "vouchers"].includes(item.id) && !item.ok);
   const nextAction = openNotices.length
     ? { title: `先处理 ${openNotices.length} 项上期结转事项`, body: "延期事项已带入本期，处理后会保留来源与审计记录。", page: "overview", action: "查看结转事项" }
     : reconciliationEnabled && flow.unresolved.length
     ? { title: `先处理 ${flow.unresolved.length} 笔未完成流水`, body: "低置信度和证据不足事项不会自动入账。", page: "reconcile", action: "进入批量核销" }
+    : preFreezeBlocker
+      ? { title: preFreezeBlocker.label, body: preFreezeBlocker.detail || "完成这项复核后，再冻结本期报表。", page: preFreezeBlocker.page, stage: preFreezeBlocker.id === "bank" ? "s3" : undefined, panel: preFreezeBlocker.id === "vouchers" ? "vouchers" : undefined, action: "去处理" }
     : !flow.version
       ? { title: "冻结本期第一版报表", body: "冻结后会保留不可覆盖的版本快照和后续差异。", page: "reports", action: "查看报表" }
-      : taxEnabled && !(workspace.tax.financeConfirmedAt && payrollConfirmationDone)
+      : taxEnabled && !financeConfirmationDone
         ? { title: `请${terminology.customer}完成首次数据确认`, body: payrollEnabled ? "财务数据与工资社保会分别留下确认记录。" : "财务、税务与报表会留下逐项确认记录。", page: "tax", action: "开始确认" }
-        : taxEnabled && !workspace.tax.ownerConfirmedAt
+        : taxEnabled && !flow.checks.find((item) => item.id === "owner")?.ok
           ? { title: "完成提交前最终确认", body: "最终确认后才能导出本地申报包。", page: "tax", action: "继续确认" }
           : taxEnabled && !workspace.delivery.filing.receipt
             ? { title: "等待真实外部办理回执", body: "税务局未连接；请在外部办理后把回执导回本地。", page: "tax", action: "查看申报边界" }
             : !workspace.delivery.filing.archivedAt
-              ? { title: "回执齐全，可以完成归档", body: "归档会锁定本期交付索引，并准备下一期期初。", page: "archive", action: "进入归档" }
+              ? { title: taxEnabled ? "回执齐全，可以完成归档" : "可以完成本期归档", body: "归档会保留本期交付记录，并准备下一期期初。", page: "archive", action: "进入归档" }
               : { title: "本期已经归档", body: "可以在归档页确认继承内容并进入下一期。", page: "archive", action: "查看归档" };
   const focusTransaction = flow.unresolved[0] || periodTransactions[0];
   const linkedDocuments = focusTransaction ? workspace.documents.filter((document) => focusTransaction.evidenceIds?.includes(document.id)) : [];
   const tasks = [
+    { label: "完成本期银行资料与余额勾稽", meta: flow.bankReconciliationPassed ? "已完成" : flow.checks.find((item) => item.id === "bank")?.detail, done: flow.bankReconciliationPassed, page: "setup", stage: "s3" },
     { label: "处理上期结转事项", meta: openNotices.length ? `${openNotices.length} 项待处理` : "已完成", done: openNotices.length === 0, page: "overview" },
-    ...(reconciliationEnabled ? [{ label: "完成异常与低置信度复核", meta: flow.unresolved.length ? `${flow.unresolved.length} 笔待处理` : "已完成", done: flow.unresolved.length === 0, page: "reconcile" }] : []),
+    ...(reconciliationEnabled ? [{ label: "完成异常与低置信度复核", meta: exceptionCheck?.detail || "待完成", done: Boolean(exceptionCheck?.ok), page: "reconcile" }] : []),
     { label: "冻结月度报表版本", meta: flow.version ? `${flow.version.label} · ${formatDateTime(flow.version.createdAt)}` : "尚未冻结", done: Boolean(flow.version), page: "reports" },
-    ...(taxEnabled ? [{ label: payrollEnabled ? `${terminology.customer}首次确认财务与工资社保` : `${terminology.customer}首次确认财务数据`, meta: workspace.tax.financeConfirmedAt && payrollConfirmationDone ? formatDateTime(workspace.tax.financeConfirmedAt) : "等待确认", done: Boolean(workspace.tax.financeConfirmedAt && payrollConfirmationDone), page: "tax" }] : []),
-    { label: "最终确认、回执与归档", meta: workspace.delivery.filing.archivedAt ? formatDateTime(workspace.delivery.filing.archivedAt) : "尚未归档", done: Boolean(workspace.delivery.filing.archivedAt), page: "archive" },
-  ];
+    ...(taxEnabled ? [{ label: payrollEnabled ? `${terminology.customer}首次确认财务与工资社保` : `${terminology.customer}首次确认财务数据`, meta: financeConfirmationDone ? formatDateTime(workspace.tax.financeConfirmedAt) : "等待确认", done: financeConfirmationDone, page: "tax" }] : []),
+    { label: taxEnabled ? "最终确认、回执与归档" : "完成本期归档", meta: workspace.delivery.filing.archivedAt ? formatDateTime(workspace.delivery.filing.archivedAt) : "尚未归档", done: Boolean(workspace.delivery.filing.archivedAt), page: "archive" },
+  ].sort((left, right) => Number(left.done) - Number(right.done));
   return (
     <div className="page-content overview-page">
       <StageRail workspace={workspace} onPage={onPage} />
       <section className="hero-grid">
         <article className="progress-card"><div className="section-heading compact"><div><p className="eyebrow">本月关账进度</p><h2>{progress === 100 ? "本期交付已经闭环" : "距离关账，还差几件小事"}</h2></div><span className="progress-number">{progress}%</span></div><div className="progress-track"><i style={{ width: `${progress}%` }} /></div><div className="progress-meta"><span><i className="dot sage" />已完成 {completionItems.filter(Boolean).length} / {completionItems.length} 个阶段</span>{reconciliationEnabled && <span><i className="dot clay" />{flow.unresolved.length} 笔待复核</span>}</div></article>
-        <article className="next-action-card"><span className="card-kicker"><Sparkle size={17} weight="fill" />下一步建议</span><h3>{nextAction.title}</h3><p>{nextAction.body}</p><button className="text-button" onClick={() => onPage(nextAction.page)} type="button">{nextAction.action}<ArrowRight size={16} /></button></article>
+        <article className="next-action-card"><span className="card-kicker"><Sparkle size={17} weight="fill" />下一步建议</span><h3>{nextAction.title}</h3><p>{nextAction.body}</p><button className="text-button" onClick={() => onPage(nextAction.page, { stage: nextAction.stage, panel: nextAction.panel })} type="button">{nextAction.action}<ArrowRight size={16} /></button></article>
       </section>
-      {periodNotices.length > 0 && <section className="panel carry-forward-panel"><div className="panel-heading"><div><p className="eyebrow">S13 · 跨期事项</p><h2>上期延续到本期的待办</h2></div><TonePill tone={openNotices.length ? "warning" : "success"}>{openNotices.length ? `${openNotices.length} 项待处理` : "全部处理完成"}</TonePill></div><div className="carry-forward-list">{periodNotices.map((notice) => <article className={notice.status === "resolved" ? "resolved" : ""} key={notice.id}><span><strong>{notice.message}</strong><small>来源 {notice.sourceId} · {formatCurrency(notice.amount, { sign: true })}</small></span>{notice.status === "resolved" ? <TonePill tone="success">已处理</TonePill> : <button className="secondary-button" onClick={() => onResolveNotice(notice.id)} type="button">标记已处理</button>}</article>)}</div></section>}
+      {periodNotices.length > 0 && <section className="panel carry-forward-panel"><div className="panel-heading"><div><p className="eyebrow">跨期事项</p><h2>上期延续到本期的待办</h2></div><TonePill tone={openNotices.length ? "warning" : "success"}>{openNotices.length ? `${openNotices.length} 项待处理` : "全部处理完成"}</TonePill></div><div className="carry-forward-list">{periodNotices.map((notice) => <article className={notice.status === "resolved" ? "resolved" : ""} key={notice.id}><span><strong>{notice.message}</strong><small>来源 {notice.sourceId} · {formatCurrency(notice.amount, { sign: true })}</small></span>{notice.status === "resolved" ? <TonePill tone="success">已处理</TonePill> : <button className="secondary-button" onClick={() => onResolveNotice(notice.id)} type="button">标记已处理</button>}</article>)}</div></section>}
+      <section className={`overview-grid ${reconciliationEnabled && focusTransaction ? "" : "tasks-only"}`}>
+        <article className="panel task-panel"><div className="panel-heading"><div><p className="eyebrow">月结任务</p><h2>本期待办</h2></div><TonePill tone={tasks.some((task) => !task.done) ? "warning" : "success"}>{tasks.some((task) => !task.done) ? `${tasks.filter((task) => !task.done).length} 项待办` : "已完成"}</TonePill></div><div className="task-list">{tasks.map((task) => <button className="task-row" key={task.label} onClick={() => onPage(task.page, { stage: task.stage })} type="button"><span className={`task-check ${task.done ? "done" : ""}`}>{task.done && <Check size={13} weight="bold" />}</span><span><strong>{task.label}</strong><small>{task.meta}</small></span><ArrowRight size={16} /></button>)}</div></article>
+        {reconciliationEnabled && focusTransaction && <article className="panel evidence-preview"><div className="panel-heading"><div><p className="eyebrow">单笔证据预览</p><h2>{focusTransaction ? focusTransaction.summary : "还没有流水"}</h2></div>{focusTransaction && <TonePill tone={focusTransaction.status === "reconciled" ? "success" : "warning"}>{transactionStatus(focusTransaction).label}</TonePill>}</div>{focusTransaction ? <><div className="evidence-flow"><div className="flow-node good"><Bank size={19} /><span>银行流水</span><small>{formatCurrency(focusTransaction.amount, { sign: true })}</small></div><ArrowRight size={18} /><div className={`flow-node ${focusTransaction.allocations?.length || focusTransaction.directAccount ? "good" : "missing"}`}><Receipt size={19} /><span>业务判断</span><small>{focusTransaction.suggestion || "待确认"}</small></div><ArrowRight size={18} /><div className={`flow-node ${linkedDocuments.length ? "good" : "missing"}`}><FileText size={19} /><span>本地证据</span><small>{linkedDocuments.length ? `${linkedDocuments.length} 份已关联` : "等待补齐"}</small></div></div>{focusTransaction.exceptionReason && <div className="warning-note"><WarningCircle size={18} /><span><strong>待复核：</strong>{focusTransaction.exceptionReason}</span></div>}<button className="primary-button wide" onClick={() => onPage("reconcile")} type="button">打开单笔证据复核<ArrowRight size={17} /></button></> : <EmptyState title="等待本地流水" description="导入 CSV 后，这里会显示第一条证据链。" />}</article>}
+      </section>
       <section className="metric-grid four">
         <MetricCard label="本月收款" value={formatCurrency(snapshot.summary.cashIn)} note={`${periodTransactions.filter((item) => Number(item.amount) > 0).length} 笔流入`} icon={Bank} />
         <MetricCard label="本月收入" value={formatCurrency(snapshot.summary.revenue)} note="来自已入账凭证" icon={TrendUp} tone="sage" onClick={() => onPage("reports")} />
         <MetricCard label="本月利润" value={formatCurrency(snapshot.summary.profit)} note="税前本地口径" icon={ChartBar} />
         {taxEnabled && <MetricCard label="预计税费" value={formatCurrency(snapshot.summary.estimatedTax)} note="本地估算，不可直接申报" icon={Receipt} tone="clay" onClick={() => onPage("tax")} />}
-      </section>
-      <section className="overview-grid">
-        <article className="panel task-panel"><div className="panel-heading"><div><p className="eyebrow">月结任务</p><h2>本期待办</h2></div><TonePill tone={flow.unresolved.length ? "warning" : "success"}>{flow.unresolved.length ? `${flow.unresolved.length} 项阻塞` : "可以继续"}</TonePill></div><div className="task-list">{tasks.map((task) => <button className="task-row" key={task.label} onClick={() => onPage(task.page)} type="button"><span className={`task-check ${task.done ? "done" : ""}`}>{task.done && <Check size={13} weight="bold" />}</span><span><strong>{task.label}</strong><small>{task.meta}</small></span><ArrowRight size={16} /></button>)}</div></article>
-        {reconciliationEnabled && <article className="panel evidence-preview"><div className="panel-heading"><div><p className="eyebrow">单笔证据预览</p><h2>{focusTransaction ? focusTransaction.summary : "还没有流水"}</h2></div>{focusTransaction && <TonePill tone={focusTransaction.status === "reconciled" ? "success" : "warning"}>{transactionStatus(focusTransaction).label}</TonePill>}</div>{focusTransaction ? <><div className="evidence-flow"><div className="flow-node good"><Bank size={19} /><span>银行流水</span><small>{formatCurrency(focusTransaction.amount, { sign: true })}</small></div><ArrowRight size={18} /><div className={`flow-node ${focusTransaction.allocations?.length || focusTransaction.directAccount ? "good" : "missing"}`}><Receipt size={19} /><span>业务判断</span><small>{focusTransaction.suggestion || "待确认"}</small></div><ArrowRight size={18} /><div className={`flow-node ${linkedDocuments.length ? "good" : "missing"}`}><FileText size={19} /><span>本地证据</span><small>{linkedDocuments.length ? `${linkedDocuments.length} 份已关联` : "等待补齐"}</small></div></div>{focusTransaction.exceptionReason && <div className="warning-note"><WarningCircle size={18} /><span><strong>待复核：</strong>{focusTransaction.exceptionReason}</span></div>}<button className="primary-button wide" onClick={() => onPage("reconcile")} type="button">打开单笔证据复核<ArrowRight size={17} /></button></> : <EmptyState title="等待本地流水" description="导入 CSV 后，这里会显示第一条证据链。" />}</article>}
       </section>
       <BoundaryNote />
     </div>
@@ -656,8 +665,9 @@ function TransactionDetail({ workspace, transaction, onClose, onStatus, onSaveRe
   );
 }
 
-function ReconcilePage({ workspace, onPage, onStatus, onReview, onSaveReview, onEvidence, onLinkEvidence, onDownloadEvidence, onUnlinkEvidence, onExportSelected, onResolveException, onToast }) {
+function ReconcilePage({ workspace, onPage, panelRequest, onStatus, onReview, onSaveReview, onEvidence, onLinkEvidence, onDownloadEvidence, onUnlinkEvidence, onExportSelected, onResolveException, onToast }) {
   const terminology = workspaceTerminology(workspace);
+  const [activePanel, setActivePanel] = useState(panelRequest?.panel || "transactions");
   const [filter, setFilter] = useState("unresolved");
   const [query, setQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
@@ -668,6 +678,7 @@ function ReconcilePage({ workspace, onPage, onStatus, onReview, onSaveReview, on
     setSelectedIds(new Set());
     setFocusedId(null);
   }, [workspace.id, workspace.currentPeriod]);
+  useEffect(() => { setActivePanel(panelRequest?.panel || "transactions"); }, [workspace.id, workspace.currentPeriod, panelRequest]);
   const periodTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
   const counts = { all: periodTransactions.length, unresolved: periodTransactions.filter((item) => !["reconciled", "posted", "ignored"].includes(item.status)).length, reconciled: periodTransactions.filter((item) => ["reconciled", "posted"].includes(item.status)).length, ignored: periodTransactions.filter((item) => item.status === "ignored").length };
   const filtered = periodTransactions.filter((item) => { const filterOk = filter === "all" || (filter === "unresolved" ? !["reconciled", "posted", "ignored"].includes(item.status) : filter === "reconciled" ? ["reconciled", "posted"].includes(item.status) : item.status === filter); const haystack = `${item.counterparty} ${item.summary} ${item.serial} ${item.suggestion}`.toLowerCase(); return filterOk && haystack.includes(query.trim().toLowerCase()); });
@@ -677,18 +688,34 @@ function ReconcilePage({ workspace, onPage, onStatus, onReview, onSaveReview, on
   const selection = periodTransactions.filter((item) => selectedIds.has(item.id));
   const customerDisputes = (workspace.exceptionTasks || []).filter((task) => task.code === "customer_dispute" && task.status !== "resolved");
   return (
-    <div className="reconcile-page">
-      <div className="reconcile-main">
+    <div className={`reconcile-page ${activePanel === "transactions" && focused ? "with-transaction-detail" : "without-transaction-detail"}`}>
+      <div className="reconcile-heading">
         <StageRail workspace={workspace} onPage={onPage} />
-        {customerDisputes.length > 0 && <section className="panel dispute-review-panel"><div><p className="eyebrow">S7 · {terminology.customer}异议退回</p><h2>先处理{terminology.customer}提出的差异</h2></div>{customerDisputes.map((task) => <article key={task.id}><span><strong>{task.message}</strong><small>{task.sourceId} · {formatDateTime(task.createdAt)}</small></span><button className="secondary-button" type="button" onClick={() => onResolveException(task.id)}>已处理，关闭异议</button></article>)}</section>}
+        <div className="workspace-section-tabs" role="tablist" aria-label="核销工作区">{[
+          ["transactions", "银行交易"], ["business", workspaceModuleEnabled(workspace, "members") ? "往来与会员业务" : "往来账单"], ["manual", "手工凭证"], ["vouchers", "凭证与账簿"],
+        ].map(([id, label]) => <button id={`reconcile-tab-${id}`} role="tab" aria-selected={activePanel === id} aria-controls={`reconcile-panel-${id}`} className={activePanel === id ? "active" : ""} key={id} onClick={() => setActivePanel(id)} type="button">{label}</button>)}</div>
+      </div>
+      <div className="reconcile-main">
+        {customerDisputes.length > 0 && <section className="panel dispute-review-panel"><div><p className="eyebrow">{terminology.customer}提出异议</p><h2>先处理确认中的差异</h2></div>{customerDisputes.map((task) => <article key={task.id}><span><strong>{task.message}</strong><small>{formatDateTime(task.createdAt)}</small></span><button className="secondary-button" type="button" onClick={() => onResolveException(task.id)}>已处理，关闭异议</button></article>)}</section>}
+        <div className="reconcile-panel" id="reconcile-panel-business" role="tabpanel" aria-labelledby="reconcile-tab-business" hidden={activePanel !== "business"}>
         <ReceivablesPayablesPanel showMemberBusiness={workspaceModuleEnabled(workspace, "members")} onToast={onToast} />
+        </div>
+        <div className="reconcile-panel" id="reconcile-panel-manual" role="tabpanel" aria-labelledby="reconcile-tab-manual" hidden={activePanel !== "manual"}>
         <ManualVoucherPanel onToast={onToast} />
+        </div>
+        <div className="reconcile-panel" id="reconcile-panel-vouchers" role="tabpanel" aria-labelledby="reconcile-tab-vouchers" hidden={activePanel !== "vouchers"}>
+          <AccountingWorkbench onToast={onToast} />
+        </div>
+        <div className="reconcile-panel" id="reconcile-panel-transactions" role="tabpanel" aria-labelledby="reconcile-tab-transactions" hidden={activePanel !== "transactions"}>
         <section className="workspace-toolbar"><div className="filter-tabs" role="tablist" aria-label="流水状态筛选">{FILTERS.map((item) => <button className={filter === item.id ? "active" : ""} key={item.id} onClick={() => setFilter(item.id)} role="tab" type="button">{item.label}<span>{counts[item.id]}</span></button>)}</div><label className="search-field"><MagnifyingGlass size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索对方、摘要或流水号" /><button className={query ? "visible" : ""} onClick={() => setQuery("")} type="button" aria-label="清空搜索"><X size={15} /></button></label></section>
         {selection.length > 0 && <div className="batch-bar"><span><strong>已选择 {selection.length} 笔</strong><small>批量动作只作用于当前选择</small></span><div><button className="soft-button" onClick={() => onExportSelected(selection)} type="button"><DownloadSimple size={16} />导出所选</button><button className="secondary-button" onClick={() => onStatus([...selectedIds], "ignored")} type="button">暂不处理</button><button className="primary-button" onClick={() => onReview([...selectedIds])} type="button">运行规则复核</button><button className="icon-button compact" onClick={() => setSelectedIds(new Set())} type="button" aria-label="清除选择"><X size={17} /></button></div></div>}
         <section className="panel table-panel"><div className="table-heading"><span>本期流水</span><span>{filtered.length} / {periodTransactions.length} 笔</span></div><TransactionList items={filtered} selectedIds={selectedIds} focusedId={focusedId} onToggle={toggle} onToggleAll={toggleAll} onFocus={setFocusedId} /></section>
+        </div>
         <BoundaryNote />
       </div>
+      <div className="transaction-detail-slot" hidden={activePanel !== "transactions" || !focused}>
       <TransactionDetail workspace={workspace} transaction={focused} onClose={() => setFocusedId(null)} onStatus={onStatus} onSaveReview={onSaveReview} onEvidence={onEvidence} onLinkEvidence={onLinkEvidence} onDownloadEvidence={onDownloadEvidence} onUnlinkEvidence={onUnlinkEvidence} onToast={onToast} />
+      </div>
     </div>
   );
 }
@@ -925,7 +952,8 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
     .map(([, check]) => check);
   const snapshotBalanced = snapshotChecks.every((check) => check.passed);
   const flow = workflowChecks(workspace);
-  const readyToFreeze = balanced && flow.bankReconciliationIssues.length === 0 && flow.unresolved.length === 0 && flow.pendingVouchers.length === 0;
+  const freezeBlockers = flow.checks.filter((item) => ["balanced", "bank", "exceptions", "vouchers"].includes(item.id) && !item.ok);
+  const readyToFreeze = balanced && freezeBlockers.length === 0;
   const currentFrozenVersion = flow.version;
   const excelExportReady = Boolean(currentFrozenVersion?.sourceFingerprint);
   const selectedCurrentFrozenVersion = Boolean(
@@ -953,12 +981,14 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
   return (
     <div className="page-content reports-page">
       <StageRail workspace={workspace} onPage={onPage} />
-      <section className="report-toolbar panel"><div><p className="eyebrow">S9 · 本地报表</p><h2>{selectedVersion ? `${selectedVersion.label} 冻结版本` : "实时草稿"}</h2><p>{selectedVersion ? `冻结于 ${formatDateTime(selectedVersion.createdAt)}，不会被后续修改覆盖。` : "数字会随本地凭证与税务调整更新。冻结后形成版本快照。"}</p></div><div className="report-toolbar-actions"><label className="compact-select"><span>查看版本</span><select value={versionId} onChange={(event) => setVersionId(event.target.value)}><option value="live">实时草稿</option>{versions.map((item) => <option key={item.id} value={item.id}>{item.label} · {formatDateTime(item.createdAt)}</option>)}</select><CaretDown size={13} /></label><button className="secondary-button" disabled={!selectedCurrentFrozenVersion} onClick={onExportExcel} title={excelExportTitle} type="button"><DownloadSimple size={17} />{selectedCurrentFrozenVersion ? "导出当前冻结版 Excel" : selectedVersion ? "旧版本不可导出" : "请选择当前冻结版本"}</button><button className="primary-button" disabled={!readyToFreeze} onClick={onFreeze} type="button"><SealCheck size={17} />冻结新版本</button></div></section>
-      {!balanced && <div className="danger-banner"><WarningCircle size={18} /><span><strong>报表尚未勾稽：</strong>{statementChecks.filter((check) => !check.passed).map((check) => `${check.label}差额 ${formatCurrency(check.difference)}`).join("；")}。先处理下方对应来源，再冻结报表。</span></div>}
-      {balanced && !readyToFreeze && <div className="danger-banner"><WarningCircle size={18} /><span><strong>月结链路尚未完成：</strong>{flow.bankReconciliationIssues.length ? `${flow.bankReconciliationIssues.length} 份银行流水勾稽未通过。` : flow.unresolved.length ? `${flow.unresolved.length} 笔流水尚未入账或暂不处理。` : `${flow.pendingVouchers.length} 张凭证草稿或更正尚未入账。`}</span></div>}
-      <section className="metric-grid four report-summary"><MetricCard label="资产合计" value={formatCurrency(snapshot.summary.assets)} note="资产负债表" icon={Bank} /><MetricCard label="营业收入" value={formatCurrency(snapshot.summary.revenue)} note="利润表" icon={TrendUp} tone="sage" /><MetricCard label="本月利润" value={formatCurrency(snapshot.summary.profit)} note="税前本地口径" icon={ChartBar} /><MetricCard label="三表勾稽" value={snapshotBalanced ? "通过" : "需处理"} note="试算 · 资产负债 · 现金变动" icon={CheckCircle} tone={snapshotBalanced ? "sage" : "clay"} /></section>
+      <section className="report-toolbar panel"><div><p className="eyebrow">本地报表</p><h2>{selectedVersion ? `${selectedVersion.label} 冻结版本` : "实时草稿"}</h2><p>{selectedVersion ? `冻结于 ${formatDateTime(selectedVersion.createdAt)}，不会被后续修改覆盖。` : "数字会随本地凭证与税务调整更新。冻结后形成版本快照。"}</p></div><div className="report-toolbar-actions"><label className="compact-select"><span>查看版本</span><select value={versionId} onChange={(event) => setVersionId(event.target.value)}><option value="live">实时草稿</option>{versions.map((item) => <option key={item.id} value={item.id}>{item.label} · {formatDateTime(item.createdAt)}</option>)}</select><CaretDown size={13} /></label><button className="secondary-button" disabled={!selectedCurrentFrozenVersion} onClick={onExportExcel} title={excelExportTitle} type="button"><DownloadSimple size={17} />导出 Excel</button><button className="primary-button" disabled={!readyToFreeze} onClick={onFreeze} type="button"><SealCheck size={17} />冻结新版本</button></div></section>
+      <p className="toolbar-explanation">{excelExportTitle}</p>
+      <div className="report-key-metrics"><span>资产 <strong>{formatCurrency(snapshot.summary.assets)}</strong></span><span>收入 <strong>{formatCurrency(snapshot.summary.revenue)}</strong></span><span>利润 <strong>{formatCurrency(snapshot.summary.profit)}</strong></span><span>{selectedVersion ? selectedVersion.label : "实时草稿"} · {snapshotBalanced ? "报表平衡" : "存在差额"}</span></div>
       <section className="panel report-reconciliation-panel">
-        <div className="panel-heading"><div><p className="eyebrow">报表勾稽</p><h2>每一项差额都有处理入口</h2><p>这里校验实时草稿；冻结版本只用于回看，不会掩盖当前数据变化。</p></div><TonePill tone={balanced ? "success" : "warning"}>{statementChecks.filter((check) => check.passed).length} / {statementChecks.length} 通过</TonePill></div>
+        <div className="report-check-summary"><div><strong>{readyToFreeze ? "本期已具备冻结条件" : "冻结前仍有事项待处理"}</strong><span>当前实时数据 · {statementChecks.filter((check) => check.passed).length} / {statementChecks.length} 项勾稽通过</span></div>{!readyToFreeze && <TonePill tone="warning">待处理</TonePill>}</div>
+        {!balanced && <div className="report-failed-checks">{statementChecks.filter((check) => !check.passed).map((check) => <button className="text-button" key={check.id} onClick={() => openReconciliationSource(check)} type="button">{check.label} · 差额 {formatCurrency(check.difference)}<ArrowRight size={15} /></button>)}</div>}
+        <CheckRows items={freezeBlockers.filter((item) => item.id !== "balanced")} onNavigate={onPage} />
+        <details className="inline-details"><summary>查看全部勾稽口径与来源</summary>
         <div className="check-rows report-check-rows">{statementChecks.map((check) => (
           <button key={check.id} onClick={() => openReconciliationSource(check)} type="button">
             <span className={`check-icon ${check.passed ? "ok" : ""}`}>{check.passed ? <Check size={13} weight="bold" /> : <WarningCircle size={15} />}</span>
@@ -967,6 +997,7 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
             {!check.passed && <ArrowRight size={15} />}
           </button>
         ))}</div>
+        </details>
       </section>
       <div className="reports-layout">
         <section className="panel statement-panel">
@@ -992,85 +1023,8 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
 function CheckRows({ items, onNavigate }) {
   return <div className="check-rows">{items.map((item) => {
     const actionable = !item.ok && Boolean(item.page) && Boolean(onNavigate);
-    return <button className={actionable ? "actionable" : "complete"} disabled={!actionable} key={item.id} onClick={() => onNavigate?.(item.page)} type="button"><span className={`check-icon ${item.ok ? "ok" : ""}`}>{item.ok ? <Check size={13} weight="bold" /> : <WarningCircle size={15} />}</span><span><strong>{item.label}</strong>{item.detail && <small>{item.detail}</small>}</span>{actionable && <ArrowRight size={15} />}</button>;
+    return <button className={actionable ? "actionable" : "complete"} disabled={!actionable} key={item.id} onClick={() => onNavigate?.(item.page, item.id === "bank" ? { stage: "s3" } : item.id === "vouchers" ? { panel: "vouchers" } : {})} type="button"><span className={`check-icon ${item.ok ? "ok" : ""}`}>{item.ok ? <Check size={13} weight="bold" /> : <WarningCircle size={15} />}</span><span><strong>{item.label}</strong>{item.detail && <small>{item.detail}</small>}</span>{actionable && <ArrowRight size={15} />}</button>;
   })}</div>;
-}
-
-function buildFinalConfirmationSnapshot(workspace, existingFlow = workflowChecks(workspace)) {
-  const version = existingFlow.version;
-  const report = version?.snapshot || existingFlow.snapshot;
-  const payrollEnabled = workspaceModuleEnabled(workspace, "payroll");
-  const taxRows = Object.fromEntries((report.taxWorkpaper?.rows || []).map((row) => [row.id, row]));
-  const cashFlowRows = Object.fromEntries((report.sections?.cashflow?.rows || []).map((row) => [row.id, row]));
-  const numberValue = (value) => Number(value || 0);
-  const taxes = {
-    vat: { label: "应交增值税", value: numberValue(taxRows.vatPayable?.value), basis: taxRows.vatPayable?.formula || "来自本地税务底稿" },
-    surtax: { label: "附加税费", value: numberValue(taxRows.surtax?.value), basis: taxRows.surtax?.formula || "来自本地税务底稿" },
-    incomeTax: { label: "所得税", value: numberValue(taxRows.incomeTax?.value), basis: taxRows.incomeTax?.formula || "来自本地税务底稿" },
-    ...(payrollEnabled ? { individualIncomeTax: { label: "代扣个税", value: numberValue(taxRows.individualIncomeTax?.value), basis: taxRows.individualIncomeTax?.formula || "来自当前工资表" } } : {}),
-    total: { label: "预计申报税费合计", value: numberValue(taxRows.taxTotal?.value ?? report.summary?.estimatedTax), basis: taxRows.taxTotal?.formula || "不含代扣个税" },
-  };
-  const unresolvedItems = [
-    ...existingFlow.openExceptionTasks.map((item) => ({ id: item.id, type: "异常任务", label: item.message || item.code || item.id, detail: item.sourceId || "S7 异常处理" })),
-    ...existingFlow.unresolved.map((item) => ({ id: item.id, type: "未决流水", label: item.summary || item.counterparty || item.id, detail: item.serial || item.date || "待完成入账处理" })),
-    ...existingFlow.openNotices.map((item) => ({ id: item.id, type: "跨期事项", label: item.message || item.id, detail: item.sourceId || "待处理" })),
-    ...existingFlow.pendingVouchers.map((item) => ({ id: item.id, type: "待复核凭证", label: item.summary || item.number || item.id, detail: item.status || "待复核" })),
-    ...existingFlow.bankReconciliationIssues.map((item) => ({ id: item.id, type: "银行勾稽", label: item.fileName || item.accountName || item.id, detail: item.status || "待完成" })),
-  ];
-  const vatRisks = report.taxWorkpaper?.vatReconciliation?.unresolvedItems || [];
-  const deductionAmount = numberValue(taxes.total.value) + (payrollEnabled ? numberValue(taxes.individualIncomeTax?.value) : 0);
-  return {
-    period: workspace.currentPeriod,
-    reportVersionId: version?.id || null,
-    reportVersionLabel: version?.label || null,
-    reportSourceFingerprint: version?.sourceFingerprint || null,
-    filingDraftVersionId: workspace.delivery.filing.draftVersionId || null,
-    filingDraftCreatedAt: workspace.delivery.filing.draftCreatedAt || null,
-    taxes,
-    statements: {
-      balance: {
-        label: "资产负债表",
-        metrics: [
-          { label: "资产", value: numberValue(report.summary?.assets) },
-          { label: "负债", value: numberValue(report.summary?.liabilities) },
-          { label: "所有者权益", value: numberValue(report.summary?.equity) },
-        ],
-      },
-      income: {
-        label: "利润表",
-        metrics: [
-          { label: "收入", value: numberValue(report.summary?.revenue) },
-          { label: "成本", value: numberValue(report.summary?.cost) },
-          { label: "期间费用", value: numberValue(report.summary?.expenses) },
-          { label: "利润", value: numberValue(report.summary?.profit) },
-        ],
-      },
-      cashflow: {
-        label: "现金流量表",
-        metrics: [
-          { label: "经营活动净额", value: numberValue(cashFlowRows.operating?.value) },
-          { label: "现金净增加额", value: numberValue(cashFlowRows.netCash?.value) },
-          { label: "期末现金", value: numberValue(cashFlowRows.closingCash?.value ?? report.summary?.cashBalance) },
-        ],
-      },
-    },
-    payrollSocial: {
-      payroll: numberValue(taxRows.payroll?.value),
-      socialSecurity: numberValue(taxRows.socialSecurity?.value),
-      total: numberValue(taxRows.payroll?.value) + numberValue(taxRows.socialSecurity?.value),
-    },
-    deduction: {
-      required: deductionAmount > 0,
-      amount: deductionAmount,
-    },
-    risks: [
-      { id: "local-only", level: "warning", label: "尚未提交税务局", detail: "本页只记录确认并生成本地申报包，仍需在外部完成正式申报。" },
-      { id: "calculation-basis", level: "warning", label: "本地计算口径", detail: report.taxWorkpaper?.disclaimer || "税额来自当前冻结底稿，不是税务局回执。" },
-      ...vatRisks.map((item) => ({ id: `vat-${item.kind || item.id}`, level: "danger", label: item.label || "增值税差异", detail: `仍有 ${formatCurrency(item.differenceAfterAdjustment ?? item.differenceBeforeAdjustment, { sign: true })} 差异待解释` })),
-      ...(unresolvedItems.length ? [{ id: "open-items", level: "danger", label: "仍有未处理事项", detail: `${unresolvedItems.length} 项业务、凭证或勾稽事项尚未完成` }] : []),
-    ],
-    unresolvedItems,
-  };
 }
 
 function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecision, onPrepareDraft, onFinalConfirm, onExport, onReceipt }) {
@@ -1083,9 +1037,7 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
   const exportChecks = enabledWorkflowChecks(workspace, flow.export);
   const filing = workspace.delivery.filing;
   const activeConfirmation = [...(workspace.confirmations || [])].reverse().find((confirmation) => (
-    confirmation.kind === "tax"
-    && confirmation.period === workspace.currentPeriod
-    && confirmation.reportVersionId === version?.id
+    customerConfirmationMatchesVersion(confirmation, version)
   ));
   const storedFinalConfirmation = (workspace.confirmations || []).find((confirmation) => confirmation.id === workspace.tax.finalConfirmationId)
     || [...(workspace.confirmations || [])].reverse().find((confirmation) => confirmation.kind === "final" && confirmation.period === workspace.currentPeriod);
@@ -1146,22 +1098,20 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
     const formula = rows.find((row) => row?.formula)?.formula;
     return businessTermCopy(formula ? `计算口径：${formula}` : fallback, terminology);
   };
-  const incomeById = Object.fromEntries((snapshot.sections.income?.rows || []).map((row) => [row.id, row]));
-  const balanceById = Object.fromEntries((snapshot.sections.balance?.rows || []).map((row) => [row.id, row]));
-  const workpaperById = Object.fromEntries(snapshot.taxWorkpaper.rows.map((row) => [row.id, row]));
+  const confirmationSections = buildCustomerConfirmationSections(snapshot, { payrollEnabled });
   const visibleWorkpaperRows = payrollEnabled ? snapshot.taxWorkpaper.rows : snapshot.taxWorkpaper.rows.filter((row) => !PAYROLL_WORKPAPER_ROW_IDS.has(row.id));
-  const pendingSources = [...flow.openExceptionTasks, ...flow.unresolved, ...flow.openNotices];
+  const pendingSources = confirmationSections.openItems.items;
   const confirmationItems = [
-    { id: "revenue", label: "收入", amount: formatCurrency(snapshot.summary.revenue), sourceSummary: summarizeSources([incomeById.revenue], "来自当前冻结利润表"), majorByDefault: true },
-    { id: "costExpense", label: "成本费用", amount: formatCurrency(Number(snapshot.summary.cost || 0) + Number(snapshot.summary.expenses || 0)), sourceSummary: summarizeSources([incomeById.expenses, incomeById.profit], "来自当前冻结利润表及已入账凭证"), majorByDefault: true },
-    { id: "vat", label: "应交税额", amount: formatCurrency(workpaperById.vatPayable?.value || 0), sourceSummary: summarizeSources([workpaperById.vatPayable], "来自当前冻结税务底稿"), majorByDefault: true },
-    { id: "inputVat", label: "进项税", amount: formatCurrency(workpaperById.inputVat?.value || 0), sourceSummary: summarizeSources([workpaperById.inputVat], "来自进项发票或进项税科目"), majorByDefault: false },
+    { id: "revenue", label: "收入", amount: formatCurrency(confirmationSections.revenue.value), sourceSummary: summarizeSources(confirmationSections.revenue.rows, "来自当前冻结利润表"), majorByDefault: true },
+    { id: "costExpense", label: "成本费用", amount: formatCurrency(confirmationSections.costExpense.value), sourceSummary: summarizeSources(confirmationSections.costExpense.rows, "来自当前冻结利润表及已入账凭证"), majorByDefault: true },
+    { id: "vat", label: "应交税额", amount: formatCurrency(confirmationSections.vat.value), sourceSummary: summarizeSources(confirmationSections.vat.rows, "来自当前冻结税务底稿"), majorByDefault: true },
+    { id: "inputVat", label: "进项税", amount: formatCurrency(confirmationSections.inputVat.value), sourceSummary: summarizeSources(confirmationSections.inputVat.rows, "来自进项发票或进项税科目"), majorByDefault: false },
     ...(payrollEnabled ? [
-      { id: "payroll", label: `${terminology.personnel}工资`, amount: formatCurrency(workpaperById.payroll?.value || 0), sourceSummary: summarizeSources([workpaperById.payroll], `来自当前期间${terminology.personnel}工资表`), majorByDefault: true },
-      { id: "socialSecurity", label: `${terminology.personnel}社保`, amount: formatCurrency(workpaperById.socialSecurity?.value || 0), sourceSummary: summarizeSources([workpaperById.socialSecurity], `来自当前期间${terminology.personnel}社保表`), majorByDefault: true },
+      { id: "payroll", label: `${terminology.personnel}工资`, amount: formatCurrency(confirmationSections.payroll.value), sourceSummary: summarizeSources(confirmationSections.payroll.rows, `来自当前期间${terminology.personnel}工资表`), majorByDefault: true },
+      { id: "socialSecurity", label: `${terminology.personnel}社保`, amount: formatCurrency(confirmationSections.socialSecurity.value), sourceSummary: summarizeSources(confirmationSections.socialSecurity.rows, `来自当前期间${terminology.personnel}社保表`), majorByDefault: true },
     ] : []),
-    { id: "finance", label: "财务报表", amount: `资产 ${formatCurrency(snapshot.summary.assets)} · 利润 ${formatCurrency(snapshot.summary.profit)}`, sourceSummary: summarizeSources([balanceById.assets, incomeById.profit], "来自当前冻结的资产负债表与利润表"), majorByDefault: true },
-    { id: "openItems", label: "待核实事项", amount: pendingSources.length ? `${pendingSources.length} 项` : "0 项", sourceSummary: pendingSources.length ? businessTermCopy(pendingSources.slice(0, 2).map((item) => item.message || item.summary || item.counterparty || item.id).join("；"), terminology) : "异常任务、未决流水与跨期事项均为 0", majorByDefault: false },
+    { id: "finance", label: "财务报表", amount: `资产 ${formatCurrency(confirmationSections.finance.metrics.assets.value)} · 利润 ${formatCurrency(confirmationSections.finance.metrics.profit.value)}`, sourceSummary: summarizeSources(confirmationSections.finance.rows, "来自当前冻结的资产负债表与利润表"), majorByDefault: true },
+    { id: "openItems", label: "待核实事项", amount: `${confirmationSections.openItems.value} 项`, sourceSummary: pendingSources.length ? businessTermCopy(pendingSources.slice(0, 2).map((item) => item.label || item.id).join("；"), terminology) : "异常任务、未决流水与跨期事项均为 0", majorByDefault: false },
   ];
   const localizedPrerequisiteChecks = prerequisiteChecks.map((item) => ({ ...item, label: businessTermCopy(item.label, terminology), detail: businessTermCopy(item.detail, terminology) }));
   const localizedExportChecks = exportChecks.map((item) => ({ ...item, label: businessTermCopy(item.label, terminology), detail: businessTermCopy(item.detail, terminology) }));
@@ -1176,17 +1126,27 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
     && ["authorize_external", "do_not_authorize"].includes(deductionAuthorization)
     && confirmer.trim().length > 0;
   const exportReady = finalConfirmationCurrent && exportChecks.every((item) => item.ok);
+  const blockers = localizedPrerequisiteChecks.filter((item) => !item.ok);
+  const jumpTo = (id) => { const target = document.getElementById(id); if (target?.tagName === "DETAILS") target.open = true; target?.scrollIntoView({ block: "start" }); };
+  const nextStep = blockers.length
+    ? { title: "先完成本期复核", label: blockers[0].label, run: () => onPage(blockers[0].page, blockers[0].id === "bank" ? { stage: "s3" } : blockers[0].id === "vouchers" ? { panel: "vouchers" } : {}) }
+    : !initialDone ? { title: "第一次数据确认", label: "开始逐项确认", run: () => jumpTo("tax-initial-confirmation") }
+    : !filing.draftCreatedAt ? { title: "首次确认已完成", label: "生成本地申报底稿", run: onPrepareDraft }
+    : !finalConfirmationCurrent ? { title: "提交前最终确认", label: "复核并签字", run: () => jumpTo("tax-final-confirmation") }
+    : !exportReady ? { title: "处理申报包剩余条件", label: "查看差异与条件", run: () => jumpTo("tax-workpaper") }
+    : !filing.exportedAt ? { title: "两次确认已完成", label: "查看申报包", run: () => jumpTo("tax-package") }
+    : !filing.receipt ? { title: "等待真实外部办理回执", label: "导入回执", run: () => jumpTo("tax-package") }
+    : { title: "资料已具备归档条件", label: "前往资料归档", run: () => onPage("archive") };
+
   return (
     <div className="page-content tax-page">
       <StageRail workspace={workspace} onPage={onPage} />
-      <section className="tax-boundary-card"><span className="boundary-icon"><CloudSlash size={27} /></span><div><p className="eyebrow">安全边界</p><h2>电子税务局未连接</h2><p>第一版只生成本地底稿与申报包。真实填报、提交和缴税必须在电子税务局或未来的本地安全执行器中完成。</p></div><TonePill tone="neutral">后续连接能力</TonePill></section>
-      <div className="tax-layout">
+      <section className="tax-stage-summary panel"><div className="stage-next-action"><div><p className="eyebrow">当前阶段 · {version ? version.label : "尚未冻结"}</p><h2>{nextStep.title}</h2></div><button className="primary-button" onClick={nextStep.run} type="button">{nextStep.label}<ArrowRight size={16} /></button></div><p className="local-filing-note"><CloudSlash size={17} />仅生成本地申报包；税额为本地底稿，尚未提交税务局。</p>{blockers.length > 0 && <div className="stage-blockers">{blockers.map((item) => <button key={item.id} onClick={() => onPage(item.page, item.id === "bank" ? { stage: "s3" } : item.id === "vouchers" ? { panel: "vouchers" } : {})} type="button"><WarningCircle size={16} /><span><strong>{item.label}</strong><small>{item.detail}</small></span><ArrowRight size={15} /></button>)}</div>}{!blockers.length && !exportReady && initialDone && <p className="toolbar-explanation">{localizedExportChecks.find((item) => !item.ok)?.detail || localizedExportChecks.find((item) => !item.ok)?.label}</p>}</section>
+      <div className={`tax-layout ${initialDone ? "with-filing-actions" : "confirmation-only"}`}>
         <div className="tax-main-column">
-          <section className="panel workpaper-panel"><div className="panel-heading"><div><p className="eyebrow">S10–S11 · 申报底稿</p><h2>{formatPeriod(workspace.currentPeriod)} 本地复核稿</h2></div>{version ? <TonePill tone="success">基于 {version.label}</TonePill> : <TonePill tone="warning">尚未冻结报表</TonePill>}</div><div className="workpaper-grid">{visibleWorkpaperRows.map((row) => <div key={row.id}><span>{businessTermCopy(row.label, terminology)}</span><strong>{formatCurrency(row.value)}</strong></div>)}</div><p className="workpaper-disclaimer"><WarningCircle size={16} />{businessTermCopy(snapshot.taxWorkpaper.disclaimer, terminology)}</p><div className="tax-input-grid"><div className="tax-rate-settings"><div className="tax-rate-settings-heading"><strong>本地估算税率</strong><small>界面按百分数填写，底层按小数保存，只作用于当前工作台。</small></div><div className="tax-rate-grid"><label><span>增值税率（%）</span><input type="number" min="0" max="100" step="0.01" inputMode="decimal" value={Number((Number(workspace.tax.vatRate ?? 0.03) * 100).toFixed(4))} onChange={(event) => onTaxChange("vatRate", Number(event.target.value) / 100)} onBlur={() => onTaxCommit("vatRate")} /></label><label><span>附加税率（%）</span><input type="number" min="0" max="100" step="0.01" inputMode="decimal" value={Number((Number(workspace.tax.surtaxRate ?? 0.12) * 100).toFixed(4))} onChange={(event) => onTaxChange("surtaxRate", Number(event.target.value) / 100)} onBlur={() => onTaxCommit("surtaxRate")} /></label><label><span>所得税率（%）</span><input type="number" min="0" max="100" step="0.01" inputMode="decimal" value={Number((Number(workspace.tax.incomeTaxRate ?? 0.05) * 100).toFixed(4))} onChange={(event) => onTaxChange("incomeTaxRate", Number(event.target.value) / 100)} onBlur={() => onTaxCommit("incomeTaxRate")} /></label></div></div><label><span>增值税计税基础调整</span><input type="number" step="0.01" value={workspace.tax.adjustments} onChange={(event) => onTaxChange("adjustments", Number(event.target.value))} onBlur={() => onTaxCommit("adjustments")} /></label>{payrollEnabled && <><label><span>{terminology.personnel}工资薪金</span><input type="number" step="0.01" value={workspace.tax.payroll} onChange={(event) => onTaxChange("payroll", Number(event.target.value))} onBlur={() => onTaxCommit("payroll")} /></label><label><span>{terminology.personnel}社保数据</span><input type="number" step="0.01" value={workspace.tax.socialSecurity} onChange={(event) => onTaxChange("socialSecurity", Number(event.target.value))} onBlur={() => onTaxCommit("socialSecurity")} /></label></>}<label className="full"><span>复核备注</span><textarea value={workspace.tax.note} onChange={(event) => onTaxChange("note", event.target.value)} onBlur={() => onTaxCommit("note")} placeholder="记录本期特殊口径或待说明事项" /></label></div><p className="edit-warning">修改底稿会撤销后续确认与导出状态；请重新冻结报表版本后再继续。</p></section>
-          <section className="panel confirmation-panel">
+          <section className="panel confirmation-panel" id="tax-initial-confirmation">
             <div className="panel-heading"><div><p className="eyebrow">第一次{terminology.customer}确认</p><h2>{confirmationItems.length} 项数据逐项确认</h2></div><TonePill tone={initialDone ? "success" : activeConfirmation?.status === "disputed" ? "danger" : "warning"}>{initialDone ? `${confirmationItems.length} / ${confirmationItems.length} 已确认` : `${approvedCount} / ${confirmationItems.length}`}</TonePill></div>
-            <CheckRows items={localizedPrerequisiteChecks} onNavigate={onPage} />
-            {!canConfirmSections && <p className="confirmation-gate"><WarningCircle size={16} />先完成上方五项前置条件，才能保存每一项{terminology.customer}结论。</p>}
+
             <label className="final-signer"><span>本次确认人姓名 <b>必填</b></span><input disabled={!canConfirmSections} onChange={(event) => setInitialConfirmer(event.target.value)} placeholder={`输入实际${terminology.customer}确认人姓名`} value={initialConfirmer} /></label>
             <div className="confirmation-list">{confirmationItems.map((item) => {
               const savedSection = activeConfirmation?.sections?.[item.id];
@@ -1203,37 +1163,41 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
               const decisionActor = isMajor ? responsibleName.trim() : initialConfirmer.trim();
               const canSave = canConfirmSections && !locked && Boolean(decision) && note.trim().length > 0 && decisionActor.length > 0;
               return (
+                <div className="confirmation-item-group" key={item.id}>
+                  {["revenue", "payroll", "finance"].includes(item.id) && <h3 className="confirmation-group-heading">{item.id === "revenue" ? "税务与经营数据" : item.id === "payroll" ? `${terminology.personnel}工资与社保` : "财务报表与未决事项"}</h3>}
                 <article className={`confirmation-item ${status} ${expanded ? "expanded" : "collapsed"}`} key={item.id}>
                   <button aria-expanded={expanded} className="confirmation-item-heading confirmation-item-toggle" onClick={() => setExpandedConfirmationId((current) => current === item.id ? null : item.id)} type="button"><div><span>{item.label}</span><strong>{item.amount}</strong></div><span className="confirmation-heading-actions"><TonePill tone={status === "approved" ? "success" : status === "rejected" ? "danger" : "neutral"}>{status === "approved" ? "已确认" : status === "rejected" ? "有异议" : "待确认"}</TonePill><CaretDown className="confirmation-caret" size={15} /></span></button>
                   {expanded && <div className="confirmation-item-body"><p className="confirmation-source"><FileText size={15} /><span><strong>来源摘要</strong>{item.sourceSummary}</span></p>
                   {locked ? (
-                    <div className={`confirmation-record ${status}`}><span>{status === "approved" ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} weight="fill" />}</span><div><strong>{status === "approved" ? "本项已单独确认" : "本项异议已转入 S7"}</strong><small>{savedSection.confirmedBy || savedDecision?.actor || `${terminology.customer}负责人`} · {formatDateTime(savedSection.confirmedAt || savedDecision?.at)}</small><p>{savedDecision?.note || "已记录到本地确认链"}</p></div></div>
+                    <div className={`confirmation-record ${status}`}><span>{status === "approved" ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} weight="fill" />}</span><div><strong>{status === "approved" ? "本项已单独确认" : "本项异议已形成待办"}</strong><small>{savedSection.confirmedBy || savedDecision?.actor || `${terminology.customer}负责人`} · {formatDateTime(savedSection.confirmedAt || savedDecision?.at)}</small><p>{savedDecision?.note || "已记录到本地确认链"}</p></div></div>
                   ) : (
                     <div className="confirmation-form">
                       <fieldset className="confirmation-decisions"><legend>本项结论</legend><label><input checked={decision === "approve"} disabled={!canConfirmSections} name={`confirmation-${item.id}`} onChange={() => updateDraft({ decision: "approve" })} type="radio" /><span>确认</span></label><label><input checked={decision === "reject"} disabled={!canConfirmSections} name={`confirmation-${item.id}`} onChange={() => updateDraft({ decision: "reject" })} type="radio" /><span>有异议</span></label></fieldset>
                       <label className="confirmation-note"><span>本项说明 <b>必填</b></span><textarea disabled={!canConfirmSections} onChange={(event) => updateDraft({ note: event.target.value })} placeholder={decision === "reject" ? "写明差异、正确口径或需补充的资料" : "写明已核对的来源与结论"} value={note} /></label>
                       <label className="major-toggle"><input checked={isMajor} disabled={!canConfirmSections} onChange={(event) => updateDraft({ isMajor: event.target.checked })} type="checkbox" /><span><strong>本项属于重大事项</strong><small>重大事项必须由负责人单独签字。</small></span></label>
                       {isMajor && <label className="confirmation-signer"><span>负责人签字姓名 <b>必填</b></span><input disabled={!canConfirmSections} onChange={(event) => updateDraft({ responsibleName: event.target.value })} placeholder="输入本项负责人姓名" value={responsibleName} /></label>}
-                      {decision === "reject" && <p className="confirmation-reject-warning"><WarningCircle size={15} />保存后将立即生成 S7 异常事项并返回异常处理。</p>}
+                      {decision === "reject" && <p className="confirmation-reject-warning"><WarningCircle size={15} />保存后将立即生成待复核事项并返回异常处理。</p>}
                       <button className={decision === "reject" ? "danger-button" : "secondary-button"} disabled={!canSave} onClick={() => {
-                        const saved = onSectionDecision({ section: item.id, decision, note: note.trim(), isMajor, responsibleName: responsibleName.trim(), confirmationName: initialConfirmer.trim() });
+                        const saved = onSectionDecision({ reportVersionId: version.id, section: item.id, decision, note: note.trim(), isMajor, responsibleName: responsibleName.trim(), confirmationName: initialConfirmer.trim() });
                         if (saved) setSectionDrafts((current) => ({ ...current, [item.id]: {} }));
-                      }} type="button">{decision === "reject" ? "保存异议并退回 S7" : "保存本项确认"}</button>
+                      }} type="button">{decision === "reject" ? "保存异议并返回复核" : "保存本项确认"}</button>
                     </div>
                   )}</div>}
-                </article>
+                </article></div>
               );
             })}</div>
             <p className={`confirmation-summary ${initialDone ? "done" : ""}`}>{initialDone ? `${confirmationItems.length} 项已全部逐项确认，完成时间 ${formatDateTime(workspace.tax.financeConfirmedAt)}` : `还需确认 ${confirmationItems.length - approvedCount} 项；全部完成前不能生成申报底稿。`}</p>
           </section>
+          <details className="workpaper-details" id="tax-workpaper"><summary>底稿明细与本地参数</summary>
+          <section className="panel workpaper-panel"><div className="panel-heading"><div><p className="eyebrow">本地申报底稿</p><h2>{formatPeriod(workspace.currentPeriod)} 本地复核稿</h2></div>{version ? <TonePill tone="success">基于 {version.label}</TonePill> : <TonePill tone="warning">尚未冻结报表</TonePill>}</div><div className="workpaper-groups">{[{ label: "税务金额与差异", rows: visibleWorkpaperRows.filter((row) => !PAYROLL_WORKPAPER_ROW_IDS.has(row.id)) }, ...(payrollEnabled ? [{ label: `${terminology.personnel}工资与社保`, rows: visibleWorkpaperRows.filter((row) => PAYROLL_WORKPAPER_ROW_IDS.has(row.id)) }] : [])].map((group) => <section key={group.label}><h3>{group.label}</h3><div className="workpaper-grid">{group.rows.map((row) => <div key={row.id}><span>{businessTermCopy(row.label, terminology)}</span><strong>{formatCurrency(row.value)}</strong></div>)}</div></section>)}</div><p className="workpaper-disclaimer"><WarningCircle size={16} />{businessTermCopy(snapshot.taxWorkpaper.disclaimer, terminology)}</p><div className="tax-input-grid"><div className="tax-rate-settings"><div className="tax-rate-settings-heading"><strong>本地估算税率</strong><small>仅用于当前工作台的本地估算。</small></div><div className="tax-rate-grid"><label><span>增值税率（%）</span><input type="number" min="0" max="100" step="0.01" inputMode="decimal" value={Number((Number(workspace.tax.vatRate ?? 0.03) * 100).toFixed(4))} onChange={(event) => onTaxChange("vatRate", Number(event.target.value) / 100)} onBlur={() => onTaxCommit("vatRate")} /></label><label><span>附加税率（%）</span><input type="number" min="0" max="100" step="0.01" inputMode="decimal" value={Number((Number(workspace.tax.surtaxRate ?? 0.12) * 100).toFixed(4))} onChange={(event) => onTaxChange("surtaxRate", Number(event.target.value) / 100)} onBlur={() => onTaxCommit("surtaxRate")} /></label><label><span>所得税率（%）</span><input type="number" min="0" max="100" step="0.01" inputMode="decimal" value={Number((Number(workspace.tax.incomeTaxRate ?? 0.05) * 100).toFixed(4))} onChange={(event) => onTaxChange("incomeTaxRate", Number(event.target.value) / 100)} onBlur={() => onTaxCommit("incomeTaxRate")} /></label></div></div><label><span>增值税计税基础调整</span><input type="number" step="0.01" value={workspace.tax.adjustments} onChange={(event) => onTaxChange("adjustments", Number(event.target.value))} onBlur={() => onTaxCommit("adjustments")} /></label>{payrollEnabled && <><label><span>{terminology.personnel}工资薪金</span><input type="number" step="0.01" value={workspace.tax.payroll} onChange={(event) => onTaxChange("payroll", Number(event.target.value))} onBlur={() => onTaxCommit("payroll")} /></label><label><span>{terminology.personnel}社保数据</span><input type="number" step="0.01" value={workspace.tax.socialSecurity} onChange={(event) => onTaxChange("socialSecurity", Number(event.target.value))} onBlur={() => onTaxCommit("socialSecurity")} /></label></>}<label className="full"><span>复核备注</span><textarea value={workspace.tax.note} onChange={(event) => onTaxChange("note", event.target.value)} onBlur={() => onTaxCommit("note")} placeholder="记录本期特殊口径或待说明事项" /></label></div><p className="edit-warning">修改底稿会撤销后续确认与导出状态；请重新冻结报表版本后再继续。</p></section>
+          </details>
         </div>
-        <aside className="tax-side-column">
-          <section className="panel filing-steps-panel"><div className="panel-heading"><div><p className="eyebrow">S11–S12 · 提交前流程</p><h2>本地申报包</h2></div><ShieldCheck size={22} /></div><ol className="filing-timeline"><li className={initialDone ? "done" : "active"}><span>{initialDone ? <Check size={13} weight="bold" /> : 1}</span><div><strong>第一次{terminology.customer}确认</strong><small>{formatDateTime(workspace.tax.financeConfirmedAt)}</small></div></li><li className={filing.draftCreatedAt ? "done" : initialDone ? "active" : ""}><span>{filing.draftCreatedAt ? <Check size={13} weight="bold" /> : 2}</span><div><strong>生成本地申报底稿</strong><small>{formatDateTime(filing.draftCreatedAt)}</small></div></li><li className={finalConfirmationCurrent ? "done" : filing.draftCreatedAt ? "active" : ""}><span>{finalConfirmationCurrent ? <Check size={13} weight="bold" /> : 3}</span><div><strong>第二次最终确认</strong><small>{finalConfirmationCurrent ? formatDateTime(storedFinalConfirmation.confirmedAt) : "等待逐项确认"}</small></div></li><li className={filing.exportedAt ? "done" : finalConfirmationCurrent ? "active" : ""}><span>{filing.exportedAt ? <Check size={13} weight="bold" /> : 4}</span><div><strong>导出本地申报包</strong><small>{formatDateTime(filing.exportedAt)}</small></div></li><li className={filing.receipt ? "done" : filing.exportedAt ? "active" : ""}><span>{filing.receipt ? <Check size={13} weight="bold" /> : 5}</span><div><strong>导回真实办理回执</strong><small>{filing.receipt?.name || "等待外部办理"}</small></div></li></ol><button className="secondary-button wide" disabled={!initialDone || Boolean(filing.draftCreatedAt)} onClick={onPrepareDraft} type="button">{filing.draftCreatedAt ? "底稿已生成" : "生成本地申报底稿"}</button></section>
-          <section className="panel package-panel"><div className="panel-heading"><div><p className="eyebrow">文件交付</p><h2>导出与回执</h2></div><DownloadSimple size={21} /></div><CheckRows items={localizedExportChecks} onNavigate={onPage} /><button className="primary-button wide" disabled={!exportReady} onClick={onExport} type="button"><DownloadSimple size={17} />{filing.exportedAt ? "重新导出本地申报包" : "导出本地申报包"}</button><input ref={receiptInput} hidden type="file" accept=".pdf,.json,.xml,.txt,.csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) onReceipt(file); event.target.value = ""; }} /><button className="secondary-button wide" disabled={!filing.exportedAt} onClick={() => receiptInput.current?.click()} type="button"><UploadSimple size={17} />{filing.receipt ? "替换本地回执" : "导入真实外部回执"}</button>{filing.receipt && <div className="receipt-card"><Receipt size={21} /><span><strong>{filing.receipt.name}</strong><small>{fileSize(filing.receipt.size)} · SHA-256 {filing.receipt.hash.slice(0, 10)}…</small></span><CheckCircle size={18} weight="fill" /></div>}</section>
+        <aside className="tax-side-column" hidden={!initialDone}>
+          <section className="panel package-panel" id="tax-package"><div className="panel-heading"><div><p className="eyebrow">文件交付</p><h2>导出与回执</h2></div><DownloadSimple size={21} /></div><p className="toolbar-explanation">{exportReady ? "当前冻结版本已完成两次确认。" : localizedExportChecks.find((item) => !item.ok)?.label}</p><button className="primary-button wide" disabled={!exportReady} onClick={onExport} type="button"><DownloadSimple size={17} />{filing.exportedAt ? "重新导出本地申报包" : "导出本地申报包"}</button><input ref={receiptInput} hidden type="file" accept=".pdf,.json,.xml,.txt,.csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) onReceipt(file); event.target.value = ""; }} /><button className="secondary-button wide" disabled={!filing.exportedAt} onClick={() => receiptInput.current?.click()} type="button"><UploadSimple size={17} />{filing.receipt ? "替换本地回执" : "导入真实外部回执"}</button>{filing.receipt && <div className="receipt-card"><Receipt size={21} /><span><strong>{filing.receipt.name}</strong><small>{fileSize(filing.receipt.size)} · SHA-256 {filing.receipt.hash.slice(0, 10)}…</small></span><CheckCircle size={18} weight="fill" /></div>}</section>
         </aside>
       </div>
-      <section className="panel final-confirm-panel final-confirm-workspace">
-        <div className="panel-heading"><div><p className="eyebrow">S12 · 第二次{terminology.customer}确认</p><h2>提交前最终责任确认</h2></div><TonePill tone={finalConfirmationCurrent ? "success" : storedFinalConfirmation ? "warning" : "neutral"}>{finalConfirmationCurrent ? "已记录 · 未提交" : storedFinalConfirmation ? "上次确认已失效" : "等待确认"}</TonePill></div>
+      <section className="panel final-confirm-panel final-confirm-workspace" id="tax-final-confirmation" hidden={!filing.draftCreatedAt && !storedFinalConfirmation}>
+        <div className="panel-heading"><div><p className="eyebrow">第二次{terminology.customer}确认</p><h2>提交前最终责任确认</h2></div><TonePill tone={finalConfirmationCurrent ? "success" : storedFinalConfirmation ? "warning" : "neutral"}>{finalConfirmationCurrent ? "已记录 · 未提交" : storedFinalConfirmation ? "上次确认已失效" : "等待确认"}</TonePill></div>
         <p className="final-boundary-copy">这里保存{terminology.customer}对当前冻结数字、风险和外部扣款选择的最终确认，只生成本地申报包；不会提交税务局，也不会自动扣款或缴税。</p>
         {storedFinalConfirmation && !finalConfirmationCurrent && <p className="final-invalid-banner"><WarningCircle size={17} />上一次最终确认对应的报表版本、底稿或数据已变化，必须按当前数字重新完成全部确认。</p>}
         {!canStartFinalConfirmation && !finalConfirmationCurrent && <p className="confirmation-gate"><WarningCircle size={16} />先完成 {confirmationItems.length} 项第一次确认并生成当前冻结版本的本地申报底稿。</p>}
@@ -1247,7 +1211,7 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
           <div className="final-review-side">
             <section className={`final-deduction-summary ${displayedFinalSnapshot.deduction.required ? "required" : ""}`}><span>是否需要扣款</span><strong>{displayedFinalSnapshot.deduction.required ? "预计需要在外部办理扣款" : "当前预计无需扣款"}</strong><b>{formatCurrency(displayedFinalSnapshot.deduction.amount)}</b><small>这里只判断当前底稿金额，不会发起银行或税务扣款。</small></section>
             <section className="final-risk-section"><div className="subheading"><strong>申报风险</strong><span>{displayedFinalSnapshot.risks.length} 项</span></div><div className="final-risk-list">{displayedFinalSnapshot.risks.map((risk) => <article className={risk.level} key={risk.id}><WarningCircle size={17} /><span><strong>{businessTermCopy(risk.label, terminology)}</strong><small>{businessTermCopy(risk.detail, terminology)}</small></span></article>)}</div></section>
-            <section className="final-open-section"><div className="subheading"><strong>仍未处理事项</strong><span>{displayedFinalSnapshot.unresolvedItems.length} 项</span></div>{displayedFinalSnapshot.unresolvedItems.length ? <div className="final-open-list">{displayedFinalSnapshot.unresolvedItems.map((item) => <article key={`${item.type}-${item.id}`}><span><strong>{businessTermCopy(item.type, terminology)} · {businessTermCopy(item.label, terminology)}</strong><small>{businessTermCopy(item.detail, terminology)}</small></span></article>)}</div> : <p className="final-empty-state"><CheckCircle size={18} weight="fill" />当前没有未处理的流水、异常、凭证、跨期或银行勾稽事项。</p>}</section>
+            <section className="final-open-section"><div className="subheading"><strong>仍未处理事项</strong><span>{displayedFinalSnapshot.unresolvedItems.length} 项</span></div>{displayedFinalSnapshot.unresolvedItems.length ? <div className="final-open-list">{displayedFinalSnapshot.unresolvedItems.map((item) => <article key={`${item.type}-${item.id}`}><span><strong>{businessTermCopy(item.type, terminology)} · {businessTermCopy(item.label, terminology)}</strong><small>{businessTermCopy(item.detail, terminology)}</small></span></article>)}</div> : <p className="final-empty-state"><CheckCircle size={18} weight="fill" />当前冻结版本未记录待核实事项。</p>}</section>
           </div>
         </div>
         {finalConfirmationCurrent ? (
@@ -1257,7 +1221,7 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
             <div className="final-attestations"><label><input checked={finalChecks.numbersReviewed} disabled={!canStartFinalConfirmation} onChange={(event) => setFinalChecks((current) => ({ ...current, numbersReviewed: event.target.checked }))} type="checkbox" /><span><strong>数字已复核</strong><small>{payrollEnabled ? `我已逐项核对所属期、各税种、三大报表以及${terminology.personnel}工资社保金额。` : "我已逐项核对所属期、各税种以及三大报表。"}</small></span></label><label><input checked={finalChecks.risksAcknowledged} disabled={!canStartFinalConfirmation} onChange={(event) => setFinalChecks((current) => ({ ...current, risksAcknowledged: event.target.checked }))} type="checkbox" /><span><strong>风险已知晓</strong><small>我已阅读本地计算口径、申报风险和仍未处理事项。</small></span></label><label><input checked={finalChecks.localOnlyAcknowledged} disabled={!canStartFinalConfirmation} onChange={(event) => setFinalChecks((current) => ({ ...current, localOnlyAcknowledged: event.target.checked }))} type="checkbox" /><span><strong>理解这里只生成本地申报包、尚未提交税务局</strong><small>确认不会触发申报、缴税或银行扣款。</small></span></label></div>
             <fieldset className="final-deduction-choice" disabled={!canStartFinalConfirmation}><legend>外部扣款授权 <b>必选</b></legend><label><input checked={deductionAuthorization === "authorize_external"} name="deduction-authorization" onChange={() => setDeductionAuthorization("authorize_external")} type="radio" /><span><strong>授权外部办理扣款</strong><small>仅记录授权意向，仍需在税务局或银行渠道执行。</small></span></label><label><input checked={deductionAuthorization === "do_not_authorize"} name="deduction-authorization" onChange={() => setDeductionAuthorization("do_not_authorize")} type="radio" /><span><strong>不授权外部扣款</strong><small>由负责人另行安排缴税，不在本工作台执行。</small></span></label></fieldset>
             <label className="final-signer"><span>最终负责人姓名 <b>必填</b></span><input disabled={!canStartFinalConfirmation} onChange={(event) => setConfirmer(event.target.value)} placeholder="输入承担最终责任的姓名" value={confirmer} /></label>
-            <button className="primary-button" disabled={!finalReady} onClick={() => onFinalConfirm({ name: confirmer.trim(), selections: { ...finalChecks, deductionAuthorization } })} type="button"><ShieldCheck size={17} />保存最终确认（不提交税务局）</button>
+            <button className="primary-button" disabled={!finalReady} onClick={() => onFinalConfirm({ reportVersionId: version.id, filingDraftCreatedAt: filing.draftCreatedAt, name: confirmer.trim(), selections: { ...finalChecks, deductionAuthorization } })} type="button"><ShieldCheck size={17} />保存最终确认（不提交税务局）</button>
           </div>
         )}
       </section>
@@ -1269,18 +1233,25 @@ function ArchivePage({ workspace, onPage, onDocuments, onDownloadDocument, onRec
   const terminology = workspaceTerminology(workspace);
   const [tab, setTab] = useState("documents");
   const [query, setQuery] = useState("");
+  const [carryForwardAccountId, setCarryForwardAccountId] = useState("");
   const docsInput = useRef(null);
   const receiptInput = useRef(null);
   const flow = workflowChecks(workspace);
   const taxEnabled = workspaceModuleEnabled(workspace, "tax");
   const filing = workspace.delivery.filing;
   const archived = workspace.delivery.archives.find((item) => item.period === workspace.currentPeriod);
+  const equityAccounts = workspaceAccountDefinitions(workspace).filter((account) => account.category === "equity" && account.status !== "inactive");
+  const selectedEquityAccountId = carryForwardAccountId
+    || equityAccounts.find((account) => account.id === workspace.openingCarryForward?.equityAccountId)?.id
+    || equityAccounts.find((account) => account.id === "equity")?.id
+    || (equityAccounts.length === 1 ? equityAccounts[0].id : "");
   const documents = workspace.documents.filter((item) => `${item.name} ${item.type || item.category || ""} ${item.status || item.lifecycleStatus || ""}`.toLowerCase().includes(query.trim().toLowerCase()));
   const archiveChecks = enabledWorkflowChecks(workspace, flow.archive);
   const archiveReady = archiveChecks.every((item) => item.ok);
   useEffect(() => {
     setTab("documents");
     setQuery("");
+    setCarryForwardAccountId("");
   }, [workspace.id, workspace.currentPeriod]);
   function showArchiveTab(nextTab) {
     setTab(nextTab);
@@ -1298,9 +1269,11 @@ function ArchivePage({ workspace, onPage, onDocuments, onDownloadDocument, onRec
   return (
     <div className="page-content archive-page">
       <StageRail workspace={workspace} onPage={onPage} />
-      <section className="archive-hero"><div><p className="eyebrow">S13 · {taxEnabled ? "回执、归档与下一期" : "归档与下一期"}</p><h2>{archived ? `${formatPeriod(workspace.currentPeriod)} 已归档` : "让本期交付真正闭环"}</h2><p>{archived ? `归档于 ${formatDateTime(archived.archivedAt)}，${taxEnabled ? "报表、确认、回执" : "报表、资料、操作记录"}与期末余额已经建立索引。` : taxEnabled ? "必须先导入真实外部办理回执，再把本地申报包、确认记录和操作日志一起归档。" : "把当前冻结报表、本期资料和操作记录建立本地归档索引。"}</p></div><div className="archive-hero-actions"><button className="secondary-button" onClick={onExportIndex} type="button"><DownloadSimple size={17} />导出归档索引</button>{archived ? <button className="primary-button" onClick={onNextPeriod} type="button">进入下一期<ArrowRight size={17} /></button> : <button className="primary-button" disabled={!archiveReady} onClick={onArchive} type="button"><Archive size={17} />完成本期归档</button>}</div></section>
-      <section className="metric-grid four archive-status-grid"><MetricCard label="冻结报表" value={flow.version?.label || "未完成"} note={flow.version ? formatDateTime(flow.version.createdAt) : "先去报表中心"} icon={ChartBar} tone={flow.version ? "sage" : "clay"} onClick={() => onPage("reports")} />{taxEnabled ? <><MetricCard label="两次确认" value={workspace.tax.ownerConfirmedAt ? "已完成" : "未完成"} note={workspace.tax.confirmedBy || `等待${terminology.customer}`} icon={ShieldCheck} tone={workspace.tax.ownerConfirmedAt ? "sage" : "clay"} onClick={() => onPage("tax")} /><MetricCard label="本地申报包" value={filing.exportedAt ? "已导出" : "未导出"} note={formatDateTime(filing.exportedAt)} icon={DownloadSimple} tone={filing.exportedAt ? "sage" : "clay"} onClick={() => onPage("tax")} /><MetricCard label="真实回执" value={filing.receipt ? "已导入" : "待导入"} note={filing.receipt?.name || "来自外部办理"} icon={Receipt} tone={filing.receipt ? "sage" : "clay"} onClick={openReceiptStatus} /></> : <><MetricCard label="本期资料" value={`${workspace.documents.length} 份`} note="浏览器本地记录" icon={FileText} onClick={() => showArchiveTab("documents")} /><MetricCard label="操作记录" value={`${workspace.auditLog.length} 条`} note="当前工作台" icon={Clock} onClick={() => showArchiveTab("logs")} /></>}</section>
-      {taxEnabled && !filing.receipt && <section className="receipt-upload-card"><span><Receipt size={25} /></span><div><strong>导入真实外部办理回执</strong><p>选择在电子税务局或本地安全执行器中取得的 PDF、XML、JSON 或文本回执。文件只在本地读取并记录哈希。</p></div><input ref={receiptInput} hidden type="file" accept=".pdf,.json,.xml,.txt,.csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) onReceipt(file); event.target.value = ""; }} /><button className="primary-button" disabled={!filing.exportedAt} onClick={() => receiptInput.current?.click()} type="button"><UploadSimple size={17} />选择回执</button></section>}
+      <section className="archive-hero"><div><p className="eyebrow">{taxEnabled ? "回执与归档" : "本期资料"}</p><h2>{archived ? `${formatPeriod(workspace.currentPeriod)} 已归档` : "本期资料与归档"}</h2><p>{archived ? `归档于 ${formatDateTime(archived.archivedAt)}。已保存本期报表与资料记录，原件状态见文件列表。` : taxEnabled ? "必须先导入真实外部办理回执，再把本地申报包、确认记录和操作日志一起归档。" : "把当前冻结报表、本期资料和操作记录建立本地归档索引。"}</p></div><div className="archive-hero-actions">{archived ? <>
+        {Number(archived.summary.profit) !== 0 && <label><span>损益 {formatCurrency(archived.summary.profit)} 转入</span><select aria-label="利润结转权益科目" value={selectedEquityAccountId} onChange={(event) => setCarryForwardAccountId(event.target.value)}>{!selectedEquityAccountId && <option value="">请选择权益科目</option>}{equityAccounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}</select></label>}
+        <button className="primary-button" onClick={() => onNextPeriod(selectedEquityAccountId)} type="button">进入下一期<ArrowRight size={17} /></button>
+      </> : <button className="primary-button" disabled={!archiveReady} onClick={onArchive} type="button"><Archive size={17} />完成本期归档</button>}</div></section>
+      <div className="archive-status-strip"><button onClick={() => onPage("reports")} type="button">报表 <strong>{flow.version?.label || "待冻结"}</strong></button>{taxEnabled && <><button onClick={() => onPage("tax")} type="button">确认 <strong>{flow.checks.find((item) => item.id === "owner")?.ok ? "已完成" : "待完成"}</strong></button><button onClick={() => onPage("tax")} type="button">申报包 <strong>{filing.exportedAt ? "已导出" : "待导出"}</strong></button><button onClick={openReceiptStatus} type="button">回执 <strong>{filing.receipt ? "已导入" : "待导入"}</strong></button></>}<span>{workspace.documents.length} 份资料</span></div>
       <section className="panel archive-content-panel">
         <div className="archive-toolbar">
           <div className="report-tabs" role="tablist">
@@ -1318,14 +1291,15 @@ function ArchivePage({ workspace, onPage, onDocuments, onDownloadDocument, onRec
           const originalAvailable = document.storage?.availableLocally === true;
           return <article className="document-card" key={document.id}>
             <span className="document-icon"><FileText size={22} /></span>
-            <div><small>{document.type || document.category || "本地资料"} · {document.period || "未分期"}</small><strong>{document.name}</strong><p>{fileSize(document.size)} · {document.hash ? "已记录校验标识" : "本地元数据"}</p></div>
+            <div><small>{document.type || document.category || "本地资料"} · {document.period || "未分期"}</small><strong>{document.name}</strong><p>{fileSize(document.size)} · {originalAvailable ? "原件保存在当前设备" : "当前设备缺少原件"}</p></div>
             <div className="archive-document-actions">
-              <TonePill tone={document.status?.includes("待") ? "warning" : "success"}>{document.status || "已获取"}</TonePill>
-              <button className="secondary-button archive-document-download" disabled={!originalAvailable} title={originalAvailable ? "下载当前设备保存的原文件" : "当前设备没有这份资料的原文件"} onClick={() => onDownloadDocument?.(document.id)} type="button"><DownloadSimple size={15} />{originalAvailable ? "下载原文件" : "原文件不可用"}</button>
+              <TonePill tone={document.status?.includes("待") ? "warning" : "success"}>{[document.status, document.lifecycleStatus].includes("已归档") || document.archiveStatus === "archived" ? "记录已归档" : document.status || "记录已获取"}</TonePill>
+              <button className="secondary-button archive-document-download" disabled={!originalAvailable} title={originalAvailable ? "下载当前设备保存的原文件" : "当前设备没有这份资料的原文件"} onClick={() => onDownloadDocument?.(document.id)} type="button"><DownloadSimple size={15} />下载原文件</button>
             </div>
           </article>;
         })}</div> : <EmptyState title="没有符合条件的资料" description="添加本地文件或清空搜索条件。" />)}
         {tab === "logs" && (workspace.auditLog.length ? <div className="audit-list">{workspace.auditLog.map((item) => <div key={item.id}><span className="audit-dot" /><span><strong>{item.action}</strong><small>{item.detail}</small></span><span><strong>{item.actor}</strong><small>{formatDateTime(item.at)}</small></span></div>)}</div> : <EmptyState title="还没有操作日志" description="确认、导出、导入和归档动作都会记录在这里。" />)}
+        {tab === "periods" && <div className="archive-history-tools"><button className="secondary-button" onClick={onExportIndex} type="button"><DownloadSimple size={17} />导出归档索引</button></div>}
         {tab === "periods" && (workspace.delivery.archives.length ? <div className="period-archive-list">{workspace.delivery.archives.map((item) => (
           <article key={item.id}>
             <span className="archive-badge"><Archive size={20} /></span>
@@ -1347,7 +1321,8 @@ function ArchivePage({ workspace, onPage, onDocuments, onDownloadDocument, onRec
           </article>
         ))}</div> : <EmptyState title="还没有历史归档" description={taxEnabled ? "本期回执导入并通过校验后，可以形成第一条归档记录。" : "冻结报表和本地资料通过校验后，可以形成第一条归档记录。"} />)}
       </section>
-      {!archived && <div className="archive-check-panel panel"><div className="panel-heading"><div><p className="eyebrow">归档校验</p><h2>{archiveReady ? "全部条件已满足" : "还不能完成归档"}</h2></div><TonePill tone={archiveReady ? "success" : "warning"}>{archiveChecks.filter((item) => item.ok).length} / {archiveChecks.length}</TonePill></div><CheckRows items={archiveChecks} onNavigate={onPage} /></div>}
+      {taxEnabled && !filing.receipt && <section className="receipt-upload-card"><span><Receipt size={25} /></span><div><strong>导入真实外部办理回执</strong><p>选择在电子税务局或本地安全执行器中取得的 PDF、XML、JSON 或文本回执。文件只在本地读取并记录哈希。</p></div><input ref={receiptInput} hidden type="file" accept=".pdf,.json,.xml,.txt,.csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) onReceipt(file); event.target.value = ""; }} /><button className="primary-button" disabled={!filing.exportedAt} onClick={() => receiptInput.current?.click()} type="button"><UploadSimple size={17} />选择回执</button></section>}
+      {!archived && !archiveReady && <div className="archive-check-panel panel"><div className="panel-heading"><div><p className="eyebrow">归档校验</p><h2>{archiveReady ? "全部条件已满足" : "还不能完成归档"}</h2></div><TonePill tone={archiveReady ? "success" : "warning"}>{archiveChecks.filter((item) => item.ok).length} / {archiveChecks.length}</TonePill></div><CheckRows items={archiveChecks.filter((item) => !item.ok)} onNavigate={onPage} /></div>}
       <BoundaryNote />
     </div>
   );
@@ -1513,6 +1488,7 @@ function App() {
   const [managerOpen, setManagerOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [setupInitialStage, setSetupInitialStage] = useState("s0");
+  const [reconcilePanelRequest, setReconcilePanelRequest] = useState(null);
   const [toast, setToast] = useState(null);
   const workspace = activeWorkspace ? ensureWorkspace(activeWorkspace) : null;
   const terminology = workspaceTerminology(workspace);
@@ -1533,9 +1509,12 @@ function App() {
     document.body.style.overflow = "hidden";
     return () => { document.body.style.overflow = previousOverflow; };
   }, [workspaceDialog, managerOpen, importOpen]);
-  function navigateToPage(nextPage) {
-    if (nextPage === "setup") setSetupInitialStage("s0");
-    setPage(enabledPageIds.has(nextPage) ? nextPage : "overview");
+  function navigateToPage(nextPage, options = {}) {
+    const panelAliases = { vouchers: "vouchers", bills: "business", manualVouchers: "manual" };
+    const destination = panelAliases[nextPage] ? "reconcile" : nextPage;
+    if (destination === "setup") setSetupInitialStage(options.stage || "s0");
+    if (destination === "reconcile") setReconcilePanelRequest({ panel: panelAliases[nextPage] || options.panel || "transactions" });
+    setPage(enabledPageIds.has(destination) ? destination : "overview");
   }
   function requestBankAccountSetup() {
     setImportOpen(false);
@@ -1929,101 +1908,14 @@ function App() {
       setToast({ tone: "danger", message: error.message || "申报底稿保存失败" });
     }
   }
-  function recordInitialConfirmationSection({ section, decision, note, isMajor, responsibleName, confirmationName }) {
+  function recordInitialConfirmationSection(input) {
     try {
-      if (!note?.trim()) throw new Error("每一项确认都必须填写说明");
-      if (!isMajor && !confirmationName?.trim()) throw new Error("普通确认或异议必须填写本次确认人真实姓名");
-      if (isMajor && !responsibleName?.trim()) throw new Error("重大事项必须填写本项负责人签字姓名");
-      const at = new Date().toISOString();
-      const decisionActor = isMajor ? responsibleName.trim() : confirmationName.trim();
-      mutateActive((current) => {
-        const flow = workflowChecks(current);
-        const missingPrerequisites = flow.checks.slice(0, 5).filter((item) => !item.ok);
-        if (!flow.version) throw new Error("当前报表版本已变化，请重新冻结后确认");
-        if (missingPrerequisites.length) throw new Error(`首次确认前仍需完成：${missingPrerequisites.map((item) => item.label).join("、")}`);
-
-        let next = current;
-        let confirmation = [...(next.confirmations || [])].reverse().find((item) => (
-          item.kind === "tax"
-          && item.period === next.currentPeriod
-          && item.reportVersionId === flow.version.id
-          && item.status !== "disputed"
-        ));
-        if (!confirmation) {
-          next = createCustomerConfirmationPackage(
-            next,
-            { period: next.currentPeriod, reportVersionId: flow.version.id },
-            { actor: actorName, at },
-          );
-          confirmation = next.confirmations.at(-1);
-        }
-        if (confirmation.sections?.[section]?.status !== "pending") throw new Error("本项已保存，不能重复覆盖原确认记录");
-
-        next = recordCustomerConfirmation(next, {
-          confirmationId: confirmation.id,
-          section,
-          decision,
-          note: isMajor ? `重大事项：${note.trim()}` : note.trim(),
-        }, { actor: decisionActor, at });
-        if (workspaceModuleEnabled(next, "payroll") && decision === "approve" && ["payroll", "socialSecurity"].includes(section)) {
-          next = confirmPayrollSocialData(next, { section, confirmed: true }, { actor: actorName, at });
-        }
-
-        const savedConfirmation = next.confirmations.find((item) => item.id === confirmation.id);
-        const allApproved = requiredInitialConfirmationSections(next).every((id) => savedConfirmation.sections?.[id]?.status === "approved");
-        const resetFiling = {
-          ...next.delivery.filing,
-          period: next.currentPeriod,
-          draftCreatedAt: null,
-          draftVersionId: null,
-          initialConfirmationId: confirmation.id,
-          finalConfirmedVersionId: null,
-          exportedAt: null,
-          exportedPackage: null,
-          receipt: null,
-          archivedAt: null,
-        };
-        if (decision === "reject") {
-          return audit({
-            ...next,
-            tax: {
-              ...next.tax,
-              financeConfirmedAt: null,
-              payrollConfirmedAt: null,
-              socialSecurityConfirmedAt: null,
-              ownerConfirmedAt: null,
-              confirmedBy: "",
-              financeConfirmedVersionId: null,
-              payrollConfirmedVersionId: null,
-              socialSecurityConfirmedVersionId: null,
-              payrollConfirmedFingerprint: null,
-              socialSecurityConfirmedFingerprint: null,
-              ownerConfirmedVersionId: null,
-            },
-            delivery: { ...next.delivery, filing: resetFiling },
-          }, `${terminology.customer}异议退回 S7`, `${section}：${note.trim()}`, actorName);
-        }
-
-        const withResetDownstream = {
-          ...next,
-          tax: { ...next.tax, ownerConfirmedAt: null, ownerConfirmedVersionId: null, confirmedBy: "" },
-          delivery: { ...next.delivery, filing: resetFiling },
-        };
-        if (!allApproved) return withResetDownstream;
-        return audit({
-          ...withResetDownstream,
-          tax: {
-            ...withResetDownstream.tax,
-            financeConfirmedAt: savedConfirmation.updatedAt || at,
-            financeConfirmedVersionId: flow.version.id,
-          },
-        }, `${terminology.customer}第一次确认完成`, workspaceModuleEnabled(next, "payroll") ? "收入、成本费用、应交税额、进项税、工资、社保、财务报表与待核实事项均已逐项确认" : "收入、成本费用、应交税额、进项税、财务报表与待核实事项均已逐项确认", actorName);
-      });
-      if (decision === "reject") {
+      mutateActive((current) => saveInitialConfirmationSection(current, input, { actor: actorName }));
+      if (input.decision === "reject") {
         navigateToPage("reconcile");
-        setToast({ tone: "warning", message: "异议已形成 S7 异常任务，已返回异常处理" });
+        setToast({ tone: "warning", message: "异议已形成待办，已返回异常处理" });
       } else {
-        setToast({ tone: "success", message: "本项确认已写入本地 confirmation 数据链" });
+        setToast({ tone: "success", message: "本项确认已保存到本地记录" });
       }
       return true;
     } catch (error) {
@@ -2074,10 +1966,7 @@ function App() {
         const prepareChecks = enabledWorkflowChecks(current, flow.prepare);
         const confirmation = (current.confirmations || []).find((item) => item.id === current.delivery.filing.initialConfirmationId);
         const confirmationComplete = Boolean(
-          confirmation
-          && confirmation.kind === "tax"
-          && confirmation.period === current.currentPeriod
-          && confirmation.reportVersionId === flow.version?.id
+          customerConfirmationMatchesVersion(confirmation, flow.version)
           && requiredSections.every((section) => confirmation.sections?.[section]?.status === "approved"),
         );
         if (!confirmationComplete) throw new Error(`还不能生成底稿：${requiredSections.length} 项${terminology.customer}确认尚未全部完成`);
@@ -2090,76 +1979,9 @@ function App() {
       setToast({ tone: "danger", message: error.message || "申报底稿生成失败" });
     }
   }
-  function finalConfirm({ name, selections }) {
+  function finalConfirm(input) {
     try {
-      if (!name?.trim()) throw new Error("请填写最终负责人姓名");
-      if (!selections?.numbersReviewed || !selections?.risksAcknowledged || !selections?.localOnlyAcknowledged) throw new Error("请完成三项最终确认声明");
-      if (!["authorize_external", "do_not_authorize"].includes(selections?.deductionAuthorization)) throw new Error("请选择是否授权外部扣款");
-      const now = new Date().toISOString();
-      mutateActive((current) => {
-        const flow = workflowChecks(current);
-        const requiredSections = requiredInitialConfirmationSections(current);
-        const prepareChecks = enabledWorkflowChecks(current, flow.prepare);
-        const versionId = flow.version?.id;
-        const initialConfirmation = (current.confirmations || []).find((item) => item.id === current.delivery.filing.initialConfirmationId);
-        const initialConfirmationComplete = Boolean(
-          initialConfirmation
-          && initialConfirmation.reportVersionId === versionId
-          && requiredSections.every((section) => initialConfirmation.sections?.[section]?.status === "approved"),
-        );
-        if (!versionId || current.delivery.filing.draftVersionId !== versionId || !current.delivery.filing.draftCreatedAt) throw new Error("当前底稿与报表版本不一致，请重新生成");
-        if (!initialConfirmationComplete || !prepareChecks.every((item) => item.ok)) throw new Error(`第一次${terminology.customer}确认或前置复核已失效，请重新完成`);
-
-        const snapshot = buildFinalConfirmationSnapshot(current, flow);
-        const finalRecord = {
-          id: uid("final-confirmation"),
-          kind: "final",
-          period: current.currentPeriod,
-          version: (current.confirmations || []).filter((item) => item.kind === "final" && item.period === current.currentPeriod).length + 1,
-          status: "approved",
-          createdAt: now,
-          confirmedAt: now,
-          confirmedBy: name.trim(),
-          reportVersionId: versionId,
-          reportSourceFingerprint: flow.version.sourceFingerprint || null,
-          filingDraftVersionId: current.delivery.filing.draftVersionId,
-          filingDraftCreatedAt: current.delivery.filing.draftCreatedAt,
-          selections: {
-            numbersReviewed: true,
-            risksAcknowledged: true,
-            localOnlyAcknowledged: true,
-            deductionAuthorization: selections.deductionAuthorization,
-          },
-          signature: { name: name.trim(), signedAt: now },
-          snapshot,
-          decisions: [{ id: uid("decision"), decision: "approve", actor: name.trim(), at: now, note: "最终数字、风险、本地包边界和外部扣款选择已逐项确认" }],
-          sourceIds: [versionId, current.delivery.filing.initialConfirmationId].filter(Boolean),
-        };
-        const next = {
-          ...current,
-          confirmations: [...(current.confirmations || []), finalRecord],
-          tax: {
-            ...current.tax,
-            ownerConfirmedAt: now,
-            confirmedBy: name.trim(),
-            ownerConfirmedVersionId: versionId,
-            finalConfirmationId: finalRecord.id,
-          },
-          delivery: {
-            ...current.delivery,
-            filing: {
-              ...current.delivery.filing,
-              finalConfirmedVersionId: versionId,
-              exportedAt: null,
-              exportedPackage: null,
-              receipt: null,
-              archivedAt: null,
-            },
-          },
-        };
-        const deductionLabel = selections.deductionAuthorization === "authorize_external" ? "授权外部办理扣款" : "不授权外部扣款";
-        return audit(next, `${terminology.customer}第二次最终确认`, `${name.trim()}确认 ${versionId} 当前数字与风险；${deductionLabel}；仅保存本地记录，未提交税务局、未执行扣款`, actorName);
-      });
+      mutateActive((current) => recordFinalConfirmation(current, input, { actor: actorName }));
       setToast({ tone: "success", message: "最终确认快照已保存；尚未提交税务局，也未执行扣款" });
     } catch (error) {
       setToast({ tone: "danger", message: error.message || "最终确认失败" });
@@ -2239,7 +2061,7 @@ function App() {
       setToast({ tone: "danger", message: error.message || "期间归档失败" });
     }
   }
-  function goNextPeriod() { try { const next = enterNextPeriod(workspace, actorName); if (next.currentPeriod === workspace.currentPeriod) { setToast({ tone: "warning", message: "请先完成本期归档。" }); return; } mutateActive(() => next, { allowArchivedTransition: true }); setPage("overview"); setToast({ tone: "success", message: `已进入${formatPeriod(next.currentPeriod)}，期末余额已继承` }); } catch (error) { setToast({ tone: "danger", message: error.message || "无法进入下一期" }); } }
+  function goNextPeriod(equityAccountId) { try { const next = enterNextPeriod(workspace, actorName, { equityAccountId }); if (next.currentPeriod === workspace.currentPeriod) { setToast({ tone: "warning", message: "请先完成本期归档。" }); return; } mutateActive(() => next, { allowArchivedTransition: true }); setPage("overview"); setToast({ tone: "success", message: `已进入${formatPeriod(next.currentPeriod)}，期末余额与损益已结转` }); } catch (error) { setToast({ tone: "danger", message: error.message || "无法进入下一期" }); } }
   function exportArchiveIndex() {
     try {
       const index = { product: PRODUCT_NAME, workspace: workspace.name, exportedAt: new Date().toISOString(), archives: workspace.delivery.archives, activeFiling: workspace.delivery.filing, auditLog: workspace.auditLog };
@@ -2287,11 +2109,11 @@ function App() {
         {activePage === "overview" && <OverviewPage workspace={workspace} onPage={navigateToPage} onResolveNotice={resolveNotice} />}
         {activePage === "members" && workspaceModuleEnabled(workspace, "members") && <MemberLedgerPage workspace={workspace} onAddMember={addLedgerMember} onMemberStatus={changeLedgerMemberStatus} onAddEvent={addLedgerEvent} onEventStatus={changeLedgerEventStatus} />}
         {activePage === "inventory" && workspaceModuleEnabled(workspace, "inventory") && <InventoryPage workspace={workspace} onPage={navigateToPage} onToast={(message) => setToast({ tone: "success", message })} />}
-        {activePage === "reconcile" && <ReconcilePage workspace={workspace} onPage={navigateToPage} onStatus={setTransactionStatus} onReview={reviewTransactions} onSaveReview={saveTransactionReview} onEvidence={addEvidence} onLinkEvidence={linkExistingEvidence} onDownloadEvidence={downloadLinkedEvidence} onUnlinkEvidence={unlinkEvidenceFromTransaction} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} />}
+        {activePage === "reconcile" && <ReconcilePage workspace={workspace} onPage={navigateToPage} panelRequest={reconcilePanelRequest} onStatus={setTransactionStatus} onReview={reviewTransactions} onSaveReview={saveTransactionReview} onEvidence={addEvidence} onLinkEvidence={linkExistingEvidence} onDownloadEvidence={downloadLinkedEvidence} onUnlinkEvidence={unlinkEvidenceFromTransaction} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} />}
         {activePage === "reports" && <ReportsPage workspace={workspace} onPage={navigateToPage} onFreeze={freezeReport} onExportExcel={exportReportExcel} />}
         {activePage === "tax" && <TaxPage workspace={workspace} onPage={navigateToPage} onTaxChange={changeTax} onTaxCommit={commitTax} onSectionDecision={recordInitialConfirmationSection} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} />}
         {activePage === "archive" && <ArchivePage workspace={workspace} onPage={navigateToPage} onDocuments={addDocuments} onDownloadDocument={downloadArchiveDocument} onReceipt={receiveReceipt} onArchive={completeArchive} onNextPeriod={goNextPeriod} onExportIndex={exportArchiveIndex} onExportArchive={exportArchivedPeriod} />}
-        {activePage === "setup" && <FoundationRecordsPanel initialStage={setupInitialStage} key={`${workspace.id}-${setupInitialStage}`} onToast={(message) => setToast({ tone: "success", message })} />}
+        {activePage === "setup" && <FoundationRecordsPanel initialStage={setupInitialStage} key={`${workspace.id}-${setupInitialStage}`} onNavigate={navigateToPage} onToast={(message) => setToast({ tone: "success", message })} />}
       </div>
       <BottomNav workspace={workspace} page={activePage} onPage={navigateToPage} />
       <WorkspaceDialog mode={workspaceDialog} workspace={workspace} onClose={() => setWorkspaceDialog(null)} onSubmit={submitWorkspaceDialog} />

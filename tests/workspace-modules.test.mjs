@@ -71,7 +71,7 @@ test("module choices persist per workspace and a workspace without an operator r
   const reloaded = createFinanceDeskStore({ repository });
   assert.deepEqual(
     { ...reloaded.getActiveWorkspace().modules },
-    { overview: true, members: false, reconcile: false, reports: true, tax: true, payroll: true, archive: true, setup: true },
+    { overview: true, members: false, inventory: false, reconcile: false, reports: true, tax: true, payroll: true, archive: true, setup: true },
   );
   assert.equal(reloaded.getState().activeUserId, null);
 

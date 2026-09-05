@@ -1,9 +1,14 @@
 import {
   accountDefinition,
   buildAttachmentPackage,
+  buildCustomerConfirmationSections,
   buildFinancialStatements,
   buildManagementMetrics,
+  buildPeriodCarryForward,
   buildTaxWorkpaper,
+  customerConfirmationMatchesVersion,
+  createCustomerConfirmationPackage,
+  recordCustomerConfirmation,
 } from "./domain/accounting/index.js";
 import { buildPayrollSocialSummary, buildStructuredInvoiceVatSummary } from "./features/intake/documentIntake.js";
 import { buildBankAccountReconciliationSummary } from "./features/intake/bankStatementImport.js";
@@ -837,13 +842,18 @@ export function buildReportSnapshot(workspace) {
       ? [formulaDetail("input-credit-floor", "进项留抵转下期", Math.abs(invoiceVatPayableBeforeFloor), "本期应交增值税最低按 0 列示，多出的可抵扣进项单独留抵")]
       : []),
   ];
-  const taxEstimateDetails = [
-    ...(usesStructuredInvoiceVat
-      ? structuredVatPayableDetails
-      : [formulaDetail("estimated-vat", "增值税估算", estimatedVat, `销项估算减进项税额，税率 ${vatRatePercent}`)]),
-    formulaDetail("estimated-surtax", "附加税费估算", estimatedSurtax, `按增值税估算额的 ${surtaxRatePercent} 本地估算`),
-    formulaDetail("estimated-income-tax", "所得税估算", estimatedIncomeTax, `按正数会计利润的 ${incomeTaxRatePercent} 本地估算`),
-  ];
+  const vatPayableDetails = usesStructuredInvoiceVat
+    ? structuredVatPayableDetails
+    : [{ ...formulaDetail("estimated-vat", "增值税估算", estimatedVat, `销项估算减进项税额，税率 ${vatRatePercent}`), sourceIds: engineTax.vatPayable.sourceIds }];
+  const surtaxDetails = [{
+    ...formulaDetail("estimated-surtax", "附加税费估算", estimatedSurtax, `按增值税估算额的 ${surtaxRatePercent} 本地估算`),
+    sourceIds: uniqueSourceIds(vatPayableDetails.flatMap((detail) => detail.sourceIds || [])),
+  }];
+  const incomeTaxDetails = [{
+    ...formulaDetail("estimated-income-tax", "所得税估算", estimatedIncomeTax, `按正数会计利润的 ${incomeTaxRatePercent} 本地估算`),
+    sourceIds: engine.incomeStatement.profit.sourceIds,
+  }];
+  const taxEstimateDetails = [...vatPayableDetails, ...surtaxDetails, ...incomeTaxDetails];
   const cashGapValue = Math.abs(Math.min(0, managementById.cashGap?.value ?? (cashBalance - payable - estimatedTax)));
   const cashGapDetails = [
     formulaDetail("gap-cash", "可用现金余额", cashBalance, "来自已入账凭证与期初结转"),
@@ -855,6 +865,16 @@ export function buildReportSnapshot(workspace) {
     period: workspace.currentPeriod,
     generatedAt: new Date().toISOString(),
     ledger: statements.ledger,
+    confirmationContext: {
+      payrollEnabled: workspaceModuleEnabled(workspace, "payroll"),
+      costSourceIds: engine.incomeStatement.cost.sourceIds,
+      costExpense: makeTraceableRow("costExpense", "成本费用", engine.incomeStatement.cost.value + statements.expenses, [...costDetails, ...expenseDetails], "本期成本 + 期间费用"),
+      openItems: [
+        ...(workspace.exceptionTasks || []).filter((item) => item.status !== "resolved").map((item) => ({ id: item.id, type: "异常任务", label: item.message || item.code || item.id, detail: item.sourceId || "S7 异常处理", sourceIds: uniqueSourceIds(item.id, item.sourceId, item.sourceIds) })),
+        ...(workspace.transactions || []).filter((item) => String(item.date || "").startsWith(workspace.currentPeriod) && !["posted", "ignored"].includes(item.status)).map((item) => ({ id: item.id, type: "未决流水", label: item.summary || item.counterparty || item.id, detail: item.serial || item.date, sourceIds: uniqueSourceIds(item.id, item.sourceIds) })),
+        ...(workspace.delivery?.notices || []).filter((item) => item.period === workspace.currentPeriod && item.status !== "resolved").map((item) => ({ id: item.id, type: "跨期事项", label: item.message || item.id, detail: item.sourceId || "待处理", sourceIds: uniqueSourceIds(item.id, item.sourceId) })),
+      ],
+    },
     summary: {
       revenue: statements.revenue,
       cost: engine.incomeStatement.cost.value,
@@ -1003,11 +1023,11 @@ export function buildReportSnapshot(workspace) {
           "vatPayable",
           "应交增值税",
           estimatedVat,
-          usesStructuredInvoiceVat ? structuredVatPayableDetails : taxEstimateDetails.slice(0, 1),
+          vatPayableDetails,
           usesStructuredInvoiceVat ? "max(0，销项税额 − 可抵扣进项税额)" : "max(0，销项税额估算 − 进项税额)",
         ),
-        makeTraceableRow("surtax", "附加税费估算", estimatedSurtax, taxEstimateDetails.slice(1, 2), `增值税估算额 × ${surtaxRatePercent}`),
-        makeTraceableRow("incomeTax", "所得税估算", estimatedIncomeTax, taxEstimateDetails.slice(2, 3), `max(0，本月利润) × ${incomeTaxRatePercent}`),
+        makeTraceableRow("surtax", "附加税费估算", estimatedSurtax, surtaxDetails, `增值税估算额 × ${surtaxRatePercent}`),
+        makeTraceableRow("incomeTax", "所得税估算", estimatedIncomeTax, incomeTaxDetails, `max(0，本月利润) × ${incomeTaxRatePercent}`),
         makeTraceableRow("payroll", "应发工资", payrollAmount, grossSalaryDetails, payrollSocialSummary.payrollRecords.length ? "当前期间工资表逐人应发工资合计，需客户单独确认" : "财务人员在本地底稿中单独录入并由客户确认"),
         makeTraceableRow("personalSocialSecurity", "个人社保", payrollSocialSummary.totals.socialSecurity.personalSocial, personalSocialDetails, "当前期间社保表逐人个人承担社保合计"),
         makeTraceableRow("employerSocialSecurity", "企业社保", payrollSocialSummary.totals.socialSecurity.employerSocial, employerSocialDetails, "当前期间社保表逐人企业承担社保合计"),
@@ -1146,6 +1166,25 @@ const WORKFLOW_SOURCE_KEYS = [
   "openingLedger",
 ];
 
+function financialVoucherSource(voucher) {
+  // Export history remains on the voucher, but does not change its accounting or evidence.
+  const { attachmentPackages: _attachmentPackages, updatedAt: _updatedAt, ...source } = voucher;
+  return source;
+}
+
+function workflowSourceMatches(fingerprint, workspace) {
+  if (!fingerprint) return false;
+  try {
+    const stored = JSON.parse(fingerprint);
+    if (Array.isArray(stored.sources?.vouchers)) {
+      stored.sources.vouchers = stored.sources.vouchers.map(financialVoucherSource);
+    }
+    return JSON.stringify(stored) === workflowSourceFingerprint(workspace);
+  } catch {
+    return false;
+  }
+}
+
 function workflowSourceValue(workspace, key) {
   if (key === "modules") {
     const { inventory, ...modules } = workspace.modules || {};
@@ -1169,6 +1208,7 @@ function workflowSourceValue(workspace, key) {
   if (key === "payrollRecords") {
     return (workspace.payrollRecords || []).filter((record) => record.period === workspace.currentPeriod);
   }
+  if (key === "vouchers") return (workspace.vouchers || []).map(financialVoucherSource);
   return workspace[key] || (["company", "modules", "openingLedger", "rules"].includes(key) ? {} : []);
 }
 
@@ -1202,7 +1242,7 @@ export function getPayrollSocialConfirmationState(workspace) {
   const summary = buildPayrollSocialSummary(current, { period: current.currentPeriod });
   const latestVersion = getLatestReportVersion(current);
   const sourceIsCurrent = latestVersion?.sourceFingerprint
-    ? latestVersion.sourceFingerprint === workflowSourceFingerprint(current)
+    ? workflowSourceMatches(latestVersion.sourceFingerprint, current)
     : Boolean(latestVersion)
       && current.tax?.frozenAt === latestVersion.createdAt
       && comparableSnapshot(latestVersion.snapshot) === comparableSnapshot(buildReportSnapshot(current));
@@ -1349,37 +1389,63 @@ export function workflowChecks(workspace) {
     exceptionTaskIds: openBankReconciliationTasks.map((task) => task.id),
   }];
   const pendingVouchers = (workspace.vouchers || []).filter((voucher) => (
-    voucher.period === workspace.currentPeriod && !["posted", "superseded"].includes(voucher.status)
+    (voucher.period || String(voucher.date || "").slice(0, 7)) === workspace.currentPeriod && !["posted", "superseded", "invalidated", "replaced"].includes(voucher.status)
   ));
   const latestVersion = getLatestReportVersion(workspace);
   const sourceIsCurrent = latestVersion?.sourceFingerprint
-    ? latestVersion.sourceFingerprint === workflowSourceFingerprint(workspace)
+    ? workflowSourceMatches(latestVersion.sourceFingerprint, workspace)
     : Boolean(latestVersion)
       && workspace.tax?.frozenAt === latestVersion.createdAt
       && comparableSnapshot(latestVersion.snapshot) === comparableSnapshot(snapshot);
   const version = sourceIsCurrent ? latestVersion : null;
   const filing = workspace.delivery.filing;
+  const initialConfirmation = (workspace.confirmations || []).find((item) => item.id === filing.initialConfirmationId);
+  const initialConfirmationCurrent = customerConfirmationMatchesVersion(initialConfirmation, version)
+    && Object.keys(buildCustomerConfirmationSections(version.snapshot, { payrollEnabled })).every((id) => initialConfirmation.sections?.[id]?.status === "approved");
+  const finalConfirmation = (workspace.confirmations || []).find((item) => item.id === workspace.tax.finalConfirmationId);
+  const finalConfirmationCurrent = Boolean(version
+    && finalConfirmation?.kind === "final"
+    && finalConfirmation.status === "approved"
+    && finalConfirmation.snapshot
+    && finalConfirmation.reportVersionId === version.id
+    && finalConfirmation.reportSourceFingerprint === (version.sourceFingerprint || null)
+    && finalConfirmation.filingDraftVersionId === filing.draftVersionId
+    && finalConfirmation.filingDraftCreatedAt === filing.draftCreatedAt);
   const payrollSocialConfirmation = payrollEnabled ? getPayrollSocialConfirmationState(workspace) : null;
   const payrollChecks = payrollEnabled ? [
     { id: "payroll", label: `${terminology.customer}已单独确认工资表`, ok: Boolean(version && payrollSocialConfirmation.payroll.confirmed), page: "tax", detail: payrollSocialConfirmation.payroll.available ? (payrollSocialConfirmation.payroll.confirmed ? "工资表已绑定当前冻结版本" : `工资表待${terminology.customer}勾选确认`) : "当前期间尚未导入工资表" },
     { id: "socialSecurity", label: `${terminology.customer}已单独确认社保表`, ok: Boolean(version && payrollSocialConfirmation.socialSecurity.confirmed), page: "tax", detail: payrollSocialConfirmation.socialSecurity.available ? (payrollSocialConfirmation.socialSecurity.confirmed ? "社保表已绑定当前冻结版本" : `社保表待${terminology.customer}勾选确认`) : "当前期间尚未导入社保表" },
   ] : [];
+  const pendingLabels = {
+    balanced: "核对报表勾稽",
+    bank: "核对银行流水",
+    exceptions: "处理待复核事项",
+    vouchers: "完成凭证入账",
+    frozen: "冻结本期报表",
+    finance: "完成首次确认",
+    payroll: "确认工资表",
+    socialSecurity: "确认社保表",
+    owner: "完成最终确认",
+    vatReconciliation: "解释增值税差异",
+    exported: "导出本地申报包",
+    receipt: "导入外部办理回执",
+  };
   const checks = [
     { id: "balanced", label: "试算、资产负债与现金变动勾稽通过", ok: statementsBalanced, page: "reports", detail: statementsBalanced ? "三项校验通过" : "至少一项校验存在差异" },
     { id: "bank", label: "本期银行流水余额勾稽通过", ok: bankReconciliationPassed, page: "setup", detail: bankReconciliationDetail },
     { id: "exceptions", label: "流水、异常与跨期事项已完成复核", ok: unresolved.length === 0 && openExceptionTasks.length === 0 && openNotices.length === 0, page: openNotices.length ? "overview" : "reconcile", detail: unresolved.length || openExceptionTasks.length || openNotices.length ? `${unresolved.length} 笔流水、${openExceptionTasks.length} 项异常、${openNotices.length} 项跨期待办未完成` : "已完成" },
     { id: "vouchers", label: "本期凭证已全部复核入账", ok: pendingVouchers.length === 0, page: "reconcile", detail: pendingVouchers.length ? `${pendingVouchers.length} 张草稿或更正待处理` : "已完成" },
     { id: "frozen", label: "本期当前数据已有冻结版本", ok: Boolean(version), page: "reports", detail: latestVersion && !version ? "上游数据已变化，请重新冻结" : undefined },
-    { id: "finance", label: `${terminology.customer}已完成首次财务确认`, ok: Boolean(version && workspace.tax.financeConfirmedAt && workspace.tax.financeConfirmedVersionId === version.id), page: "tax" },
+    { id: "finance", label: `${terminology.customer}已完成首次财务确认`, ok: Boolean(initialConfirmationCurrent && workspace.tax.financeConfirmedAt && workspace.tax.financeConfirmedVersionId === version.id), page: "tax" },
     ...payrollChecks,
-    { id: "owner", label: `${terminology.customer}已完成最终责任确认`, ok: Boolean(version && workspace.tax.ownerConfirmedAt && workspace.tax.ownerConfirmedVersionId === version.id && filing.finalConfirmedVersionId === version.id), page: "tax" },
+    { id: "owner", label: `${terminology.customer}已完成最终责任确认`, ok: Boolean(finalConfirmationCurrent && workspace.tax.ownerConfirmedAt && workspace.tax.ownerConfirmedVersionId === version.id && filing.finalConfirmedVersionId === version.id), page: "tax" },
     { id: "vatReconciliation", label: "增值税差异均已解释", ok: !snapshot.taxWorkpaper.vatReconciliation.hasUnexplainedDifferences, page: "tax", detail: snapshot.taxWorkpaper.vatReconciliation.hasUnexplainedDifferences ? snapshot.taxWorkpaper.vatReconciliation.unresolvedItems.map((item) => `${item.label}（差额 ${item.differenceBeforeAdjustment.toFixed(2)}）`).join("、") : "两项差异均已核对" },
     { id: "exported", label: "本地申报包已导出", ok: Boolean(version && filing.exportedAt && filing.exportedPackage?.reportVersionId === version.id), page: "tax" },
     { id: "receipt", label: "外部办理回执已本地导入", ok: Boolean(version
       && filing.receipt?.reportVersionId === version.id
       && filing.receipt?.packageId === filing.exportedPackage?.id
       && filing.receipt?.packageHash === filing.exportedPackage?.hash), page: "archive" },
-  ];
+  ].map((check) => check.ok ? check : { ...check, label: pendingLabels[check.id] });
   const archiveChecks = taxEnabled
     ? checks
     : checks.filter((check) => !["finance", "payroll", "socialSecurity", "owner", "vatReconciliation", "exported", "receipt"].includes(check.id));
@@ -1402,6 +1468,252 @@ export function workflowChecks(workspace) {
     latestVersion,
     version,
   };
+}
+
+export function recordInitialConfirmationSection(workspace, { reportVersionId, section, decision, note, isMajor, responsibleName, confirmationName }, context = {}) {
+  if (!note?.trim()) throw new Error("每一项确认都必须填写说明");
+  if (!isMajor && !confirmationName?.trim()) throw new Error("普通确认或异议必须填写本次确认人真实姓名");
+  if (isMajor && !responsibleName?.trim()) throw new Error("重大事项必须填写本项负责人签字姓名");
+  const current = ensureWorkspace(workspace);
+  const terminology = workspaceTerminology(current);
+  const actorName = context.actor || "本地用户";
+  const at = context.at || new Date().toISOString();
+  const decisionActor = isMajor ? responsibleName.trim() : confirmationName.trim();
+  const flow = workflowChecks(current);
+  const missingPrerequisites = flow.checks.slice(0, 5).filter((item) => !item.ok);
+  if (!flow.version || flow.version.id !== reportVersionId) throw new Error("当前报表版本已变化，请按页面更新后的冻结数字重新确认");
+  if (missingPrerequisites.length) throw new Error(`首次确认前仍需完成：${missingPrerequisites.map((item) => item.label).join("、")}`);
+
+  let next = current;
+  let confirmation = [...(next.confirmations || [])].reverse().find((item) => (
+    customerConfirmationMatchesVersion(item, flow.version)
+    && item.status !== "disputed"
+  ));
+  if (!confirmation) {
+    next = createCustomerConfirmationPackage(
+      next,
+      { period: next.currentPeriod, reportVersionId: flow.version.id },
+      { actor: actorName, at },
+    );
+    confirmation = next.confirmations.at(-1);
+  }
+  if (confirmation.sections?.[section]?.status !== "pending") throw new Error("本项已保存，不能重复覆盖原确认记录");
+
+  next = recordCustomerConfirmation(next, {
+    confirmationId: confirmation.id,
+    section,
+    decision,
+    note: isMajor ? `重大事项：${note.trim()}` : note.trim(),
+  }, { actor: decisionActor, at });
+  if (workspaceModuleEnabled(next, "payroll") && decision === "approve" && ["payroll", "socialSecurity"].includes(section)) {
+    next = confirmPayrollSocialData(next, { section, confirmed: true }, { actor: actorName, at });
+  }
+
+  const savedConfirmation = next.confirmations.find((item) => item.id === confirmation.id);
+  const allApproved = Object.values(savedConfirmation.sections).every((item) => item.status === "approved");
+  const resetFiling = {
+    ...next.delivery.filing,
+    period: next.currentPeriod,
+    draftCreatedAt: null,
+    draftVersionId: null,
+    initialConfirmationId: confirmation.id,
+    finalConfirmedVersionId: null,
+    exportedAt: null,
+    exportedPackage: null,
+    receipt: null,
+    archivedAt: null,
+  };
+  if (decision === "reject") {
+    return audit({
+      ...next,
+      tax: {
+        ...next.tax,
+        financeConfirmedAt: null,
+        payrollConfirmedAt: null,
+        socialSecurityConfirmedAt: null,
+        ownerConfirmedAt: null,
+        confirmedBy: "",
+        financeConfirmedVersionId: null,
+        payrollConfirmedVersionId: null,
+        socialSecurityConfirmedVersionId: null,
+        payrollConfirmedFingerprint: null,
+        socialSecurityConfirmedFingerprint: null,
+        ownerConfirmedVersionId: null,
+      },
+      delivery: { ...next.delivery, filing: resetFiling },
+    }, `${terminology.customer}异议退回 S7`, `${section}：${note.trim()}`, actorName);
+  }
+
+  const withResetDownstream = {
+    ...next,
+    tax: { ...next.tax, ownerConfirmedAt: null, ownerConfirmedVersionId: null, confirmedBy: "" },
+    delivery: { ...next.delivery, filing: resetFiling },
+  };
+  if (!allApproved) return withResetDownstream;
+  return audit({
+    ...withResetDownstream,
+    tax: {
+      ...withResetDownstream.tax,
+      financeConfirmedAt: savedConfirmation.updatedAt || at,
+      financeConfirmedVersionId: flow.version.id,
+    },
+  }, `${terminology.customer}第一次确认完成`, workspaceModuleEnabled(next, "payroll") ? "收入、成本费用、应交税额、进项税、工资、社保、财务报表与待核实事项均已逐项确认" : "收入、成本费用、应交税额、进项税、财务报表与待核实事项均已逐项确认", actorName);
+}
+
+export function buildFinalConfirmationSnapshot(workspace, existingFlow = workflowChecks(workspace)) {
+  const version = existingFlow.version;
+  const report = version?.snapshot || existingFlow.snapshot;
+  const confirmationSections = buildCustomerConfirmationSections(report, { payrollEnabled: workspaceModuleEnabled(workspace, "payroll") });
+  const payrollEnabled = Boolean(confirmationSections.payroll);
+  const taxRows = Object.fromEntries((report.taxWorkpaper?.rows || []).map((row) => [row.id, row]));
+  const balanceRows = Object.fromEntries((report.sections?.balance?.rows || []).map((row) => [row.id, row]));
+  const incomeRows = Object.fromEntries((report.sections?.income?.rows || []).map((row) => [row.id, row]));
+  const cashFlowRows = Object.fromEntries((report.sections?.cashflow?.rows || []).map((row) => [row.id, row]));
+  const numberValue = (value) => Number(value || 0);
+  const frozenMetric = (label, row, fallback) => ({
+    label,
+    value: numberValue(row?.value ?? fallback),
+    basis: row?.formula || "来自当前冻结报表",
+    sourceIds: [...new Set([...(row?.sourceIds || []), ...(row?.details || []).flatMap((detail) => [...(detail.sourceIds || []), detail.voucherId, detail.documentId])].filter(Boolean))],
+  });
+  const taxes = {
+    vat: frozenMetric("应交增值税", taxRows.vatPayable),
+    surtax: frozenMetric("附加税费", taxRows.surtax),
+    incomeTax: frozenMetric("所得税", taxRows.incomeTax),
+    ...(payrollEnabled ? { individualIncomeTax: frozenMetric("代扣个税", taxRows.individualIncomeTax) } : {}),
+    total: frozenMetric("预计申报税费合计", taxRows.taxTotal, report.summary?.estimatedTax),
+  };
+  const unresolvedItems = confirmationSections.openItems.items;
+  const vatRisks = report.taxWorkpaper?.vatReconciliation?.unresolvedItems || [];
+  const deductionAmount = numberValue(taxes.total.value) + (payrollEnabled ? numberValue(taxes.individualIncomeTax?.value) : 0);
+  return {
+    period: workspace.currentPeriod,
+    reportVersionId: version?.id || null,
+    reportVersionLabel: version?.label || null,
+    reportSourceFingerprint: version?.sourceFingerprint || null,
+    confirmationSections: Object.fromEntries(Object.entries(confirmationSections).map(([id, { status: _status, ...section }]) => [id, section])),
+    filingDraftVersionId: workspace.delivery.filing.draftVersionId || null,
+    filingDraftCreatedAt: workspace.delivery.filing.draftCreatedAt || null,
+    taxes,
+    statements: {
+      balance: {
+        label: "资产负债表",
+        metrics: [
+          frozenMetric("资产", balanceRows.assets, report.summary?.assets),
+          frozenMetric("负债", balanceRows.liabilities, report.summary?.liabilities),
+          frozenMetric("所有者权益", balanceRows.equity, report.summary?.equity),
+        ],
+      },
+      income: {
+        label: "利润表",
+        metrics: [
+          frozenMetric("收入", incomeRows.revenue, report.summary?.revenue),
+          { label: "成本", value: numberValue(report.summary?.cost), sourceIds: report.confirmationContext?.costSourceIds || [] },
+          frozenMetric("期间费用", incomeRows.expenses, report.summary?.expenses),
+          frozenMetric("利润", incomeRows.profit, report.summary?.profit),
+        ],
+      },
+      cashflow: {
+        label: "现金流量表",
+        metrics: [
+          frozenMetric("经营活动净额", cashFlowRows.operating),
+          frozenMetric("现金净增加额", cashFlowRows.netCash),
+          frozenMetric("期末现金", cashFlowRows.closingCash, report.summary?.cashBalance),
+        ],
+      },
+    },
+    payrollSocial: payrollEnabled ? {
+      applicable: true,
+      payroll: numberValue(taxRows.payroll?.value),
+      socialSecurity: numberValue(taxRows.socialSecurity?.value),
+      total: numberValue(taxRows.payroll?.value) + numberValue(taxRows.socialSecurity?.value),
+      sourceIds: [...new Set([...confirmationSections.payroll.sourceIds, ...confirmationSections.socialSecurity.sourceIds])],
+    } : { applicable: false },
+    deduction: {
+      required: deductionAmount > 0,
+      amount: deductionAmount,
+      sourceIds: [...new Set([...taxes.total.sourceIds, ...(taxes.individualIncomeTax?.sourceIds || [])])],
+    },
+    risks: [
+      { id: "local-only", level: "warning", label: "尚未提交税务局", detail: "本页只记录确认并生成本地申报包，仍需在外部完成正式申报。" },
+      { id: "calculation-basis", level: "warning", label: "本地计算口径", detail: report.taxWorkpaper?.disclaimer || "税额来自当前冻结底稿，不是税务局回执。" },
+      ...vatRisks.map((item) => ({ id: `vat-${item.kind || item.id}`, level: "danger", label: item.label || "增值税差异", detail: `仍有 ${formatCurrency(item.differenceAfterAdjustment ?? item.differenceBeforeAdjustment, { sign: true })} 差异待解释` })),
+      ...(unresolvedItems.length ? [{ id: "open-items", level: "danger", label: "仍有未处理事项", detail: `${unresolvedItems.length} 项业务、凭证或勾稽事项尚未完成` }] : []),
+    ],
+    unresolvedItems,
+  };
+}
+
+export function recordFinalConfirmation(workspace, { reportVersionId, filingDraftCreatedAt, name, selections }, context = {}) {
+  if (!name?.trim()) throw new Error("请填写最终负责人姓名");
+  if (!selections?.numbersReviewed || !selections?.risksAcknowledged || !selections?.localOnlyAcknowledged) throw new Error("请完成三项最终确认声明");
+  if (!["authorize_external", "do_not_authorize"].includes(selections?.deductionAuthorization)) throw new Error("请选择是否授权外部扣款");
+  const current = ensureWorkspace(workspace);
+  const terminology = workspaceTerminology(current);
+  const actorName = context.actor || "本地用户";
+  const now = context.at || new Date().toISOString();
+  const flow = workflowChecks(current);
+  const requiredSections = Object.keys(buildCustomerConfirmationSections(flow.version?.snapshot || flow.snapshot, { payrollEnabled: workspaceModuleEnabled(current, "payroll") }));
+  const prepareChecks = flow.prepare;
+  const versionId = flow.version?.id;
+  if (versionId !== reportVersionId || current.delivery.filing.draftCreatedAt !== filingDraftCreatedAt) throw new Error("页面显示的冻结版本或底稿已变化，请按更新后的数字重新确认");
+  const initialConfirmation = (current.confirmations || []).find((item) => item.id === current.delivery.filing.initialConfirmationId);
+  const initialConfirmationComplete = Boolean(
+    customerConfirmationMatchesVersion(initialConfirmation, flow.version)
+    && requiredSections.every((section) => initialConfirmation.sections?.[section]?.status === "approved"),
+  );
+  if (!versionId || current.delivery.filing.draftVersionId !== versionId || !current.delivery.filing.draftCreatedAt) throw new Error("当前底稿与报表版本不一致，请重新生成");
+  if (!initialConfirmationComplete || !prepareChecks.every((item) => item.ok)) throw new Error(`第一次${terminology.customer}确认或前置复核已失效，请重新完成`);
+
+  const snapshot = buildFinalConfirmationSnapshot(current, flow);
+  const finalRecord = {
+    id: uid("final-confirmation"),
+    kind: "final",
+    period: current.currentPeriod,
+    version: (current.confirmations || []).filter((item) => item.kind === "final" && item.period === current.currentPeriod).length + 1,
+    status: "approved",
+    createdAt: now,
+    confirmedAt: now,
+    confirmedBy: name.trim(),
+    reportVersionId: versionId,
+    reportSourceFingerprint: flow.version.sourceFingerprint || null,
+    filingDraftVersionId: current.delivery.filing.draftVersionId,
+    filingDraftCreatedAt: current.delivery.filing.draftCreatedAt,
+    selections: {
+      numbersReviewed: true,
+      risksAcknowledged: true,
+      localOnlyAcknowledged: true,
+      deductionAuthorization: selections.deductionAuthorization,
+    },
+    signature: { name: name.trim(), signedAt: now },
+    snapshot,
+    decisions: [{ id: uid("decision"), decision: "approve", actor: name.trim(), at: now, note: "最终数字、风险、本地包边界和外部扣款选择已逐项确认" }],
+    sourceIds: [versionId, current.delivery.filing.initialConfirmationId].filter(Boolean),
+  };
+  const next = {
+    ...current,
+    confirmations: [...(current.confirmations || []), finalRecord],
+    tax: {
+      ...current.tax,
+      ownerConfirmedAt: now,
+      confirmedBy: name.trim(),
+      ownerConfirmedVersionId: versionId,
+      finalConfirmationId: finalRecord.id,
+    },
+    delivery: {
+      ...current.delivery,
+      filing: {
+        ...current.delivery.filing,
+        finalConfirmedVersionId: versionId,
+        exportedAt: null,
+        exportedPackage: null,
+        receipt: null,
+        archivedAt: null,
+      },
+    },
+  };
+  const deductionLabel = selections.deductionAuthorization === "authorize_external" ? "授权外部办理扣款" : "不授权外部扣款";
+  return audit(next, `${terminology.customer}第二次最终确认`, `${name.trim()}确认 ${versionId} 当前数字与风险；${deductionLabel}；仅保存本地记录，未提交税务局、未执行扣款`, actorName);
 }
 
 export function prepareFilingDraft(workspace, actor = "本地用户") {
@@ -1471,10 +1783,16 @@ export async function exportLocalFilingPackage(workspace) {
     workspace: workspace.name,
     company: workspace.company,
     period: workspace.currentPeriod,
+    reportVersionId: flow.version.id,
+    reportSourceFingerprint: flow.version.sourceFingerprint,
     workpaper: flow.version.snapshot.taxWorkpaper,
     disclaimer: "本地底稿，不是电子税务局正式申报文件。",
   }, null, 2));
   folder.file(`${terminology.customer}确认记录.json`, JSON.stringify({
+    reportVersionId: flow.version.id,
+    reportSourceFingerprint: flow.version.sourceFingerprint,
+    initialConfirmation: (workspace.confirmations || []).find((item) => item.id === workspace.delivery.filing.initialConfirmationId),
+    finalConfirmation: (workspace.confirmations || []).find((item) => item.id === workspace.tax.finalConfirmationId),
     financeConfirmedAt: workspace.tax.financeConfirmedAt,
     payrollConfirmedAt: workspace.tax.payrollConfirmedAt,
     socialSecurityConfirmedAt: workspace.tax.socialSecurityConfirmedAt,
@@ -1485,8 +1803,10 @@ export async function exportLocalFilingPackage(workspace) {
     payrollConfirmedFingerprint: workspace.tax.payrollConfirmedFingerprint,
     socialSecurityConfirmedFingerprint: workspace.tax.socialSecurityConfirmedFingerprint,
   }, null, 2));
-  folder.file("工资与社保明细.json", JSON.stringify({
-    ...buildPayrollSocialSummary(workspace, { period: workspace.currentPeriod }),
+  if (flow.version.snapshot.confirmationContext?.payrollEnabled ?? workspaceModuleEnabled(workspace, "payroll")) folder.file("工资与社保明细.json", JSON.stringify({
+    ...flow.version.snapshot.taxWorkpaper.payrollSocialSummary,
+    reportVersionId: flow.version.id,
+    reportSourceFingerprint: flow.version.sourceFingerprint,
     confirmations: {
       payrollConfirmedAt: workspace.tax.payrollConfirmedAt,
       socialSecurityConfirmedAt: workspace.tax.socialSecurityConfirmedAt,
@@ -1494,7 +1814,7 @@ export async function exportLocalFilingPackage(workspace) {
     },
     disclaimer: "当前浏览器本地导入与确认记录；不代表已连接社保、个税或税务平台。",
   }, null, 2));
-  const periodVouchers = (workspace.vouchers || []).filter((voucher) => voucher.period === workspace.currentPeriod && ["posted", "superseded"].includes(voucher.status));
+  const periodVouchers = (workspace.vouchers || []).filter((voucher) => (voucher.period || String(voucher.date || "").slice(0, 7)) === workspace.currentPeriod && ["posted", "superseded", "invalidated", "replaced"].includes(voucher.status));
   folder.file("凭证与附件索引.json", JSON.stringify(periodVouchers.map((voucher) => ({
     voucher,
     attachmentPackage: buildAttachmentPackage(workspace, voucher.id),
@@ -1503,7 +1823,8 @@ export async function exportLocalFilingPackage(workspace) {
   folder.file("银行勾稽记录.json", JSON.stringify((workspace.bankImports || []).filter((bankImport) => bankImport.period === workspace.currentPeriod), null, 2));
   folder.file("异常与确认记录.json", JSON.stringify({
     exceptions: workspace.exceptionTasks || [],
-    confirmations: (workspace.confirmations || []).filter((confirmation) => confirmation.period === workspace.currentPeriod),
+    reportVersionId: flow.version.id,
+    confirmations: (workspace.confirmations || []).filter((confirmation) => [workspace.delivery.filing.initialConfirmationId, workspace.tax.finalConfirmationId].includes(confirmation.id)),
   }, null, 2));
   folder.file("操作日志.csv", auditCsv(workspace));
   const blob = await zip.generateAsync({ type: "blob" });
@@ -1599,7 +1920,8 @@ export function archivePeriod(workspace, actor = "本地用户") {
     throw new Error(`期间归档前仍需完成：${missing.join("、")}`);
   }
   const archivedAt = new Date().toISOString();
-  const record = {
+  // Detach archived data from live records before later exports or edits.
+  const record = structuredClone({
     id: uid("archive"),
     period: workspace.currentPeriod,
     archivedAt,
@@ -1628,16 +1950,17 @@ export function archivePeriod(workspace, actor = "本地用户") {
     carryForwardItems: workspace.transactions
       .filter((item) => String(item.date || "").startsWith(workspace.currentPeriod) && item.status === "ignored")
       .map((item) => ({ id: item.id, counterparty: item.counterparty, summary: item.summary, amount: item.amount, fromPeriod: workspace.currentPeriod })),
-    closingLedger: flow.snapshot.ledger,
-    summary: flow.snapshot.summary,
+    closingLedger: flow.version.snapshot.ledger,
+    openingCarryForward: workspace.openingCarryForward || null,
+    summary: flow.version.snapshot.summary,
     reportSnapshot: flow.version.snapshot,
-    vouchers: (workspace.vouchers || []).filter((voucher) => voucher.period === workspace.currentPeriod && ["posted", "superseded"].includes(voucher.status)),
-    attachmentPackages: (workspace.vouchers || []).filter((voucher) => voucher.period === workspace.currentPeriod && ["posted", "superseded"].includes(voucher.status)).map((voucher) => buildAttachmentPackage(workspace, voucher.id)),
+    vouchers: (workspace.vouchers || []).filter((voucher) => (voucher.period || String(voucher.date || "").slice(0, 7)) === workspace.currentPeriod && ["posted", "superseded", "invalidated", "replaced"].includes(voucher.status)),
+    attachmentPackages: (workspace.vouchers || []).filter((voucher) => (voucher.period || String(voucher.date || "").slice(0, 7)) === workspace.currentPeriod && ["posted", "superseded", "invalidated", "replaced"].includes(voucher.status)).map((voucher) => buildAttachmentPackage(workspace, voucher.id)),
     documents: (workspace.documents || []).filter((document) => !document.period || document.period === workspace.currentPeriod),
     confirmationPackages: (workspace.confirmations || []).filter((confirmation) => confirmation.period === workspace.currentPeriod),
     exceptionRecords: (workspace.exceptionTasks || []).filter((task) => task.status === "resolved" || flow.unresolved.some((item) => item.id === task.sourceId)),
     auditSnapshot: workspace.auditLog || [],
-  };
+  });
   const archivedDocumentIds = new Set(record.documents.map((document) => document.id));
   const next = {
     ...workspace,
@@ -1709,25 +2032,28 @@ export function resetTaxForPeriod(tax = {}, period) {
   };
 }
 
-export function enterNextPeriod(workspace, actor = "本地用户") {
+export function enterNextPeriod(workspace, actor = "本地用户", { equityAccountId = null } = {}) {
   const filing = workspace.delivery.filing;
   const archive = workspace.delivery.archives.find((item) => item.period === workspace.currentPeriod);
   if (!filing.archivedAt || !archive) return workspace;
-  if (archive.sourceFingerprint && archive.sourceFingerprint !== workflowSourceFingerprint(workspace)) {
+  if (archive.sourceFingerprint && !workflowSourceMatches(archive.sourceFingerprint, workspace)) {
     throw new Error("本期归档后数据又发生变化，不能沿用旧期末余额；请通过更正流程重新归档");
   }
   const target = nextPeriod(workspace.currentPeriod);
-  const ledger = archive.closingLedger || {};
-  const openingLedger = Object.fromEntries(Object.entries(ledger).map(([accountId, value]) => {
-    const category = accountDefinition(accountId, workspace).category;
-    const carriesForward = ["asset", "contraAsset", "liability", "equity"].includes(category);
-    return [accountId, carriesForward ? Number(value || 0) : 0];
-  }));
+  const carryForward = buildPeriodCarryForward(workspace, { closingLedger: archive.closingLedger || {}, equityAccountId });
   const next = {
     ...workspace,
     currentPeriod: target,
     periods: [...new Set([target, ...workspace.periods])],
-    openingLedger,
+    openingLedger: carryForward.openingLedger,
+    openingCarryForward: {
+      archiveId: archive.id,
+      fromPeriod: archive.period,
+      period: target,
+      profit: carryForward.profit,
+      equityAccountId: carryForward.equityAccountId,
+      profitAndLossBalances: carryForward.profitAndLossBalances,
+    },
     tax: resetTaxForPeriod(workspace.tax, target),
     delivery: {
       ...workspace.delivery,
@@ -1745,7 +2071,7 @@ export function enterNextPeriod(workspace, actor = "本地用户") {
       filing: emptyFiling(target),
     },
   };
-  return audit(next, "进入下一期", `${workspace.currentPeriod} → ${target}，继承已归档期末余额`, actor);
+  return audit(next, "进入下一期", `${workspace.currentPeriod} → ${target}，继承归档 ${archive.id} 的期末余额；损益 ${carryForward.profit.toFixed(2)}${carryForward.equityAccountId ? ` 转入 ${accountDefinition(carryForward.equityAccountId, workspace).label}` : "，无需权益调整"}`, actor);
 }
 
 export function formatCurrency(value, { sign = false } = {}) {

@@ -73,7 +73,7 @@ function emptyMovementForm(workspace) {
     unitCost: "",
     locationId: firstItem?.locationId || defaultLocationId(workspace),
     reason: "",
-    sourceId: "",
+    referenceNo: "",
     evidenceIds: [],
   };
 }
@@ -252,7 +252,7 @@ export function InventoryPage({ onPage, onToast }) {
         unitCost: movementForm.unitCost,
         locationId: movementForm.locationId,
         reason: movementForm.reason,
-        sourceIds: movementForm.sourceId.trim() ? [movementForm.sourceId.trim()] : [],
+        referenceNo: movementForm.referenceNo,
         evidenceIds: movementForm.evidenceIds,
       }, { actor });
       actions.replaceWorkspace(current.id, next, { requiredPermission: "data.write" });
@@ -341,7 +341,7 @@ export function InventoryPage({ onPage, onToast }) {
             <label><span>入库单价{movementForm.type === INVENTORY_MOVEMENT_TYPES.RECEIPT ? " *" : ""}</span><input disabled={!COST_INPUT_TYPES.has(movementForm.type)} required={movementForm.type === INVENTORY_MOVEMENT_TYPES.RECEIPT} min="0" step="0.01" type="number" value={movementForm.unitCost} onChange={(event) => setMovementForm((form) => ({ ...form, unitCost: event.target.value }))} placeholder={COST_INPUT_TYPES.has(movementForm.type) ? "填写本次单位成本" : "出库时自动计算"} /></label>
             <label><span>场所</span><select value={movementForm.locationId} onChange={(event) => setMovementForm((form) => ({ ...form, locationId: event.target.value }))}><option value="">未归属场所</option>{locations.map((location) => <option value={location.id} key={location.id}>{location.name || location.id}{location.status === "inactive" ? "（已停用）" : ""}</option>)}</select></label>
             <label className="full"><span>原因{LOSS_TYPES.has(movementForm.type) ? " *" : ""}</span><textarea required={LOSS_TYPES.has(movementForm.type)} value={movementForm.reason} onChange={(event) => setMovementForm((form) => ({ ...form, reason: event.target.value }))} placeholder={LOSS_TYPES.has(movementForm.type) ? "说明损耗或盘亏原因" : "补充本次流转原因（可选）"} /></label>
-            <label className="full"><span>来源标识</span><input value={movementForm.sourceId} onChange={(event) => setMovementForm((form) => ({ ...form, sourceId: event.target.value }))} placeholder="单据号、批次号或外部来源标识" /></label>
+            <label className="full"><span>单据 / 批次号</span><input value={movementForm.referenceNo} onChange={(event) => setMovementForm((form) => ({ ...form, referenceNo: event.target.value }))} placeholder="外部单据号或批次号（可选）" /></label>
             <fieldset className="inventory-document-fieldset">
               <legend>关联资料</legend>
               <div className="inventory-document-options">
@@ -385,7 +385,7 @@ export function InventoryPage({ onPage, onToast }) {
               <span className="inventory-table-cell numeric" data-label="数量"><strong>{formatQuantity(movement.quantity, movement.itemUnit)}</strong><small>结余 {formatQuantity(movement.balanceQuantity, movement.itemUnit)}</small></span>
               <span className="inventory-table-cell numeric" data-label="单位成本"><strong>{formatCurrency(movement.unitCost)}</strong><small>金额 {formatCurrency(movement.amount)}</small></span>
               <span className="inventory-table-cell" data-label="场所"><strong>{movement.locationName || "未归属场所"}</strong><small>{movement.locationId}</small></span>
-              <span className="inventory-table-cell" data-label="原因与来源"><strong>{movement.reason || "未填写原因"}</strong><small>{movement.sourceIds?.length ? "来源 " + movement.sourceIds.join("、") : "无来源标识"} · 资料 {movement.evidenceIds?.length || 0} 份</small></span>
+              <span className="inventory-table-cell" data-label="原因与来源"><strong>{movement.reason || "未填写原因"}</strong><small>{[movement.referenceNo, movement.sourceIds?.length ? "关联 " + movement.sourceIds.join("、") : "", `${movement.evidenceIds?.length || 0} 份资料`].filter(Boolean).join(" · ")}</small></span>
               <span className="inventory-table-actions" data-label="会计处理">{isLoss ? (movement.voucherId ? <span className={"inventory-voucher-state " + (voucher?.status === "posted" ? "" : "pending")}>{voucherStatusLabel(voucher?.status)}</span> : <button className="secondary-button" type="button" onClick={() => createLossVoucher(movement)}><Receipt size={14} />生成凭证草稿</button>) : <span className="inventory-voucher-state">无需损耗凭证</span>}</span>
             </div>;
           })}

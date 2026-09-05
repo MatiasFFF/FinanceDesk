@@ -20,8 +20,11 @@ import {
 } from "./classification.js";
 import {
   assessTransactionEvidence,
+  assessManualVoucherEvidence,
+  syncManualVoucherEvidenceTasks,
   unresolvedExceptionTasks,
 } from "../../features/evidence/evidenceEngine.js";
+import { commitReconciliationCorrection } from "../../features/reconciliation/reconciliationEngine.js";
 import {
   MEMBER_EVENT_DEFINITIONS,
   MEMBER_EVENT_KINDS,
@@ -57,6 +60,58 @@ function findAdvanceApplication(workspace, applicationId) {
   const application = (workspace.advanceApplications || []).find((item) => item.id === applicationId);
   if (!application) throw new AccountingRuleError("ADVANCE_APPLICATION_NOT_FOUND", `找不到预收/预付冲销关系：${applicationId}`);
   return application;
+}
+
+export function assertAccountingPeriodWritable(workspace, period = workspace.currentPeriod) {
+  if (period !== workspace.currentPeriod) {
+    throw new AccountingRuleError("HISTORICAL_PERIOD_IMMUTABLE", "历史期间不能直接改写；请在当前未归档期间新建手工调整，关联原凭证与计算依据");
+  }
+  if (workspace.delivery?.archives?.some((archive) => archive.period === period) || workspace.delivery?.filing?.archivedAt) {
+    throw new AccountingRuleError("PERIOD_ARCHIVED", "当前期间已归档，不能修改核销或凭证；请进入下一期后以手工调整关联历史原凭证");
+  }
+}
+
+function voucherSourceIds(voucher) {
+  return collectSourceIds(voucher.sourceIds, (voucher.lines || []).map((line) => line.sourceIds));
+}
+
+function voucherAllocations(workspace, voucher) {
+  const ids = new Set(voucherSourceIds(voucher));
+  return (workspace.transactions || []).flatMap((transaction) => (transaction.allocations || []).filter((allocation) => ids.has(allocation.id)));
+}
+
+export function vouchersForReconciliation(workspace, transactionId, allocationId) {
+  return (workspace.vouchers || []).filter((voucher) => {
+    if (!["posted", "draft", "changes_requested"].includes(voucher.status)) return false;
+    const sources = voucherSourceIds(voucher);
+    return sources.includes(allocationId) || (sources.includes(transactionId) && !voucherAllocations(workspace, voucher).length);
+  });
+}
+
+export function invalidateReconciliationDrafts(workspace, transactionId, allocationId, reason, context = {}) {
+  const next = cloneAccountingState(workspace);
+  const resolvedContext = operationContext(context);
+  vouchersForReconciliation(next, transactionId, allocationId)
+    .filter((voucher) => ["draft", "changes_requested"].includes(voucher.status))
+    .forEach((voucher) => {
+      const before = voucherSnapshot(voucher, resolvedContext, "核销来源变化前");
+      voucher.status = "invalidated";
+      voucher.invalidatedAt = resolvedContext.at;
+      voucher.invalidationReason = reason;
+      voucher.versions = [...(voucher.versions || []), before, voucherSnapshot(voucher, resolvedContext, reason)];
+      (next.businessEvents || []).filter((event) => event.draftVoucherId === voucher.id).forEach((event) => {
+        event.draftVoucherId = null;
+        event.accountingStatus = "pending";
+      });
+      (next.exceptionTasks || []).filter((task) => task.sourceId === voucher.id && task.status !== "resolved").forEach((task) => {
+        task.status = "resolved";
+        task.resolution = "source_invalidated";
+        task.resolvedAt = resolvedContext.at;
+        task.history = [...(task.history || []), { at: resolvedContext.at, actor: resolvedContext.actor, action: "source_invalidated", note: reason }];
+      });
+      appendAuditEntry(next, { action: "voucher.invalidate_source", entityType: "voucher", entityId: voucher.id, detail: `${reason}；请按当前核销重新生成草稿`, before, after: { status: voucher.status }, sourceIds: collectSourceIds(voucher.id, transactionId, allocationId) }, resolvedContext);
+    });
+  return next;
 }
 
 const VOUCHER_EVENT_LABELS = Object.freeze({
@@ -115,7 +170,7 @@ function voucherAccountForBill(bill) {
 function postedSourceIds(workspace) {
   return new Set((workspace.vouchers || [])
     .filter((voucher) => ["posted", "draft", "changes_requested"].includes(voucher.status))
-    .flatMap((voucher) => voucher.sourceIds || []));
+    .flatMap(voucherSourceIds));
 }
 
 function voucherLineDimension(line, ...names) {
@@ -366,6 +421,45 @@ function billAllocationLines(workspace, transaction, availableAllocations) {
   ]);
 }
 
+export function buildReconciliationCorrectionLines(workspace, voucher, allocation, replacement) {
+  const oldBill = findBill(workspace, allocation.billId);
+  const newBill = findBill(workspace, replacement.billId);
+  const account = voucherAccountForBill(newBill);
+  const oldAccount = voucherAccountForBill(oldBill);
+  if (!account || !oldAccount) throw new AccountingRuleError("UNSUPPORTED_BILL_KIND", "目标账单必须是有效的应收、应付、预收或预付账单");
+  const lines = structuredClone(voucher.lines || []);
+  const transaction = findTransaction(workspace, replacement.transactionId);
+  const side = Number(transaction.amount) >= 0 ? "credit" : "debit";
+  let index = lines.findIndex((line) => line.account === oldAccount && Number(line[side]) > 0 && line.sourceIds?.includes(allocation.id));
+  if (index < 0) index = lines.findIndex((line) => line.account === oldAccount && Number(line[side]) > 0 && line.sourceIds?.includes(allocation.billId));
+  if (index < 0) throw new AccountingRuleError("ALLOCATION_VOUCHER_LINE_MISSING", "原凭证没有可对应此核销的分录；请先从原凭证创建更正草稿，核对账单来源和分录后再更正核销");
+  const line = lines[index];
+  const amount = roundMoney(allocation.amount);
+  if (amount - Number(line[side]) > accountingRules(workspace).amountTolerance) throw new AccountingRuleError("ALLOCATION_VOUCHER_AMOUNT_MISMATCH", "原凭证对应分录金额小于核销金额，请先核对原凭证");
+  const keepOldBill = voucherAllocations(workspace, voucher).some((item) => item.id !== allocation.id && item.billId === allocation.billId);
+  const keepSource = (id) => id !== allocation.id && (id !== allocation.billId || keepOldBill);
+  const replacementTax = line.taxAmount == null ? null : roundMoney(Number(line.taxAmount) * amount / Number(line[side]));
+  const replacementLine = {
+    ...line,
+    account,
+    auxiliaryId: newBill.counterparty || null,
+    auxiliaryLabel: newBill.counterparty || null,
+    [side]: amount,
+    taxAmount: replacementTax,
+    sourceIds: [newBill.id, replacement.id],
+  };
+  line[side] = roundMoney(Number(line[side]) - amount);
+  line.sourceIds = (line.sourceIds || []).filter(keepSource);
+  if (line.taxAmount != null) line.taxAmount = roundMoney(Number(line.taxAmount) - replacementTax);
+  if (line[side] === 0) lines.splice(index, 1);
+  lines.push(replacementLine);
+  return {
+    lines,
+    sourceIds: collectSourceIds((voucher.sourceIds || []).filter(keepSource), replacement.transactionId, replacement.id, newBill.id),
+    evidenceIds: collectSourceIds(voucher.evidenceIds, newBill.evidenceIds),
+  };
+}
+
 function directTransactionLines(workspace, transaction, classification) {
   const amount = absoluteAmount(transaction.amount);
   const incoming = Number(transaction.amount) >= 0;
@@ -506,7 +600,7 @@ export function createBankBusinessEventVoucherDraft(workspace, {
   }
   const activeVoucher = (next.vouchers || []).find((voucher) => (
     (voucher.bankBusinessEventId === event.id || voucher.sourceIds?.includes(event.id))
-    && voucher.status !== "superseded"
+    && ["posted", "draft", "changes_requested"].includes(voucher.status)
   ));
   if (activeVoucher) {
     throw new AccountingRuleError("SOURCE_ALREADY_VOUCHERED", `业务事件 ${event.businessEventNo || event.id} 已有${activeVoucher.no || "凭证草稿"}`);
@@ -708,7 +802,10 @@ function voucherSnapshot(voucher, context, reason) {
     reason,
     summary: voucher.summary,
     lines: structuredClone(voucher.lines || []),
+    sourceIds: [...(voucher.sourceIds || [])],
     evidenceIds: [...(voucher.evidenceIds || [])],
+    basis: structuredClone(voucher.basis || {}),
+    reconciliationCorrection: structuredClone(voucher.reconciliationCorrection || null),
     judgement: structuredClone(voucher.judgement || {}),
     accountingAttributes: structuredClone(voucher.accountingAttributes || {}),
     status: voucher.status,
@@ -744,10 +841,12 @@ export function createManualVoucherDraft(workspace, {
   summary,
   lines,
   evidenceIds = [],
+  basis = {},
   note = "",
 } = {}, context = {}) {
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext({ ...context, mode: context.mode || "manual" });
+  assertAccountingPeriodWritable(next);
   if (resolvedContext.mode !== "manual") {
     throw new AccountingRuleError("MANUAL_VOUCHER_DRAFT_MODE_REQUIRED", "独立手工凭证只能由财务人员手工创建");
   }
@@ -788,6 +887,7 @@ export function createManualVoucherDraft(workspace, {
     lines: normalizedLines,
     sourceIds,
     evidenceIds: normalizedEvidenceIds,
+    basis: structuredClone(basis),
     accountingAttributes: { sourceType: "manual" },
     judgement: {
       eventType: "manualVoucher",
@@ -804,6 +904,7 @@ export function createManualVoucherDraft(workspace, {
   synchronizeVoucherJudgementAccounts(next, voucher, resolvedContext, "创建独立手工凭证草稿");
   voucher.versions.push(voucherSnapshot(voucher, resolvedContext, "创建独立手工凭证草稿"));
   next.vouchers = [...(next.vouchers || []), voucher];
+  syncManualVoucherEvidenceTasks(next, voucher, resolvedContext);
   appendAuditEntry(next, {
     action: "voucher.create_manual_draft",
     entityType: "voucher",
@@ -823,6 +924,7 @@ export function createManualVoucherDraft(workspace, {
 
 export function createVoucherDraft(workspace, { transactionId, summary, note = "" }, context = {}) {
   const sourceTransaction = findTransaction(workspace, transactionId);
+  assertAccountingPeriodWritable(workspace, String(sourceTransaction.date || "").slice(0, 7));
   const bankBusinessEvent = (workspace.businessEvents || []).find((event) => (
     event.id === sourceTransaction.bankBusinessEventId
     || (event.sourceType === "bankTransaction" && event.transactionId === sourceTransaction.id)
@@ -871,6 +973,7 @@ export function createVoucherDraft(workspace, { transactionId, summary, note = "
     version: 1,
     lines,
     sourceIds: trace.sourceIds,
+    reconciliationSources: allocations.map(({ id, billId, amount }) => ({ id, billId, amount })),
     evidenceIds: trace.evidenceIds,
     judgement: {
       eventType: classification.eventType,
@@ -1061,6 +1164,20 @@ function sourceTransactionsForVoucher(workspace, voucher) {
 }
 
 function ensurePostingAllowed(workspace, voucher, mode) {
+  const allocations = voucherAllocations(workspace, voucher);
+  if (allocations.some((allocation) => !["confirmed", "posted"].includes(allocation.status))) {
+    throw new AccountingRuleError("VOUCHER_SOURCE_CHANGED", "凭证包含已撤销或未确认的核销来源；请按当前核销重新生成草稿");
+  }
+  if ((voucher.reconciliationSources || []).some((source) => !allocations.some((allocation) => (
+    allocation.id === source.id && allocation.billId === source.billId && roundMoney(allocation.amount) === roundMoney(source.amount)
+  )))) {
+    throw new AccountingRuleError("VOUCHER_SOURCE_CHANGED", "核销账单或金额已变化，旧草稿不能入账；请重新生成草稿");
+  }
+  if (voucher.revisionOf) {
+    const original = findVoucher(workspace, voucher.revisionOf);
+    if (original.status !== "posted") throw new AccountingRuleError("REVISION_ORIGINAL_CHANGED", "原凭证已被另一版本替代，请从当前有效凭证重新创建更正");
+    assertAccountingPeriodWritable(workspace, original.period || String(original.date).slice(0, 7));
+  }
   const linkedEvent = (workspace.businessEvents || []).find((event) => (
     event.id === voucher.memberEventId
     || event.id === voucher.bankBusinessEventId
@@ -1070,6 +1187,18 @@ function ensurePostingAllowed(workspace, voucher, mode) {
     throw new AccountingRuleError("MEMBER_MODULE_DISABLED", "当前工作台未启用会员模块，会员业务凭证不能入账");
   }
   const transactions = sourceTransactionsForVoucher(workspace, voucher);
+  if (!voucher.advanceApplicationId) {
+    transactions.forEach((transaction) => {
+      const ownAllocationIds = new Set(allocations.filter((allocation) => (transaction.allocations || []).some((item) => item.id === allocation.id)).map((allocation) => allocation.id));
+      const duplicate = (workspace.vouchers || []).find((other) => {
+        if (other.id === voucher.id || other.id === voucher.revisionOf || other.status !== "posted" || other.advanceApplicationId) return false;
+        if (!sourceTransactionsForVoucher(workspace, other).some((item) => item.id === transaction.id)) return false;
+        const otherAllocations = voucherAllocations(workspace, other).filter((allocation) => (transaction.allocations || []).some((item) => item.id === allocation.id));
+        return !ownAllocationIds.size || !otherAllocations.length || otherAllocations.some((allocation) => ownAllocationIds.has(allocation.id));
+      });
+      if (duplicate) throw new AccountingRuleError("SOURCE_ALREADY_POSTED", `同一流水或核销来源已由 ${duplicate.no || duplicate.id} 入账；请使用该凭证的更正草稿，避免重复记账`);
+    });
+  }
   const unresolved = transactions.flatMap((transaction) => unresolvedExceptionTasks(workspace, transaction.id));
   if (unresolved.length) {
     throw new AccountingRuleError("UNRESOLVED_EXCEPTION", "凭证来源仍有未解决异常", {
@@ -1115,12 +1244,58 @@ function nextVoucherNumber(workspace, voucher) {
   return `记-${String(maximum + 1).padStart(3, "0")}`;
 }
 
+// Only the async file-reading entry can authorize a manual voucher posting.
+// The proof is local to this call; saved metadata is never reused as proof.
+const verifiedManualPostings = new WeakMap();
+
+function isManualVoucher(voucher) {
+  return voucher.sourceType === "manual" || voucher.judgement?.eventType === "manualVoucher";
+}
+
+export async function postVoucherWithEvidence(workspace, input, context = {}) {
+  const snapshot = cloneAccountingState(workspace);
+  const voucher = findVoucher(snapshot, input.voucherId);
+  if (!isManualVoucher(voucher)) return postVoucher(snapshot, input, context);
+  assertAccountingPeriodWritable(snapshot, voucher.period);
+  const assessment = assessManualVoucherEvidence(snapshot, voucher);
+  if (!assessment.complete) throw new AccountingRuleError("VOUCHER_EVIDENCE_REQUIRED", assessment.issues.map((issue) => issue.message).join("；"), assessment);
+  const { getStoredDocumentRecord, hashLocalFile } = await import("../../features/intake/documentIntake.js");
+  const verifiedFiles = [];
+  for (const document of assessment.documents) {
+    try {
+      const record = await getStoredDocumentRecord({ fileVault: context.fileVault, workspaceId: snapshot.id, document });
+      if (!record.blob?.size) throw new Error("原文件为空或不存在");
+      const hash = await hashLocalFile(record.blob);
+      if (hash !== document.hash) throw new Error("原文件哈希与资料记录不一致");
+      verifiedFiles.push({ documentId: document.id, hash, size: record.blob.size });
+    } catch (error) {
+      throw new AccountingRuleError("VOUCHER_ORIGINAL_REQUIRED", `${document.name || document.id}：${error.message}；请载入草稿，重新上传原件并替换资料关联`, { documentId: document.id });
+    }
+  }
+  verifiedManualPostings.set(snapshot, { voucherId: voucher.id, files: verifiedFiles, documentIds: assessment.documentIds });
+  try {
+    return postVoucher(snapshot, input, context);
+  } finally {
+    verifiedManualPostings.delete(snapshot);
+  }
+}
+
 export function postVoucher(workspace, { voucherId, reviewNote, mode = "manual" }, context = {}) {
   if (mode !== "automatic" && !reviewNote?.trim()) throw new AccountingRuleError("REVIEW_NOTE_REQUIRED", "人工入账必须填写复核意见");
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext({ ...context, mode });
   const voucher = findVoucher(next, voucherId);
-  if (voucher.sourceType === "manual" && mode !== "manual") {
+  assertAccountingPeriodWritable(next, voucher.period || String(voucher.date).slice(0, 7));
+  if (isManualVoucher(voucher)) {
+    const proof = verifiedManualPostings.get(workspace);
+    const assessment = assessManualVoucherEvidence(next, voucher);
+    if (!assessment.complete) throw new AccountingRuleError("VOUCHER_EVIDENCE_REQUIRED", assessment.issues.map((issue) => issue.message).join("；"), assessment);
+    if (proof?.voucherId !== voucher.id) throw new AccountingRuleError("VOUCHER_ORIGINAL_REQUIRED", "手工凭证必须通过原件核验后入账；请在手工凭证面板补齐来源与资料并复核入账");
+    voucher.evidenceIds = collectSourceIds(voucher.evidenceIds, proof.documentIds);
+    voucher.evidenceVerification = { at: resolvedContext.at, actor: resolvedContext.actor, files: proof.files, referenceVoucherIds: assessment.referenceIds };
+    syncManualVoucherEvidenceTasks(next, voucher, resolvedContext);
+  }
+  if (isManualVoucher(voucher) && mode !== "manual") {
     throw new AccountingRuleError("MANUAL_VOUCHER_MANUAL_POST_REQUIRED", "独立手工凭证只能由财务人员填写复核意见后手工入账");
   }
   if (voucher.bankBusinessEventId && mode !== "manual") {
@@ -1134,6 +1309,7 @@ export function postVoucher(workspace, { voucherId, reviewNote, mode = "manual" 
   }
   const validation = validateVoucherBalance(voucher, accountingRules(next).amountTolerance, next);
   if (!validation.balanced) throw new AccountingRuleError("VOUCHER_UNBALANCED", validation.errors.join("；"), validation);
+  if (voucher.reconciliationCorrection) commitReconciliationCorrection(next, voucher, resolvedContext);
   ensurePostingAllowed(next, voucher, mode);
   const before = { status: voucher.status, version: voucher.version };
   const review = {
@@ -1150,9 +1326,15 @@ export function postVoucher(workspace, { voucherId, reviewNote, mode = "manual" 
   voucher.postedAt = resolvedContext.at;
   voucher.postedBy = resolvedContext.actor;
   voucher.versions = [...(voucher.versions || []), voucherSnapshot(voucher, resolvedContext, "凭证入账")];
+  if (voucher.revisionOf) {
+    const original = findVoucher(next, voucher.revisionOf);
+    original.status = "superseded";
+    original.supersededBy = voucher.id;
+    original.supersededAt = resolvedContext.at;
+  }
   const postedAllocationSourceIds = new Set((next.vouchers || [])
-    .filter((item) => ["posted", "superseded"].includes(item.status))
-    .flatMap((item) => item.sourceIds || []));
+    .filter((item) => item.status === "posted")
+    .flatMap(voucherSourceIds));
   sourceTransactionsForVoucher(next, voucher).forEach((transaction) => {
     const allocations = activeAllocations(transaction).filter((allocation) => allocation.status !== "suspected");
     const remaining = Math.max(0, roundMoney(
@@ -1199,12 +1381,6 @@ export function postVoucher(workspace, { voucherId, reviewNote, mode = "manual" 
     application.postedAt = resolvedContext.at;
     application.updatedAt = resolvedContext.at;
   }
-  if (voucher.revisionOf) {
-    const original = findVoucher(next, voucher.revisionOf);
-    original.status = "superseded";
-    original.supersededBy = voucher.id;
-    original.supersededAt = resolvedContext.at;
-  }
   appendAuditEntry(next, {
     action: "voucher.post",
     entityType: "voucher",
@@ -1223,6 +1399,8 @@ export function reviewVoucher(workspace, { voucherId, decision, note }, context 
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext(context);
   const voucher = findVoucher(next, voucherId);
+  assertAccountingPeriodWritable(next, voucher.period || String(voucher.date).slice(0, 7));
+  if (!["draft", "changes_requested"].includes(voucher.status)) throw new AccountingRuleError("VOUCHER_NOT_REVIEWABLE", "只能复核草稿；已入账记录请创建更正草稿");
   const review = {
     id: nextRecordId(voucher.reviews || [], "review"),
     at: resolvedContext.at,
@@ -1244,13 +1422,16 @@ export function reviewVoucher(workspace, { voucherId, decision, note }, context 
   return next;
 }
 
-export function reviseDraftVoucher(workspace, { voucherId, summary, lines, evidenceIds, reason }, context = {}) {
+export function reviseDraftVoucher(workspace, { voucherId, summary, lines, evidenceIds, basis, sourceIds, reconciliationCorrection, reason }, context = {}) {
   if (!reason?.trim()) throw new AccountingRuleError("REVISION_REASON_REQUIRED", "修改凭证必须填写原因");
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext(context);
   const voucher = findVoucher(next, voucherId);
-  if (voucher.status === "posted") throw new AccountingRuleError("POSTED_VOUCHER_IMMUTABLE", "已入账凭证不能直接覆盖，请创建修订版");
-  if (voucher.status === "superseded") throw new AccountingRuleError("SUPERSEDED_VOUCHER_IMMUTABLE", "已被替代的凭证不能修改");
+  assertAccountingPeriodWritable(next, voucher.period || String(voucher.date).slice(0, 7));
+  if (!["draft", "changes_requested"].includes(voucher.status)) throw new AccountingRuleError("VOUCHER_IMMUTABLE", "只能修改有效草稿；已入账凭证请创建更正，来源失效的凭证请重新生成");
+  if (voucher.reconciliationCorrection && (lines != null || sourceIds != null || reconciliationCorrection != null)) {
+    throw new AccountingRuleError("RECONCILIATION_CORRECTION_LOCKED", "核销更正的分录由目标账单生成；如需更换目标，请取消此更正草稿后重新选择");
+  }
   const before = voucherSnapshot(voucher, resolvedContext, reason);
   if (summary != null) {
     const revisedSummary = String(summary).trim();
@@ -1269,9 +1450,23 @@ export function reviseDraftVoucher(workspace, { voucherId, summary, lines, evide
       : aggregateLines(lines);
     if (voucher.sourceType === "manual") {
       voucher.sourceIds = collectSourceIds(voucher.lines.map((line) => line.sourceIds || []));
+    } else {
+      voucher.sourceIds = collectSourceIds(voucher.sourceIds, voucher.lines.map((line) => line.sourceIds || []));
     }
   }
   if (evidenceIds != null) voucher.evidenceIds = collectSourceIds(evidenceIds);
+  if (basis != null) voucher.basis = structuredClone(basis);
+  if (sourceIds != null && !isManualVoucher(voucher)) voucher.sourceIds = collectSourceIds(sourceIds);
+  if (reconciliationCorrection != null) {
+    voucher.reconciliationCorrection = structuredClone(reconciliationCorrection);
+    voucher.reconciliationSources = [];
+    const targetBill = findBill(next, reconciliationCorrection.replacement.billId);
+    voucher.businessReferences = (voucher.businessReferences || []).map((reference) => (
+      reference.kind === "bill" && reference.id === reconciliationCorrection.originalAllocation.billId
+        ? { ...reference, id: targetBill.id, label: targetBill.no || targetBill.id }
+        : reference
+    ));
+  }
   const validation = validateVoucherBalance(voucher, accountingRules(next).amountTolerance, next);
   if (!validation.balanced) throw new AccountingRuleError("VOUCHER_UNBALANCED", validation.errors.join("；"), validation);
   voucher.version += 1;
@@ -1279,6 +1474,7 @@ export function reviseDraftVoucher(workspace, { voucherId, summary, lines, evide
   voucher.updatedAt = resolvedContext.at;
   voucher.updatedBy = resolvedContext.actor;
   synchronizeVoucherJudgementAccounts(next, voucher, resolvedContext, reason.trim());
+  if (isManualVoucher(voucher)) syncManualVoucherEvidenceTasks(next, voucher, resolvedContext);
   voucher.versions = [...(voucher.versions || []), before, voucherSnapshot(voucher, resolvedContext, reason.trim())];
   appendAuditEntry(next, {
     action: "voucher.revise",
@@ -1297,7 +1493,11 @@ export function createPostedVoucherRevision(workspace, { voucherId, reason }, co
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext(context);
   const original = findVoucher(next, voucherId);
+  assertAccountingPeriodWritable(next, original.period || String(original.date).slice(0, 7));
   if (original.status !== "posted") throw new AccountingRuleError("POSTED_VOUCHER_REQUIRED", "只有已入账凭证需要创建独立修订版");
+  if ((next.vouchers || []).some((voucher) => voucher.revisionOf === original.id && ["draft", "changes_requested"].includes(voucher.status))) {
+    throw new AccountingRuleError("REVISION_ALREADY_EXISTS", "该凭证已有更正草稿，请先完成或取消现有更正，不能重复创建");
+  }
   const revision = {
     ...cloneAccountingState(original),
     id: nextRecordId(next.vouchers || [], "voucher"),
@@ -1311,11 +1511,16 @@ export function createPostedVoucherRevision(workspace, { voucherId, reason }, co
     postedAt: null,
     postedBy: null,
     supersededBy: null,
+    supersededAt: null,
+    reconciliationCorrection: null,
+    attachmentPackages: [],
+    evidenceVerification: null,
     reviews: [],
     versions: [voucherSnapshot(original, resolvedContext, "修订前已入账版本")],
   };
   synchronizeVoucherJudgementAccounts(next, revision, resolvedContext, reason.trim());
   next.vouchers.push(revision);
+  if (isManualVoucher(revision)) syncManualVoucherEvidenceTasks(next, revision, resolvedContext);
   appendAuditEntry(next, {
     action: "voucher.create_revision",
     entityType: "voucher",
@@ -1329,7 +1534,8 @@ export function createPostedVoucherRevision(workspace, { voucherId, reason }, co
 
 export function buildAttachmentPackage(workspace, voucherId) {
   const voucher = findVoucher(workspace, voucherId);
-  const documents = (workspace.documents || []).filter((document) => voucher.evidenceIds?.includes(document.id));
+  const manualAssessment = isManualVoucher(voucher) ? assessManualVoucherEvidence(workspace, voucher) : null;
+  const documents = manualAssessment?.documents || (workspace.documents || []).filter((document) => voucher.evidenceIds?.includes(document.id));
   const transactions = sourceTransactionsForVoucher(workspace, voucher);
   const businessEvents = (workspace.businessEvents || []).filter((event) => voucher.sourceIds?.includes(event.id));
   const bills = (workspace.bills || []).filter((bill) => voucher.sourceIds?.includes(bill.id));
@@ -1344,6 +1550,7 @@ export function buildAttachmentPackage(workspace, voucherId) {
   const missing = assessments.flatMap((assessment) => assessment.missing).filter((item, index, all) => (
     all.findIndex((candidate) => candidate.id === item.id) === index
   ));
+  if (manualAssessment) missing.push(...manualAssessment.issues.map((issue) => ({ id: issue.code, label: issue.message })));
   return {
     voucherId: voucher.id,
     voucherNo: voucher.no,
@@ -1356,6 +1563,8 @@ export function buildAttachmentPackage(workspace, voucherId) {
       ...businessReferences.filter((reference) => reference.kind !== "bill").map((reference) => ({ kind: reference.kind === "order_contract" ? "订单 / 合同" : "关联业务", id: reference.id, name: reference.label || reference.id, sourceIds: [reference.id] })),
       ...advanceApplications.map((application) => ({ kind: "预收/预付冲销", id: application.id, name: application.voucherSource?.summary || application.note || application.id, sourceIds: application.sourceIds || [application.id] })),
       ...documents.map((document) => ({ kind: document.type || "资料", id: document.id, name: document.name || document.title || document.id, sourceIds: [document.id] })),
+      ...(manualAssessment?.referenceIds || []).map((id) => ({ kind: "原凭证", id, name: (workspace.vouchers || []).find((item) => item.id === id)?.summary || id, sourceIds: [id] })),
+      ...(voucher.basis?.description ? [{ kind: "计算 / 调整依据", id: `${voucher.id}-basis`, name: voucher.basis.description, sourceIds: collectSourceIds(voucher.basis.voucherIds, voucher.basis.calculationDocumentId) }] : []),
       { kind: "业务匹配说明", id: `${voucher.id}-judgement`, name: voucher.judgement?.reasons?.join("；") || voucher.summary, sourceIds: voucher.sourceIds || [] },
       ...(voucher.reviews || []).map((review) => ({ kind: "人工复核记录", id: review.id, name: `${review.actor}：${review.note}`, sourceIds: [voucher.id] })),
     ],
@@ -1402,6 +1611,8 @@ export function traceVoucherSources(workspace, voucherId) {
     businessEvents: events,
     relatedTransactions,
     businessReferences: voucher.businessReferences || [],
+    basis: voucher.basis || null,
+    referenceVouchers: (workspace.vouchers || []).filter((item) => collectSourceIds(voucher.basis?.voucherIds, voucher.revisionOf).includes(item.id)),
     advanceApplications,
     documents,
     reviews: voucher.reviews || [],

@@ -277,7 +277,7 @@ function documentKindLabel(kind) {
   return { contract: "合同", invoice: "发票", approval: "审批单" }[kind] || "资料";
 }
 
-export function DocumentIntakePanel({ defaultCategory = "其他资料", compact = false, onToast }) {
+export function DocumentIntakePanel({ defaultCategory = "其他资料", compact = false, onToast, onNavigate, activeSection, onSectionChange }) {
   const { state, activeWorkspace, actions, store, fileVault } = useFinanceDesk();
   const terminology = workspaceTerminology(activeWorkspace);
   const displayText = (value) => applyWorkspaceTerminology(value, activeWorkspace);
@@ -290,6 +290,14 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     user.status === "active" && String(user.name || "").trim()
   ))?.name?.trim() || "本地用户";
   const inputRef = useRef(null);
+  const voucherExportRef = useRef(null);
+  const [localSection, setLocalSection] = useState("files");
+  const selectedSection = activeSection ?? localSection;
+  const [uploadOpen, setUploadOpen] = useState(false);
+  function selectSection(nextSection) {
+    setLocalSection(nextSection);
+    onSectionChange?.(nextSection);
+  }
   const payrollFileInputRef = useRef(null);
   const documentActionCancelRef = useRef(null);
   const documentActionTriggerRef = useRef(null);
@@ -299,6 +307,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const [query, setQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const hasFilters = Boolean(query.trim() || categoryFilter !== "all" || statusFilter !== "all");
   const [editing, setEditing] = useState(null);
   const [preview, setPreview] = useState(null);
   const [pendingDocumentAction, setPendingDocumentAction] = useState(null);
@@ -411,6 +420,25 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   ), [activeWorkspace, selectedArchivePeriod]);
   const monthlyArchiveExports = (activeWorkspace.delivery?.financialArchiveExports || [])
     .filter((record) => record.period === selectedArchivePeriod);
+  const latestMonthlyArchiveExport = monthlyArchiveExports.at(-1);
+  const monthlyArchiveIssues = [
+    ...(monthlyArchivePlan?.missingItems || []),
+    ...(latestMonthlyArchiveExport?.missingItems || []).filter((item) => item.key?.startsWith("runtime:")
+      && !monthlyArchivePlan?.missingItems.some((current) => current.documentId && current.documentId === item.documentId))
+      .map((item) => ({ ...item, previousExport: true })),
+  ].filter((item, index, all) => {
+    if (item.key === "check:voucherAttachments") return !all.some((other) => other.key?.startsWith("voucher:") || (other.kind === "original_file" && other.sectionKey !== "receipt"));
+    if (item.key === "check:exceptions") return !all.some((other) => ["unresolved_exception", "unresolved_notice"].includes(other.kind));
+    return all.findIndex((other) => other.key === item.key) === index;
+  });
+  const hasPendingInput = Boolean(editing || payrollFilePreview || vatReconciliation.items.some((item) => {
+    const draft = vatReconciliationDrafts[item.kind];
+    return draft && (draft.reason !== (item.activeRecord?.reason || item.storedRecord?.reason || "")
+      || String(draft.adjustmentAmount) !== String(item.activeRecord?.adjustmentAmount ?? item.storedRecord?.adjustmentAmount ?? ""));
+  }));
+  const visibleDocuments = editing && !filteredDocuments.some((document) => document.id === editing.id)
+    ? [...(activeWorkspace.documents || []).filter((document) => document.id === editing.id), ...filteredDocuments]
+    : filteredDocuments;
 
   useEffect(() => {
     setCategory(payrollEnabled || !isPayrollDocumentCategory(defaultCategory) ? defaultCategory : "其他资料");
@@ -432,7 +460,13 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     setError("");
     setUploadFeedback(null);
     setMatchFeedback(null);
-  }, [activeWorkspace.id, activeWorkspace.currentPeriod, defaultCategory, payrollEnabled]);
+    setUploadOpen(false);
+  }, [activeWorkspace.id, activeWorkspace.currentPeriod, defaultCategory]);
+
+  useEffect(() => {
+    if (!payrollEnabled && selectedSection === "payroll") selectSection("files");
+    if (!payrollEnabled && isPayrollDocumentCategory(category)) setCategory("其他资料");
+  }, [payrollEnabled, selectedSection, category]);
 
   useEffect(() => {
     if (pendingDocumentAction) documentActionCancelRef.current?.focus();
@@ -612,6 +646,11 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   }
 
   function beginEdit(document) {
+    selectSection("files");
+    if (editing) {
+      if (editing.id !== document.id) setError("请先保存或取消当前资料的编辑，再打开另一份资料。");
+      return;
+    }
     clearPendingDocumentAction();
     setError("");
     setEditing({
@@ -904,7 +943,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         period: monthlyArchivePlan.period,
       });
       onToast?.(result.manifest.isComplete
-        ? `已在本地生成并下载完整财务档案：${result.fileName}`
+        ? `已在本地下载完整财务档案：${result.fileName}；原文件 ${result.manifest.originalFileCount} 份已装入并核验`
         : `已在本地导出不完整草稿包：${result.fileName}；清单列出 ${result.manifest.missingItems.length} 项缺失`);
     } catch (caught) {
       setError(caught.message || "月度财务档案包生成失败");
@@ -913,23 +952,181 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     }
   }
 
+  function archiveResolution(item) {
+    if (item.sectionKey === "receipt") return { label: "前往导入回执", page: "archive" };
+    if (item.documentId || item.kind === "original_file") return { label: "查看原件", section: "files", documentId: item.documentId };
+    const attachment = monthlyArchivePlan?.voucherAttachments.find((entry) => item.voucherId === entry.voucherId || item.key?.startsWith(`voucher:${entry.voucherId}:`));
+    if (attachment) return { label: "查看凭证附件", section: "exports", voucherId: attachment.voucherId };
+    if (item.sectionKey === "voucherAttachments") return { label: "查看缺件与匹配", section: "missing" };
+    if (item.sectionKey === "payroll") return payrollEnabled ? { label: "补齐工资社保", section: "payroll" } : { instruction: "需启用工资社保模块后补齐该期间资料。" };
+    if (item.sectionKey === "reports") return { label: "前往报表中心", page: "reports" };
+    if (["taxWorkpaper", "filingPackage", "initialConfirmation", "finalConfirmation"].includes(item.sectionKey)) return { label: "前往确认与申报", page: "tax" };
+    if (["vouchers", "exceptions"].includes(item.sectionKey)) return { label: "前往核销与凭证", page: "reconcile" };
+    return { instruction: item.sectionKey === "moduleSnapshot" ? "需要该期间原有的模块快照，当前设置不能替代。" : "保留此项待核实，不生成替代记录。" };
+  }
+
+  function resolveArchiveItem(item) {
+    const resolution = archiveResolution(item);
+    if (resolution.section) {
+      selectSection(resolution.section);
+      if (resolution.voucherId) {
+        setSelectedVoucherId(resolution.voucherId);
+        if (voucherExportRef.current) voucherExportRef.current.open = true;
+        window.requestAnimationFrame(() => voucherExportRef.current?.scrollIntoView({ block: "nearest" }));
+      }
+      if (resolution.section === "files") {
+        const document = activeWorkspace.documents.find((record) => record.id === resolution.documentId);
+        setQuery(document?.name || "");
+        setCategoryFilter("all");
+        setStatusFilter(document ? "all" : "missing");
+      }
+      return;
+    }
+    if (hasPendingInput) {
+      setError("还有未保存的资料输入。请先保存或取消编辑、处理导入预览，再前往其他页面。");
+      return;
+    }
+    onNavigate?.(resolution.page);
+  }
+
+  function archiveIssueLabel(item) {
+    const document = activeWorkspace.documents.find((record) => record.id === item.documentId);
+    const voucher = monthlyArchivePlan?.vouchers.find((record) => item.voucherId === record.id || item.key?.startsWith(`voucher:${record.id}:`));
+    let label = document?.name || item.label || "待补资料";
+    if (item.documentId && !document) label = label.replaceAll(item.documentId, "原始资料");
+    if (voucher && !voucher.no) label = label.replaceAll(voucher.id, "相关凭证");
+    return displayText(label);
+  }
+
   return (
-    <section className={`foundation-section document-intake-panel ${compact ? "compact" : "intake-wide"}`}>
-      <div className="foundation-section-heading"><div><small>IndexedDB · 不上传</small><h3><FileText size={18} />本地资料库</h3></div><span>{filteredDocuments.length} / {activeWorkspace.documents.length} 份</span></div>
+    <section className={`foundation-section document-intake-panel ${compact ? "compact" : "intake-wide"}`} data-unsaved-changes={hasPendingInput || undefined}>
+      <div className="foundation-section-heading"><div><h3><FileText size={18} />本地资料库</h3></div><button className="primary-button" type="button" aria-expanded={uploadOpen && selectedSection === "files"} disabled={!fileVault || busy} onClick={() => { selectSection("files"); setUploadOpen((open) => selectedSection === "files" ? !open : true); }}><FileArrowUp size={17} />上传原文件</button></div>
+      <nav className="document-section-nav" aria-label="资料库分组">{[
+        { id: "files", label: "文件", count: activeWorkspace.documents.length },
+        { id: "business", label: "合同与发票" },
+        ...(payrollEnabled ? [{ id: "payroll", label: "工资社保" }] : []),
+        { id: "missing", label: "缺件与匹配", count: openDocumentTasks.length || null },
+        { id: "exports", label: "导出归档" },
+      ].map((item) => <button key={item.id} type="button" className={selectedSection === item.id ? "active" : ""} aria-pressed={selectedSection === item.id} onClick={() => selectSection(item.id)}>{item.label}{item.count != null && <span>{item.count}</span>}</button>)}</nav>
+      {editing && selectedSection !== "files" && <div className="document-draft-reminder"><span>“{editing.name}”的编辑内容已保留。</span><button className="secondary-button" type="button" onClick={() => selectSection("files")}>继续编辑</button></div>}
+      {!payrollEnabled && payrollFilePreview && <div className="document-draft-reminder"><span>工资社保模块已停用，未导入的文件预览已保留。</span><button className="secondary-button" type="button" onClick={() => { setPayrollFilePreview(null); setPayrollFieldMapping({}); }}>取消此次导入</button></div>}
+      {error && <div className="foundation-error" role="alert"><WarningCircle size={18} /><span>{displayText(error)}</span></div>}
       {!fileVault && <div className="foundation-error"><WarningCircle size={18} />当前环境不支持浏览器本地文件保险箱，只能查看已有资料元数据。</div>}
-      <div className="document-intake-upload-zone">
+      <div className="document-intake-upload-zone" hidden={selectedSection !== "files" || !uploadOpen}>
         <div className="document-intake-controls document-upload-controls">
           <label className="foundation-field"><span>资料类别</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{selectableCategories.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
           <label className="foundation-field"><span>业务期间</span><input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} /></label>
-          <label className="foundation-field"><span>关联业务对象（可选）</span><select value={relatedObjectId} onChange={(event) => setRelatedObjectId(event.target.value)}><option value="">暂不关联</option>{relatedGroups.map((group) => <optgroup label={group.label} key={group.collection}>{group.items.map((item) => <option value={item.id} key={item.id}>{relatedLabel(item)} · {item.id}</option>)}</optgroup>)}</select></label>
-          <button className="secondary-button" type="button" disabled={!fileVault || busy} onClick={() => inputRef.current?.click()}><FileArrowUp size={17} />{busy ? "正在保存…" : "上传原文件"}</button>
+          <label className="foundation-field"><span>关联业务（可选）</span><select value={relatedObjectId} onChange={(event) => setRelatedObjectId(event.target.value)}><option value="">暂不关联</option>{relatedGroups.map((group) => <optgroup label={group.label} key={group.collection}>{group.items.map((item) => <option value={item.id} key={item.id}>{relatedLabel(item)}</option>)}</optgroup>)}</select></label>
+          <button className="secondary-button" type="button" disabled={!fileVault || busy} onClick={() => inputRef.current?.click()}><FileArrowUp size={17} />{busy ? "正在保存…" : "选择文件并上传"}</button>
           <input ref={inputRef} type="file" multiple hidden onChange={addFiles} />
         </div>
-        <p className="foundation-hint">合同、发票、审批单等原文件保存在当前浏览器 IndexedDB；分类、期间、校验哈希和业务关联保存在当前工作台，不会上传外部服务。</p>
+        <p className="foundation-hint">选择类别和期间后上传文件。原文件保存在当前浏览器；换设备前请导出含原件的资料包。</p>
         {uploadFeedback && <div className={`${uploadFeedback.tone === "error" ? "foundation-error" : "foundation-notice"} import-feedback document-upload-feedback`} role={uploadFeedback.tone === "error" ? "alert" : "status"} aria-live="polite">{uploadFeedback.tone === "error" ? <WarningCircle size={18} /> : <CheckCircle size={18} weight="fill" />}<span>{displayText(uploadFeedback.message)}</span></div>}
-        <div className="foundation-notice"><WarningCircle size={18} /><span><strong>OCR 未连接。</strong> 合同、发票和审批字段必须由本地用户人工录入并核对，系统不会假装从原文件自动识别。</span></div>
+        <p className="foundation-hint">合同、发票和审批字段需要手工录入，文字识别尚未接入。</p>
       </div>
-      <div className="bank-import-workspace">
+      <div className="document-intake-controls document-filter-controls" hidden={selectedSection !== "files"}>
+        <div className="document-filter-search">
+          <label className="foundation-field"><span>搜索资料</span><span className="search-field"><MagnifyingGlass size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="文件名、类别或关联业务" /></span></label>
+          {hasFilters && <button className="document-filter-clear" type="button" onClick={() => { setQuery(""); setCategoryFilter("all"); setStatusFilter("all"); }}>清空筛选</button>}
+        </div>
+        <label className="foundation-field"><span>类别</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="all">全部类别</option>{categories.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
+        <label className="foundation-field"><span>状态</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">全部状态</option><option value="active">未归档</option><option value="archived">已归档</option><option value="linked">已关联</option><option value="unlinked">未使用，可删除</option><option value="available">原文件可用</option><option value="missing">原文件缺失</option></select></label>
+      </div>
+      {preview && (
+        <div className="bank-import-workspace document-preview-panel" hidden={selectedSection !== "files"}>
+          <div className="foundation-section-heading"><div><small>浏览器本地预览</small><h3>{preview.document.name}</h3></div><button className="foundation-icon-button" type="button" aria-label="关闭预览" onClick={closePreview}><X size={17} /></button></div>
+          {preview.kind === "image" && <img className="document-preview-image" src={preview.url} alt={preview.document.name} />}
+          {preview.kind === "pdf" && <iframe className="document-preview-frame" src={preview.url} title={`预览 ${preview.document.name}`} />}
+          {preview.kind === "text" && <div className="bank-preview-scroll document-preview-text"><pre className="document-preview-pre">{preview.text}</pre>{preview.truncated && <p className="foundation-hint">内容较长，页面仅显示前 300,000 个字符；下载可查看完整原文件。</p>}</div>}
+          {preview.kind === "audio" && <audio className="document-preview-audio" src={preview.url} controls />}
+          {preview.kind === "video" && <video className="document-preview-video" src={preview.url} controls />}
+          {preview.kind === "unsupported" && <div className="foundation-notice"><WarningCircle size={18} />该格式无法由浏览器直接预览，原文件仍可完整下载。</div>}
+          <div className="foundation-inline-actions document-preview-actions"><button className="secondary-button" type="button" onClick={() => download(preview.document)}><DownloadSimple size={16} />下载原文件</button><button className="secondary-button" type="button" onClick={closePreview}>关闭预览</button></div>
+        </div>
+      )}
+      <div className={`document-record-grid${editing ? " is-editing" : ""}`} hidden={selectedSection !== "files"}>
+        {visibleDocuments.map((document) => {
+          const locallyAvailable = document.storage?.mode === "indexeddb" && document.storage?.availableLocally;
+          const canReadOriginal = Boolean(locallyAvailable && fileVault);
+          const canPreview = canReadOriginal && previewKind(document.mimeType, document.name) !== "unsupported";
+          const usage = getLocalDocumentUsage(activeWorkspace, document.id);
+          const archived = usage.some((item) => item.kind === "archive");
+          const isEditing = editing?.id === document.id;
+          const pendingAction = pendingDocumentAction?.documentId === document.id ? pendingDocumentAction.action : null;
+          const confirmationId = `document-action-${document.id}`;
+          return (
+            <article className="document-record" key={document.id}>
+              <span className="document-record-icon"><FileText size={20} /></span>
+              <div>
+                <strong>{document.name}</strong>
+                <small>{categoryDisplayLabel(document.category, activeWorkspace)} · {document.period || "未分期"} · {fileSize(document.size)}</small>
+                <div className="document-state-row"><span>{archived ? "已归档" : "未归档"}</span><span className={locallyAvailable ? "original-available" : "original-missing"}>原件：{locallyAvailable ? "本机可用" : "本机缺失"}</span></div>
+                <details className="document-trace-details"><summary>资料详情与追溯</summary>
+                  {!archived && <div className="document-secondary-actions">
+                    {!isEditing && <button className="secondary-button" type="button" onClick={() => beginEdit(document)}><PencilSimple size={15} />编辑资料</button>}
+                    <button className="secondary-button" type="button" aria-haspopup="dialog" aria-expanded={pendingAction === "archive"} aria-controls={confirmationId} onClick={(event) => requestDocumentAction(document, "archive", event.currentTarget)}><Archive size={15} />归档</button>
+                    {usage.length === 0 && <button className="secondary-button" type="button" aria-label="删除未使用资料" aria-haspopup="dialog" aria-expanded={pendingAction === "delete"} aria-controls={confirmationId} onClick={(event) => requestDocumentAction(document, "delete", event.currentTarget)}><Trash size={15} />删除</button>}
+                  </div>}
+                  {!locallyAvailable && <p>当前设备没有原件，暂不能预览或下载。</p>}
+                  {canReadOriginal && !canPreview && <p>此格式不支持页面预览，可下载原文件查看。</p>}
+                  {archived ? <p>已归档资料不能直接修改或删除。</p> : usage.length > 0 && <p>资料已被业务使用，不能删除。</p>}
+                  <p>{usage.length ? `关联：${usage.map((item) => displayText(item.label)).join("、")}` : "暂无业务关联"}</p>
+                  {structuredDetailLines(document, activeWorkspace).map((line) => <p key={line}>{line}</p>)}
+                  {documentStructuredKind(document.category) && <p>业务字段由人工录入，文字识别尚未接入。</p>}
+                  <p>文档编号：<code>{document.id}</code></p><p>原件哈希：<code>{document.hash || "尚无可核验的原件记录"}</code></p>
+                </details>
+                {isEditing && (
+                  <div className="bank-import-workspace document-editor-panel">
+                    <div className="document-intake-controls document-edit-controls">
+                      <label className="foundation-field"><span>文件名称</span><input value={editing.name} onChange={(event) => setEditing((current) => ({ ...current, name: event.target.value }))} /></label>
+                      <label className="foundation-field"><span>资料类别</span><select value={editing.category} onChange={(event) => changeEditCategory(event.target.value)}>{selectableCategories.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
+                      <label className="foundation-field"><span>业务期间</span><input type="month" value={editing.period} onChange={(event) => setEditing((current) => ({ ...current, period: event.target.value }))} /></label>
+                      <label className="foundation-field"><span>添加关联对象</span><select value="" onChange={(event) => addEditRelation(event.target.value)}><option value="">选择后加入</option>{relatedGroups.map((group) => <optgroup label={group.label} key={group.collection}>{group.items.filter((item) => !editing.relatedObjectIds.includes(item.id)).map((item) => <option value={item.id} key={item.id}>{relatedLabel(item)}</option>)}</optgroup>)}</select></label>
+                    </div>
+                    <StructuredDataFields category={editing.category} value={editing.structuredData} onChange={(structuredData) => setEditing((current) => ({ ...current, structuredData }))} workspace={activeWorkspace} currentDocumentId={editing.id} />
+                    <div className="permission-chip-list">{editing.relatedObjectIds.map((objectId) => <span key={objectId}>{relatedLabels.get(objectId) || objectId} <button type="button" aria-label={`解除 ${relatedLabels.get(objectId) || objectId} 关联`} onClick={() => removeEditRelation(objectId)}>×</button></span>)}</div>
+                    <div className="foundation-inline-actions document-editor-actions"><button className="primary-button" type="button" onClick={saveEdit}>保存资料详情</button><button className="secondary-button" type="button" onClick={closeEditing}>取消</button></div>
+                  </div>
+                )}
+                {pendingAction && (
+                  <div
+                    id={confirmationId}
+                    className={`document-action-confirmation ${pendingAction}`}
+                    role="alertdialog"
+                    aria-modal="false"
+                    aria-labelledby={`${confirmationId}-title`}
+                    aria-describedby={`${confirmationId}-description`}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Escape") return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      clearPendingDocumentAction(true);
+                    }}
+                  >
+                    {pendingAction === "delete" ? <WarningCircle size={19} /> : <Archive size={19} />}
+                    <div className="document-action-confirmation-copy">
+                      <strong id={`${confirmationId}-title`}>{pendingAction === "delete" ? "确认删除资料" : "确认归档资料"}</strong>
+                      <p id={`${confirmationId}-description`}>{pendingAction === "delete"
+                        ? <>将删除“{document.name}”的资料记录及当前浏览器中的本地原文件，无法从本页面恢复。</>
+                        : <>归档“{document.name}”后将不能直接修改或删除；资料记录和本地原文件仍会保留。</>}</p>
+                    </div>
+                    <div className="document-action-confirmation-actions">
+                      <button ref={documentActionCancelRef} className="secondary-button" type="button" onClick={() => clearPendingDocumentAction(true)}>取消</button>
+                      <button className={pendingAction === "delete" ? "danger-button" : "primary-button"} type="button" onClick={() => pendingAction === "delete" ? remove(document) : archive(document)}>{pendingAction === "delete" ? "确认删除" : "确认归档"}</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+              {canReadOriginal && <div className="document-primary-actions">
+                {canPreview && <button className="secondary-button" type="button" aria-label="页面预览" onClick={() => showPreview(document)}><Eye size={15} />预览</button>}
+                <button className="secondary-button" type="button" aria-label="下载原文件" onClick={() => download(document)}><DownloadSimple size={15} />下载</button>
+              </div>}
+            </article>
+          );
+        })}
+        {!visibleDocuments.length && <p className="foundation-empty">没有符合当前条件的资料。</p>}
+      </div>
+      <div className="bank-import-workspace" hidden={selectedSection !== "business"}>
         <div className="foundation-section-heading">
           <div><small>结构化合同 · 预览后确认</small><h3>合同账单计划</h3></div>
           <span>{contractBillingPlans.length} 份合同 · 待生成 {contractBillingPlans.reduce((sum, plan) => sum + plan.items.length, 0)} 张</span>
@@ -956,7 +1153,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           {!contractBillingPlans.length && <p className="foundation-empty">当前还没有结构化合同资料。上传或编辑合同并补齐账单计划字段后，会先在这里预览。</p>}
         </div>
       </div>
-      <div className="bank-import-workspace">
+      <div className="bank-import-workspace" hidden={selectedSection !== "business"}>
         <div className="foundation-section-heading">
           <div><small>五类审批 · 人工确认</small><h3>审批单与业务链</h3></div>
           <span>{approvalConnections.filter((item) => item.details.linkStatus === "linked").length} / {approvalConnections.length} 已关联</span>
@@ -989,7 +1186,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           {!approvalConnections.length && <p className="foundation-empty">当前还没有结构化审批单资料。</p>}
         </div>
       </div>
-      <div className="bank-import-workspace">
+      <div className="bank-import-workspace" hidden={selectedSection !== "business"}>
         <div className="foundation-section-heading">
           <div><small>{activeWorkspace.currentPeriod} · 结构化发票</small><h3>增值税发票来源</h3></div>
           <span>{invoiceVatSummary.usesStructuredInvoices ? "发票汇总口径" : "仍用原估算口径"}</span>
@@ -1111,7 +1308,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           })}
         </div>
       </div>
-      {payrollEnabled && <div className="bank-import-workspace">
+      {payrollEnabled && <div className="bank-import-workspace" hidden={selectedSection !== "payroll"}>
         <div className="foundation-section-heading">
           <div><small>{activeWorkspace.currentPeriod} · CSV / XLS / XLSX · 仅本地</small><h3>工资与社保导入核对</h3></div>
           <span>工资 {payrollSocialSummary.counts.payroll} 人 · 社保 {payrollSocialSummary.counts.socialSecurity} 人 · 差异 {payrollSocialSummary.counts.issues} 人</span>
@@ -1182,7 +1379,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         </div>
         {!!(activeWorkspace.payrollImports || []).length && <p className="foundation-hint">当前工作台已记录 {(activeWorkspace.payrollImports || []).length} 个本地导入批次；最近一次为 {(activeWorkspace.payrollImports || []).at(-1).fileName}，原文件没有上传。</p>}
       </div>}
-      <div className="bank-import-workspace">
+      <div className="bank-import-workspace" hidden={selectedSection !== "missing"}>
         <div className="foundation-section-heading">
           <div><small>本地规则建议 · 必须人工确认</small><h3>资料匹配与缺件待办</h3></div>
           <span>建议 {matchSuggestions.length} · 待补 {openDocumentTasks.length} · 已关闭 {resolvedDocumentTaskCount}</span>
@@ -1205,14 +1402,45 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           {!matchSuggestions.length && <p className="foundation-empty">当前没有达到建议阈值的未确认匹配；可先补录资料详情，或在资料编辑区手动关联。</p>}
         </div>
       </div>
-      <div className="bank-import-workspace">
-        <div className="foundation-section-heading">
-          <div><small>凭证附件包 · 仅本地生成</small><h3>选择凭证并核对附件</h3></div>
-          <span>{selectedVoucher?.attachmentPackages?.length || 0} 次生成记录</span>
-        </div>
-        <p className="foundation-hint">选择凭证只展示已关联资料和缺失项，不会读取原文件或生成 ZIP；只有点击下方按钮才会从当前浏览器读取原文件、复核哈希并下载，任何内容都不会上传网络。</p>
+      <div className="bank-import-workspace monthly-financial-archive" hidden={selectedSection !== "exports"}>
+        <div className="foundation-section-heading"><div><h3>月度资料包</h3></div></div>
         <div className="document-intake-controls document-action-controls">
-          <label className="foundation-field"><span>凭证</span><select value={selectedVoucherId} onChange={(event) => setSelectedVoucherId(event.target.value)}><option value="">请选择凭证</option>{(activeWorkspace.vouchers || []).map((voucher) => <option value={voucher.id} key={voucher.id}>{voucher.no || "凭证草稿"} · {voucher.summary || voucher.id}</option>)}</select></label>
+          <label className="foundation-field"><span>财务期间</span><select value={selectedArchivePeriod} onChange={(event) => setSelectedArchivePeriod(event.target.value)}>{archivePeriods.map((archivePeriod) => <option value={archivePeriod} key={archivePeriod}>{archivePeriod}</option>)}</select></label>
+          <button className="primary-button" type="button" disabled={!fileVault || !monthlyArchivePlan || generatingMonthlyArchive} onClick={generateMonthlyArchive}><DownloadSimple size={17} />{generatingMonthlyArchive ? "正在核对原件…" : "导出资料包"}</button>
+        </div>
+        {monthlyArchivePlan ? (
+          <>
+            <div className={`archive-package-summary${monthlyArchivePlan.isComplete ? "" : " is-draft"}`}>
+              <div><strong>{monthlyArchivePlan.isComplete ? "清单齐备，待核验原件" : "草稿 · 仍有待处理项"}</strong><p>期间记录{monthlyArchivePlan.archiveRecord ? "已归档" : "尚未归档"}。导出时会核对并装入原文件；缺件会标为草稿。</p></div>
+              {latestMonthlyArchiveExport && <span>最近导出：{latestMonthlyArchiveExport.isComplete ? "完整资料包" : "草稿资料包"}{latestMonthlyArchiveExport.originalFileCount != null && ` · ${latestMonthlyArchiveExport.originalFileCount} 份原件`}</span>}
+            </div>
+            {!!monthlyArchiveIssues.length && <ul className="archive-action-list">
+              {monthlyArchiveIssues.map((item) => {
+                const resolution = archiveResolution(item);
+                return <li key={item.key}><div><strong>{archiveIssueLabel(item)}</strong><p>{item.previousExport ? "上次原件核验：" : ""}{displayText(item.reason).replaceAll("哈希", "校验信息")}</p></div>{resolution.section || (resolution.page && onNavigate) ? <button className="secondary-button" type="button" onClick={() => resolveArchiveItem(item)}>{resolution.label}</button> : <small>{resolution.instruction || `请${resolution.label}`}</small>}</li>;
+              })}
+            </ul>}
+            <details className="document-trace-details archive-section-details">
+              <summary>完整清单与导出记录</summary>
+              <p className="foundation-hint">{monthlyArchivePlan.moduleSnapshot.known ? `${monthlyArchivePlan.moduleSnapshot.source === "workspace.modules" ? "当前工作台" : "该期间保存的"}模块：确认与申报${monthlyArchivePlan.moduleSnapshot.taxEnabled ? "适用" : "不适用"}，工资社保${monthlyArchivePlan.moduleSnapshot.payrollEnabled ? "适用" : "不适用"}。` : "历史模块快照缺失，未采用当前开关豁免历史必需项。"}</p>
+              <div className="foundation-record-list">
+                {monthlyArchivePlan.sections.map((section) => {
+                  const statusText = { collected: "已收集", missing: "缺失", not_required: "不适用", pending_generation: "导出时生成" }[section.status];
+                  return <article className="foundation-record" key={section.key}><div><strong>{displayText(section.label)}</strong><small>{displayText(section.detail)}</small></div><span>{statusText}</span></article>;
+                })}
+              </div>
+              {!!monthlyArchiveExports.length && <ul>{monthlyArchiveExports.map((record) => <li key={record.id}>{record.generatedAt} · {record.fileName}</li>)}</ul>}
+              <pre>{JSON.stringify({ moduleSnapshot: monthlyArchivePlan.moduleSnapshot, missingItems: monthlyArchivePlan.missingItems, originalFiles: latestMonthlyArchiveExport?.originalFiles || [], packageHash: latestMonthlyArchiveExport?.hash || null }, null, 2)}</pre>
+            </details>
+          </>
+        ) : <p className="foundation-empty">当前工作台没有可导出的财务期间。</p>}
+      </div>
+      <details className="document-voucher-export" ref={voucherExportRef} hidden={selectedSection !== "exports"}>
+        <summary>单张凭证附件包<span>按凭证选择原件</span></summary>
+      <div className="bank-import-workspace">
+        <p className="foundation-hint">下载包包含已关联原件、复核记录和缺失清单。</p>
+        <div className="document-intake-controls document-action-controls">
+          <label className="foundation-field"><span>凭证</span><select value={selectedVoucherId} onChange={(event) => setSelectedVoucherId(event.target.value)}><option value="">请选择凭证</option>{(activeWorkspace.vouchers || []).map((voucher) => <option value={voucher.id} key={voucher.id}>{voucher.no || "未编号凭证"} · {voucher.summary || "无摘要"}{voucher.status === "invalidated" ? "（失效历史）" : ""}</option>)}</select></label>
           <button className="primary-button" type="button" disabled={!fileVault || !selectedVoucher || generatingPackage} onClick={generateAttachmentPackage}><DownloadSimple size={17} />{generatingPackage ? "正在生成 ZIP…" : "生成并下载本地 ZIP"}</button>
         </div>
         {voucherPackagePlan ? (
@@ -1239,120 +1467,8 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           </>
         ) : <p className="foundation-empty">当前工作台还没有可选凭证。</p>}
       </div>
-      <div className="bank-import-workspace">
-        <div className="foundation-section-heading">
-          <div><small>整月财务档案 · 本地 ZIP</small><h3>选择期间并核对归档清单</h3></div>
-          <span>{monthlyArchivePlan?.isComplete ? "可生成完整档案" : "仅可导出不完整草稿"}</span>
-        </div>
-        <p className="foundation-hint">选择期间只计算归档清单，不读取回执原文件、不生成 ZIP。点击导出后才会读取并校验真实回执，为 ZIP 内每个文件生成统一哈希；导出记录不会把期间标记为正式归档，也不会上传网络。</p>
-        <div className="document-intake-controls document-action-controls">
-          <label className="foundation-field"><span>财务期间</span><select value={selectedArchivePeriod} onChange={(event) => setSelectedArchivePeriod(event.target.value)}>{archivePeriods.map((archivePeriod) => <option value={archivePeriod} key={archivePeriod}>{archivePeriod}</option>)}</select></label>
-          <button className={monthlyArchivePlan?.isComplete ? "primary-button" : "secondary-button"} type="button" disabled={!fileVault || !monthlyArchivePlan || generatingMonthlyArchive} onClick={generateMonthlyArchive}><DownloadSimple size={17} />{generatingMonthlyArchive ? "正在生成 ZIP…" : (monthlyArchivePlan?.isComplete ? "生成完整财务档案 ZIP" : "导出不完整财务档案草稿")}</button>
-        </div>
-        {monthlyArchivePlan ? (
-          <>
-            <div className="foundation-record-list">
-              {monthlyArchivePlan.sections.map((section) => {
-                const statusText = section.status === "collected" ? "已收集" : (section.status === "missing" ? "缺失" : "点击后生成");
-                return <article className="foundation-record" key={section.key}><div><strong>{String(section.order).padStart(2, "0")} · {displayText(section.label)}</strong><small>{displayText(section.detail)}</small></div><span><strong>{statusText}</strong><small>{section.count == null ? "" : `${section.count} 项`}</small></span></article>;
-              })}
-            </div>
-            {!!monthlyArchivePlan.missingItems.length && <div className="foundation-notice"><WarningCircle size={18} /><span><strong>不能标记为完整档案：</strong> {monthlyArchivePlan.missingItems.map((item) => `${displayText(item.label)}（${displayText(item.reason)}）`).join("；")}。仍可导出文件名和清单均明确标注的“不完整草稿包”。</span></div>}
-            {!!monthlyArchiveExports.length && <p className="foundation-hint">本期间已导出 {monthlyArchiveExports.length} 次；最近一次为 {monthlyArchiveExports.at(-1).fileName}。这些是本地导出记录，不等于正式期间归档。</p>}
-          </>
-        ) : <p className="foundation-empty">当前工作台没有可导出的财务期间。</p>}
-      </div>
-      <div className="document-intake-controls document-filter-controls">
-        <label className="foundation-field"><span>搜索资料</span><span className="search-field"><MagnifyingGlass size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="文件名、哈希或关联对象" /></span></label>
-        <label className="foundation-field"><span>类别筛选</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="all">全部类别</option>{categories.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
-        <label className="foundation-field"><span>状态筛选</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">全部状态</option><option value="active">未归档</option><option value="archived">已归档</option><option value="linked">已关联</option><option value="unlinked">未使用，可删除</option><option value="available">原文件可用</option><option value="missing">原文件缺失</option></select></label>
-        <button className="secondary-button" type="button" onClick={() => { setQuery(""); setCategoryFilter("all"); setStatusFilter("all"); }}>清空筛选</button>
-      </div>
-      {error && <div className="foundation-error" role="alert"><WarningCircle size={18} /><span>{displayText(error)}</span></div>}
-      {preview && (
-        <div className="bank-import-workspace document-preview-panel">
-          <div className="foundation-section-heading"><div><small>浏览器本地预览</small><h3>{preview.document.name}</h3></div><button className="foundation-icon-button" type="button" aria-label="关闭预览" onClick={closePreview}><X size={17} /></button></div>
-          {preview.kind === "image" && <img className="document-preview-image" src={preview.url} alt={preview.document.name} />}
-          {preview.kind === "pdf" && <iframe className="document-preview-frame" src={preview.url} title={`预览 ${preview.document.name}`} />}
-          {preview.kind === "text" && <div className="bank-preview-scroll document-preview-text"><pre className="document-preview-pre">{preview.text}</pre>{preview.truncated && <p className="foundation-hint">内容较长，页面仅显示前 300,000 个字符；下载可查看完整原文件。</p>}</div>}
-          {preview.kind === "audio" && <audio className="document-preview-audio" src={preview.url} controls />}
-          {preview.kind === "video" && <video className="document-preview-video" src={preview.url} controls />}
-          {preview.kind === "unsupported" && <div className="foundation-notice"><WarningCircle size={18} />该格式无法由浏览器直接预览，原文件仍可完整下载。</div>}
-          <div className="foundation-inline-actions document-preview-actions"><button className="secondary-button" type="button" onClick={() => download(preview.document)}><DownloadSimple size={16} />下载原文件</button><button className="secondary-button" type="button" onClick={closePreview}>关闭预览</button></div>
-        </div>
-      )}
-      <div className={`document-record-grid${editing ? " is-editing" : ""}`}>
-        {filteredDocuments.map((document) => {
-          const locallyAvailable = document.storage?.mode === "indexeddb" && document.storage?.availableLocally;
-          const usage = getLocalDocumentUsage(activeWorkspace, document.id);
-          const archived = usage.some((item) => item.kind === "archive");
-          const isEditing = editing?.id === document.id;
-          const pendingAction = pendingDocumentAction?.documentId === document.id ? pendingDocumentAction.action : null;
-          const confirmationId = `document-action-${document.id}`;
-          return (
-            <article className="document-record" key={document.id}>
-              <span className="document-record-icon"><FileText size={20} /></span>
-              <div>
-                <strong>{document.name}</strong>
-                <small>{categoryDisplayLabel(document.category, activeWorkspace)} · {document.period || "未分期"} · {fileSize(document.size)} · {archived ? "已归档" : document.lifecycleStatus || "已获取"}</small>
-                <p title={usage.map((item) => displayText(item.label)).join("、")}>{usage.length ? `正在使用：${usage.map((item) => displayText(item.label)).join("、")}` : "未使用，可安全删除"}</p>
-                <p>{document.hash ? `哈希 ${document.hash.slice(0, 12)}… · ${locallyAvailable ? "原文件可用" : "原文件缺失"}` : "仅有资料元数据；未保存原文件"}</p>
-                {structuredDetailLines(document, activeWorkspace).map((line) => <p key={line}>{line}</p>)}
-                {documentStructuredKind(document.category) && <p>字段来源：人工录入 · OCR 未连接</p>}
-                {isEditing && (
-                  <div className="bank-import-workspace document-editor-panel">
-                    <div className="document-intake-controls document-edit-controls">
-                      <label className="foundation-field"><span>文件名称</span><input value={editing.name} onChange={(event) => setEditing((current) => ({ ...current, name: event.target.value }))} /></label>
-                      <label className="foundation-field"><span>资料类别</span><select value={editing.category} onChange={(event) => changeEditCategory(event.target.value)}>{selectableCategories.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
-                      <label className="foundation-field"><span>业务期间</span><input type="month" value={editing.period} onChange={(event) => setEditing((current) => ({ ...current, period: event.target.value }))} /></label>
-                      <label className="foundation-field"><span>添加关联对象</span><select value="" onChange={(event) => addEditRelation(event.target.value)}><option value="">选择后加入</option>{relatedGroups.map((group) => <optgroup label={group.label} key={group.collection}>{group.items.filter((item) => !editing.relatedObjectIds.includes(item.id)).map((item) => <option value={item.id} key={item.id}>{relatedLabel(item)}</option>)}</optgroup>)}</select></label>
-                    </div>
-                    <StructuredDataFields category={editing.category} value={editing.structuredData} onChange={(structuredData) => setEditing((current) => ({ ...current, structuredData }))} workspace={activeWorkspace} currentDocumentId={editing.id} />
-                    <div className="permission-chip-list">{editing.relatedObjectIds.map((objectId) => <span key={objectId}>{relatedLabels.get(objectId) || objectId} <button type="button" aria-label={`解除 ${relatedLabels.get(objectId) || objectId} 关联`} onClick={() => removeEditRelation(objectId)}>×</button></span>)}</div>
-                    <div className="foundation-inline-actions document-editor-actions"><button className="primary-button" type="button" onClick={saveEdit}>保存资料详情</button><button className="secondary-button" type="button" onClick={closeEditing}>取消</button></div>
-                  </div>
-                )}
-                {pendingAction && (
-                  <div
-                    id={confirmationId}
-                    className={`document-action-confirmation ${pendingAction}`}
-                    role="alertdialog"
-                    aria-modal="false"
-                    aria-labelledby={`${confirmationId}-title`}
-                    aria-describedby={`${confirmationId}-description`}
-                    onKeyDown={(event) => {
-                      if (event.key !== "Escape") return;
-                      event.preventDefault();
-                      event.stopPropagation();
-                      clearPendingDocumentAction(true);
-                    }}
-                  >
-                    {pendingAction === "delete" ? <WarningCircle size={19} /> : <Archive size={19} />}
-                    <div className="document-action-confirmation-copy">
-                      <strong id={`${confirmationId}-title`}>{pendingAction === "delete" ? "确认删除资料" : "确认归档资料"}</strong>
-                      <p id={`${confirmationId}-description`}>{pendingAction === "delete"
-                        ? <>将删除“{document.name}”的资料记录及当前浏览器中的本地原文件，无法从本页面恢复。</>
-                        : <>归档“{document.name}”后将不能直接修改或删除；资料记录和本地原文件仍会保留。</>}</p>
-                    </div>
-                    <div className="document-action-confirmation-actions">
-                      <button ref={documentActionCancelRef} className="secondary-button" type="button" onClick={() => clearPendingDocumentAction(true)}>取消</button>
-                      <button className={pendingAction === "delete" ? "danger-button" : "primary-button"} type="button" onClick={() => pendingAction === "delete" ? remove(document) : archive(document)}>{pendingAction === "delete" ? "确认删除" : "确认归档"}</button>
-                    </div>
-                  </div>
-                )}
-              </div>
-              <span className="foundation-record-actions">
-                <button type="button" disabled={!locallyAvailable || !fileVault} aria-label="页面预览" title="页面预览" onClick={() => showPreview(document)}><Eye size={15} /></button>
-                <button type="button" disabled={!locallyAvailable || !fileVault} aria-label="下载原文件" title="下载原文件" onClick={() => download(document)}><DownloadSimple size={15} /></button>
-                <button type="button" disabled={archived} aria-label="编辑资料详情" title={archived ? "已归档资料不能直接修改" : "编辑资料详情"} onClick={() => beginEdit(document)}><PencilSimple size={15} /></button>
-                <button type="button" disabled={archived} aria-label="标记归档" aria-haspopup="dialog" aria-expanded={pendingAction === "archive"} aria-controls={confirmationId} title={archived ? "资料已归档" : "标记归档"} onClick={(event) => requestDocumentAction(document, "archive", event.currentTarget)}><Archive size={15} /></button>
-                <button type="button" disabled={usage.length > 0} aria-label="删除未使用资料" aria-haspopup="dialog" aria-expanded={pendingAction === "delete"} aria-controls={confirmationId} title={usage.length ? `不能删除：${usage.map((item) => displayText(item.label)).join("、")}` : "删除未使用资料"} onClick={(event) => requestDocumentAction(document, "delete", event.currentTarget)}><Trash size={15} /></button>
-              </span>
-            </article>
-          );
-        })}
-        {!filteredDocuments.length && <p className="foundation-empty">没有符合当前条件的资料。</p>}
-      </div>
+      </details>
+
     </section>
   );
 }

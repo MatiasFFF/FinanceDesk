@@ -9,6 +9,7 @@ import {
   periodOf,
   roundMoney,
   sumMoney,
+  workspaceAccountDefinitions,
   workspaceUsesMemberBusinessTerms,
 } from "./model.js";
 import * as XLSX from "xlsx";
@@ -82,6 +83,42 @@ export function buildLedger(workspace, { period = workspace.currentPeriod } = {}
     vouchers: vouchers.map((voucher) => voucher.id),
     totals: { debit, credit, difference: roundMoney(debit - credit) },
   };
+}
+
+export function buildPeriodCarryForward(workspace, { closingLedger, equityAccountId = null }) {
+  const profitAndLossBalances = {};
+  const openingLedger = Object.fromEntries(Object.entries(closingLedger).map(([accountId, value]) => {
+    const balance = roundMoney(value);
+    const category = accountDefinition(accountId, workspace).category;
+    if (["revenue", "contraRevenue", "cost", "expense"].includes(category)) {
+      profitAndLossBalances[accountId] = balance;
+      return [accountId, 0];
+    }
+    if (!["asset", "contraAsset", "liability", "equity"].includes(category) && balance !== 0) {
+      throw new AccountingRuleError("CARRY_FORWARD_ACCOUNT_CATEGORY", `科目 ${accountDefinition(accountId, workspace).label} 尚未归入资产、负债、权益或损益，不能丢弃其期末余额`);
+    }
+    return [accountId, balance];
+  }));
+  // The ledger stores debit balances as positive and credit balances as negative.
+  const profit = roundMoney(-sumMoney(Object.values(profitAndLossBalances)));
+  let targetAccountId = null;
+  if (profit !== 0) {
+    const equityAccounts = workspaceAccountDefinitions(workspace)
+      .filter((account) => account.category === "equity" && account.status !== "inactive");
+    targetAccountId = equityAccountId
+      || equityAccounts.find((account) => account.id === workspace.openingCarryForward?.equityAccountId)?.id
+      || equityAccounts.find((account) => account.id === "equity")?.id
+      || (equityAccounts.length === 1 ? equityAccounts[0].id : null);
+    if (!equityAccounts.some((account) => account.id === targetAccountId)) {
+      throw new AccountingRuleError("CARRY_FORWARD_EQUITY_REQUIRED", "请选择一个有效的权益科目承接本期损益；可在科目设置中配置未分配利润科目");
+    }
+    openingLedger[targetAccountId] = roundMoney((openingLedger[targetAccountId] || 0) - profit);
+  }
+  const difference = sumMoney(Object.values(openingLedger));
+  if (Math.abs(difference) > 0.01) {
+    throw new AccountingRuleError("CARRY_FORWARD_UNBALANCED", "归档期末余额结转后仍不平衡，不能进入下一期", { difference });
+  }
+  return { openingLedger, profit, equityAccountId: targetAccountId, profitAndLossBalances };
 }
 
 function selectAccounts(ledger, categories) {
@@ -1403,34 +1440,72 @@ export function freezeReportVersion(workspace, { period = workspace.currentPerio
   return next;
 }
 
+export function buildCustomerConfirmationSections(snapshot, { payrollEnabled = true } = {}) {
+  const income = Object.fromEntries((snapshot.sections?.income?.rows || []).map((row) => [row.id, row]));
+  const balance = Object.fromEntries((snapshot.sections?.balance?.rows || []).map((row) => [row.id, row]));
+  const tax = Object.fromEntries((snapshot.taxWorkpaper?.rows || []).map((row) => [row.id, row]));
+  const metric = (value, rows) => ({
+    value: roundMoney(value),
+    rows: rows.filter(Boolean),
+    sourceIds: collectSourceIds(rows.filter(Boolean).map((row) => [row.sourceIds, (row.details || []).map((detail) => [detail.sourceIds, detail.voucherId, detail.documentId])])),
+  });
+  const openItems = snapshot.confirmationContext?.openItems || [];
+  const sections = {
+    finance: {
+      ...metric(snapshot.summary?.profit, [balance.assets, income.profit]),
+      metrics: {
+        assets: metric(snapshot.summary?.assets, [balance.assets]),
+        profit: metric(snapshot.summary?.profit, [income.profit]),
+      },
+    },
+    revenue: metric(snapshot.summary?.revenue, [income.revenue]),
+    costExpense: metric(Number(snapshot.summary?.cost || 0) + Number(snapshot.summary?.expenses || 0), snapshot.confirmationContext?.costExpense ? [snapshot.confirmationContext.costExpense] : [income.expenses, income.profit]),
+    vat: metric(tax.vatPayable?.value, [tax.vatPayable]),
+    inputVat: metric(tax.inputVat?.value, [tax.inputVat]),
+    ...((snapshot.confirmationContext?.payrollEnabled ?? payrollEnabled) ? {
+      payroll: metric(tax.payroll?.value, [tax.payroll]),
+      socialSecurity: metric(tax.socialSecurity?.value, [tax.socialSecurity]),
+    } : {}),
+    openItems: { value: openItems.length, items: openItems, sourceIds: collectSourceIds(openItems.map((item) => [item.id, item.sourceIds])) },
+  };
+  return Object.fromEntries(Object.entries(sections).map(([id, section]) => [id, { status: "pending", ...section }]));
+}
+
+export function customerConfirmationMatchesVersion(confirmation, version) {
+  return Boolean(confirmation?.kind === "tax"
+    && confirmation.snapshot
+    && version?.snapshot
+    && confirmation.period === version.period
+    && confirmation.reportVersionId === version.id
+    && confirmation.reportSourceFingerprint === (version.sourceFingerprint || null));
+}
+
 export function createCustomerConfirmationPackage(workspace, { period = workspace.currentPeriod, reportVersionId = null } = {}, context = {}) {
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext(context);
-  const tax = buildTaxWorkpaper(next, { period });
-  const statements = buildFinancialStatements(next, { period });
+  const version = (next.delivery?.reportVersions || []).find((item) => item.id === reportVersionId && item.period === period);
+  if (!version?.snapshot?.taxWorkpaper || !version.frozen) {
+    throw new AccountingRuleError("FROZEN_REPORT_REQUIRED", "请先冻结本期页面上的报表与税务底稿，再生成客户确认包");
+  }
+  const snapshot = version.snapshot;
+  const sections = buildCustomerConfirmationSections(snapshot, { payrollEnabled: next.modules?.payroll === true });
   const confirmations = next.confirmations || (next.confirmations = []);
   const confirmation = {
     id: nextRecordId(confirmations, "confirmation-package"),
     kind: "tax",
     period,
     reportVersionId,
+    reportVersionLabel: version.label,
+    reportSourceFingerprint: version.sourceFingerprint || null,
+    snapshot,
     version: confirmations.filter((item) => item.kind === "tax" && item.period === period).length + 1,
     status: "pending",
     createdAt: resolvedContext.at,
     createdBy: resolvedContext.actor,
-    sections: {
-      finance: { status: "pending", value: statements.incomeStatement.profit.value, sourceIds: statements.incomeStatement.profit.sourceIds },
-      revenue: { status: "pending", value: tax.taxableRevenue.value, sourceIds: tax.taxableRevenue.sourceIds },
-      costExpense: { status: "pending", value: roundMoney(statements.incomeStatement.cost.value + statements.incomeStatement.expenses.value), sourceIds: collectSourceIds(statements.incomeStatement.cost.sourceIds, statements.incomeStatement.expenses.sourceIds) },
-      vat: { status: "pending", value: tax.vatPayable.value, sourceIds: tax.vatPayable.sourceIds },
-      inputVat: { status: "pending", value: tax.inputVat.value, sourceIds: tax.inputVat.sourceIds },
-      payroll: { status: "pending", value: tax.payroll.value, sourceIds: tax.payroll.sourceIds },
-      socialSecurity: { status: "pending", value: tax.socialSecurity.value, sourceIds: tax.socialSecurity.sourceIds },
-      openItems: { status: "pending", value: tax.unresolvedExceptionIds.length, sourceIds: tax.unresolvedExceptionIds },
-    },
-    unresolvedExceptionIds: tax.unresolvedExceptionIds,
+    sections,
+    unresolvedExceptionIds: sections.openItems.items.filter((item) => item.type === "异常任务").map((item) => item.id),
     decisions: [],
-    sourceIds: collectSourceIds(tax.financialStatementSourceIds, tax.payroll.sourceIds, tax.socialSecurity.sourceIds),
+    sourceIds: collectSourceIds(version.id, Object.values(sections).map((section) => section.sourceIds)),
   };
   confirmations.push(confirmation);
   appendAuditEntry(next, {
@@ -1465,6 +1540,9 @@ export function recordCustomerConfirmation(workspace, {
     note: note.trim(),
     at: resolvedContext.at,
     actor: resolvedContext.actor,
+    reportVersionId: confirmation.reportVersionId,
+    value: before.value,
+    sourceIds: before.sourceIds,
   };
   confirmation.decisions.push(record);
   confirmation.sections[section].status = decision === "approve" ? "approved" : "rejected";

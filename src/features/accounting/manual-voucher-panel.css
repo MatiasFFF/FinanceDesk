@@ -666,3 +666,35 @@
     width: 100%;
   }
 }
+
+.manual-voucher-editor[hidden] { display: none; }
+.manual-voucher-panel-heading { padding: 0 0 12px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.manual-voucher-panel-heading p { display: none; }
+.manual-voucher-panel-heading > div > span { font-size: 12px; }
+.manual-voucher-panel-heading h2 { font-size: 20px; }
+.manual-voucher-editor { box-shadow: none; }
+.manual-voucher-records { padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.manual-voucher-record-list { gap: 0; }
+.manual-voucher-record { padding: 14px 0; border: 0; border-top: 1px solid var(--line-soft); border-radius: 0; background: transparent; }
+.manual-voucher-record.is-posted { border-color: var(--line-soft); }
+.manual-voucher-record-heading h4 { font-size: 14px; }
+.manual-voucher-record-heading p,
+.manual-voucher-record-details,
+.manual-voucher-record-heading > div > small { font-size: 11px; }
+.manual-voucher-posting-details > summary { color: var(--clay-dark); font-size: 12px; font-weight: 700; cursor: pointer; }
+.manual-voucher-posting > button { min-height: 40px; }
+.manual-voucher-posting > p { flex-wrap: wrap; align-items: center; font-size: 11px; }
+.manual-voucher-header-fields select,
+.manual-voucher-documents > label input[type="file"] { width: 100%; min-width: 0; min-height: 40px; padding: 8px 9px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--paper); color: var(--espresso); font: inherit; font-size: 12px; }
+.manual-voucher-header-fields select[multiple],
+.manual-voucher-line select[multiple] { min-height: 88px; }
+.manual-voucher-header-fields select:focus { outline: 2px solid var(--sage-soft); outline-offset: 1px; border-color: var(--sage); }
+.manual-voucher-documents > label { display: grid; gap: 7px; margin-bottom: 12px; color: var(--muted); font-size: 12px; }
+.manual-voucher-documents > label:has(input[type="checkbox"]) { grid-template-columns: auto minmax(0, 1fr); align-items: start; }
+.manual-voucher-balance:not(.is-invalid):not(.is-balanced) strong { color: var(--muted); }
+.manual-voucher-empty { grid-template-columns: auto minmax(0, 1fr); justify-items: start; align-content: center; align-items: center; min-height: 80px; padding: 14px; border: 0; background: var(--canvas); text-align: left; }
+.manual-voucher-empty p { grid-column: 2; font-size: 12px; }
+.manual-voucher-editor-actions { flex-wrap: wrap; }
+.manual-voucher-editor-actions > button { min-width: 0; }
+.manual-voucher-error,
+.manual-voucher-validation-errors { font-size: 12px; }

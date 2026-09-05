@@ -1432,6 +1432,102 @@
   }
 }
 
+/* Compact task sections keep the transaction drawer focused on one record. */
+.transaction-accounting-workbench {
+  gap: 12px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: 12px;
+}
+
+.transaction-accounting-workbench .accounting-heading { padding-bottom: 10px; }
+.transaction-accounting-workbench .accounting-heading strong { font-size: 22px; font-variant-numeric: tabular-nums; }
+.transaction-accounting-workbench > .engine-summary { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 14px; }
+.transaction-accounting-workbench > .engine-summary > span:first-child { grid-column: 1 / -1; }
+.transaction-accounting-workbench .engine-summary > span { padding: 0; border: 0; background: transparent; box-shadow: none; }
+.transaction-accounting-workbench .engine-summary strong { font-size: 12px; }
+.transaction-accounting-workbench .engine-form,
+.transaction-accounting-workbench .engine-account-grid { grid-template-columns: minmax(0, 1fr); }
+.transaction-accounting-workbench .engine-form .full { grid-column: auto; }
+.transaction-accounting-workbench .engine-form,
+.transaction-accounting-workbench .engine-exceptions,
+.transaction-accounting-workbench .engine-allocation,
+.transaction-accounting-workbench .engine-allocation-history,
+.transaction-accounting-workbench .engine-special,
+.transaction-accounting-workbench .engine-vouchers { border-top: 0; padding-top: 0; }
+.transaction-accounting-workbench .engine-inline { flex-wrap: wrap; align-items: stretch; gap: 8px; }
+.transaction-accounting-workbench .engine-inline > button { flex: 1 1 135px; justify-content: center; white-space: normal; }
+.transaction-accounting-workbench .engine-subheading { flex-wrap: wrap; align-items: baseline; }
+.transaction-accounting-workbench .engine-voucher-card { padding: 10px 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.transaction-accounting-workbench .engine-voucher-card + .engine-voucher-card { border-top: 1px solid var(--line-soft); }
+.transaction-accounting-workbench .engine-allocation-history > div:not(.engine-subheading) { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; padding: 10px; box-shadow: none; }
+.transaction-accounting-workbench .engine-allocation-history > div > span { min-width: 0; }
+.transaction-accounting-workbench .engine-allocation-history > div > button { grid-column: 1 / -1; justify-self: end; width: auto; }
+.transaction-accounting-workbench .engine-voucher-line-details { overflow-wrap: anywhere; }
+
+.engine-section { min-width: 0; border-top: 1px solid var(--line-soft); font-size: 12px; }
+.engine-section > summary { padding: 12px 0; color: var(--espresso); font-weight: 700; cursor: pointer; overflow-wrap: anywhere; }
+.engine-section[open] > summary { margin-bottom: 2px; }
+.engine-section > .engine-reasons { margin-bottom: 10px; }
+.engine-voucher-edit > input,
+.transaction-accounting-workbench .engine-allocation-history select,
+.workspace-voucher-panel .settlement-heading select { width: 100%; min-width: 0; min-height: 38px; padding: 8px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--paper-strong); color: var(--espresso); font: inherit; }
+.engine-voucher-edit > input { margin: 8px 0; }
+.engine-next-note { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--clay-soft); color: var(--clay-dark); font-size: 12px; line-height: 1.6; }
+
+.settlement-panel { gap: 12px; padding: 16px; box-shadow: none; }
+.settlement-panel .settlement-heading { align-items: center; gap: 12px; }
+.settlement-panel .settlement-heading h2 { font-size: 19px; }
+.settlement-panel .settlement-heading p { font-size: 12px; }
+.settlement-panel .settlement-metrics { display: flex; flex-wrap: wrap; gap: 8px 24px; padding: 6px 0 12px; border-bottom: 1px solid var(--line-soft); }
+.settlement-panel .settlement-metrics > span { gap: 4px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.settlement-panel .settlement-metrics strong { font-size: 16px; }
+.settlement-panel .settlement-bill-list { gap: 0; }
+.settlement-panel .settlement-bill-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 10px 20px; padding: 14px 0; border: 0; border-bottom: 1px solid var(--line-soft); border-radius: 0; box-shadow: none; background: transparent; }
+.settlement-panel .settlement-bill-row:last-child { border-bottom: 0; }
+.settlement-panel .settlement-bill-row > details,
+.settlement-panel .settlement-bill-overview { grid-column: 1 / -1; }
+.settlement-panel .settlement-bill-overview { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 20px; }
+.settlement-panel .settlement-bill-amounts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.settlement-panel .member-accounting-row .settlement-bill-amounts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.settlement-panel .settlement-bill-amounts > span { min-height: 36px; padding: 0 10px; }
+.settlement-panel .settlement-bill-amounts > span:first-child { padding-left: 0; }
+.settlement-panel .settlement-bill-amounts strong { font-size: 13px; }
+.settlement-panel .settlement-bill-row > details { padding-top: 0; border-top: 0; font-size: 12px; }
+.settlement-panel .settlement-source-list > div > span { min-width: 0; }
+.settlement-panel .engine-voucher-card { box-shadow: none; }
+
+.workspace-accounting-view { display: grid; gap: 20px; min-width: 0; }
+.workspace-voucher-panel { display: grid; gap: 12px; min-width: 0; padding: 18px; border: 1px solid var(--line-soft); border-radius: var(--radius-panel, 14px); background: var(--paper-strong); }
+.workspace-voucher-panel h2 { margin: 0; font-size: 20px; }
+.workspace-voucher-list { display: grid; min-width: 0; }
+.workspace-voucher-record { min-width: 0; border-top: 1px solid var(--line-soft); }
+.workspace-voucher-record > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 16px; padding: 14px 0; cursor: pointer; }
+.workspace-voucher-record > summary > span { display: grid; gap: 4px; min-width: 0; }
+.workspace-voucher-record summary strong { overflow-wrap: anywhere; font-size: 13px; }
+.workspace-voucher-record summary small { color: var(--quiet); font-size: 11px; }
+.workspace-voucher-record summary b { font-size: 14px; font-variant-numeric: tabular-nums; }
+.workspace-voucher-record summary em { font-style: normal; white-space: nowrap; }
+.workspace-voucher-content { display: grid; container: voucher-card / inline-size; gap: 12px; min-width: 0; padding-bottom: 18px; }
+
+@container settlement-panel (max-width: 680px) {
+  .settlement-panel .settlement-bill-row,
+  .settlement-panel .settlement-bill-overview { grid-template-columns: minmax(0, 1fr); }
+  .settlement-panel .settlement-bill-amounts { padding-top: 0; border-top: 0; }
+  .settlement-panel .settlement-bill-amounts > span { display: grid; grid-template-columns: minmax(0, 1fr); border-top: 0; align-content: start; gap: 3px; }
+  .settlement-panel .settlement-bill-amounts strong { text-align: left; white-space: normal; }
+}
+
+@media (max-width: 620px) {
+  .workspace-voucher-record > summary { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+  .workspace-voucher-record > summary > span { grid-column: 1 / -1; }
+  .workspace-voucher-record > summary > em { justify-self: end; }
+  .workspace-voucher-panel .settlement-heading { flex-direction: column; }
+}
+
 /* Voucher cards can live in a wide settlement page or a narrow desktop detail rail. */
 @container voucher-card (max-width: 920px) {
   .engine-voucher-line.is-editable {

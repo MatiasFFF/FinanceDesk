@@ -41,6 +41,28 @@ function markImportedFilesUnverified(state) {
   };
 }
 
+function applyRestoredFiles(state, files = []) {
+  if (!files.length) return state;
+  const remaining = new Map(files.map((file) => [`${file.workspaceId}\u0000${file.documentId}`, file]));
+  if (remaining.size !== files.length) throw new Error("备份包含重复的原件关联");
+  const next = {
+    ...state,
+    workspaces: state.workspaces.map((workspace) => ({
+      ...workspace,
+      documents: (workspace.documents || []).map((document) => {
+        const key = `${workspace.id}\u0000${document.id}`;
+        const file = remaining.get(key);
+        if (!file) return document;
+        if (!file.blobId || !file.hash || file.hash !== document.hash) throw new Error("恢复原件与资料索引不一致");
+        remaining.delete(key);
+        return { ...document, storage: { ...document.storage, mode: "indexeddb", blobId: file.blobId, backupBlobId: null, availableLocally: true } };
+      }),
+    })),
+  };
+  if (remaining.size) throw new Error("恢复原件找不到所属资料");
+  return next;
+}
+
 function serializeState(state, writtenAt = new Date().toISOString()) {
   const payload = JSON.stringify(state);
   return JSON.stringify({
@@ -180,7 +202,7 @@ export function importBackupJson(text, options = {}) {
     if (checksum(JSON.stringify(rawState)) !== parsed.checksum) throw new Error("备份文件校验失败，内容可能已损坏");
   }
   const imported = markImportedFilesUnverified(assertValidState(migrateState(rawState, options)));
-  if ((options.mode || "replace") === "replace" || !options.currentState) return imported;
+  if ((options.mode || "replace") === "replace" || !options.currentState) return applyRestoredFiles(imported, options.restoredFiles);
   if (options.mode !== "merge") throw new Error(`不支持的导入模式：${options.mode}`);
 
   const current = assertValidState(migrateState(options.currentState, options));
@@ -199,9 +221,9 @@ export function importBackupJson(text, options = {}) {
     ids.add(id);
     return { ...workspace, id, name: `${workspace.name}（导入）` };
   });
-  return assertValidState({
+  return applyRestoredFiles(assertValidState({
     ...current,
     workspaces: [...current.workspaces, ...additions],
     updatedAt: options.timestamp || new Date().toISOString(),
-  });
+  }), options.restoredFiles);
 }

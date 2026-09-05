@@ -3,7 +3,9 @@ import test from "node:test";
 
 import { createBlankWorkspace } from "../src/domain/foundation.js";
 import { AccountingRuleError } from "../src/domain/accounting/model.js";
-import { postVoucher } from "../src/domain/accounting/vouchers.js";
+import { postVoucherWithEvidence } from "../src/domain/accounting/vouchers.js";
+import { createDocumentMetadata } from "../src/features/intake/documentIntake.js";
+import { createMemoryFileVault } from "../src/features/intake/browserFileVault.js";
 import {
   INVENTORY_MOVEMENT_TYPES,
   buildInventorySummary,
@@ -169,7 +171,7 @@ test("inventory blocks historical negative stock and revalues after an item open
   assert.equal(summary.items[0].movements[0].unitCost, 60);
 });
 
-test("loss movements create one reviewed manual inventory voucher", () => {
+test("loss movements create one reviewed manual inventory voucher", async (t) => {
   let workspace = inventoryWorkspace();
   workspace = createInventoryItem(workspace, {
     name: "成品",
@@ -179,6 +181,28 @@ test("loss movements create one reviewed manual inventory voucher", () => {
     openingUnitCost: 80,
   }, context);
   const itemId = workspace.inventoryItems[0].id;
+  const fileVault = createMemoryFileVault();
+  const blob = new Blob(["报废审批：成品 1 件，移动平均成本 80 元，同意报废。"], { type: "text/plain" });
+  const document = await createDocumentMetadata(blob, {
+    id: "loss-document-1",
+    name: "报废审批.txt",
+    period: workspace.currentPeriod,
+    actor: context.actor,
+    createdAt: context.at,
+    relatedObjectIds: ["loss-approval-1"],
+  });
+  await fileVault.put({
+    id: document.id,
+    workspaceId: workspace.id,
+    name: document.name,
+    mimeType: document.mimeType,
+    size: document.size,
+    hash: document.hash,
+    blob,
+    createdAt: document.createdAt,
+  });
+  workspace.documents = [document];
+  workspace.approvals = [{ id: "loss-approval-1", name: "成品报废审批", status: "approved", evidenceIds: [document.id] }];
   workspace = recordInventoryMovement(workspace, {
     itemId,
     type: INVENTORY_MOVEMENT_TYPES.LOSS,
@@ -186,6 +210,7 @@ test("loss movements create one reviewed manual inventory voucher", () => {
     quantity: 1,
     locationId: "location-main",
     reason: "报废",
+    referenceNo: "报废单 2026-09-001",
     sourceIds: ["loss-approval-1"],
     evidenceIds: ["loss-document-1"],
   }, context);
@@ -200,18 +225,46 @@ test("loss movements create one reviewed manual inventory voucher", () => {
     ["inventory", 0, 80],
   ]);
   assert.deepEqual(voucher.evidenceIds, ["loss-document-1"]);
+  assert.ok([movementId, itemId, "loss-approval-1"].every((id) => voucher.sourceIds.includes(id)));
+  assert.equal(workspace.inventoryMovements[0].itemId, itemId);
+  assert.equal(workspace.inventoryMovements[0].referenceNo, "报废单 2026-09-001");
+  assert.equal(voucher.sourceIds.includes("报废单 2026-09-001"), false);
   assert.equal(workspace.inventoryMovements[0].voucherId, voucher.id);
   assert.throws(() => createInventoryLossVoucherDraft(workspace, { movementId }, context), (error) => (
     error instanceof AccountingRuleError && error.code === "INVENTORY_LOSS_VOUCHER_EXISTS"
   ));
-  assert.throws(() => postVoucher(workspace, { voucherId: voucher.id, mode: "automatic" }, context), (error) => (
+  await assert.rejects(() => postVoucherWithEvidence(workspace, { voucherId: voucher.id, mode: "automatic" }, { ...context, fileVault }), (error) => (
     error instanceof AccountingRuleError && error.code === "MANUAL_VOUCHER_MANUAL_POST_REQUIRED"
   ));
 
-  workspace = postVoucher(workspace, {
+  const withAnotherItem = createInventoryItem(workspace, {
+    name: "另一物料", unit: "件", openingQuantity: 0, openingUnitCost: 0, locationId: "location-main",
+  }, context);
+  const otherItemId = withAnotherItem.inventoryItems.at(-1).id;
+  for (const scenario of [
+    { name: "missing movement", change: (current) => { current.inventoryMovements = []; } },
+    { name: "missing item", change: (current) => { current.inventoryItems = current.inventoryItems.filter((item) => item.id !== itemId); } },
+    { name: "movement references a different existing item", change: (current) => { current.inventoryMovements[0].itemId = otherItemId; } },
+    { name: "unregistered source id", change: (current) => { current.vouchers[0].sourceIds.push("free-form-approval-number"); } },
+    { name: "attachment index does not exist", change: (current) => { current.documents = []; } },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const current = structuredClone(withAnotherItem);
+      scenario.change(current);
+      const before = structuredClone(current);
+      await assert.rejects(() => postVoucherWithEvidence(current, {
+        voucherId: voucher.id, mode: "manual", reviewNote: "库存来源与附件必须真实有效",
+      }, { ...context, fileVault }), (error) => error instanceof AccountingRuleError && error.code === "VOUCHER_EVIDENCE_REQUIRED");
+      assert.deepEqual(current, before);
+      assert.equal(current.vouchers[0].status, "draft");
+    });
+  }
+
+  workspace = await postVoucherWithEvidence(workspace, {
     voucherId: voucher.id,
     mode: "manual",
     reviewNote: "已复核损耗依据、数量和移动平均成本",
-  }, context);
+  }, { ...context, fileVault });
   assert.equal(workspace.vouchers[0].status, "posted");
+  assert.deepEqual(workspace.vouchers[0].evidenceVerification.files, [{ documentId: document.id, hash: document.hash, size: document.size }]);
 });

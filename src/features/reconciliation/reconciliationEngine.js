@@ -31,6 +31,14 @@ import {
   reviewTransactionEvidence,
   unresolvedExceptionTasks,
 } from "../evidence/evidenceEngine.js";
+import {
+  assertAccountingPeriodWritable,
+  buildReconciliationCorrectionLines,
+  createPostedVoucherRevision,
+  invalidateReconciliationDrafts,
+  reviseDraftVoucher,
+  vouchersForReconciliation,
+} from "../../domain/accounting/vouchers.js";
 
 function allAllocations(workspace) {
   return (workspace.transactions || []).flatMap((transaction) => transaction.allocations || []);
@@ -1884,6 +1892,7 @@ export function applyReconciliation(workspace, { transactionId, allocations, not
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext(context);
   const transaction = findTransaction(next, transactionId);
+  assertAccountingPeriodWritable(next, periodOf(transaction.date));
   const classification = effectiveBankTransactionClassification(next, transaction);
   if ([EVENT_TYPES.INTERNAL_TRANSFER, EVENT_TYPES.REFUND, EVENT_TYPES.UNKNOWN].includes(classification.eventType)) {
     throw new AccountingRuleError("NON_BILL_EVENT", "退款、内部转账或未知事项不能按普通应收应付核销");
@@ -2010,14 +2019,17 @@ export function reverseReconciliation(workspace, { allocationId, reason }, conte
     }
   }
   if (!allocation || !transaction) throw new AccountingRuleError("ALLOCATION_NOT_FOUND", `找不到核销记录：${allocationId}`);
+  assertAccountingPeriodWritable(next, allocation.fundingPeriod || periodOf(transaction.date));
   if (allocation.status === "reversed") throw new AccountingRuleError("ALREADY_REVERSED", "该核销记录已经撤销");
+  const posted = vouchersForReconciliation(next, transaction.id, allocation.id).filter((voucher) => voucher.status === "posted");
+  if (posted.length) throw new AccountingRuleError("POSTED_RECONCILIATION_CORRECTION_REQUIRED", "该核销已经入账；请选择正确账单并创建核销更正草稿，复核入账时同步替换核销和凭证", { voucherIds: posted.map((voucher) => voucher.id) });
   const before = transactionSettlement(transaction);
   allocation.status = "reversed";
   allocation.reversedAt = resolvedContext.at;
   allocation.reversedBy = resolvedContext.actor;
   allocation.reversalReason = reason.trim();
   const after = transactionSettlement(transaction);
-  transaction.status = after.allocated > 0 ? "pending" : "pending";
+  transaction.status = "pending";
   appendAuditEntry(next, {
     action: "reconciliation.reverse",
     entityType: "allocation",
@@ -2027,7 +2039,115 @@ export function reverseReconciliation(workspace, { allocationId, reason }, conte
     after,
     sourceIds: [transaction.id, allocation.billId, allocation.id],
   }, resolvedContext);
+  return invalidateReconciliationDrafts(next, transaction.id, allocation.id, `撤销核销：${reason.trim()}`, resolvedContext);
+}
+
+function correctionAllocation(workspace, allocationId) {
+  for (const transaction of workspace.transactions || []) {
+    const allocation = (transaction.allocations || []).find((item) => item.id === allocationId);
+    if (allocation) return { transaction, allocation };
+  }
+  throw new AccountingRuleError("ALLOCATION_NOT_FOUND", `找不到核销记录：${allocationId}`);
+}
+
+function validateCorrectionReplacement(workspace, allocation, transaction, replacement) {
+  assertAccountingPeriodWritable(workspace, allocation.fundingPeriod || periodOf(transaction.date));
+  if (allocation.status === "reversed") throw new AccountingRuleError("ALREADY_REVERSED", "原核销已变化，请取消旧更正草稿后重新选择");
+  if (allocation.billId === replacement.billId) throw new AccountingRuleError("CORRECTION_TARGET_REQUIRED", "请选择与原核销不同的正确账单");
+  if (roundMoney(allocation.amount) !== roundMoney(replacement.amount)) throw new AccountingRuleError("CORRECTION_AMOUNT_CHANGED", "本次核销更正保持原核销金额，请重新选择正确账单");
+  const preview = cloneAccountingState(workspace);
+  correctionAllocation(preview, allocation.id).allocation.status = "reversed";
+  const draft = buildReconciliationAllocationDraft(preview, { transactionId: transaction.id, allocations: [replacement] });
+  if (!draft.valid) throw new AccountingRuleError(draft.issues[0].code, draft.issues[0].message, draft.issues[0].details);
+}
+
+export function createReconciliationCorrection(workspace, { allocationId, billId, reason }, context = {}) {
+  if (!reason?.trim()) throw new AccountingRuleError("REVERSAL_REASON_REQUIRED", "核销更正必须填写原因");
+  const { transaction, allocation } = correctionAllocation(workspace, allocationId);
+  const posted = vouchersForReconciliation(workspace, transaction.id, allocationId).filter((voucher) => voucher.status === "posted");
+  if (posted.length !== 1) throw new AccountingRuleError("CORRECTION_VOUCHER_REQUIRED", "核销更正需要唯一有效的已入账凭证；未入账记录可直接撤销后重新核销");
+  const resolvedContext = operationContext({ ...context, mode: "manual" });
+  const replacement = { billId, amount: allocation.amount };
+  validateCorrectionReplacement(workspace, allocation, transaction, replacement);
+  let next = createPostedVoucherRevision(workspace, { voucherId: posted[0].id, reason }, resolvedContext);
+  const revision = next.vouchers[next.vouchers.length - 1];
+  const targetBill = findBill(next, billId);
+  const plannedAllocation = {
+    ...replacement,
+    id: `allocation-correction-${revision.id}`,
+    transactionId: transaction.id,
+    status: "confirmed",
+    mode: "manual",
+    fundingPeriod: allocation.fundingPeriod || periodOf(transaction.date),
+    businessPeriod: targetBill.businessPeriod || periodOf(targetBill.date),
+    sourceIds: [transaction.id, billId],
+    note: reason.trim(),
+  };
+  const rebuilt = buildReconciliationCorrectionLines(next, revision, allocation, plannedAllocation);
+  next = reviseDraftVoucher(next, {
+    voucherId: revision.id,
+    ...rebuilt,
+    reconciliationCorrection: { transactionId: transaction.id, originalAllocation: structuredClone(allocation), replacement: plannedAllocation, reason: reason.trim(), status: "pending" },
+    reason: `核销更正：${reason.trim()}`,
+  }, resolvedContext);
+  appendAuditEntry(next, { action: "reconciliation.prepare_correction", entityType: "allocation", entityId: allocation.id, detail: `${reason.trim()}；原核销与凭证继续有效，待 ${revision.id} 复核入账`, sourceIds: [transaction.id, allocation.id, billId, posted[0].id, revision.id] }, resolvedContext);
   return next;
+}
+
+export function cancelReconciliationCorrection(workspace, { voucherId, reason }, context = {}) {
+  if (!reason?.trim()) throw new AccountingRuleError("REVISION_REASON_REQUIRED", "取消更正草稿必须填写原因");
+  const next = cloneAccountingState(workspace);
+  const voucher = (next.vouchers || []).find((item) => item.id === voucherId);
+  if (!voucher?.revisionOf || !["draft", "changes_requested"].includes(voucher.status)) throw new AccountingRuleError("CORRECTION_DRAFT_REQUIRED", "只能取消尚未入账的更正草稿");
+  assertAccountingPeriodWritable(next, voucher.period);
+  const resolvedContext = operationContext(context);
+  voucher.status = "invalidated";
+  voucher.invalidatedAt = resolvedContext.at;
+  voucher.invalidationReason = reason.trim();
+  (next.exceptionTasks || []).filter((task) => task.sourceId === voucher.id && task.status !== "resolved").forEach((task) => {
+    task.status = "resolved";
+    task.resolution = "revision_cancelled";
+    task.resolvedAt = resolvedContext.at;
+    task.resolvedBy = resolvedContext.actor;
+    task.history = [...(task.history || []), { at: resolvedContext.at, actor: resolvedContext.actor, action: "revision_cancelled", note: reason.trim() }];
+  });
+  appendAuditEntry(next, { action: "voucher.cancel_revision", entityType: "voucher", entityId: voucher.id, detail: `${reason.trim()}；原核销与原凭证保持有效`, sourceIds: collectSourceIds(voucher.id, voucher.revisionOf, voucher.sourceIds) }, resolvedContext);
+  return next;
+}
+
+// Called on postVoucher's private clone. Any later posting error discards this
+// change together with the voucher, so business and accounting commit together.
+export function commitReconciliationCorrection(workspace, voucher, context) {
+  const plan = voucher.reconciliationCorrection;
+  if (plan?.status !== "pending") throw new AccountingRuleError("CORRECTION_NOT_PENDING", "该核销更正已经处理，不能重复入账");
+  const { transaction, allocation } = correctionAllocation(workspace, plan.originalAllocation.id);
+  if (transaction.id !== plan.transactionId || allocation.billId !== plan.originalAllocation.billId
+    || roundMoney(allocation.amount) !== roundMoney(plan.originalAllocation.amount)) {
+    throw new AccountingRuleError("CORRECTION_SOURCE_CHANGED", "原核销已变化，请取消此草稿并从当前记录重新更正");
+  }
+  const posted = vouchersForReconciliation(workspace, transaction.id, allocation.id).filter((item) => item.status === "posted");
+  if (posted.length !== 1 || posted[0].id !== voucher.revisionOf) throw new AccountingRuleError("CORRECTION_ORIGINAL_CHANGED", "核销对应的有效凭证已变化，请重新创建更正");
+  assertAccountingPeriodWritable(workspace, posted[0].period);
+  validateCorrectionReplacement(workspace, allocation, transaction, plan.replacement);
+  if (allAllocations(workspace).some((item) => item.id === plan.replacement.id)) throw new AccountingRuleError("CORRECTION_ALREADY_APPLIED", "目标核销记录已存在，请取消此草稿后重新更正");
+  const before = transactionSettlement(transaction);
+  allocation.status = "reversed";
+  allocation.reversedAt = context.at;
+  allocation.reversedBy = context.actor;
+  allocation.reversalReason = plan.reason;
+  allocation.correctedByVoucherId = voucher.id;
+  const replacement = { ...structuredClone(plan.replacement), createdAt: context.at, createdBy: context.actor, correctionOf: allocation.id, voucherId: voucher.id };
+  transaction.allocations.push(replacement);
+  plan.status = "committed";
+  plan.committedAt = context.at;
+  voucher.reconciliationSources = (transaction.allocations || []).filter((item) => voucher.sourceIds?.includes(item.id)).map(({ id, billId, amount }) => ({ id, billId, amount }));
+  const event = (workspace.businessEvents || []).find((item) => item.id === voucher.bankBusinessEventId && item.relatedBillId === allocation.billId);
+  if (event) {
+    event.versions = [...(event.versions || []), { at: context.at, actor: context.actor, reason: plan.reason, relatedBillId: event.relatedBillId, sourceIds: [...(event.sourceIds || [])] }];
+    event.relatedBillId = replacement.billId;
+    event.sourceIds = collectSourceIds((event.sourceIds || []).filter((id) => id !== allocation.billId), replacement.billId);
+  }
+  appendAuditEntry(workspace, { action: "reconciliation.correct", entityType: "allocation", entityId: allocation.id, detail: `${plan.reason}；与更正凭证 ${voucher.id} 同步生效`, before, after: transactionSettlement(transaction), sourceIds: [transaction.id, allocation.id, replacement.id, replacement.billId, voucher.id, voucher.revisionOf] }, context);
 }
 
 export function redoReconciliation(workspace, { allocationIds, transactionId, allocations, reason }, context = {}) {

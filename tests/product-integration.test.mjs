@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import JSZip from "jszip";
 
 import {
   accountDefinition,
   buildFinancialStatements,
   buildTaxWorkpaper,
   createAccountingFixture,
-  createCustomerConfirmationPackage,
+  createPostedVoucherRevision,
   freezeReportVersion as freezeAccountingReportVersion,
-  recordCustomerConfirmation,
+  postVoucher,
 } from "../src/domain/accounting/index.js";
 import {
   createInitialState,
@@ -32,6 +33,7 @@ import {
   archivePeriod,
   attachReceipt,
   buildArchivedPeriodExport,
+  buildFinalConfirmationSnapshot,
   buildVatReconciliationSummary,
   buildReportSnapshot,
   confirmPayrollSocialData,
@@ -42,6 +44,8 @@ import {
   getPayrollSocialConfirmationState,
   markPackageExported,
   prepareFilingDraft,
+  recordFinalConfirmation,
+  recordInitialConfirmationSection,
   recordVatReconciliation,
   resetTaxForPeriod,
   workflowChecks,
@@ -137,6 +141,329 @@ function withPayrollSocialData(workspace) {
   });
   return applyPayrollSocialImport(next, socialPlan, { actor: "测试会计", at: "2026-09-04T08:00:20.000Z" });
 }
+
+function explainVatDifferences(workspace) {
+  let next = workspace;
+  for (const item of buildVatReconciliationSummary(next).unresolvedItems) {
+    next = recordVatReconciliation(next, {
+      kind: item.kind,
+      reason: "已复核账面与发票来源，差额在本地底稿单独调整",
+      adjustmentAmount: -item.differenceBeforeAdjustment,
+    }, { actor: "测试会计", at: "2026-09-04T08:00:30.000Z" });
+  }
+  return next;
+}
+
+function approveInitialConfirmation(workspace) {
+  let next = workspace;
+  const version = workflowChecks(next).version;
+  const sections = ["finance", "revenue", "costExpense", "vat", "inputVat",
+    ...(version.snapshot.confirmationContext.payrollEnabled ? ["payroll", "socialSecurity"] : []), "openItems"];
+  for (const [index, section] of sections.entries()) {
+    next = recordInitialConfirmationSection(next, {
+      reportVersionId: version.id,
+      section,
+      decision: "approve",
+      note: "已逐项复核页面中的冻结金额与来源",
+      confirmationName: "客户负责人",
+    }, { actor: "测试会计", at: `2026-09-04T08:${String(3 + index).padStart(2, "0")}:00.000Z` });
+  }
+  return next;
+}
+
+function finalConfirmationInput(workspace) {
+  return {
+    reportVersionId: workflowChecks(workspace).version.id,
+    filingDraftCreatedAt: workspace.delivery.filing.draftCreatedAt,
+    name: "客户负责人",
+    selections: {
+      numbersReviewed: true,
+      risksAcknowledged: true,
+      localOnlyAcknowledged: true,
+      deductionAuthorization: "do_not_authorize",
+    },
+  };
+}
+
+function recordPackageAndReceipt(workspace) {
+  let next = markPackageExported(workspace, {
+    id: "filing-package-test",
+    fileName: "申报包.zip",
+    size: 1024,
+    hash: "package-sha256",
+    exportedAt: "2026-09-04T08:14:00.000Z",
+    reportVersionId: workflowChecks(workspace).version.id,
+  }, "测试会计");
+  next = {
+    ...next,
+    documents: [...next.documents, {
+      id: "receipt-document-test",
+      name: "真实回执.txt",
+      category: "申报回执",
+      deliveryArtifact: true,
+      period: next.currentPeriod,
+      hash: "receipt-sha256",
+      relatedObjectIds: [],
+      storage: { mode: "indexeddb", blobId: "receipt-document-test", availableLocally: true },
+    }],
+  };
+  return attachReceipt(next, {
+    id: "receipt-test",
+    name: "真实回执.txt",
+    hash: "receipt-sha256",
+    documentId: "receipt-document-test",
+    importedAt: "2026-09-04T08:15:00.000Z",
+  }, "测试会计");
+}
+
+function archiveWithoutTax(workspace = closeableWorkspace()) {
+  const localClose = { ...workspace, modules: { ...workspace.modules, tax: false, payroll: false } };
+  return archivePeriod(freezeReportVersion(localClose, "测试会计"), "测试会计");
+}
+
+for (const scenario of [
+  { name: "profit", cost: 500, profit: 2080, equityAccountId: "equity", openingEquity: -25000, nextEquity: -27080 },
+  { name: "loss", cost: 3080, profit: -500, equityAccountId: "equity", openingEquity: -25000, nextEquity: -24500 },
+  { name: "zero profit", cost: 2580, profit: 0, equityAccountId: "equity", openingEquity: -25000, nextEquity: -25000 },
+  { name: "custom retained earnings", cost: 500, profit: 2080, equityAccountId: "retainedEarnings", openingEquity: -1000, nextEquity: -3080 },
+]) {
+  test(`period carry-forward clears income accounts and carries ${scenario.name} into equity exactly once`, () => {
+    const workspace = closeableWorkspace();
+    if (scenario.equityAccountId !== "equity") {
+      workspace.chartOfAccounts = [...workspace.chartOfAccounts, {
+        id: scenario.equityAccountId, label: "本工作台未分配利润", category: "equity", normalSide: "credit", status: "active",
+      }];
+      workspace.openingLedger = { ...workspace.openingLedger, equity: -24000, [scenario.equityAccountId]: scenario.openingEquity };
+    }
+    workspace.vouchers.push({
+      id: "carry-forward-cost", no: "记-012", period: workspace.currentPeriod, date: `${workspace.currentPeriod}-31`,
+      summary: "确认本期主营业务成本", status: "posted", version: 1, sourceIds: ["bill-ap-1"], evidenceIds: ["doc-purchase"],
+      lines: [
+        { account: "costOfSales", debit: scenario.cost, credit: 0, sourceIds: ["bill-ap-1"] },
+        { account: "payable", debit: 0, credit: scenario.cost, sourceIds: ["bill-ap-1"] },
+      ],
+    });
+    const archived = archiveWithoutTax(workspace);
+    const archive = structuredClone(archived.delivery.archives[0]);
+    assert.equal(archive.summary.profit, scenario.profit);
+    assert.equal(archive.closingLedger.revenueGroup, -3200);
+    assert.equal(archive.closingLedger.salesReturns, 600);
+    assert.equal(archive.closingLedger.costOfSales, scenario.cost);
+    assert.equal(archive.closingLedger.expenseFee, 20);
+    if (scenario.profit !== 0) {
+      assert.throws(() => enterNextPeriod(archived, "测试会计", { equityAccountId: "expenseFee" }), /有效的权益科目/);
+    }
+
+    const next = enterNextPeriod(archived, "测试会计", { equityAccountId: scenario.equityAccountId });
+    assert.equal(next.currentPeriod, "2026-09");
+    for (const account of ["revenueGroup", "salesReturns", "costOfSales", "expenseFee"]) assert.equal(next.openingLedger[account], 0, account);
+    assert.equal(next.openingLedger[scenario.equityAccountId], scenario.nextEquity);
+    for (const [account, balance] of Object.entries(archive.closingLedger)) {
+      if (["asset", "contraAsset", "liability", "equity"].includes(accountDefinition(account, archived).category) && account !== scenario.equityAccountId) {
+        assert.equal(next.openingLedger[account], balance, `${account} retains its archived balance`);
+      }
+    }
+    assert.equal(Math.round(Object.values(next.openingLedger).reduce((sum, value) => sum + value, 0) * 100), 0);
+    assert.equal(buildReportSnapshot(next).summary.profit, 0);
+    assert.equal(next.openingCarryForward.profit, scenario.profit);
+    assert.equal(next.openingCarryForward.archiveId, archive.id);
+    assert.equal(next.openingCarryForward.equityAccountId, scenario.profit === 0 ? null : scenario.equityAccountId);
+    assert.deepEqual(next.delivery.archives[0], archive);
+    assert.deepEqual(archived.delivery.archives[0], archive);
+    assert.equal(enterNextPeriod(next, "测试会计"), next);
+    assert.deepEqual(enterNextPeriod(archived, "测试会计", { equityAccountId: scenario.equityAccountId }).openingLedger, next.openingLedger);
+  });
+}
+
+test("attachment export metadata preserves the archived version while financial and evidence edits invalidate it", () => {
+  const workspace = closeableWorkspace();
+  workspace.documents.find((document) => document.id === "doc-settlement").hash = "settlement-original-hash";
+  const archived = archiveWithoutTax(workspace);
+  const archive = structuredClone(archived.delivery.archives[0]);
+  const exported = structuredClone(archived);
+  const voucher = exported.vouchers.find((item) => item.id === "voucher-0003");
+  voucher.attachmentPackages = [...(voucher.attachmentPackages || []), {
+    id: "attachment-export-after-close", exportedAt: "2026-09-05T09:00:00.000Z", fileName: "记-003-附件.zip", hash: "attachment-package-hash",
+  }];
+  voucher.updatedAt = "2026-09-05T09:00:00.000Z";
+  assert.equal(workflowSourceFingerprint(exported), workflowSourceFingerprint(archived));
+  assert.equal(workflowChecks(exported).version.id, archive.reportVersionId);
+  const next = enterNextPeriod(exported, "测试会计");
+  assert.equal(next.currentPeriod, "2026-09");
+  assert.deepEqual(next.vouchers.find((item) => item.id === voucher.id).attachmentPackages, voucher.attachmentPackages);
+  assert.equal(next.vouchers.find((item) => item.id === voucher.id).updatedAt, voucher.updatedAt);
+  assert.deepEqual(next.delivery.archives[0], archive);
+
+  for (const [label, change] of [
+    ["balanced entry amounts", (changed) => {
+      const entry = changed.vouchers.find((item) => item.id === "voucher-0003");
+      entry.lines[0].debit += 1;
+      entry.lines[1].credit += 1;
+    }],
+    ["source relationship", (changed) => changed.vouchers.find((item) => item.id === "voucher-0003").sourceIds.push("new-source")],
+    ["original evidence hash", (changed) => { changed.documents.find((document) => document.id === "doc-settlement").hash = "changed-original-hash"; }],
+  ]) {
+    const changed = structuredClone(exported);
+    change(changed);
+    assert.notEqual(workflowSourceFingerprint(changed), workflowSourceFingerprint(archived), label);
+    assert.equal(workflowChecks(changed).version, null, label);
+    assert.throws(() => enterNextPeriod(changed, "测试会计"), /归档后数据又发生变化/, label);
+    assert.deepEqual(changed.delivery.archives[0], archive);
+  }
+});
+
+test("initial and final confirmations retain signatures, reject stale views and cannot be replaced by timestamp flags", async () => {
+  const base = closeableWorkspace();
+  base.modules.payroll = false;
+  const frozen = freezeReportVersion(explainVatDifferences(base), "测试会计");
+  const versionId = workflowChecks(frozen).version.id;
+  const decision = { reportVersionId: versionId, section: "finance", decision: "approve", note: "已核对冻结报表", confirmationName: "客户负责人" };
+  assert.throws(() => recordInitialConfirmationSection(frozen, { ...decision, note: " " }), /必须填写说明/);
+  assert.throws(() => recordInitialConfirmationSection(frozen, { ...decision, confirmationName: " " }), /真实姓名/);
+  assert.throws(() => recordInitialConfirmationSection(frozen, { ...decision, isMajor: true, responsibleName: " " }), /负责人签字姓名/);
+  assert.throws(() => recordInitialConfirmationSection(frozen, { ...decision, reportVersionId: "stale-version" }), /报表版本已变化/);
+
+  const major = recordInitialConfirmationSection(frozen, { ...decision, isMajor: true, responsibleName: "重大事项负责人" }, { actor: "测试会计", at: "2026-09-04T08:01:00.000Z" });
+  assert.equal(major.confirmations.at(-1).decisions.at(-1).actor, "重大事项负责人");
+  assert.match(major.confirmations.at(-1).decisions.at(-1).note, /^重大事项：/);
+  assert.equal(major.confirmations.at(-1).decisions.at(-1).reportVersionId, versionId);
+  assert.throws(() => recordInitialConfirmationSection(major, decision), /不能重复覆盖/);
+  const disputed = recordInitialConfirmationSection(frozen, { ...decision, decision: "reject", note: "费用来源存在异议" }, { actor: "测试会计" });
+  assert.equal(disputed.confirmations.at(-1).status, "disputed");
+  assert.equal(disputed.exceptionTasks.some((task) => task.code === "customer_dispute" && task.status === "open" && task.message === "费用来源存在异议"), true);
+  assert.equal(disputed.tax.financeConfirmedAt, null);
+  assert.throws(() => prepareFilingDraft(disputed), /生成申报底稿前仍需完成/);
+
+  const forgedInitial = { ...frozen, tax: { ...frozen.tax, financeConfirmedAt: fixedNow().toISOString(), financeConfirmedVersionId: versionId } };
+  assert.equal(workflowChecks(forgedInitial).checks.find((check) => check.id === "finance").ok, false);
+  assert.throws(() => prepareFilingDraft(forgedInitial), /完成首次确认/);
+  const approved = approveInitialConfirmation(frozen);
+  assert.equal(approved.confirmations.at(-1).status, "approved");
+  assert.equal(approved.confirmations.at(-1).decisions.every((decision) => decision.actor === "客户负责人"), true);
+  assert.equal(approved.delivery.filing.initialConfirmationId, approved.confirmations.at(-1).id);
+  assert.equal(workflowChecks(approved).checks.find((check) => check.id === "finance").ok, true);
+  assert.equal("payroll" in approved.confirmations.at(-1).sections, false);
+  const draft = prepareFilingDraft(approved, "测试会计");
+  const input = finalConfirmationInput(draft);
+  assert.throws(() => recordFinalConfirmation(draft, { ...input, name: " " }), /最终负责人姓名/);
+  assert.throws(() => recordFinalConfirmation(draft, { ...input, selections: { ...input.selections, risksAcknowledged: false } }), /三项最终确认声明/);
+  assert.throws(() => recordFinalConfirmation(draft, { ...input, selections: { ...input.selections, deductionAuthorization: "" } }), /是否授权外部扣款/);
+  assert.throws(() => recordFinalConfirmation(draft, { ...input, reportVersionId: "stale-version" }), /冻结版本或底稿已变化/);
+  assert.throws(() => recordFinalConfirmation(draft, { ...input, filingDraftCreatedAt: "old-draft-time" }), /冻结版本或底稿已变化/);
+  const mismatchedDraft = { ...draft, delivery: { ...draft.delivery, filing: { ...draft.delivery.filing, draftVersionId: "other-version" } } };
+  assert.throws(() => recordFinalConfirmation(mismatchedDraft, input), /底稿与报表版本不一致/);
+  const forgedFinal = {
+    ...draft,
+    tax: { ...draft.tax, ownerConfirmedAt: fixedNow().toISOString(), ownerConfirmedVersionId: versionId },
+    delivery: { ...draft.delivery, filing: { ...draft.delivery.filing, finalConfirmedVersionId: versionId } },
+  };
+  assert.equal(workflowChecks(forgedFinal).checks.find((check) => check.id === "owner").ok, false);
+  await assert.rejects(() => exportLocalFilingPackage(forgedFinal), /完成最终确认/);
+
+  const final = recordFinalConfirmation(draft, input, { actor: "测试会计", at: "2026-09-04T08:13:00.000Z" });
+  assert.equal(workflowChecks(final).checks.find((check) => check.id === "owner").ok, true);
+  assert.deepEqual(final.confirmations.slice(0, -1), draft.confirmations);
+  assert.deepEqual(final.confirmations.at(-1).signature, { name: "客户负责人", signedAt: "2026-09-04T08:13:00.000Z" });
+  assert.equal(final.confirmations.at(-1).selections.deductionAuthorization, "do_not_authorize");
+  assert.equal(final.confirmations.at(-1).snapshot.payrollSocial.applicable, false);
+  assert.equal(final.auditLog.some((item) => item.action === "客户第二次最终确认"), true);
+  assert.match(final.auditLog.find((item) => item.action === "客户第二次最终确认").detail, /仅保存本地记录，未提交税务局、未执行扣款/);
+});
+
+test("structured invoice VAT, first confirmation, final confirmation and actual filing ZIP share one frozen snapshot", async (t) => {
+  let workspace = withPayrollSocialData(closeableWorkspace());
+  const period = workspace.currentPeriod;
+  const invoice = (id, taxDirection, amount, taxAmount) => ({
+    id, name: `${id}.pdf`, category: "发票", period, hash: `${id}-original-hash`, relatedObjectIds: ["txn-split"],
+    structuredData: {
+      kind: "invoice", invoiceNumber: id, invoiceDate: `${period}-04`, taxDirection, amount, taxAmount,
+      taxRate: taxDirection === "output" ? 13 : 6, verificationStatus: "unverified", redLetterStatus: "normal", voidStatus: "valid",
+      certificationStatus: taxDirection === "input" ? "certified" : "not_required",
+    },
+  });
+  workspace.documents.push(invoice("confirmation-output-invoice", "output", 113, 13), invoice("confirmation-input-invoice", "input", 106, 6));
+  const revenueBasedVat = buildTaxWorkpaper(workspace, { period }).vatPayable.value;
+  assert.notEqual(revenueBasedVat, 7);
+  workspace = freezeReportVersion(explainVatDifferences(workspace), "测试会计");
+  const version = structuredClone(workflowChecks(workspace).version);
+  assert.equal(version.snapshot.taxWorkpaper.sourceMode, "structured_invoices");
+  assert.equal(version.snapshot.taxWorkpaper.rows.find((row) => row.id === "vatPayable").value, 7);
+  workspace = approveInitialConfirmation(workspace);
+  const initial = structuredClone(workspace.confirmations.at(-1));
+  assert.equal(initial.sections.vat.value, 7);
+  assert.equal(initial.sections.inputVat.value, 6);
+  assert.equal(initial.sections.payroll.value, 10000);
+  assert.equal(initial.sections.socialSecurity.value, 2400);
+  assert.equal(initial.sections.vat.sourceIds.includes("confirmation-output-invoice"), true);
+  assert.equal(initial.sections.vat.sourceIds.includes("confirmation-input-invoice"), true);
+  assert.deepEqual(initial.snapshot, version.snapshot);
+  assert.equal(initial.reportSourceFingerprint, version.sourceFingerprint);
+
+  workspace = prepareFilingDraft(workspace, "测试会计");
+  const displayedFinal = buildFinalConfirmationSnapshot(workspace);
+  workspace = recordFinalConfirmation(workspace, finalConfirmationInput(workspace), { actor: "测试会计" });
+  const final = structuredClone(workspace.confirmations.at(-1));
+  assert.deepEqual(final.snapshot, displayedFinal);
+  assert.equal(final.snapshot.taxes.vat.value, 7);
+  assert.deepEqual(new Set(final.snapshot.taxes.vat.sourceIds), new Set(initial.sections.vat.sourceIds));
+  for (const [id, section] of Object.entries(initial.sections)) {
+    assert.equal(final.snapshot.confirmationSections[id].value, section.value, id);
+    assert.deepEqual(final.snapshot.confirmationSections[id].sourceIds, section.sourceIds, id);
+  }
+  assert.deepEqual(final.snapshot.confirmationSections.finance.metrics, initial.sections.finance.metrics);
+  assert.equal(final.filingDraftCreatedAt, workspace.delivery.filing.draftCreatedAt);
+  assert.equal(final.reportVersionId, initial.reportVersionId);
+  assert.equal(final.reportSourceFingerprint, version.sourceFingerprint);
+
+  let downloadedBlob;
+  let clicked = false;
+  const anchor = { click() { clicked = true; } };
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  t.after(() => {
+    if (documentDescriptor) Object.defineProperty(globalThis, "document", documentDescriptor);
+    else delete globalThis.document;
+    if (windowDescriptor) Object.defineProperty(globalThis, "window", windowDescriptor);
+    else delete globalThis.window;
+  });
+  Object.defineProperties(globalThis, {
+    document: { configurable: true, value: { createElement: (tag) => { assert.equal(tag, "a"); return anchor; } } },
+    window: { configurable: true, value: { setTimeout: (callback) => callback() } },
+  });
+  t.mock.method(URL, "createObjectURL", (blob) => { downloadedBlob = blob; return "blob:filing-package-test"; });
+  t.mock.method(URL, "revokeObjectURL", () => {});
+  const metadata = await exportLocalFilingPackage(workspace);
+  assert.equal(clicked, true);
+  assert.equal(anchor.download, metadata.fileName);
+  assert.equal(metadata.size, downloadedBlob.size);
+  assert.match(metadata.hash, /^[a-f0-9]{64}$/);
+  assert.equal(metadata.reportVersionId, version.id);
+  const zip = await JSZip.loadAsync(await downloadedBlob.arrayBuffer());
+  const folder = `${PRODUCT_NAME}-${period}-本地申报包/`;
+  const readJson = async (name) => JSON.parse(await zip.file(folder + name).async("string"));
+  const serialized = (value) => JSON.parse(JSON.stringify(value));
+  const report = await readJson("报表快照.json");
+  const workpaper = await readJson("税务申报底稿.json");
+  const confirmations = await readJson("客户确认记录.json");
+  const payroll = await readJson("工资与社保明细.json");
+  assert.deepEqual(report, serialized(version.snapshot));
+  assert.deepEqual(workpaper.workpaper, serialized(version.snapshot.taxWorkpaper));
+  assert.equal(workpaper.reportSourceFingerprint, version.sourceFingerprint);
+  assert.deepEqual(confirmations.initialConfirmation, serialized(initial));
+  assert.deepEqual(confirmations.finalConfirmation, serialized(final));
+  assert.equal(confirmations.reportVersionId, version.id);
+  assert.equal(payroll.totals.payroll.grossSalary, initial.sections.payroll.value);
+  assert.equal(payroll.totals.socialSecurityPayable, initial.sections.socialSecurity.value);
+  assert.equal(payroll.reportSourceFingerprint, version.sourceFingerprint);
+  assert.deepEqual((await readJson("异常与确认记录.json")).confirmations, serialized([initial, final]));
+  assert.deepEqual(workspace.delivery.reportVersions[0], version);
+
+  const changed = structuredClone(workspace);
+  changed.documents.find((document) => document.id === "confirmation-output-invoice").hash = "changed-original";
+  assert.equal(workflowChecks(changed).version, null);
+  await assert.rejects(() => exportLocalFilingPackage(changed), /冻结本期报表/);
+  assert.deepEqual(changed.confirmations, workspace.confirmations);
+});
 
 test("product identity and the complete local foundation remain reachable from primary navigation", () => {
   assert.equal(PRODUCT_NAME, "财务工作台");
@@ -428,7 +755,7 @@ test("an unexplained VAT difference blocks the final local filing package", asyn
   const check = workflowChecks(workspace).checks.find((item) => item.id === "vatReconciliation");
   assert.equal(check.ok, false);
   assert.match(check.detail, /差额 10.00/);
-  await assert.rejects(() => exportLocalFilingPackage(workspace), /增值税差异均已解释/);
+  await assert.rejects(() => exportLocalFilingPackage(workspace), /解释增值税差异/);
 });
 
 test("payroll and social records enter the tax workpaper, compare by employee, and require separate current confirmations", () => {
@@ -611,6 +938,31 @@ test("a pending correction voucher blocks confirmation even when its source tran
   assert.equal(flow.checks.find((item) => item.id === "vouchers").ok, false);
 });
 
+test("posting a date-only correction keeps the superseded voucher in history and allows the close to continue", () => {
+  let workspace = closeableWorkspace();
+  delete workspace.vouchers.find((voucher) => voucher.id === "voucher-0001").period;
+  const before = buildReportSnapshot(workspace).summary;
+  workspace = createPostedVoucherRevision(workspace, {
+    voucherId: "voucher-0001", reason: "更正已入账凭证并保留原记录",
+  }, { actor: "测试会计", at: "2026-09-04T08:01:00.000Z" });
+  const revision = workspace.vouchers.find((voucher) => voucher.revisionOf === "voucher-0001");
+  assert.deepEqual(workflowChecks(workspace).pendingVouchers.map((voucher) => voucher.id), [revision.id]);
+  workspace = postVoucher(workspace, {
+    voucherId: revision.id, reviewNote: "已复核更正凭证及来源，原凭证由本次入账替代", mode: "manual",
+  }, { actor: "测试会计", at: "2026-09-04T08:02:00.000Z" });
+  assert.equal(workspace.vouchers.find((voucher) => voucher.id === "voucher-0001").status, "superseded");
+  assert.equal(workspace.vouchers.find((voucher) => voucher.id === revision.id).status, "posted");
+  assert.deepEqual(workflowChecks(workspace).pendingVouchers, []);
+  assert.equal(buildReportSnapshot(workspace).summary.revenue, before.revenue);
+  assert.equal(buildReportSnapshot(workspace).summary.profit, before.profit);
+  const archived = archiveWithoutTax(workspace);
+  const archive = archived.delivery.archives[0];
+  assert.equal(archive.vouchers.find((voucher) => voucher.id === "voucher-0001").status, "superseded");
+  assert.equal(archive.vouchers.find((voucher) => voucher.id === revision.id).status, "posted");
+  assert.equal(archive.attachmentPackages.some((item) => item.voucherId === "voucher-0001"), true);
+  assert.equal(enterNextPeriod(archived, "测试会计").currentPeriod, "2026-09");
+});
+
 test("a failed bank reconciliation blocks report freezing and confirmation", () => {
   const workspace = ensureWorkspace(createAccountingFixture());
   workspace.transactions = workspace.transactions.map((transaction) => ({ ...transaction, status: "ignored" }));
@@ -624,54 +976,37 @@ test("a failed bank reconciliation blocks report freezing and confirmation", () 
   const flow = workflowChecks(workspace);
   assert.equal(flow.bankReconciliationIssues.length, 1);
   assert.equal(flow.checks.find((item) => item.id === "bank").ok, false);
+  assert.equal(flow.checks.find((item) => item.id === "bank").label, "核对银行流水");
 });
 
-test("freezing V2 clears every confirmation and delivery artifact bound to V1", () => {
-  const base = ensureWorkspace(createAccountingFixture());
-  base.transactions = base.transactions.map((transaction) => ({ ...transaction, status: "ignored" }));
-  base.vouchers = base.vouchers.map((voucher) => ({ ...voucher, status: "posted" }));
-  const v1 = freezeReportVersion(base, "测试会计");
-  const v1Id = v1.delivery.reportVersions[0].id;
-  v1.tax = {
-    ...v1.tax,
-    financeConfirmedAt: fixedNow().toISOString(),
-    payrollConfirmedAt: fixedNow().toISOString(),
-    socialSecurityConfirmedAt: fixedNow().toISOString(),
-    ownerConfirmedAt: fixedNow().toISOString(),
-    financeConfirmedVersionId: v1Id,
-    payrollConfirmedVersionId: v1Id,
-    socialSecurityConfirmedVersionId: v1Id,
-    ownerConfirmedVersionId: v1Id,
-  };
-  v1.delivery.filing = {
-    ...v1.delivery.filing,
-    draftCreatedAt: fixedNow().toISOString(),
-    draftVersionId: v1Id,
-    finalConfirmedVersionId: v1Id,
-    exportedAt: fixedNow().toISOString(),
-    exportedPackage: { reportVersionId: v1Id },
-    receipt: { id: "receipt-v1", reportVersionId: v1Id },
-  };
+test("freezing V2 clears effective confirmations and delivery artifacts while preserving V1 history", () => {
+  let v1 = freezeReportVersion(explainVatDifferences(withPayrollSocialData(closeableWorkspace())), "测试会计");
+  v1 = approveInitialConfirmation(v1);
+  v1 = prepareFilingDraft(v1, "测试会计");
+  v1 = recordFinalConfirmation(v1, finalConfirmationInput(v1), { actor: "测试会计" });
+  v1 = recordPackageAndReceipt(v1);
+  assert.equal(workflowChecks(v1).archive.every((check) => check.ok), true);
+  const v1Confirmations = structuredClone(v1.confirmations);
 
   const v2 = freezeReportVersion(v1, "测试会计");
   assert.equal(v2.delivery.reportVersions[0].label, "V2");
   assert.equal(v2.tax.financeConfirmedAt, null);
+  assert.equal(v2.tax.payrollConfirmedAt, null);
   assert.equal(v2.tax.socialSecurityConfirmedAt, null);
   assert.equal(v2.tax.ownerConfirmedVersionId, null);
+  assert.equal(v2.delivery.filing.initialConfirmationId, null);
   assert.equal(v2.delivery.filing.draftVersionId, null);
+  assert.equal(v2.delivery.filing.finalConfirmedVersionId, null);
   assert.equal(v2.delivery.filing.exportedPackage, null);
   assert.equal(v2.delivery.filing.receipt, null);
+  assert.deepEqual(v2.confirmations, v1Confirmations);
+  assert.equal(workflowChecks(v2).checks.find((check) => check.id === "finance").ok, false);
+  assert.equal(workflowChecks(v2).checks.find((check) => check.id === "owner").ok, false);
+  assert.throws(() => prepareFilingDraft(v2, "测试会计"), /完成首次确认/);
 });
 
 test("the full frozen-version confirmation, package, receipt, archive and next-period chain remains bound", () => {
-  let workspace = withPayrollSocialData(closeableWorkspace());
-  for (const item of buildVatReconciliationSummary(workspace).unresolvedItems) {
-    workspace = recordVatReconciliation(workspace, {
-      kind: item.kind,
-      reason: "完整流程测试已人工核对该差额",
-      adjustmentAmount: -item.differenceBeforeAdjustment,
-    }, { actor: "测试会计", at: "2026-09-04T08:00:30.000Z" });
-  }
+  let workspace = explainVatDifferences(withPayrollSocialData(closeableWorkspace()));
   workspace = freezeAccountingReportVersion(
     workspace,
     { period: workspace.currentPeriod, label: "月度财务报表" },
@@ -679,77 +1014,12 @@ test("the full frozen-version confirmation, package, receipt, archive and next-p
   );
   workspace = freezeReportVersion(workspace, "测试会计");
   const versionId = workflowChecks(workspace).version.id;
-  workspace = createCustomerConfirmationPackage(
-    workspace,
-    { period: workspace.currentPeriod, reportVersionId: versionId },
-    { actor: "测试会计", at: "2026-09-04T08:02:00.000Z" },
-  );
-  const confirmationId = workspace.confirmations.at(-1).id;
-  for (const [index, section] of ["finance", "revenue", "costExpense", "vat", "inputVat", "payroll", "socialSecurity", "openItems"].entries()) {
-    workspace = recordCustomerConfirmation(workspace, {
-      confirmationId,
-      section,
-      decision: "approve",
-      note: "本地逐项确认",
-    }, { actor: "客户负责人", at: `2026-09-04T08:${String(3 + index).padStart(2, "0")}:00.000Z` });
-  }
-  workspace = {
-    ...workspace,
-    tax: {
-      ...workspace.tax,
-      financeConfirmedAt: "2026-09-04T08:12:00.000Z",
-      financeConfirmedVersionId: versionId,
-    },
-    delivery: {
-      ...workspace.delivery,
-      filing: { ...workspace.delivery.filing, initialConfirmationId: confirmationId },
-    },
-  };
-  workspace = confirmPayrollSocialData(workspace, { section: "payroll", confirmed: true }, { actor: "客户负责人", at: "2026-09-04T08:12:10.000Z" });
-  workspace = confirmPayrollSocialData(workspace, { section: "socialSecurity", confirmed: true }, { actor: "客户负责人", at: "2026-09-04T08:12:20.000Z" });
+  workspace = approveInitialConfirmation(workspace);
   workspace = prepareFilingDraft(workspace, "测试会计");
-  workspace = {
-    ...workspace,
-    tax: {
-      ...workspace.tax,
-      ownerConfirmedAt: "2026-09-04T08:13:00.000Z",
-      ownerConfirmedVersionId: versionId,
-      confirmedBy: "客户负责人",
-    },
-    delivery: {
-      ...workspace.delivery,
-      filing: { ...workspace.delivery.filing, finalConfirmedVersionId: versionId },
-    },
-  };
-  workspace = markPackageExported(workspace, {
-    id: "filing-package-test",
-    fileName: "申报包.zip",
-    size: 1024,
-    hash: "package-sha256",
-    exportedAt: "2026-09-04T08:14:00.000Z",
-    reportVersionId: versionId,
-  }, "测试会计");
-  workspace = {
-    ...workspace,
-    documents: [...workspace.documents, {
-      id: "receipt-document-test",
-      name: "真实回执.txt",
-      category: "申报回执",
-      deliveryArtifact: true,
-      period: workspace.currentPeriod,
-      hash: "receipt-sha256",
-      relatedObjectIds: [],
-      storage: { mode: "indexeddb", blobId: "receipt-document-test", availableLocally: true },
-    }],
-  };
-  workspace = attachReceipt(workspace, {
-    id: "receipt-test",
-    name: "真实回执.txt",
-    hash: "receipt-sha256",
-    documentId: "receipt-document-test",
-    importedAt: "2026-09-04T08:15:00.000Z",
-  }, "测试会计");
+  workspace = recordFinalConfirmation(workspace, finalConfirmationInput(workspace), { actor: "测试会计", at: "2026-09-04T08:13:00.000Z" });
+  workspace = recordPackageAndReceipt(workspace);
   assert.equal(workflowChecks(workspace).archive.every((check) => check.ok), true);
+  assert.equal(workflowChecks(workspace).checks.find((check) => check.id === "bank").label, "本期银行流水余额勾稽通过");
 
   const fingerprint = workflowSourceFingerprint(workspace);
   const archived = archivePeriod(workspace, "测试会计");

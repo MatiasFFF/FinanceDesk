@@ -150,10 +150,12 @@ test("completed local download metadata is persisted without any upload state", 
   assert.equal(next.auditLog.at(-1).action, "report.excel_export");
 });
 
-test("report page only offers the current validated frozen-version export", () => {
+test("report page only exports the selected current frozen version", () => {
   const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
   assert.match(appSource, /const excelExportReady = Boolean\(currentFrozenVersion\?\.sourceFingerprint\)/);
-  assert.match(appSource, /导出当前冻结版 Excel/);
+  assert.match(appSource, /selectedVersion\.id === currentFrozenVersion\.id/);
+  assert.match(appSource, /disabled=\{!selectedCurrentFrozenVersion\} onClick=\{onExportExcel\}/);
+  assert.match(appSource, /导出 Excel/);
   assert.match(appSource, /if \(!flow\.version\?\.sourceFingerprint\) throw new Error/);
   assert.match(appSource, /latestFlow\.version\.sourceFingerprint !== metadata\.sourceFingerprint/);
   assert.match(appSource, /未上传网络/);

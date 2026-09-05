@@ -1,7 +1,8 @@
-import { createId } from "../../domain/foundation.js";
+import { createId, normalizeWorkspaceModules } from "../../domain/foundation.js";
 import { buildFinancialStatements, buildManagementMetrics, buildTaxWorkpaper } from "../../domain/accounting/reporting.js";
 import { attachEvidenceDocument, reviewTransactionEvidence } from "../evidence/evidenceEngine.js";
 import { normalizeMoney, parseDelimitedText } from "./bankStatementImport.js";
+import { mergeAttachmentPdfs } from "./pdfAttachments.js";
 
 const LINKABLE_COLLECTIONS = [
   "vouchers",
@@ -3061,11 +3062,14 @@ function voucherPackageSnapshot(voucher) {
     summary: voucher.summary || "",
     status: voucher.status || null,
     version: voucher.version || 1,
+    revisionOf: voucher.revisionOf || null,
     lines: voucher.lines || [],
     sourceIds: voucher.sourceIds || [],
     relatedSourceIds: voucher.relatedSourceIds || [],
     evidenceIds: voucher.evidenceIds || [],
     documentIds: voucher.documentIds || [],
+    basis: voucher.basis || null,
+    evidenceVerification: voucher.evidenceVerification || null,
     judgement: voucher.judgement || null,
     blockers: voucher.blockers || [],
   };
@@ -3075,6 +3079,7 @@ function sourceRelationshipSnapshot(plan) {
   return {
     voucherId: plan.voucherId,
     sourceIds: plan.sourceIds,
+    originalVoucherIds: [...new Set([...(plan.voucher.basis?.voucherIds || []), plan.voucher.revisionOf].filter(Boolean))],
     sources: plan.sourceObjects.map(({ collection, label, item }) => ({
       collection,
       kind: label,
@@ -3122,6 +3127,7 @@ export async function generateVoucherAttachmentPackage(input) {
   const usedPaths = new Set();
   const packagedFiles = [];
   const runtimeMissing = [];
+  const mergeEntries = [];
 
   VOUCHER_ATTACHMENT_SECTIONS.forEach((section) => zip.folder(`${String(section.order).padStart(2, "0")}-${safeZipName(section.label)}`));
   for (const section of plan.sections) {
@@ -3132,7 +3138,14 @@ export async function generateVoucherAttachmentPackage(input) {
         const actualHash = await hashLocalFile(record.blob);
         if (documentMetadata.hash && actualHash !== documentMetadata.hash) throw new Error("原文件哈希与工作台记录不一致");
         const archivePath = uniqueZipPath(folder, record.name || documentMetadata.name, usedPaths);
-        zip.file(archivePath, new Uint8Array(await record.blob.arrayBuffer()));
+        const bytes = new Uint8Array(await record.blob.arrayBuffer());
+        zip.file(archivePath, bytes);
+        mergeEntries.push({
+          documentId: documentMetadata.id,
+          name: record.name || documentMetadata.name,
+          mimeType: record.mimeType || documentMetadata.mimeType,
+          bytes,
+        });
         packagedFiles.push({
           sectionKey: section.key,
           sectionLabel: section.label,
@@ -3158,6 +3171,12 @@ export async function generateVoucherAttachmentPackage(input) {
     }
   }
 
+  const { bytes: mergedPdfBytes, ...mergedPdf } = await mergeAttachmentPdfs(mergeEntries);
+  const mergedPreview = {
+    ...mergedPdf,
+    archivePath: mergedPdfBytes ? "附件合并预览.pdf" : null,
+    note: "合并文件仅供阅读，不是签章原件；请以包内保留的原文件为准。",
+  };
   const missingItems = uniqueMissingItems([...plan.missingItems, ...runtimeMissing]);
   const voucherSnapshot = voucherPackageSnapshot(plan.voucher);
   const relationships = sourceRelationshipSnapshot(plan);
@@ -3189,8 +3208,11 @@ export async function generateVoucherAttachmentPackage(input) {
     files: packagedFiles,
     hashes: packagedFiles.map(({ documentId, name, archivePath, hash, hashAlgorithm }) => ({ documentId, name, archivePath, hash, hashAlgorithm })),
     missingItems,
+    mergedPreview,
   };
 
+  if (mergedPdfBytes) zip.file(mergedPreview.archivePath, mergedPdfBytes);
+  zip.file("附件合并说明.json", jsonFile(mergedPreview));
   zip.file("凭证.json", jsonFile(voucherSnapshot));
   zip.file("来源关系.json", jsonFile(relationships));
   zip.file("哈希清单.json", jsonFile(manifest.hashes));
@@ -3242,7 +3264,7 @@ export async function generateVoucherAttachmentPackage(input) {
 
 export const MONTHLY_FINANCIAL_ARCHIVE_SECTIONS = Object.freeze([
   { key: "vouchers", order: 1, label: "凭证与分录" },
-  { key: "voucherAttachments", order: 2, label: "凭证附件包或附件清单" },
+  { key: "voucherAttachments", order: 2, label: "凭证原始附件与清单" },
   { key: "reports", order: 3, label: "三大报表与管理报表" },
   { key: "taxFiling", order: 4, label: "税务申报底稿与本地申报包" },
   { key: "payroll", order: 5, label: "工资社保数据" },
@@ -3274,7 +3296,72 @@ function latestPeriodReportVersion(workspace, period, archiveRecord) {
     .filter((item, index, all) => item?.id && all.findIndex((candidate) => candidate?.id === item.id) === index)
     .filter((item) => item.period === period)
     .sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")));
-  return versions.find((item) => item.id === archiveRecord?.reportVersionId) || versions[0] || null;
+  return archiveRecord?.reportVersionId
+    ? versions.find((item) => item.id === archiveRecord.reportVersionId) || null
+    : versions[0] || null;
+}
+
+function monthlyArchiveSourceContext(workspace, period, archiveRecord, reportVersion) {
+  const historical = Boolean(archiveRecord) || period !== workspace.currentPeriod;
+  let savedSource = null;
+  let sourceOrigin = null;
+  if (historical) {
+    for (const [origin, fingerprint] of [["archive.sourceFingerprint", archiveRecord?.sourceFingerprint], ["reportVersion.sourceFingerprint", reportVersion?.sourceFingerprint]]) {
+      if (!fingerprint) continue;
+      try {
+        const snapshot = JSON.parse(fingerprint);
+        if (snapshot.currentPeriod === period && snapshot.sources) {
+          savedSource = snapshot;
+          sourceOrigin = origin;
+          break;
+        }
+      } catch {
+        // Older archives may not contain a readable source snapshot.
+      }
+    }
+  }
+  const savedModules = historical ? archiveRecord?.modules || savedSource?.sources?.modules : workspace.modules;
+  const known = !historical || Boolean(savedModules && Object.keys(savedModules).length);
+  const modules = known
+    ? normalizeWorkspaceModules(savedModules, {
+      payrollDefault: historical ? savedModules.payroll !== false : workspace.templateId === "fitness-studio" || Boolean(workspace.isDemo),
+    })
+    : { tax: true, payroll: true };
+  const moduleSnapshot = {
+    modules,
+    known,
+    source: historical ? (archiveRecord?.modules ? "archive.modules" : (known ? `${sourceOrigin}.sources.modules` : "unavailable")) : "workspace.modules",
+    reportVersionId: archiveRecord?.reportVersionId || reportVersion?.id || null,
+    taxEnabled: modules.tax !== false,
+    payrollEnabled: modules.payroll !== false,
+    payrollConfirmationRequired: modules.tax !== false && modules.payroll !== false,
+  };
+  if (!historical) return { sourceWorkspace: workspace, moduleSnapshot, historical };
+
+  const sources = savedSource?.sources || {};
+  const documents = [...(archiveRecord?.documents || []), ...(sources.documents || [])]
+    .filter((document, index, all) => all.findIndex((item) => item.id === document.id) === index)
+    .map((document) => {
+      const current = (workspace.documents || []).find((item) => item.id === document.id && item.hash === document.hash);
+      return { ...document, storage: current?.storage || document.storage || null };
+    });
+  return {
+    historical,
+    moduleSnapshot,
+    sourceWorkspace: {
+      ...sources,
+      id: workspace.id,
+      name: workspace.name,
+      currentPeriod: period,
+      modules,
+      tax: savedSource?.tax || {},
+      documents,
+      vouchers: archiveRecord?.vouchers || sources.vouchers || [],
+      confirmations: archiveRecord?.confirmationPackages || [],
+      auditLog: archiveRecord?.auditSnapshot || [],
+      exceptionTasks: archiveRecord?.exceptionRecords || sources.exceptionTasks || [],
+    },
+  };
 }
 
 function safelyBuildMonthlySnapshot(builder, workspace, period) {
@@ -3301,7 +3388,7 @@ function taxWorkpaperValue(workpaper, key) {
   return row?.value;
 }
 
-function monthlyVoucherAttachmentManifest(workspace, voucher, archivedPackage) {
+function monthlyVoucherAttachmentManifest(workspace, voucher, archivedPackage, moduleSnapshot) {
   const currentVoucher = (workspace.vouchers || []).find((item) => item.id === voucher.id);
   if (!currentVoucher) {
     return {
@@ -3314,6 +3401,12 @@ function monthlyVoucherAttachmentManifest(workspace, voucher, archivedPackage) {
   }
   try {
     const plan = buildVoucherAttachmentPackagePlan(workspace, currentVoucher.id);
+    const relations = voucherAttachmentRelations(workspace, currentVoucher);
+    const missingDocumentIds = [...relations.documentIds].filter((id) => !plan.documents.some((document) => document.id === id));
+    const missingItems = uniqueMissingItems([
+      ...plan.missingItems.filter((item) => moduleSnapshot.taxEnabled || item.kind !== "section" || item.sectionKey !== "confirmation"),
+      ...missingDocumentIds.map((id) => ({ key: `document-index:${id}`, kind: "original_file", documentId: id, label: id, reason: "凭证引用的资料索引缺失，无法读取原文件" })),
+    ]);
     return {
       voucherId: currentVoucher.id,
       voucherNo: currentVoucher.no || null,
@@ -3326,8 +3419,8 @@ function monthlyVoucherAttachmentManifest(workspace, voucher, archivedPackage) {
           key: section.key,
           order: section.order,
           label: section.label,
-          required: section.required,
-          status: section.status,
+          required: section.key === "confirmation" && !moduleSnapshot.taxEnabled ? false : section.required,
+          status: section.key === "confirmation" && !moduleSnapshot.taxEnabled && !section.documents.length && !section.records.length ? "not_required" : section.status,
           documentIds: section.documents.map((document) => document.id),
           recordCount: section.records.length,
         })),
@@ -3341,10 +3434,16 @@ function monthlyVoucherAttachmentManifest(workspace, voucher, archivedPackage) {
           relatedObjectIds: documentMetadata.relatedObjectIds || [],
           storage: documentMetadata.storage || null,
         })),
+        documentIds: [...relations.documentIds],
         evidenceLinks: plan.evidenceLinks,
-        missingItems: plan.missingItems,
+        sourceRelationships: sourceRelationshipSnapshot(plan),
+        confirmations: plan.confirmations,
+        matchingRecords: plan.matchingRecords,
+        reviews: plan.reviews,
+        missingItems,
       },
-      missingItems: plan.missingItems,
+      archivedManifest: archivedPackage || null,
+      missingItems,
     };
   } catch (error) {
     return {
@@ -3399,22 +3498,24 @@ export function buildMonthlyFinancialArchivePlan(workspace, period = workspace?.
   if (!workspace) throw new Error("找不到要导出的工作台");
   if (!/^\d{4}-\d{2}$/.test(String(period || ""))) throw new Error("请选择有效的财务期间");
   const archiveRecord = (workspace.delivery?.archives || []).find((item) => item.period === period) || null;
-  const vouchers = archiveRecord?.vouchers || (workspace.vouchers || []).filter((voucher) => periodOfRecord(voucher) === period);
+  const reportVersion = latestPeriodReportVersion(workspace, period, archiveRecord);
+  const { sourceWorkspace, moduleSnapshot, historical } = monthlyArchiveSourceContext(workspace, period, archiveRecord, reportVersion);
+  const { taxEnabled, payrollEnabled, payrollConfirmationRequired } = moduleSnapshot;
+  const vouchers = archiveRecord?.vouchers || (sourceWorkspace.vouchers || []).filter((voucher) => periodOfRecord(voucher) === period);
   const periodSources = new Set(vouchers.flatMap((voucher) => [
     voucher.id,
     ...(voucher.sourceIds || []),
     ...(voucher.evidenceIds || []),
     ...(voucher.lines || []).flatMap((line) => line.sourceIds || []),
   ]));
-  (workspace.transactions || []).filter((transaction) => periodOfRecord(transaction) === period).forEach((transaction) => periodSources.add(transaction.id));
-  const reportVersion = latestPeriodReportVersion(workspace, period, archiveRecord);
+  (sourceWorkspace.transactions || []).filter((transaction) => periodOfRecord(transaction) === period).forEach((transaction) => periodSources.add(transaction.id));
   const frozenSnapshot = archiveRecord?.reportSnapshot
     || reportVersion?.snapshot
     || (reportVersion?.statements ? { statements: reportVersion.statements } : null);
-  const liveStatementsResult = safelyBuildMonthlySnapshot(buildFinancialStatements, workspace, period);
-  const managementResult = safelyBuildMonthlySnapshot(buildManagementMetrics, workspace, period);
-  const taxResult = period === workspace.currentPeriod
-    ? safelyBuildMonthlySnapshot(buildTaxWorkpaper, workspace, period)
+  const liveStatementsResult = safelyBuildMonthlySnapshot(buildFinancialStatements, sourceWorkspace, period);
+  const managementResult = safelyBuildMonthlySnapshot(buildManagementMetrics, sourceWorkspace, period);
+  const taxResult = !historical && (taxEnabled || payrollEnabled)
+    ? safelyBuildMonthlySnapshot(buildTaxWorkpaper, sourceWorkspace, period)
     : { value: null, error: null };
   const liveStatements = liveStatementsResult.value;
   const financialStatements = {
@@ -3428,14 +3529,15 @@ export function buildMonthlyFinancialArchivePlan(workspace, period = workspace?.
     || managementResult.value;
   const taxWorkpaper = frozenSnapshot?.taxWorkpaper || reportVersion?.taxWorkpaper || taxResult.value;
   const filing = archiveRecord?.filing
-    || ((workspace.delivery?.filing?.period || workspace.currentPeriod) === period ? workspace.delivery?.filing : null);
+    || (!historical && (workspace.delivery?.filing?.period || workspace.currentPeriod) === period ? workspace.delivery?.filing : null);
   const filingPackage = filing?.exportedPackage || archiveRecord?.package || null;
   const receipt = filing?.receipt || archiveRecord?.receipt || null;
-  const archiveDocuments = archiveRecord?.documents || [];
-  const receiptDocument = [...(workspace.documents || []), ...archiveDocuments]
+  const receiptDocument = (sourceWorkspace.documents || [])
     .find((document) => document.id === receipt?.documentId) || null;
-  const confirmationState = archiveRecord?.confirmations || (period === workspace.currentPeriod ? workspace.tax || {} : {});
+  const confirmationState = archiveRecord?.confirmations || (!historical ? workspace.tax || {} : {});
   const initialConfirmation = {
+    required: taxEnabled,
+    payrollRequired: payrollConfirmationRequired,
     id: filing?.initialConfirmationId || confirmationState.initialConfirmationId || null,
     financeConfirmedAt: confirmationState.financeConfirmedAt || null,
     payrollConfirmedAt: confirmationState.payrollConfirmedAt || null,
@@ -3447,13 +3549,16 @@ export function buildMonthlyFinancialArchivePlan(workspace, period = workspace?.
   initialConfirmation.complete = Boolean(
     initialConfirmation.id
     && initialConfirmation.financeConfirmedAt
-    && initialConfirmation.payrollConfirmedAt
-    && initialConfirmation.socialSecurityConfirmedAt
     && initialConfirmation.financeConfirmedVersionId
-    && initialConfirmation.payrollConfirmedVersionId
-    && initialConfirmation.socialSecurityConfirmedVersionId
+    && (!payrollConfirmationRequired || (
+      initialConfirmation.payrollConfirmedAt
+      && initialConfirmation.socialSecurityConfirmedAt
+      && initialConfirmation.payrollConfirmedVersionId
+      && initialConfirmation.socialSecurityConfirmedVersionId
+    ))
   );
   const finalConfirmation = {
+    required: taxEnabled,
     ownerConfirmedAt: confirmationState.ownerConfirmedAt || null,
     confirmedBy: confirmationState.confirmedBy || null,
     ownerConfirmedVersionId: confirmationState.ownerConfirmedVersionId || null,
@@ -3466,18 +3571,19 @@ export function buildMonthlyFinancialArchivePlan(workspace, period = workspace?.
     && finalConfirmation.finalConfirmedVersionId
   );
   const confirmationPackages = archiveRecord?.confirmationPackages
-    || (workspace.confirmations || []).filter((confirmation) => confirmation.period === period);
-  const payrollSocialSummary = taxWorkpaper?.payrollSocialSummary || buildPayrollSocialSummary(workspace, { period });
+    || (sourceWorkspace.confirmations || []).filter((confirmation) => confirmation.period === period);
+  const payrollSocialSummary = taxWorkpaper?.payrollSocialSummary || buildPayrollSocialSummary(sourceWorkspace, { period });
   const payroll = {
     period,
+    required: payrollEnabled,
     payroll: taxWorkpaperValue(taxWorkpaper, "payroll"),
     socialSecurity: taxWorkpaperValue(taxWorkpaper, "socialSecurity"),
     summary: payrollSocialSummary,
     payrollRecords: payrollSocialSummary.payrollRecords,
     socialSecurityRecords: payrollSocialSummary.socialSecurityRecords,
-    payrollSourceIds: period === workspace.currentPeriod ? workspace.tax?.payrollSourceIds || [] : [],
-    socialSecuritySourceIds: period === workspace.currentPeriod ? workspace.tax?.socialSecuritySourceIds || [] : [],
-    documents: [...(workspace.documents || []), ...archiveDocuments].filter((document, index, all) => (
+    payrollSourceIds: sourceWorkspace.tax?.payrollSourceIds || [],
+    socialSecuritySourceIds: sourceWorkspace.tax?.socialSecuritySourceIds || [],
+    documents: (sourceWorkspace.documents || []).filter((document, index, all) => (
       all.findIndex((candidate) => candidate.id === document.id) === index
       && (!periodOfRecord(document) || periodOfRecord(document) === period)
       && /工资|薪资|社保|公积金/.test(`${document.category || document.type || ""} ${document.name || ""}`)
@@ -3485,21 +3591,22 @@ export function buildMonthlyFinancialArchivePlan(workspace, period = workspace?.
   };
   const archivedAttachmentPackages = archiveRecord?.attachmentPackages || [];
   const voucherAttachments = vouchers.map((voucher) => monthlyVoucherAttachmentManifest(
-    workspace,
+    sourceWorkspace,
     voucher,
     archivedAttachmentPackages.find((item) => item.voucherId === voucher.id),
+    moduleSnapshot,
   ));
-  const exceptionRecords = periodExceptionRecords(workspace, period, archiveRecord, periodSources);
+  const exceptionRecords = periodExceptionRecords(sourceWorkspace, period, archiveRecord, periodSources);
   const notices = (workspace.delivery?.notices || []).filter((notice) => notice.period === period);
-  const auditLog = periodAuditRecords(workspace, period, archiveRecord, periodSources);
-  const transactionManualReviews = periodTransactionManualReviews(workspace, period);
+  const auditLog = periodAuditRecords(sourceWorkspace, period, archiveRecord, periodSources);
+  const transactionManualReviews = periodTransactionManualReviews(sourceWorkspace, period);
   const reportChecks = frozenSnapshot?.summary?.engineChecks
     || reportVersion?.statements?.checks
     || liveStatements?.checks
     || {};
   const reportChecksPassed = Object.keys(reportChecks).length > 0
     && Object.values(reportChecks).every((check) => check?.passed !== false);
-  const pendingVouchers = vouchers.filter((voucher) => !["posted", "superseded"].includes(voucher.status));
+  const pendingVouchers = vouchers.filter((voucher) => !["posted", "superseded", "invalidated"].includes(voucher.status));
   const attachmentMissing = voucherAttachments.flatMap((attachment) => attachment.missingItems.map((item) => ({
     ...item,
     key: `voucher:${attachment.voucherId}:${item.key || item.label}`,
@@ -3512,21 +3619,26 @@ export function buildMonthlyFinancialArchivePlan(workspace, period = workspace?.
     && filingPackage
     && receipt.packageId === filingPackage.id
     && receipt.packageHash === filingPackage.hash
-    && (!reportVersion || receipt.reportVersionId === reportVersion.id)
+    && (!(archiveRecord?.reportVersionId || reportVersion?.id) || receipt.reportVersionId === (archiveRecord?.reportVersionId || reportVersion.id))
   );
+  const taxCheckKeys = new Set(["taxWorkpaper", "filingPackage", "initialConfirmation", "finalConfirmation", "receipt"]);
   const checks = [
-    { key: "vouchers", label: "本期凭证已全部复核入账", ok: pendingVouchers.length === 0, reason: pendingVouchers.length ? `${pendingVouchers.length} 张凭证仍是草稿或待更正状态` : "凭证与分录清单已形成" },
+    { key: "moduleSnapshot", label: "归档适用模块可追溯", ok: moduleSnapshot.known, reason: moduleSnapshot.known ? (historical ? "采用当时保存的模块配置" : "采用当前工作台模块配置") : "历史档案未保存可读取的模块配置，不能用当前开关豁免历史必需项" },
+    { key: "vouchers", label: "本期有效凭证已全部复核入账", ok: pendingVouchers.length === 0, reason: pendingVouchers.length ? `${pendingVouchers.length} 张凭证仍是草稿或待更正状态` : "凭证与分录清单已形成，失效历史记录单独保留" },
     { key: "voucherAttachments", label: "各凭证附件清单无缺件", ok: attachmentMissing.length === 0, reason: attachmentMissing.length ? `${attachmentMissing.length} 项凭证附件或记录缺失` : `${voucherAttachments.length} 张凭证均已形成附件清单` },
     { key: "reports", label: "三大报表已有冻结版本且勾稽通过", ok: Boolean(frozenSnapshot && Object.values(financialStatements).every(Boolean) && managementReport && reportChecksPassed), reason: frozenSnapshot ? (reportChecksPassed ? "冻结报表与管理报表可用" : "冻结报表勾稽未全部通过") : "本期没有冻结报表版本" },
     { key: "taxWorkpaper", label: "税务申报底稿已形成", ok: Boolean(taxWorkpaper && filing?.draftCreatedAt && filing?.draftVersionId), reason: filing?.draftCreatedAt ? "税务底稿可用" : "尚未生成本地税务申报底稿" },
     { key: "filingPackage", label: "本地申报包信息完整", ok: Boolean(filingPackage?.id && filingPackage?.hash && filingPackage?.reportVersionId), reason: filingPackage ? "本地申报包元数据可用" : "尚未导出本地申报包" },
     { key: "payroll", label: "工资社保数据已记录", ok: payroll.payroll !== undefined && payroll.socialSecurity !== undefined, reason: payroll.payroll !== undefined && payroll.socialSecurity !== undefined ? "工资与社保数值已进入底稿" : "缺少工资或社保数据快照" },
-    { key: "initialConfirmation", label: "第一次客户确认记录完整", ok: initialConfirmation.complete, reason: initialConfirmation.complete ? "首次财务、工资表与社保表确认已分别记录" : "缺少首次财务/工资表/社保表确认时间、记录或版本关联" },
+    { key: "initialConfirmation", label: "第一次客户确认记录完整", ok: initialConfirmation.complete, reason: initialConfirmation.complete ? (payrollConfirmationRequired ? "首次财务、工资表与社保表确认已分别记录" : "首次财务确认已记录；工资社保不适用") : (payrollConfirmationRequired ? "缺少首次财务/工资表/社保表确认时间、记录或版本关联" : "缺少首次财务确认时间、记录或版本关联") },
     { key: "finalConfirmation", label: "第二次最终责任确认记录完整", ok: finalConfirmation.complete, reason: finalConfirmation.complete ? "最终责任确认已记录" : "缺少最终确认人、时间或版本关联" },
     { key: "receipt", label: "真实回执与本地申报包关系有效", ok: Boolean(receiptLinksToPackage && receiptDocument?.hash && receiptDocument?.storage?.availableLocally), reason: !receipt ? "尚未导入真实办理回执" : (!receiptDocument?.storage?.availableLocally ? "回执索引存在，但当前浏览器没有原文件" : (receiptLinksToPackage ? "回执原文件及申报包关联可用" : "回执与本地申报包版本或哈希关系不一致")) },
     { key: "exceptions", label: "异常与跨期待办均已处理", ok: unresolvedExceptions.length === 0 && unresolvedNotices.length === 0, reason: unresolvedExceptions.length || unresolvedNotices.length ? `${unresolvedExceptions.length} 项异常、${unresolvedNotices.length} 项跨期待办未解决` : "当前没有未解决事项" },
     { key: "audit", label: "操作日志可追溯", ok: auditLog.length > 0 || vouchers.length === 0, reason: auditLog.length ? `${auditLog.length} 条期间相关日志` : (vouchers.length ? "本期存在凭证但没有可追溯操作日志" : "无业务期间的空日志清单") },
-  ];
+  ].map((check) => {
+    const applicable = taxCheckKeys.has(check.key) ? taxEnabled : (check.key === "payroll" ? payrollEnabled : true);
+    return { ...check, applicable, ok: !applicable || check.ok, reason: applicable ? check.reason : (check.key === "payroll" ? "本期未启用工资社保模块" : "本期未启用确认与申报模块") };
+  });
   const missingItems = uniqueMissingItems([
     ...checks.filter((check) => !check.ok).map((check) => ({ key: `check:${check.key}`, kind: "required_archive_item", sectionKey: check.key, label: check.label, reason: check.reason })),
     ...attachmentMissing,
@@ -3538,10 +3650,10 @@ export function buildMonthlyFinancialArchivePlan(workspace, period = workspace?.
     monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[0], checkByKey.get("vouchers").ok ? "collected" : "missing", `${vouchers.length} 张凭证，${vouchers.reduce((sum, voucher) => sum + (voucher.lines || []).length, 0)} 条分录`, vouchers.length),
     monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[1], checkByKey.get("voucherAttachments").ok ? "collected" : "missing", `${voucherAttachments.length} 份附件清单，缺失 ${attachmentMissing.length} 项`, voucherAttachments.length),
     monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[2], checkByKey.get("reports").ok ? "collected" : "missing", reportVersion ? `${reportVersion.label || reportVersion.id} · 冻结快照` : "仅有即时草稿快照，未冻结"),
-    monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[3], checkByKey.get("taxWorkpaper").ok && checkByKey.get("filingPackage").ok ? "collected" : "missing", filingPackage?.fileName || "缺少本地申报包信息"),
-    monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[4], checkByKey.get("payroll").ok ? "collected" : "missing", `工资 ${payroll.payroll ?? "缺失"} · 社保 ${payroll.socialSecurity ?? "缺失"}`),
-    monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[5], initialConfirmation.complete && finalConfirmation.complete ? "collected" : "missing", `首次确认 ${initialConfirmation.complete ? "已完成" : "缺失"} · 最终确认 ${finalConfirmation.complete ? "已完成" : "缺失"}`),
-    monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[6], checkByKey.get("receipt").ok ? "collected" : "missing", receipt?.name || "尚未导入真实回执"),
+    monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[3], !taxEnabled ? "not_required" : (checkByKey.get("taxWorkpaper").ok && checkByKey.get("filingPackage").ok ? "collected" : "missing"), !taxEnabled ? "本期未启用确认与申报模块" : (filingPackage?.fileName || "缺少本地申报包信息")),
+    monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[4], !payrollEnabled ? "not_required" : (checkByKey.get("payroll").ok ? "collected" : "missing"), !payrollEnabled ? "本期未启用工资社保模块" : `工资 ${payroll.payroll ?? "缺失"} · 社保 ${payroll.socialSecurity ?? "缺失"}`),
+    monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[5], !taxEnabled ? "not_required" : (initialConfirmation.complete && finalConfirmation.complete ? "collected" : "missing"), !taxEnabled ? "本期未启用确认与申报模块" : `首次确认 ${initialConfirmation.complete ? "已完成" : "缺失"} · 最终确认 ${finalConfirmation.complete ? "已完成" : "缺失"}${payrollEnabled ? "" : " · 无需工资社保确认"}`),
+    monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[6], !taxEnabled ? "not_required" : (checkByKey.get("receipt").ok ? "collected" : "missing"), !taxEnabled ? "本期未启用确认与申报模块" : (receipt?.name || "尚未导入真实回执")),
     monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[7], checkByKey.get("exceptions").ok ? "collected" : "missing", `${exceptionRecords.length} 条异常记录，未解决 ${unresolvedExceptions.length + unresolvedNotices.length} 项 · ${transactionManualReviews.length} 条 S7 人工复核备注`, exceptionRecords.length + transactionManualReviews.length),
     monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[8], checkByKey.get("audit").ok ? "collected" : "missing", `${auditLog.length} 条期间相关日志`, auditLog.length),
     monthlySection(MONTHLY_FINANCIAL_ARCHIVE_SECTIONS[9], "pending_generation", "点击导出后为 ZIP 内每个文件生成哈希"),
@@ -3551,6 +3663,7 @@ export function buildMonthlyFinancialArchivePlan(workspace, period = workspace?.
     isComplete: missingItems.length === 0,
     status: missingItems.length ? "incomplete_draft" : "complete",
     archiveRecord,
+    moduleSnapshot,
     vouchers,
     voucherAttachments,
     reportVersion,
@@ -3567,6 +3680,7 @@ export function buildMonthlyFinancialArchivePlan(workspace, period = workspace?.
     confirmationPackages,
     receipt,
     receiptDocument,
+    receiptLinksToPackage,
     exceptionRecords,
     notices,
     auditLog,
@@ -3598,29 +3712,6 @@ function archiveTransactionManualReviewCsv(entries) {
   return `\ufeff${rows.map((row) => row.map(cell).join(",")).join("\n")}`;
 }
 
-function monthlyAttachmentHashReferences(voucherAttachments) {
-  const references = voucherAttachments.flatMap((attachment) => [
-    ...(attachment.manifest?.documents || []).map((documentMetadata) => ({
-      voucherId: attachment.voucherId,
-      documentId: documentMetadata.id,
-      name: documentMetadata.name,
-      hash: documentMetadata.hash,
-      referenceType: "attachment_manifest",
-    })),
-    ...(attachment.generatedPackages || []).flatMap((packageRecord) => (packageRecord.hashes || []).map((hash) => ({
-      voucherId: attachment.voucherId,
-      packageId: packageRecord.id,
-      ...hash,
-      referenceType: "generated_voucher_package",
-    }))),
-  ]).filter((reference) => reference.hash);
-  return references.filter((reference, index, all) => all.findIndex((candidate) => (
-    candidate.voucherId === reference.voucherId
-    && candidate.documentId === reference.documentId
-    && candidate.hash === reference.hash
-  )) === index);
-}
-
 async function archiveContentDescriptor(path, content, mimeType = "application/json") {
   const bytes = content instanceof Uint8Array
     ? content
@@ -3649,31 +3740,161 @@ export async function generateMonthlyFinancialArchivePackage(input) {
     || "本地用户";
   const packageId = input.packageId || createId("monthly-financial-archive");
   const runtimeMissing = [];
-  let receiptDescriptor = null;
-  if (plan.receipt && plan.receiptDocument?.storage?.availableLocally) {
-    try {
-      const record = await getStoredDocumentRecord({ fileVault, workspaceId, document: plan.receiptDocument });
-      const bytes = new Uint8Array(await record.blob.arrayBuffer());
-      receiptDescriptor = await archiveContentDescriptor(
-        `07-真实回执/${safeZipName(record.name || plan.receiptDocument.name, "真实回执原文件")}`,
-        bytes,
-        record.mimeType || plan.receiptDocument.mimeType || "application/octet-stream",
-      );
-      const expectedHashes = [plan.receiptDocument.hash, plan.receipt.hash].filter(Boolean);
-      if (expectedHashes.some((hash) => hash !== receiptDescriptor.hash)) throw new Error("真实回执原文件哈希与工作台记录不一致");
-    } catch (error) {
-      receiptDescriptor = null;
+  const originalContents = [];
+  const originalFiles = [];
+  const mergeEntries = [];
+  const usedPaths = new Set();
+  const readResults = new Map();
+  const contentsByHash = new Map();
+
+  async function collectOriginal(documentMetadata, reference) {
+    const expectedHashes = [documentMetadata.hash, reference.receiptHash].filter(Boolean);
+    const readKey = JSON.stringify([documentMetadata.storage?.blobId || documentMetadata.id, ...expectedHashes]);
+    let result = readResults.get(readKey);
+    if (!result) {
+      try {
+        if (!documentMetadata.hash) throw new Error("资料索引缺少原始哈希，无法核验原文件");
+        const record = await getStoredDocumentRecord({ fileVault, workspaceId, document: documentMetadata });
+        const descriptor = await archiveContentDescriptor(
+          "",
+          new Uint8Array(await record.blob.arrayBuffer()),
+          record.mimeType || documentMetadata.mimeType || "application/octet-stream",
+        );
+        if ([...expectedHashes, record.hash].filter(Boolean).some((hash) => hash !== descriptor.hash)) {
+          throw new Error("原文件实际哈希与资料或回执记录不一致");
+        }
+        const contentKey = `${descriptor.hash}:${descriptor.size}`;
+        const duplicates = contentsByHash.get(contentKey) || [];
+        const duplicate = duplicates.find((item) => item.bytes.every((byte, index) => byte === descriptor.bytes[index]));
+        if (!duplicate) {
+          const folder = reference.sectionKey === "receipt" ? "07-真实回执/原文件" : "02-凭证附件/原文件";
+          descriptor.path = uniqueZipPath(folder, record.name || documentMetadata.name, usedPaths);
+          originalContents.push(descriptor);
+          contentsByHash.set(contentKey, [...duplicates, descriptor]);
+        }
+        result = { descriptor: duplicate || descriptor };
+      } catch (error) {
+        result = { error: error.message || "当前浏览器无法读取原文件" };
+      }
+      readResults.set(readKey, result);
+    }
+    const { receiptHash, ...referenceDetails } = reference;
+    if (result.descriptor) {
+      mergeEntries.push({
+        documentId: documentMetadata.id,
+        name: documentMetadata.name,
+        mimeType: documentMetadata.mimeType || result.descriptor.mimeType,
+        bytes: result.descriptor.bytes,
+      });
+    }
+    originalFiles.push({
+      ...referenceDetails,
+      documentId: documentMetadata.id || null,
+      name: documentMetadata.name || documentMetadata.id || "原文件",
+      expectedHash: documentMetadata.hash || null,
+      ...(receiptHash ? { receiptHash } : {}),
+      archivePath: result.descriptor?.path || null,
+      hash: result.descriptor?.hash || null,
+      hashAlgorithm: result.descriptor?.hashAlgorithm || null,
+      size: result.descriptor?.size ?? null,
+      status: result.error ? "missing" : "included",
+      ...(result.error ? { reason: result.error } : {}),
+    });
+    if (result.error) {
       runtimeMissing.push({
-        key: "runtime:receipt-original",
+        key: `runtime:${reference.sectionKey}:${reference.voucherId || "receipt"}:${documentMetadata.id || "unknown"}`,
         kind: "original_file",
-        sectionKey: "receipt",
-        documentId: plan.receiptDocument.id,
-        label: plan.receiptDocument.name || "真实回执原文件",
-        reason: error.message || "当前浏览器无法读取真实回执原文件",
+        sectionKey: reference.sectionKey,
+        voucherId: reference.voucherId || null,
+        documentId: documentMetadata.id || null,
+        label: [reference.voucherNo || reference.voucherId, documentMetadata.name || documentMetadata.id || "真实回执原文件"].filter(Boolean).join(" · "),
+        reason: result.error,
       });
     }
   }
-  const missingItems = uniqueMissingItems([...plan.missingItems, ...runtimeMissing]);
+
+  for (const attachment of plan.voucherAttachments) {
+    const documents = attachment.manifest?.documents || [];
+    const documentIds = new Set([...(attachment.manifest?.documentIds || []), ...documents.map((document) => document.id)]);
+    for (const documentId of documentIds) {
+      const documentMetadata = documents.find((document) => document.id === documentId) || { id: documentId };
+      await collectOriginal(documentMetadata, {
+        sectionKey: "voucherAttachments",
+        referenceType: "attachment_manifest",
+        voucherId: attachment.voucherId,
+        voucherNo: attachment.voucherNo,
+      });
+    }
+  }
+  if (plan.moduleSnapshot.taxEnabled && plan.receipt) {
+    await collectOriginal(plan.receiptDocument || { id: plan.receipt.documentId, name: plan.receipt.name }, {
+      sectionKey: "receipt",
+      referenceType: "filing_receipt",
+      receiptHash: plan.receipt.hash,
+    });
+  }
+  const { bytes: mergedPdfBytes, ...mergedPdf } = await mergeAttachmentPdfs(mergeEntries);
+  const mergedPreviewContent = mergedPdfBytes
+    ? await archiveContentDescriptor("附件合并预览.pdf", mergedPdfBytes, "application/pdf")
+    : null;
+  const mergedPreview = {
+    ...mergedPdf,
+    archivePath: mergedPreviewContent?.path || null,
+    hash: mergedPreviewContent?.hash || null,
+    hashAlgorithm: mergedPreviewContent?.hashAlgorithm || null,
+    note: "合并文件仅供阅读，不是签章原件；请以包内保留的原文件为准。",
+  };
+  const resolvedOriginal = (item) => item.kind === "original_file" && item.documentId
+    && originalFiles.some((file) => file.documentId === item.documentId && file.status === "included")
+    && !originalFiles.some((file) => file.documentId === item.documentId && file.status === "missing");
+  const voucherAttachments = plan.voucherAttachments.map((attachment) => {
+    const originals = originalFiles.filter((file) => file.voucherId === attachment.voucherId);
+    const missingItems = uniqueMissingItems([
+      ...attachment.missingItems.filter((item) => !resolvedOriginal(item)),
+      ...runtimeMissing.filter((item) => item.voucherId === attachment.voucherId),
+    ]);
+    return {
+      ...attachment,
+      missingItems,
+      manifest: {
+        ...attachment.manifest,
+        status: missingItems.length ? "incomplete" : "complete",
+        originals,
+        missingItems,
+        sections: (attachment.manifest?.sections || []).map((section) => {
+          const files = originals.filter((file) => section.documentIds.includes(file.documentId));
+          const hasMissing = files.some((file) => file.status === "missing") || missingItems.some((item) => item.sectionKey === section.key);
+          const hasContent = files.some((file) => file.status === "included") || section.recordCount > 0 || section.key === "missing";
+          return {
+            ...section,
+            recordCount: section.key === "missing" ? missingItems.length : section.recordCount,
+            status: hasMissing ? "missing" : (hasContent ? "collected" : (section.required ? "missing" : "not_required")),
+            archivePaths: [...new Set(files.filter((file) => file.status === "included").map((file) => file.archivePath))],
+          };
+        }),
+      },
+    };
+  });
+  const attachmentMissing = voucherAttachments.flatMap((attachment) => attachment.missingItems);
+  const attachmentFiles = originalFiles.filter((file) => file.sectionKey === "voucherAttachments");
+  const attachmentFileCount = new Set(attachmentFiles.filter((file) => file.status === "included").map((file) => file.archivePath)).size;
+  const checks = plan.checks.map((check) => {
+    if (check.key === "voucherAttachments") {
+      const missingCount = attachmentMissing.length;
+      return { ...check, ok: missingCount === 0, label: "凭证原始附件已读取并核验", reason: missingCount ? `${missingCount} 项凭证附件或记录缺失` : `${attachmentFileCount} 份原件已装入 ZIP，重复引用共用一份文件` };
+    }
+    if (check.key === "receipt" && check.applicable) {
+      const originalIncluded = originalFiles.some((file) => file.sectionKey === "receipt" && file.status === "included");
+      const ok = plan.receiptLinksToPackage && originalIncluded;
+      return { ...check, ok, reason: ok ? "回执原件已装入 ZIP，哈希与申报包关联已核验" : (runtimeMissing.find((item) => item.sectionKey === "receipt")?.reason || check.reason) };
+    }
+    return check;
+  });
+  const missingItems = uniqueMissingItems([
+    ...checks.filter((check) => !check.ok).map((check) => ({ key: `check:${check.key}`, kind: "required_archive_item", sectionKey: check.key, label: check.label, reason: check.reason })),
+    ...plan.missingItems.filter((item) => item.kind !== "required_archive_item" && !resolvedOriginal(item)),
+    ...runtimeMissing,
+  ]);
   const isComplete = missingItems.length === 0;
   const status = isComplete ? "complete" : "incomplete_draft";
   const statusLabel = isComplete ? "完整财务档案" : "不完整财务档案草稿";
@@ -3694,10 +3915,18 @@ export async function generateMonthlyFinancialArchivePackage(input) {
     localOnly: true,
     externalUpload: false,
     officialPeriodArchiveChanged: false,
-    sections: plan.sections.map((section) => section.key === "receipt" && runtimeMissing.length
-      ? { ...section, status: "missing", detail: runtimeMissing[0].reason }
-      : section),
-    checks: plan.checks,
+    moduleSnapshot: plan.moduleSnapshot,
+    originalFileCount: originalContents.length,
+    originalFiles,
+    mergedPreview,
+    sections: plan.sections.map((section) => {
+      if (section.key === "voucherAttachments" || (section.key === "receipt" && plan.moduleSnapshot.taxEnabled)) {
+        const check = checks.find((item) => item.key === section.key);
+        return { ...section, status: check.ok ? "collected" : "missing", detail: check.reason };
+      }
+      return section.key === "hashes" ? { ...section, status: "collected", detail: "包内文件及原始附件均有哈希记录" } : section;
+    }),
+    checks,
     missingItems,
     recordSources: [{
       key: "s7TransactionManualReviews",
@@ -3712,7 +3941,8 @@ export async function generateMonthlyFinancialArchivePackage(input) {
   };
   const contents = [
     await archiveContentDescriptor("01-凭证与分录/凭证与分录.json", jsonFile({ period: plan.period, vouchers: plan.vouchers })),
-    await archiveContentDescriptor("02-凭证附件/附件包与附件清单.json", jsonFile({ period: plan.period, vouchers: plan.voucherAttachments })),
+    await archiveContentDescriptor("02-凭证附件/附件包与附件清单.json", jsonFile({ period: plan.period, vouchers: voucherAttachments, originals: attachmentFiles })),
+    await archiveContentDescriptor("02-凭证附件/原件路径与哈希映射.json", jsonFile(attachmentFiles)),
     await archiveContentDescriptor("03-财务与管理报表/资产负债表.json", jsonFile(plan.financialStatements.balanceSheet)),
     await archiveContentDescriptor("03-财务与管理报表/利润表.json", jsonFile(plan.financialStatements.incomeStatement)),
     await archiveContentDescriptor("03-财务与管理报表/现金流量表.json", jsonFile(plan.financialStatements.cashFlow)),
@@ -3730,16 +3960,34 @@ export async function generateMonthlyFinancialArchivePackage(input) {
     await archiveContentDescriptor(transactionManualReviewFiles.csv, archiveTransactionManualReviewCsv(plan.transactionManualReviews), "text/csv"),
     await archiveContentDescriptor("09-操作日志/操作日志.json", jsonFile(plan.auditLog)),
     await archiveContentDescriptor("09-操作日志/操作日志.csv", archiveAuditCsv(plan.auditLog), "text/csv"),
+    await archiveContentDescriptor("阅读说明.txt", [
+      `FinanceDesk · ${plan.period} · ${statusLabel}`,
+      "解压后可直接打开原文件，无需返回原浏览器。",
+      "凭证及分录：01-凭证与分录/凭证与分录.json",
+      "凭证、文档 ID、原件路径与哈希：02-凭证附件/原件路径与哈希映射.json",
+      "共用原件只保存一份；映射中的 archivePath 为 ZIP 根目录下的相对路径。",
+      "凭证附件清单中的 generatedPackages 是历史导出记录，其旧路径不作为本包路径。",
+      "适用模块、回执原件路径和缺失项：档案包清单.json",
+      "文件哈希：统一哈希清单.json；哈希清单自身不参与循环校验。",
+      `已装入原文件 ${originalContents.length} 份；缺失 ${missingItems.length} 项。`,
+      ...missingItems.map((item) => `${item.label}：${item.reason}`),
+    ].join("\n"), "text/plain"),
     await archiveContentDescriptor("档案包清单.json", jsonFile(manifest)),
+    await archiveContentDescriptor("附件合并说明.json", jsonFile(mergedPreview)),
+    ...originalContents,
+    ...(mergedPreviewContent ? [mergedPreviewContent] : []),
   ];
-  if (receiptDescriptor) contents.push(receiptDescriptor);
   const hashManifest = {
     packageId,
     period: plan.period,
     generatedAt,
     algorithm: contents.every((item) => item.hashAlgorithm === "SHA-256") ? "SHA-256" : "per-entry; see hashAlgorithm",
-    files: contents.map(({ path, mimeType, size, hash, hashAlgorithm }) => ({ path, mimeType, size, hash, hashAlgorithm })),
-    referencedAttachmentOriginals: monthlyAttachmentHashReferences(plan.voucherAttachments),
+    files: contents.map(({ path, mimeType, size, hash, hashAlgorithm }) => ({
+      path, mimeType, size, hash, hashAlgorithm,
+      documentIds: [...new Set(originalFiles.filter((file) => file.archivePath === path).map((file) => file.documentId))],
+      voucherIds: [...new Set(originalFiles.filter((file) => file.archivePath === path && file.voucherId).map((file) => file.voucherId))],
+    })),
+    referencedAttachmentOriginals: attachmentFiles,
     selfExcluded: "统一哈希清单.json 为避免循环校验，不包含自身哈希。",
   };
   const hashDescriptor = await archiveContentDescriptor("统一哈希清单.json", jsonFile(hashManifest));
@@ -3756,6 +4004,9 @@ export async function generateMonthlyFinancialArchivePackage(input) {
     fileName,
     size: archiveByteLength(archive),
     hash: archiveHash,
+    moduleSnapshot: plan.moduleSnapshot,
+    originalFileCount: originalContents.length,
+    originalFiles,
     missingItems,
     generatedAt,
     generatedBy,

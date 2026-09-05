@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createAccountingFixture } from "../src/domain/accounting/fixtures.js";
-import { createBlankWorkspace } from "../src/domain/foundation.js";
+import { createBlankWorkspace, createInitialState, setWorkspacePeriod } from "../src/domain/foundation.js";
 import { AccountingRuleError } from "../src/domain/accounting/model.js";
+import { buildGeneralLedger, effectivePostedVouchers } from "../src/domain/accounting/ledger.js";
 import { setBankTransactionBusinessEventDimensions } from "../src/domain/accounting/classification.js";
+import { createDocumentMetadata } from "../src/features/intake/documentIntake.js";
+import { createMemoryFileVault } from "../src/features/intake/browserFileVault.js";
+import { freezeReportVersion as freezeVisibleReportVersion } from "../src/productWorkflow.js";
 import {
   buildFinancialStatements,
   buildManagementMetrics,
@@ -24,6 +28,7 @@ import {
   createPostedVoucherRevision,
   createVoucherDraft,
   postVoucher,
+  postVoucherWithEvidence,
   reviseDraftVoucher,
   traceVoucherSources,
   validateVoucherBalance,
@@ -43,14 +48,53 @@ import {
 
 const context = { actor: "测试会计", at: "2026-09-06T13:00:00.000Z" };
 
-test("independent manual vouchers preserve dimensions and require reviewed manual posting", () => {
-  let workspace = createBlankWorkspace({
+function setFixturePeriod(workspace, period) {
+  const state = createInitialState({ timestamp: context.at });
+  return setWorkspacePeriod({
+    ...state,
+    activeWorkspaceId: workspace.id,
+    workspaces: [workspace],
+  }, workspace.id, period, { actor: context.actor, timestamp: context.at }).workspaces[0];
+}
+
+async function manualOriginalFixture() {
+  const workspace = createBlankWorkspace({
     id: "workspace-manual-voucher",
     name: "通用财务工作台",
     currentPeriod: "2026-09",
   }, { timestamp: context.at });
+  const fileVault = createMemoryFileVault();
+  const blob = new Blob(["2026年9月场地费用：1200元；按租赁合同计提。"], { type: "text/plain" });
+  const document = await createDocumentMetadata(blob, {
+    id: "doc-manual",
+    name: "月末计提计算表.txt",
+    period: workspace.currentPeriod,
+    actor: context.actor,
+    createdAt: context.at,
+  });
+  await fileVault.put({
+    id: document.id,
+    workspaceId: workspace.id,
+    name: document.name,
+    mimeType: document.mimeType,
+    size: document.size,
+    hash: document.hash,
+    blob,
+    createdAt: document.createdAt,
+  });
+  workspace.documents = [document];
+  return { workspace, fileVault, document };
+}
+
+test("independent manual vouchers preserve dimensions and require reviewed manual posting", async () => {
+  const original = await manualOriginalFixture();
+  let workspace = original.workspace;
+  const postingContext = { ...context, fileVault: original.fileVault };
   workspace.stores = [{ id: "location-main", name: "总部", status: "active" }];
-  workspace.documents = [{ id: "doc-manual", name: "月末计提依据.pdf", status: "active" }];
+  workspace.contracts = [
+    { id: "contract-2026-09", name: "场地租赁合同", status: "active", evidenceIds: [original.document.id] },
+    { id: "contract-revised-2026-09", name: "场地租赁补充协议", status: "active", evidenceIds: [original.document.id] },
+  ];
 
   workspace = createManualVoucherDraft(workspace, {
     date: "2026-09-30",
@@ -124,22 +168,160 @@ test("independent manual vouchers preserve dimensions and require reviewed manua
   assert.equal(voucher.lines[0].department, "运营部");
   assert.deepEqual(voucher.sourceIds, ["contract-revised-2026-09"]);
 
-  assert.throws(() => postVoucher(workspace, {
+  await assert.rejects(() => postVoucherWithEvidence(workspace, {
     voucherId: voucher.id,
     mode: "automatic",
-  }, context), (error) => error instanceof AccountingRuleError && error.code === "MANUAL_VOUCHER_MANUAL_POST_REQUIRED");
+  }, postingContext), (error) => error instanceof AccountingRuleError && error.code === "MANUAL_VOUCHER_MANUAL_POST_REQUIRED");
   assert.throws(() => postVoucher(workspace, {
     voucherId: voucher.id,
     mode: "manual",
   }, context), (error) => error instanceof AccountingRuleError && error.code === "REVIEW_NOTE_REQUIRED");
 
-  workspace = postVoucher(workspace, {
+  assert.throws(() => postVoucher(workspace, {
+    voucherId: voucher.id,
+    mode: "manual",
+    reviewNote: "有原件也必须经过文件核验入口",
+  }, postingContext), (error) => error instanceof AccountingRuleError && error.code === "VOUCHER_ORIGINAL_REQUIRED");
+
+  workspace = await postVoucherWithEvidence(workspace, {
     voucherId: voucher.id,
     mode: "manual",
     reviewNote: "已复核合同、期间、科目和金额",
-  }, { ...context, at: "2026-09-30T12:00:00.000Z" });
+  }, { ...postingContext, at: "2026-09-30T12:00:00.000Z" });
   assert.equal(workspace.vouchers[0].status, "posted");
   assert.equal(workspace.vouchers[0].no, "记-001");
+  assert.deepEqual(workspace.vouchers[0].evidenceVerification.files, [{
+    documentId: original.document.id,
+    hash: original.document.hash,
+    size: original.document.size,
+  }]);
+});
+
+test("balanced manual drafts without valid business or calculation evidence cannot post", async (t) => {
+  for (const scenario of [
+    { name: "no source or original", sourceIds: [], evidenceIds: [], basis: {} },
+    { name: "free text is not a business record", sourceIds: ["自由填写的合同编号"], evidenceIds: ["doc-manual"], basis: {} },
+    { name: "description alone is not an accrual basis", sourceIds: [], evidenceIds: [], basis: { kind: "accrual", description: "预计费用 1200 元" } },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const original = await manualOriginalFixture();
+      const workspace = createManualVoucherDraft(original.workspace, {
+        date: "2026-09-30",
+        summary: "待补依据的场地费用",
+        evidenceIds: scenario.evidenceIds,
+        basis: scenario.basis,
+        lines: [
+          { account: "expenseRent", debit: 1200, credit: 0, sourceIds: scenario.sourceIds },
+          { account: "payable", debit: 0, credit: 1200, sourceIds: scenario.sourceIds },
+        ],
+      }, context);
+      const voucher = workspace.vouchers[0];
+      const before = structuredClone(workspace);
+      assert.equal(validateVoucherBalance(voucher, 0.01, workspace).balanced, true);
+      assert.equal(voucher.status, "draft");
+      assert.ok(workspace.exceptionTasks.some((task) => task.sourceId === voucher.id && task.code === "voucher_evidence" && task.status === "open"));
+      await assert.rejects(() => postVoucherWithEvidence(workspace, {
+        voucherId: voucher.id,
+        mode: "manual",
+        reviewNote: "复核意见不能替代原始依据",
+      }, { ...context, fileVault: original.fileVault }), (error) => error instanceof AccountingRuleError && error.code === "VOUCHER_EVIDENCE_REQUIRED");
+      assert.deepEqual(workspace, before);
+      assert.equal(effectivePostedVouchers(workspace).length, 0);
+    });
+  }
+});
+
+test("accruals, closing entries and corrections post from original evidence without bank transactions", async () => {
+  const original = await manualOriginalFixture();
+  const postingContext = { ...context, fileVault: original.fileVault };
+  let workspace = createManualVoucherDraft(original.workspace, {
+    date: "2026-09-30",
+    summary: "暂估本月场地费用",
+    basis: { kind: "accrual", description: "按月末计算表计提 1200 元", calculationDocumentId: original.document.id },
+    lines: [
+      { account: "expenseRent", debit: 1200, credit: 0 },
+      { account: "payable", debit: 0, credit: 1200 },
+    ],
+  }, context);
+  const originalId = workspace.vouchers[0].id;
+  workspace = await postVoucherWithEvidence(workspace, {
+    voucherId: originalId, mode: "manual", reviewNote: "已复核计算表与当期费用",
+  }, postingContext);
+  const postedOriginal = structuredClone(workspace.vouchers[0]);
+  assert.equal(workspace.transactions.length, 0);
+  assert.deepEqual(postedOriginal.evidenceIds, [original.document.id]);
+
+  let closing = createManualVoucherDraft(workspace, {
+    date: "2026-09-30",
+    summary: "结转本月场地费用",
+    basis: { kind: "closing", description: "依据原暂估凭证结转费用", voucherIds: [originalId] },
+    lines: [
+      { account: "equity", debit: 1200, credit: 0 },
+      { account: "expenseRent", debit: 0, credit: 1200 },
+    ],
+  }, context);
+  const closingId = closing.vouchers.at(-1).id;
+  closing = await postVoucherWithEvidence(closing, {
+    voucherId: closingId, mode: "manual", reviewNote: "已核对原凭证和结转金额",
+  }, postingContext);
+  const closingVoucher = closing.vouchers.find((voucher) => voucher.id === closingId);
+  assert.equal(closingVoucher.status, "posted");
+  assert.deepEqual(closingVoucher.evidenceIds, [original.document.id]);
+  assert.deepEqual(closingVoucher.evidenceVerification.referenceVoucherIds, [originalId]);
+  assert.equal(buildGeneralLedger(closing, { period: "2026-09" }).rows.find((row) => row.account === "expenseRent").closingSignedBalance, 0);
+
+  let corrected = createPostedVoucherRevision(workspace, {
+    voucherId: originalId, reason: "复核后按半月计提，原金额应调整为 600 元",
+  }, context);
+  const revisionId = corrected.vouchers.at(-1).id;
+  corrected = reviseDraftVoucher(corrected, {
+    voucherId: revisionId,
+    basis: { kind: "adjustment", description: "按原计算表的一半计提，1200 × 1/2 = 600 元", voucherIds: [originalId] },
+    evidenceIds: [],
+    lines: postedOriginal.lines.map((line) => ({ ...line, debit: line.debit / 2, credit: line.credit / 2 })),
+    reason: "修正实际租用天数",
+  }, context);
+  assert.deepEqual(effectivePostedVouchers(corrected).map((voucher) => voucher.id), [originalId]);
+  corrected = await postVoucherWithEvidence(corrected, {
+    voucherId: revisionId, mode: "manual", reviewNote: "已复核原计算依据及半月折算",
+  }, postingContext);
+  const retainedOriginal = corrected.vouchers.find((voucher) => voucher.id === originalId);
+  assert.equal(retainedOriginal.status, "superseded");
+  assert.deepEqual(retainedOriginal.lines, postedOriginal.lines);
+  assert.deepEqual(retainedOriginal.reviews, postedOriginal.reviews);
+  assert.deepEqual(effectivePostedVouchers(corrected).map((voucher) => voucher.id), [revisionId]);
+  assert.equal(buildGeneralLedger(corrected, { period: "2026-09" }).rows.find((row) => row.account === "expenseRent").debit, 600);
+  assert.deepEqual(traceVoucherSources(corrected, revisionId).referenceVouchers.map((voucher) => voucher.id), [originalId]);
+  assert.equal(corrected.transactions.length, 0);
+});
+
+test("missing, damaged and foreign originals cannot post a manual voucher", async (t) => {
+  for (const scenario of ["missing", "damaged", "foreign"]) {
+    await t.test(scenario, async () => {
+      const original = await manualOriginalFixture();
+      const workspace = createManualVoucherDraft(original.workspace, {
+        date: "2026-09-30",
+        summary: "核验原件归属及内容",
+        basis: { kind: "accrual", description: "按计算表计提", calculationDocumentId: original.document.id },
+        lines: [
+          { account: "expenseRent", debit: 1200, credit: 0 },
+          { account: "payable", debit: 0, credit: 1200 },
+        ],
+      }, context);
+      const record = await original.fileVault.get(original.document.id);
+      if (scenario === "missing") await original.fileVault.delete(original.document.id);
+      if (scenario === "damaged") await original.fileVault.put({ ...record, blob: new Blob(["内容已被替换"], { type: record.mimeType }) });
+      if (scenario === "foreign") await original.fileVault.put({ ...record, workspaceId: "another-workspace" });
+      const before = structuredClone(workspace);
+      await assert.rejects(() => postVoucherWithEvidence(workspace, {
+        voucherId: workspace.vouchers[0].id, mode: "manual", reviewNote: "原件核验必须通过",
+      }, { ...context, fileVault: original.fileVault }), (error) => error instanceof AccountingRuleError && error.code === "VOUCHER_ORIGINAL_REQUIRED");
+      assert.deepEqual(workspace, before);
+      assert.equal(workspace.vouchers[0].status, "draft");
+      assert.deepEqual(workspace.vouchers[0].reviews, []);
+      assert.equal(effectivePostedVouchers(workspace).length, 0);
+    });
+  }
 });
 
 test("independent manual voucher validation rejects wrong periods, inactive accounts, and imbalance", () => {
@@ -469,6 +651,10 @@ test("confirmed customer deposit application creates one manual-only traceable v
     transactionId: "txn-deposit",
     allocations: [{ billId: "bill-deposit-1", amount: 2400 }],
   }, context);
+  const augustFunding = structuredClone(workspace.transactions.find((transaction) => transaction.id === "txn-deposit"));
+  workspace = setFixturePeriod(workspace, "2026-09");
+  assert.equal(workspace.currentPeriod, "2026-09");
+  assert.deepEqual(workspace.transactions.find((transaction) => transaction.id === "txn-deposit").allocations, augustFunding.allocations);
   workspace.bills.push({
     id: "bill-ar-advance-voucher",
     no: "YS-202609-301",
@@ -493,6 +679,7 @@ test("confirmed customer deposit application creates one manual-only traceable v
     note: "核对预收余额与目标应收",
   }, { ...context, at: "2026-09-06T13:01:00.000Z" });
   const voucher = workspace.vouchers[0];
+  assert.equal(voucher.period, "2026-09");
   assert.equal(validateVoucherBalance(voucher).balanced, true);
   assert.deepEqual(voucher.lines.map((line) => [line.account, line.debit, line.credit]), [
     ["contractLiability", 800, 0],
@@ -533,6 +720,10 @@ test("confirmed supplier prepayment application drafts and posts debit-payable c
     transactionId: "txn-prepay",
     allocations: [{ billId: "bill-prepay-1", amount: 1800 }],
   }, context);
+  const augustFunding = structuredClone(workspace.transactions.find((transaction) => transaction.id === "txn-prepay"));
+  workspace = setFixturePeriod(workspace, "2026-09");
+  assert.equal(workspace.currentPeriod, "2026-09");
+  assert.deepEqual(workspace.transactions.find((transaction) => transaction.id === "txn-prepay").allocations, augustFunding.allocations);
   workspace.bills.push({
     id: "bill-ap-advance-voucher",
     no: "YF-202609-301",
@@ -552,6 +743,7 @@ test("confirmed supplier prepayment application drafts and posts debit-payable c
   const applicationId = workspace.advanceApplications[0].id;
   workspace = createAdvanceApplicationVoucherDraft(workspace, { applicationId }, context);
   const voucher = workspace.vouchers[0];
+  assert.equal(voucher.period, "2026-09");
   assert.deepEqual(voucher.lines.map((line) => [line.account, line.debit, line.credit]), [
     ["payable", 900, 0],
     ["prepayment", 0, 900],
@@ -684,7 +876,7 @@ test("draft revision keeps versions, while posted voucher requires a separate re
     voucherId,
     summary: "不应覆盖",
     reason: "尝试覆盖",
-  }, context), (error) => error instanceof AccountingRuleError && error.code === "POSTED_VOUCHER_IMMUTABLE");
+  }, context), (error) => error instanceof AccountingRuleError && error.code === "VOUCHER_IMMUTABLE");
 
   workspace = createPostedVoucherRevision(workspace, {
     voucherId,
@@ -853,8 +1045,17 @@ test("thirty-day cash forecast uses dated bills and confirmed obligations with s
 
 test("customer confirms each section explicitly and every decision is audited", () => {
   let workspace = createAccountingFixture();
-  workspace = createCustomerConfirmationPackage(workspace, { period: "2026-08" }, context);
+  workspace.modules.payroll = true;
+  assert.throws(() => createCustomerConfirmationPackage(workspace, {
+    period: "2026-08",
+  }, context), (error) => error instanceof AccountingRuleError && error.code === "FROZEN_REPORT_REQUIRED");
+  workspace = freezeVisibleReportVersion(workspace, context.actor);
+  const version = workspace.delivery.reportVersions[0];
+  workspace = createCustomerConfirmationPackage(workspace, { period: "2026-08", reportVersionId: version.id }, context);
   const confirmationId = workspace.confirmations[0].id;
+  assert.equal(version.frozen, true);
+  assert.equal(workspace.confirmations[0].reportVersionId, version.id);
+  assert.deepEqual(workspace.confirmations[0].snapshot, version.snapshot);
   const sections = ["finance", "revenue", "costExpense", "vat", "inputVat", "payroll", "socialSecurity", "openItems"];
   for (const [index, section] of sections.entries()) {
     workspace = recordCustomerConfirmation(workspace, {
@@ -866,13 +1067,17 @@ test("customer confirms each section explicitly and every decision is audited", 
   }
   assert.equal(workspace.confirmations[0].status, "approved");
   assert.equal(workspace.confirmations[0].decisions.length, sections.length);
+  assert.ok(workspace.confirmations[0].decisions.every((decision) => decision.reportVersionId === version.id));
   assert.equal(workspace.auditLog.filter((item) => item.action === "confirmation.approve").length, sections.length);
   assert.equal(buildTaxWorkpaper(workspace, { period: "2026-08" }).status, "customer_confirmed");
 });
 
 test("customer disagreement creates an exception task and blocks the tax workpaper", () => {
   let workspace = createAccountingFixture();
-  workspace = createCustomerConfirmationPackage(workspace, { period: "2026-08" }, context);
+  workspace.modules.payroll = true;
+  workspace = freezeVisibleReportVersion(workspace, context.actor);
+  const version = workspace.delivery.reportVersions[0];
+  workspace = createCustomerConfirmationPackage(workspace, { period: "2026-08", reportVersionId: version.id }, context);
   workspace = recordCustomerConfirmation(workspace, {
     confirmationId: workspace.confirmations[0].id,
     section: "payroll",

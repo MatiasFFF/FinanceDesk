@@ -1,11 +1,10 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ArrowCounterClockwise,
   ArrowsLeftRight,
   CheckCircle,
   FileText,
   GitBranch,
-  MagicWand,
   Plus,
   SealCheck,
   Trash,
@@ -37,11 +36,13 @@ import {
   confirmReconciliationSuggestion,
   confirmedAdvanceApplications,
   confirmedAllocationsForBill,
+  cancelReconciliationCorrection,
   createAdvanceApplicationVoucherDraft,
   createBankBusinessEventVoucherDraft,
   createMemberEventVoucherDraft,
   createSettlementBill,
   createPostedVoucherRevision,
+  createReconciliationCorrection,
   createVoucherDraft,
   effectiveBankTransactionClassification,
   handleReconciliationException,
@@ -52,6 +53,8 @@ import {
   manualBusinessEventTypesForWorkspace,
   memberBusinessEnabled,
   postVoucher,
+  postVoucherWithEvidence,
+  recordManualVoucherEvidenceFailure,
   recordReconciliationSuggestions,
   reviseDraftVoucher,
   reviewVoucher,
@@ -64,6 +67,7 @@ import {
   unresolvedExceptionTasks,
   validateVoucherBalance,
   vouchersForMemberEvent,
+  vouchersForReconciliation,
   vouchersForSource,
   workspaceAccountDefinitions,
 } from "../../domain/accounting/index.js";
@@ -506,7 +510,7 @@ function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChan
                 <small>不参与借贷平衡</small>
               </label>
               <label className="engine-voucher-line-field engine-voucher-line-source-field">
-                <span>来源说明（sourceIds）</span>
+                <span>来源记录</span>
                 <input value={voucherLineSourceInput(line)} onChange={(event) => {
                   const sourceIdsText = event.target.value;
                   onChange(index, { sourceIdsText, sourceIds: parseVoucherLineSourceIds(sourceIdsText) });
@@ -544,7 +548,7 @@ function VoucherLineAccountEditor({ workspace, accounts, lines, editable, onChan
                 voucherLineDimensionInput(line, "project", "projectName"),
               ].filter(Boolean).join(" · ") || "未设置"}</strong></span>
               <span><small>税额</small><strong>{line.taxAmount == null || line.taxAmount === "" ? "—" : `¥${money(line.taxAmount)}`}</strong></span>
-              <span><small>来源说明（sourceIds）</small><strong>{sourceIds.join("、") || "无分录来源"}</strong></span>
+              <span><small>来源记录</small><strong>{sourceIds.join("、") || "无分录来源"}</strong></span>
             </span>
           </div>
         );
@@ -561,7 +565,7 @@ function LedgerTrace({ voucherId, voucherIds = [], sourceIds = [], taxAmount = n
       <summary>查看追溯</summary>
       <span><b>凭证</b>{vouchers.join("、") || "期初余额"}</span>
       <span><b>税额</b>{taxAmount == null ? "—" : `¥${money(taxAmount)}`}</span>
-      <span><b>sourceIds</b>{sourceIds.join("、") || "无原始来源"}</span>
+      <span><b>原始来源</b>{sourceIds.join("、") || "无原始来源"}</span>
     </details>
   );
 }
@@ -632,7 +636,7 @@ function AccountingLedgerPanel({ workspace, onToast }) {
   return (
     <div className="accounting-ledger-panel">
       <div className="ledger-heading">
-        <div><small>S9 · 当前有效已入账凭证</small><strong>序时账、总账与明细账</strong><p>草稿、已替代及已作废版本不会进入账簿；每条分录保留凭证与原始 sourceIds。</p></div>
+        <div><small>当前有效已入账凭证</small><strong>序时账、总账与明细账</strong><p>每条账簿记录均可追溯凭证和原始资料。</p></div>
         <button className="secondary-button" type="button" onClick={exportCsv} disabled={!ledger.rows.length}><FileText size={16} />导出 CSV</button>
       </div>
 
@@ -701,7 +705,7 @@ function AccountingLedgerPanel({ workspace, onToast }) {
   );
 }
 
-function MemberBusinessAccountingQueue({ onToast }) {
+export function MemberBusinessAccountingQueue({ onToast }) {
   const { activeWorkspace, actions, state, store } = useFinanceDesk();
   const terminology = workspaceTerminology(activeWorkspace);
   const displayText = (value) => applyWorkspaceTerminology(value, activeWorkspace);
@@ -837,13 +841,12 @@ function MemberBusinessAccountingQueue({ onToast }) {
   return (
     <section className="panel settlement-panel">
       <div className="settlement-heading">
-        <div><p className="eyebrow">{terminology.member}台账 → 会计处理</p><h2>已确认{terminology.member}业务</h2><p>充值、耗课、退款、提成计提与实际付款在这里生成凭证；只有人工复核入账后，数字才进入对应财务报表。</p></div>
+        <div><h2>{terminology.member}业务凭证</h2><p>本期 {rows.length} 笔已确认业务，复核入账后进入报表。</p></div>
       </div>
       <div className="settlement-metrics">
         <span><small>待生成凭证</small><strong>{readyCount} 笔</strong></span>
         <span><small>待复核入账</small><strong>{draftCount} 笔</strong></span>
         <span><small>已进入报表</small><strong>{postedCount} 笔</strong></span>
-        <span><small>本期已确认</small><strong>{rows.length} 笔</strong></span>
       </div>
       {error && <div className="engine-error"><WarningCircle size={16} />{error}</div>}
       <div className="settlement-bill-list">
@@ -852,20 +855,21 @@ function MemberBusinessAccountingQueue({ onToast }) {
           const definition = MEMBER_EVENT_DEFINITIONS[kind];
           const voucherLabel = !voucher ? "待生成" : voucher.status === "posted" ? `${voucher.no || "已编号"} · 已入账` : "凭证草稿";
           const editableLines = voucher ? voucherLineDrafts[voucher.id] || voucher.lines : [];
-          const editable = Boolean(voucher && voucher.status !== "posted" && voucher.status !== "superseded");
+          const editable = Boolean(voucher && ["draft", "changes_requested"].includes(voucher.status));
           const validation = voucher ? validateVoucherBalance(
             { lines: editableLines },
             accountingRules(activeWorkspace).amountTolerance,
             editable ? activeWorkspace : null,
           ) : null;
           return (
-            <article className="settlement-bill-row" key={event.id}>
+            <article className="settlement-bill-row member-accounting-row" key={event.id}>
               <div className="settlement-bill-overview">
                 <div className="settlement-bill-main"><span className="settlement-kind">{displayText(definition.label)}</span><strong>{event.memberName || event.coach}</strong><small>{event.date} · {memberEventStatusLabel(event)} · {event.note || displayText(definition.accountingLabel)}</small></div>
-                <div className="settlement-bill-amounts"><span><small>业务金额</small><strong>¥{money(event.amount)}</strong></span><span><small>会计状态</small><strong>{voucherLabel}</strong></span><span><small>报表影响</small><strong>{localizedMemberReportEffect(kind, activeWorkspace)}</strong></span></div>
+                <div className="settlement-bill-amounts"><span><small>业务金额</small><strong>¥{money(event.amount)}</strong></span><span><small>会计状态</small><strong>{voucherLabel}</strong></span></div>
               </div>
-              <details className="settlement-bill-details" open={Boolean(voucher && voucher.status !== "posted")}>
-                <summary>{voucher ? "查看凭证分录与复核" : displayText(definition.suggestedEntry)}</summary>
+              <details className="settlement-bill-details">
+                <summary>{voucher ? voucher.status === "posted" ? "查看已入账凭证" : "复核凭证" : "生成凭证"}</summary>
+                <p>报表影响：{localizedMemberReportEffect(kind, activeWorkspace)}</p>
                 {voucher ? <div className="engine-voucher-card">
                   <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借方 ¥{money(validation?.debit)} · 贷方 ¥{money(validation?.credit)} · {validation?.amountsBalanced ? "借贷平衡" : "借贷不平"}{validation?.balanced ? "" : " · 分录待修正"}</small><small className="engine-voucher-tax-total">税额合计 ¥{money(validation?.taxTotal)} · 仅作信息，不参与借贷平衡</small></span><em>{voucher.status}</em></div>
                   <VoucherAccountJudgement
@@ -1040,8 +1044,8 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
       {showMemberBusiness && memberBusinessEnabled(activeWorkspace) && <MemberBusinessAccountingQueue onToast={onToast} />}
       <section className="panel settlement-panel">
       <div className="settlement-heading">
-        <div><p className="eyebrow">应收应付与核销</p><h2>往来账单与实时余额</h2><p>新增账单后，在下方打开一笔流水，即可一次拆分核销多张账单；同一账单也可由多笔流水分次结清。</p></div>
-        <button className="secondary-button" type="button" onClick={() => { setShowForm((current) => !current); setError(""); }}><Plus size={16} />新增账单</button>
+        <div><h2>往来账单</h2><p>到账后在银行交易中核销，支持多单拆分和分次结清。</p></div>
+        <button className="secondary-button" type="button" aria-expanded={showForm} onClick={() => { setShowForm((current) => !current); setError(""); }}><Plus size={16} />{showForm ? "收起表单" : form.counterparty || form.amount ? "继续填写账单" : "新增账单"}</button>
       </div>
 
       <div className="settlement-metrics">
@@ -1058,7 +1062,7 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
           <label><span>到期日期 *</span><input type="date" value={form.dueDate} onChange={(event) => setForm((current) => ({ ...current, dueDate: event.target.value }))} /></label>
           <label className="full"><span>业务摘要</span><input value={form.summary} onChange={(event) => setForm((current) => ({ ...current, summary: event.target.value }))} placeholder={`例如：9 月设计${terminology.service}费`} /></label>
           {error && <div className="engine-error full"><WarningCircle size={16} />{error}</div>}
-          <div className="engine-inline full"><button className="secondary-button" type="button" onClick={() => { setShowForm(false); setError(""); }}>取消</button><button className="primary-button" type="submit"><SealCheck size={16} />保存账单</button></div>
+          <div className="engine-inline full"><button className="secondary-button" type="button" onClick={() => { setShowForm(false); setError(""); }}>收起并保留输入</button><button className="primary-button" type="submit"><SealCheck size={16} />保存账单</button></div>
         </form>
       )}
 
@@ -1095,10 +1099,10 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
             <article className="settlement-bill-row" key={bill.id}>
               <div className="settlement-bill-main"><span className="settlement-kind">{meta.label}</span><strong>{bill.no || bill.id} · {bill.counterparty}</strong><small>{bill.summary} · 计划 ¥{money(advance?.originalAmount)} · 待到账 ¥{money(advance?.pendingFunding)}</small></div>
               <div className="settlement-bill-amounts"><span><small>原余额</small><strong>¥{money(advance?.originalBalance)}</strong></span><span><small>累计使用</small><strong>¥{money(advance?.usedAmount)}</strong></span><span><small>剩余余额</small><strong>¥{money(advance?.availableBalance)}</strong></span></div>
-              <details open={Boolean(advance?.availableBalance)}>
+              <details>
                 <summary>{advance?.applications.length ? `${advance.applications.length} 次使用 · 继续分次冲销` : "选择对应账单使用余额"}</summary>
                 {advance?.applications.length > 0 && <div className="settlement-source-list">{advance.applications.map((application) => {
-                  const relatedVouchers = (activeWorkspace.vouchers || []).filter((voucher) => voucher.advanceApplicationId === application.id && voucher.status !== "superseded");
+                  const relatedVouchers = (activeWorkspace.vouchers || []).filter((voucher) => voucher.advanceApplicationId === application.id && ["posted", "draft", "changes_requested"].includes(voucher.status));
                   const voucher = relatedVouchers.find((item) => item.id === application.voucherId || item.id === application.draftVoucherId) || relatedVouchers.at(-1);
                   return <div key={application.id}>
                     <span>
@@ -1127,8 +1131,99 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
   );
 }
 
-export function AccountingWorkbench({ transactionId, onToast }) {
-  const { activeWorkspace, actions, state, store } = useFinanceDesk();
+function voucherStatusLabel(status) {
+  return { draft: "待复核", changes_requested: "待修订", posted: "已入账", superseded: "历史版本", invalidated: "已失效" }[status] || status;
+}
+
+function WorkspaceVoucherPanel({ onToast }) {
+  const { activeWorkspace, actions, state, store, fileVault } = useFinanceDesk();
+  const [filter, setFilter] = useState("current");
+  const [notes, setNotes] = useState({});
+  const [lineDrafts, setLineDrafts] = useState({});
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const accounts = useMemo(() => workspaceAccountOptions(activeWorkspace), [activeWorkspace]);
+  const actor = currentActorName(state, activeWorkspace);
+  const vouchers = (activeWorkspace.vouchers || []).filter((voucher) => voucher.period === activeWorkspace.currentPeriod);
+  const pending = vouchers.filter((voucher) => ["draft", "changes_requested"].includes(voucher.status));
+  const posted = vouchers.filter((voucher) => voucher.status === "posted");
+  const visible = vouchers.filter((voucher) => filter === "all" || (filter === "pending" ? pending.includes(voucher) : ["posted", "draft", "changes_requested"].includes(voucher.status)));
+
+  useEffect(() => { setNotes({}); setLineDrafts({}); setError(""); }, [activeWorkspace.id, activeWorkspace.currentPeriod]);
+
+  async function changeVoucher(voucher, action) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    const current = store.getActiveWorkspace();
+    const reason = notes[voucher.id] || "";
+    try {
+      let next = current;
+      if (action === "revision") next = createPostedVoucherRevision(current, { voucherId: voucher.id, reason }, { actor });
+      else if (action === "cancel") next = cancelReconciliationCorrection(current, { voucherId: voucher.id, reason }, { actor });
+      else {
+        if (lineDrafts[voucher.id]) next = reviseDraftVoucher(next, { voucherId: voucher.id, lines: lineDrafts[voucher.id], reason }, { actor });
+        if (action === "post") next = await postVoucherWithEvidence(next, { voucherId: voucher.id, reviewNote: reason, mode: "manual" }, { actor, fileVault });
+      }
+      if (store.getActiveWorkspace() !== current) throw new Error("复核期间数据已变化，请重新操作");
+      actions.replaceWorkspace(current.id, next);
+      setLineDrafts((drafts) => { const updated = { ...drafts }; delete updated[voucher.id]; return updated; });
+      setNotes((currentNotes) => ({ ...currentNotes, [voucher.id]: "" }));
+      onToast?.({ revision: "更正草稿已创建，原凭证继续有效", cancel: "更正草稿已取消，原记录继续有效", post: "凭证已复核入账", revise: "分录修订已保存" }[action]);
+    } catch (caught) {
+      setError(caught.message || "凭证处理失败");
+      if (["VOUCHER_EVIDENCE_REQUIRED", "VOUCHER_ORIGINAL_REQUIRED"].includes(caught.code) && store.getActiveWorkspace() === current) {
+        try { actions.replaceWorkspace(current.id, recordManualVoucherEvidenceFailure(current, voucher.id, caught.message, { actor })); }
+        catch (recordError) { setError(`${caught.message}；补件任务未保存：${recordError.message}`); }
+      }
+    } finally { setBusy(false); }
+  }
+
+  return <div className="workspace-accounting-view">
+    <section className="workspace-voucher-panel">
+      <header className="settlement-heading"><div><h2>本期凭证</h2><p>{activeWorkspace.currentPeriod} · {pending.length} 张待复核 · {posted.length} 张已入账</p></div><label><span className="sr-only">凭证范围</span><select value={filter} onChange={(event) => setFilter(event.target.value)}><option value="current">当前有效记录</option><option value="pending">待复核</option><option value="all">包含历史与失效记录</option></select></label></header>
+      {error && <div className="engine-error" role="alert"><WarningCircle size={16} />{error}</div>}
+      <div className="workspace-voucher-list">{visible.length ? visible.map((voucher) => {
+        const draft = ["draft", "changes_requested"].includes(voucher.status);
+        const manual = voucher.sourceType === "manual" || voucher.judgement?.eventType === "manualVoucher";
+        const editable = draft && !manual && !voucher.reconciliationCorrection;
+        const lines = lineDrafts[voucher.id] || voucher.lines;
+        const validation = validateVoucherBalance({ lines }, accountingRules(activeWorkspace).amountTolerance, draft ? activeWorkspace : null);
+        const attachments = buildAttachmentPackage(activeWorkspace, voucher.id);
+        return <details className="workspace-voucher-record" key={voucher.id}>
+          <summary><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>{voucher.date} · {voucher.lines?.length || 0} 行分录</small></span><b>¥{money(validation.debit)}</b><em className={draft ? "engine-badge warning" : "engine-badge"}>{voucherStatusLabel(voucher.status)}</em></summary>
+          <div className="workspace-voucher-content">
+            {voucher.status === "invalidated" && <p className="engine-next-note">{voucher.invalidationReason}</p>}
+            {voucher.reconciliationCorrection?.status === "pending" && <p className="engine-next-note">核销更正将在本张凭证入账时同步生效，原核销与原凭证目前仍然有效。</p>}
+            {manual && draft && <p className="engine-next-note">需要补充来源、附件或修改分录时，请进入“手工凭证”载入本张草稿。</p>}
+            <VoucherAccountJudgement workspace={activeWorkspace} accounts={accounts} voucher={voucher} lines={lines} pending={Boolean(lineDrafts[voucher.id])} />
+            <VoucherLineAccountEditor workspace={activeWorkspace} accounts={accounts} lines={lines} editable={editable}
+              onChange={(index, patch) => updateVoucherLineDraft(setLineDrafts, voucher, (current) => current.map((line, position) => position === index ? { ...line, ...patch } : line))}
+              onAdd={() => updateVoucherLineDraft(setLineDrafts, voucher, (current) => [...current, blankVoucherLine(voucher)])}
+              onRemove={(index) => updateVoucherLineDraft(setLineDrafts, voucher, (current) => current.length > 2 ? current.filter((_, position) => position !== index) : current)} />
+            {draft && <VoucherLineValidation validation={validation} />}
+            {attachments.missing.length > 0 && <div className="engine-missing">{attachments.missing.map((item) => <span key={item.id}>待补：{item.label || item.id}</span>)}</div>}
+            {(draft || voucher.status === "posted") && <div className="engine-form"><label className="full"><span>{draft ? "复核 / 修改意见" : "更正原因"}</span><textarea value={notes[voucher.id] || ""} onChange={(event) => setNotes((current) => ({ ...current, [voucher.id]: event.target.value }))} /></label><div className="engine-voucher-form-actions">
+              {editable && <button className="secondary-button" type="button" disabled={busy || !notes[voucher.id]?.trim() || !lineDrafts[voucher.id] || !validation.balanced} onClick={() => changeVoucher(voucher, "revise")}>保存分录修订</button>}
+              {draft && <button className="primary-button" type="button" disabled={busy || !notes[voucher.id]?.trim() || !validation.balanced} onClick={() => changeVoucher(voucher, "post")}>{busy ? "正在复核…" : "复核入账"}</button>}
+              {draft && voucher.revisionOf && <button className="secondary-button" type="button" disabled={busy || !notes[voucher.id]?.trim()} onClick={() => changeVoucher(voucher, "cancel")}>取消更正</button>}
+              {voucher.status === "posted" && <button className="secondary-button" type="button" disabled={busy || !notes[voucher.id]?.trim()} onClick={() => changeVoucher(voucher, "revision")}>创建更正草稿</button>}
+            </div></div>}
+            <details className="engine-section"><summary>来源、附件与历史 · {attachments.manifest.length} 项</summary><ul className="engine-trace-list">{attachments.manifest.map((item) => <li key={`${item.kind}-${item.id}`}><strong>{item.kind}</strong><span>{item.name}</span></li>)}</ul><p>{voucher.versions?.length || 0} 条版本记录 · {voucher.reviews?.length || 0} 条复核记录</p>{(voucher.versions || []).map((version, index) => <p key={index}>{version.at} · {version.actor} · {version.reason}</p>)}</details>
+          </div>
+        </details>;
+      }) : <p className="settlement-empty">当前范围没有凭证；可从银行交易生成，或在手工凭证入口录入。</p>}</div>
+    </section>
+    <AccountingLedgerPanel workspace={activeWorkspace} onToast={onToast} />
+  </div>;
+}
+
+export function AccountingWorkbench(props) {
+  return props.transactionId ? <TransactionAccountingWorkbench {...props} /> : <WorkspaceVoucherPanel onToast={props.onToast} />;
+}
+
+function TransactionAccountingWorkbench({ transactionId, onToast }) {
+  const { activeWorkspace, actions, state, store, fileVault } = useFinanceDesk();
   const terminology = workspaceTerminology(activeWorkspace);
   const displayText = (value) => applyWorkspaceTerminology(value, activeWorkspace);
   const actor = currentActorName(state, activeWorkspace);
@@ -1153,6 +1248,9 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   });
   const [reviewReason, setReviewReason] = useState("");
   const [reversalReason, setReversalReason] = useState("");
+  const [correctionTargets, setCorrectionTargets] = useState({});
+  const [posting, setPosting] = useState(false);
+  const stepRefs = useRef({});
   const [voucherNote, setVoucherNote] = useState("");
   const [voucherSummaries, setVoucherSummaries] = useState({});
   const [voucherLineDrafts, setVoucherLineDrafts] = useState({});
@@ -1215,9 +1313,13 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   const exceptionCases = transaction ? buildReconciliationExceptionCases(activeWorkspace, transaction.id) : [];
   const allocations = transaction ? activeAllocations(transaction) : [];
   const vouchers = transaction ? vouchersForSource(activeWorkspace, transaction.id) : [];
+  const activeVouchers = vouchers.filter((voucher) => ["posted", "draft", "changes_requested"].includes(voucher.status));
+  const periodWritable = transaction && String(transaction.date).slice(0, 7) === activeWorkspace.currentPeriod
+    && !activeWorkspace.delivery?.archives?.some((archive) => archive.period === activeWorkspace.currentPeriod)
+    && !activeWorkspace.delivery?.filing?.archivedAt;
   const voucheredSourceIds = new Set(vouchers
     .filter((voucher) => ["posted", "draft", "changes_requested"].includes(voucher.status))
-    .flatMap((voucher) => voucher.sourceIds || []));
+    .flatMap((voucher) => [...(voucher.sourceIds || []), ...(voucher.lines || []).flatMap((line) => line.sourceIds || [])]));
   const unvoucheredAllocations = allocations.filter((allocation) => (
     !voucheredSourceIds.has(allocation.id) && (allocation.id || !voucheredSourceIds.has(allocation.billId))
   ));
@@ -1230,11 +1332,11 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     && (!(businessEvent.crossPeriod || REVIEW_REQUIRED_BANK_BUSINESS_TYPES.has(businessEvent.businessType)) || businessEvent.review?.status === "approved")
     && !["voucher_draft", "posted"].includes(businessEvent.accountingStatus)
   ));
-  const canCreateDraft = !requiresBusinessEventConfirmation
+  const canCreateDraft = periodWritable && !requiresBusinessEventConfirmation
     && classification?.eventType !== EVENT_TYPES.UNKNOWN
     && exceptions.length === 0
     && businessEventReadyForDraft
-    && (allocations.length ? unvoucheredAllocations.length > 0 : vouchers.length === 0);
+    && (allocations.length ? unvoucheredAllocations.length > 0 : activeVouchers.length === 0);
   const eligibleBills = transaction
     ? activeWorkspace.bills.filter((bill) => allocationDirectionMatchesBill(transaction, bill) && billSettlement(activeWorkspace, bill).remaining > 0.01)
     : [];
@@ -1275,6 +1377,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     setAllocationAmounts({});
     setReviewReason("");
     setReversalReason("");
+    setCorrectionTargets({});
     setVoucherNote("");
     setVoucherSummaries({});
     setVoucherLineDrafts({});
@@ -1370,7 +1473,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         reason: judgement.reason,
       }),
       needsExplicitReview
-        ? "业务事件已保存；低置信度保持不变，已进入 S7 人工复核，未生成或入账凭证"
+        ? "业务判断已保存，低置信度事项仍需人工复核"
         : "业务事件已人工确认；仅完成分类与留痕，未生成或入账凭证",
     );
   }
@@ -1492,12 +1595,12 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   }
 
   function reverse(allocationId) {
+    const posted = vouchersForReconciliation(store.getActiveWorkspace(), transactionId, allocationId).some((voucher) => voucher.status === "posted");
     run(
-      (workspace) => reverseReconciliation(workspace, {
-        allocationId,
-        reason: reversalReason,
-      }, { actor }),
-      "核销已撤销，原记录仍保留在审计链中",
+      (workspace) => posted
+        ? createReconciliationCorrection(workspace, { allocationId, billId: correctionTargets[allocationId], reason: reversalReason }, { actor })
+        : reverseReconciliation(workspace, { allocationId, reason: reversalReason }, { actor }),
+      posted ? "核销更正草稿已生成；在下方复核入账后，核销与凭证才会同步替换" : "核销已撤销，相关旧草稿已失效留痕；可重新核销并生成草稿",
     );
   }
 
@@ -1573,7 +1676,8 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     );
   }
 
-  function postDraft(voucher) {
+  async function postDraft(voucher) {
+    if (posting) return;
     if (memberBusinessEventBlocked) {
       setError(`${terminology.member}模块已关闭；历史${terminology.member}业务凭证保持未入账`);
       return;
@@ -1585,24 +1689,37 @@ export function AccountingWorkbench({ transactionId, onToast }) {
       return;
     }
     const hasPendingEdits = Boolean(voucherLineDrafts[voucher.id]) || Object.hasOwn(voucherSummaries, voucher.id);
-    if (run(
-      (workspace) => {
+    setError("");
+    setPosting(true);
+    try {
+        const current = store.getActiveWorkspace();
         const prepared = hasPendingEdits
-          ? reviseDraftVoucher(workspace, {
+          ? reviseDraftVoucher(current, {
             voucherId: voucher.id,
             summary: voucherSummaries[voucher.id] ?? voucher.summary,
             lines: editedLines,
             reason: voucherNote,
           }, { actor })
-          : workspace;
-        return postVoucher(prepared, {
+          : current;
+        const next = await postVoucherWithEvidence(prepared, {
           voucherId: voucher.id,
           mode: "manual",
           reviewNote: voucherNote,
-        }, { actor });
-      },
-      "凭证已人工复核入账，编号和附件来源已锁定",
-    )) clearVoucherEdits(voucher.id);
+        }, { actor, fileVault });
+        if (store.getActiveWorkspace() !== current) throw new Error("复核期间数据已变化，请重新复核入账");
+        actions.replaceWorkspace(current.id, next);
+        onToast?.(voucher.reconciliationCorrection ? "核销与更正凭证已同步入账，旧核销和旧凭证保留为历史" : "凭证已人工复核入账，编号和附件来源已锁定");
+        clearVoucherEdits(voucher.id);
+    } catch (caught) {
+      setError(displayText(caught.message || "凭证入账失败"));
+      if (["VOUCHER_EVIDENCE_REQUIRED", "VOUCHER_ORIGINAL_REQUIRED"].includes(caught.code)) {
+        const current = store.getActiveWorkspace();
+        if (current.id === activeWorkspace.id) {
+          try { actions.replaceWorkspace(current.id, recordManualVoucherEvidenceFailure(current, voucher.id, caught.message, { actor })); }
+          catch (recordError) { setError(`${caught.message}；补件任务未保存：${recordError.message}`); }
+        }
+      }
+    } finally { setPosting(false); }
   }
 
   function reviseVoucher(voucher) {
@@ -1633,6 +1750,10 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     );
   }
 
+  function cancelRevision(voucherId) {
+    run((workspace) => cancelReconciliationCorrection(workspace, { voucherId, reason: voucherNote }, { actor }), "更正草稿已取消，原核销和原凭证继续有效；可以重新选择目标账单");
+  }
+
   function requestVoucherChanges(voucherId) {
     run(
       (workspace) => reviewVoucher(workspace, {
@@ -1644,27 +1765,43 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     );
   }
 
+  function openStep(step) {
+    const element = stepRefs.current[step];
+    if (!element) return;
+    element.open = true;
+    element.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  const nextAction = !periodWritable ? null
+    : requiresBusinessEventConfirmation ? { label: "确认这笔业务", run: () => openStep("business") }
+      : exceptionCases.length ? { label: `处理 ${exceptionCases.length} 项待办`, run: () => openStep("exceptions") }
+        : canCreateDraft ? { label: "生成凭证草稿", run: createDraft }
+          : activeVouchers.some((voucher) => ["draft", "changes_requested"].includes(voucher.status)) ? { label: "复核待入账凭证", run: () => openStep("vouchers") }
+            : suggestions.some((suggestion) => !suggestion.requiresManualReview) ? { label: "确认匹配建议", run: () => openStep("suggestions") }
+              : eligibleBills.length && settlement.remaining > 0.01 && ![EVENT_TYPES.REFUND, EVENT_TYPES.INTERNAL_TRANSFER, EVENT_TYPES.UNKNOWN].includes(classification.eventType) ? { label: "选择账单核销", run: () => openStep("allocations") }
+                : transaction.status !== "posted" && !businessEvent ? { label: "更新判断与资料状态", run: inspect } : null;
+
   return (
-    <section className="accounting-workbench">
+    <section className="accounting-workbench transaction-accounting-workbench">
       <div className="accounting-heading">
-        <div><small>S5–S8 · 真实会计引擎</small><strong>分类、核销与凭证</strong></div>
-        <span className={assessment.issues.length ? "engine-badge warning" : "engine-badge"}>{assessment.completeness}% 证据</span>
+        <div><small>{Number(transaction.amount) >= 0 ? "本笔收款" : "本笔付款"}</small><strong>¥{money(Math.abs(Number(transaction.amount)))}</strong></div>
+        <span className={assessment.issues.length ? "engine-badge warning" : "engine-badge"}>{assessment.missing.length ? `待补 ${assessment.missing.length} 类资料` : "资料已关联"}</span>
       </div>
 
       {error && <div className="engine-error"><WarningCircle size={16} />{error}</div>}
 
       <div className="engine-summary">
         <span><small>业务判断</small><strong>{localizedEventLabel(classification.eventType, activeWorkspace)}</strong></span>
-        <span><small>置信度</small><strong>{classification.confidence}%</strong></span>
         <span><small>核销状态</small><strong>{statusLabel(settlement.status)}</strong></span>
         <span><small>未核销</small><strong>¥{money(settlement.remaining)}</strong></span>
       </div>
-      <ul className="engine-reasons">{classification.reasons.map((reason) => <li key={reason}>{displayText(reason)}</li>)}</ul>
-      {!businessEvent && <button className="secondary-button wide" type="button" onClick={inspect}><MagicWand size={16} />运行本地分类、证据检查与匹配建议</button>}
+      {assessment.missing.length > 0 && <p className="engine-next-note">待补：{assessment.missing.map((item) => displayText(item.label)).join("、")}。请在本笔资料区关联原件后继续复核。</p>}
+      {nextAction && <button className="primary-button wide" type="button" onClick={nextAction.run}>{nextAction.label}</button>}
 
       {requiresBusinessEventConfirmation && (
+        <details className="engine-section" ref={(node) => { stepRefs.current.business = node; }}><summary>确认业务性质</summary>
         <form className="engine-form" onSubmit={manualClassify}>
-          <div className="engine-subheading full"><strong>人工确认业务事件</strong><small>只形成业务事件和复核任务，不自动生成或入账凭证</small></div>
+          <div className="engine-subheading full"><strong>业务判断</strong><small>保存后仍需复核凭证</small></div>
           <label className="full"><span>业务类型 *</span><select required value={judgement.businessType} onChange={(event) => selectBusinessType(event.target.value)}><option value="">请选择业务类型</option>{availableBusinessTypes.map((definition) => <option value={definition.id} key={definition.id} disabled={!definition.allowedDirections.includes(Number(transaction.amount) >= 0 ? "in" : "out")}>{displayText(definition.label)}</option>)}</select></label>
           {selectedBusinessDefinition && (
             <>
@@ -1685,17 +1822,19 @@ export function AccountingWorkbench({ transactionId, onToast }) {
               <label className="full"><span>关联证据（可多选）· 期望：{displayText(selectedBusinessDefinition.evidenceHint)}</span><select multiple size={Math.min(5, Math.max(2, activeWorkspace.documents.length))} value={judgement.evidenceIds} onChange={(event) => setJudgement((current) => ({ ...current, evidenceIds: Array.from(event.target.selectedOptions, (option) => option.value) }))}>{activeWorkspace.documents.map((document) => <option value={document.id} key={document.id}>{document.name || document.title || document.id} · {document.type || "资料"}</option>)}</select></label>
               <label><span>复核后置信度（0–100）* · 原判断 {classification.confidence}%</span><input required type="number" min="0" max="100" step="1" value={judgement.confidence} onChange={(event) => setJudgement((current) => ({ ...current, confidence: event.target.value }))} /></label>
               <label><span>处理说明</span><input readOnly value={`${displayText(selectedBusinessDefinition.accountingTreatment.split("；主科目：")[0])}；主科目：${workspaceAccountLabel(activeWorkspace, accountOptions, judgement.account)}`} /></label>
-              {Number(judgement.confidence) < accountingPolicy.confidenceThreshold && <div className="engine-missing full"><span>当前低于人工复核阈值 {accountingPolicy.confidenceThreshold}%。保存后仍会阻塞凭证；必须在 S7 填写复核说明并明确采用处理，才可继续。</span></div>}
+              {Number(judgement.confidence) < accountingPolicy.confidenceThreshold && <div className="engine-missing full"><span>当前低于复核阈值 {accountingPolicy.confidenceThreshold}%，请完成待办中的人工复核后再继续入账。</span></div>}
               <label className="full"><span>人工判断依据 *</span><textarea required value={judgement.reason} onChange={(event) => setJudgement((current) => ({ ...current, reason: event.target.value }))} placeholder="写明核对了哪些对手、账单或订单、期间、税务和证据" /></label>
               <button className="secondary-button wide" type="submit">{Number(judgement.confidence) < accountingPolicy.confidenceThreshold ? "保存判断并进入人工复核" : "确认业务事件（不入账）"}</button>
             </>
           )}
         </form>
+        </details>
       )}
 
       {businessEvent && (
+        <details className="engine-section"><summary>已确认：{displayText(businessEvent.businessTypeLabel)}</summary>
         <div className="engine-special">
-          <div className="engine-subheading"><strong>{businessEvent.businessEventNo} · {displayText(businessEvent.businessTypeLabel)}</strong><small>已形成人工业务事件；入账策略：仅允许后续人工复核</small></div>
+          <div className="engine-subheading"><strong>{businessEvent.businessEventNo}</strong><small>凭证仍须人工复核</small></div>
           <div className="engine-summary">
             <span><small>业务期 / 资金期</small><strong>{businessEvent.businessPeriod} / {businessEvent.fundingPeriod}</strong></span>
             <span><small>{terminology.location} / 部门 / 项目</small><strong>{[businessEvent.storeName, businessEvent.department, businessEvent.project].filter(Boolean).join(" · ") || "未设置"}</strong></span>
@@ -1707,13 +1846,14 @@ export function AccountingWorkbench({ transactionId, onToast }) {
           <ul className="engine-reasons">{businessEvent.reasons.map((reason) => <li key={`${businessEvent.id}-${reason}`}>{displayText(reason)}</li>)}</ul>
           {memberBusinessEventBlocked && <div className="engine-missing"><span>{terminology.member}模块已关闭；这条历史{terminology.member}业务保留只读，不能继续生成、修改或入账凭证。重新启用{terminology.member}模块后才可继续处理。</span></div>}
           {businessEvent.review?.required && <div className="engine-missing"><span>仍需人工复核：{businessEvent.review.reasons.map(displayText).join("；")}</span></div>}
-          {!memberBusinessEventBlocked && businessEvent.accountingStatus === "unprocessed" && !businessEventReadyForDraft && <div className="engine-missing"><span>凭证草稿暂不可生成：请先补齐证据、确认税务属性并完成全部 S7 复核。</span></div>}
+          {!memberBusinessEventBlocked && businessEvent.accountingStatus === "unprocessed" && !businessEventReadyForDraft && <div className="engine-missing"><span>请先补齐证据、确认税务属性并完成待办复核。</span></div>}
         </div>
+        </details>
       )}
 
       {exceptionCases.length > 0 && (
+        <details className="engine-section" ref={(node) => { stepRefs.current.exceptions = node; }}><summary>待处理事项 · {exceptionCases.length}</summary>
         <div className="engine-exceptions">
-          <div className="engine-subheading"><strong>S7 · 异常事项处理</strong><small>未人工确认的事项始终阻塞凭证</small></div>
           {exceptionCases.map((item) => {
             const note = exceptionNotes[item.id] || "";
             const selectedTreatmentId = exceptionTreatments[item.id] || item.accountingTreatments[0]?.id || "";
@@ -1724,14 +1864,16 @@ export function AccountingWorkbench({ transactionId, onToast }) {
               accountRequired && businessEvent && selectedTreatment.eventType !== businessEvent.eventType,
             );
             return <article className="engine-voucher-card" key={item.id}>
-              <div className="engine-voucher-row"><WarningCircle size={16} /><span><strong>{displayText(item.triggerReason)}</strong><small>{item.code} · {exceptionWorkflowLabel(item.workflowState)} · 历史 {item.history.length} 条</small></span><em className="engine-badge warning">阻塞入账</em></div>
+              <div className="engine-voucher-row"><WarningCircle size={16} /><span><strong>{displayText(item.triggerReason)}</strong><small>{exceptionWorkflowLabel(item.workflowState)}</small></span><em className="engine-badge warning">待处理</em></div>
+              <details><summary>查看相关记录与缺件明细</summary>
               <div className="engine-summary">
                 <span><small>相关流水</small><strong>{item.relatedTransactions.map((source) => source.serial || source.id).join("、") || "无"}</strong></span>
                 <span><small>相关账单</small><strong>{item.relatedBills.map((bill) => bill.no || bill.id).join("、") || "无"}</strong></span>
                 <span><small>相关资料</small><strong>{item.relatedDocuments.map((document) => document.name).join("、") || "无"}</strong></span>
                 <span><small>缺少内容</small><strong>{item.missingContents.map((missing) => displayText(missing.label)).join("、") || "未识别出明确缺件"}</strong></span>
               </div>
-              <details open>
+              </details>
+              <details>
                 <summary>查看匹配依据和账单余额</summary>
                 <ul className="engine-reasons">{item.matchBasis.length ? item.matchBasis.map((reason) => <li key={`${item.id}-${reason}`}>{displayText(reason)}</li>) : <li>当前没有足够依据形成匹配结论</li>}</ul>
                 {item.relatedBills.length > 0 && <div className="settlement-source-list">{item.relatedBills.map((bill) => <div key={bill.id}><span><strong>{bill.no || bill.id} · {bill.counterparty}</strong><small>{localizedBillKindMeta(bill.kind, activeWorkspace).label}</small></span><b>未核销 ¥{money(bill.remaining)}</b></div>)}</div>}
@@ -1751,9 +1893,11 @@ export function AccountingWorkbench({ transactionId, onToast }) {
             </article>;
           })}
         </div>
+        </details>
       )}
 
       {suggestions.length > 0 && (
+        <details className="engine-section" ref={(node) => { stepRefs.current.suggestions = node; }}><summary>匹配建议 · {suggestions.length}</summary>
         <div className="engine-suggestions">
           <div className="engine-subheading"><strong>自动匹配候选</strong><small>确认前不会写入核销或凭证</small></div>
           {suggestions.map((item) => (
@@ -1773,9 +1917,11 @@ export function AccountingWorkbench({ transactionId, onToast }) {
             </article>
           ))}
         </div>
+        </details>
       )}
 
       {eligibleBills.length > 0 && ![EVENT_TYPES.REFUND, EVENT_TYPES.INTERNAL_TRANSFER, EVENT_TYPES.UNKNOWN].includes(classification.eventType) && (
+        <details className="engine-section" ref={(node) => { stepRefs.current.allocations = node; }}><summary>选择账单核销 · 未核销 ¥{money(settlement.remaining)}</summary>
         <div className="engine-allocation">
           <div className="engine-subheading"><strong>拆分 / 部分核销</strong><small>可一次填写多张账单，合计不超过流水未核销金额</small></div>
           <div className="engine-summary">
@@ -1797,14 +1943,24 @@ export function AccountingWorkbench({ transactionId, onToast }) {
           })}
           <button className="primary-button wide" type="button" disabled={!allocationDraft.valid} onClick={applyAllocations}><SealCheck size={16} />确认本次核销</button>
         </div>
+        </details>
       )}
 
       {allocations.length > 0 && (
+        <details className="engine-section"><summary>已核销关系 · {allocations.length}</summary>
         <div className="engine-allocation-history">
           <div className="engine-subheading"><strong>有效核销记录</strong><small>{allocations.length} 条</small></div>
-          <label><span>撤销原因 *</span><input value={reversalReason} onChange={(event) => setReversalReason(event.target.value)} placeholder="撤销前必须填写" /></label>
-          {allocations.map((allocation) => <div key={allocation.id}><span><strong>{allocation.billId}</strong><small>{allocation.businessPeriod || "未分期"} · {allocation.status}</small></span><b>¥{money(allocation.amount)}</b><button type="button" aria-label="撤销核销" onClick={() => reverse(allocation.id)}><ArrowCounterClockwise size={15} /></button></div>)}
+          <label><span>撤销 / 更正原因 *</span><input value={reversalReason} onChange={(event) => setReversalReason(event.target.value)} placeholder="说明原核销错在何处" /></label>
+          {!periodWritable && <p>历史或已归档核销保持只读；请在下一开放期间通过手工调整关联原凭证。</p>}
+          {allocations.map((allocation) => {
+            const related = vouchersForReconciliation(activeWorkspace, transactionId, allocation.id);
+            const posted = related.find((voucher) => voucher.status === "posted");
+            const pending = posted && activeWorkspace.vouchers.some((voucher) => voucher.revisionOf === posted.id && ["draft", "changes_requested"].includes(voucher.status));
+            const targets = activeWorkspace.bills.filter((bill) => bill.id !== allocation.billId && allocationDirectionMatchesBill(transaction, bill) && billSettlement(activeWorkspace, bill).remaining + 0.01 >= Number(allocation.amount));
+            return <div key={allocation.id}><span><strong>{allocation.billId}</strong><small>{allocation.businessPeriod || "未分期"} · {posted ? "已入账，需同步更正" : allocation.status}</small>{posted && <select aria-label="核销更正目标账单" disabled={pending || !periodWritable} value={correctionTargets[allocation.id] || ""} onChange={(event) => setCorrectionTargets((current) => ({ ...current, [allocation.id]: event.target.value }))}><option value="">{targets.length ? "选择正确账单，保持本次金额" : "暂无足额账单，请先补充正确账单"}</option>{targets.map((bill) => <option value={bill.id} key={bill.id}>{bill.no || bill.id} · {bill.counterparty} · 剩余 ¥{money(billSettlement(activeWorkspace, bill).remaining)}</option>)}</select>}</span><b>¥{money(allocation.amount)}</b><button type="button" aria-label={posted ? "创建核销更正草稿" : "撤销核销"} disabled={!periodWritable || !reversalReason.trim() || pending || (posted && !correctionTargets[allocation.id])} onClick={() => reverse(allocation.id)}><ArrowCounterClockwise size={15} />{pending ? "更正待入账" : posted ? "更正核销" : "撤销"}</button></div>;
+          })}
         </div>
+        </details>
       )}
 
       {classification.eventType === EVENT_TYPES.REFUND && (
@@ -1824,14 +1980,14 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         </div>
       )}
 
+      <details className="engine-section" ref={(node) => { stepRefs.current.vouchers = node; }}><summary>本笔凭证 · {activeVouchers.length} 张有效记录</summary>
       <div className="engine-vouchers">
-        <div className="engine-subheading"><strong>凭证与附件包</strong><small>{vouchers.length} 张关联凭证</small></div>
         <label><span>复核意见 *</span><textarea disabled={memberBusinessEventBlocked} value={voucherNote} onChange={(event) => setVoucherNote(event.target.value)} placeholder={memberBusinessEventBlocked ? `${terminology.member}模块已关闭，历史业务仅供查看` : "说明业务性质、科目与金额的复核结论"} /></label>
-        {canCreateDraft && <button className="secondary-button wide" type="button" onClick={createDraft}><Plus size={16} />{businessEvent ? `由 ${businessEvent.businessEventNo} 生成凭证草稿` : (vouchers.length ? `为新增核销生成凭证草稿（${unvoucheredAllocations.length} 条）` : "生成凭证草稿")}</button>}
         {vouchers.map((voucher) => {
           const attachments = buildAttachmentPackage(activeWorkspace, voucher.id);
           const trace = traceVoucherSources(activeWorkspace, voucher.id);
-          const editable = !memberBusinessEventBlocked && voucher.status !== "posted" && voucher.status !== "superseded";
+          const postable = periodWritable && !memberBusinessEventBlocked && ["draft", "changes_requested"].includes(voucher.status);
+          const editable = postable && !voucher.reconciliationCorrection;
           const editableLines = voucherLineDrafts[voucher.id] || voucher.lines;
           const lineValidation = validateVoucherBalance(
             { lines: editableLines },
@@ -1840,15 +1996,11 @@ export function AccountingWorkbench({ transactionId, onToast }) {
           );
           return (
             <article className="engine-voucher-card" key={voucher.id}>
-              <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>借方 ¥{money(lineValidation.debit)} · 贷方 ¥{money(lineValidation.credit)} · {lineValidation.amountsBalanced ? "借贷平衡" : "借贷不平"}{lineValidation.balanced ? "" : " · 分录待修正"} · 附件包 {attachments.status === "complete" ? "完整" : "待补"} · V{voucher.version}</small><small className="engine-voucher-tax-total">税额合计 ¥{money(lineValidation.taxTotal)} · 仅作信息，不参与借贷平衡</small></span><em>{voucher.status}</em></div>
+              {voucher.status === "invalidated" && <p className="engine-missing">此草稿已失效：{voucher.invalidationReason}。按当前核销重新生成；本记录仅供追溯。</p>}
+              {voucher.reconciliationCorrection?.status === "pending" && <p>核销更正：{voucher.reconciliationCorrection.originalAllocation.billId} → {voucher.reconciliationCorrection.replacement.billId}，¥{money(voucher.reconciliationCorrection.replacement.amount)}。复核入账前原核销和原凭证继续有效。</p>}
+              <div className="engine-voucher-row"><FileText size={17} /><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>{lineValidation.balanced ? `借贷各 ¥${money(lineValidation.debit)}` : "分录待修正"} · {attachments.status === "complete" ? "资料已关联" : "资料待补"} · V{voucher.version}</small>{lineValidation.taxTotal > 0 && <small>税额 ¥{money(lineValidation.taxTotal)}</small>}</span><em>{voucherStatusLabel(voucher.status)}</em></div>
+              <details className="engine-voucher-edit"><summary>{editable ? "查看 / 修改分录" : "查看分录"}</summary>
               {editable && <input value={voucherSummaries[voucher.id] ?? voucher.summary} onChange={(event) => setVoucherSummaries((current) => ({ ...current, [voucher.id]: event.target.value }))} aria-label="凭证摘要" />}
-              <VoucherAccountJudgement
-                workspace={activeWorkspace}
-                accounts={accountOptions}
-                voucher={voucher}
-                lines={editableLines}
-                pending={Boolean(voucherLineDrafts[voucher.id])}
-              />
               <VoucherLineAccountEditor
                 workspace={activeWorkspace}
                 accounts={accountOptions}
@@ -1859,11 +2011,13 @@ export function AccountingWorkbench({ transactionId, onToast }) {
                 onRemove={(lineIndex) => removeVoucherLine(voucher, lineIndex)}
               />
               {editable && <VoucherLineValidation validation={lineValidation} />}
+              {editable && (voucherLineDrafts[voucher.id] || Object.hasOwn(voucherSummaries, voucher.id)) && <button className="secondary-button" type="button" disabled={!voucherNote.trim() || !lineValidation.balanced} onClick={() => reviseVoucher(voucher)}>保存分录修订</button>}
+              {editable && voucher.status === "draft" && <button className="secondary-button" type="button" disabled={!voucherNote.trim()} onClick={() => requestVoucherChanges(voucher.id)}>退回修订</button>}
+              </details>
               <div className="engine-inline">
-                {!memberBusinessEventBlocked && voucher.status === "draft" && <button className="secondary-button" type="button" onClick={() => requestVoucherChanges(voucher.id)}>退回修改</button>}
-                {editable && <button className="secondary-button" type="button" disabled={!voucherNote.trim() || !lineValidation.balanced} onClick={() => reviseVoucher(voucher)}>保存修订</button>}
-                {voucher.status !== "posted" && voucher.status !== "superseded" && <button className="primary-button" disabled={!voucherNote.trim() || memberBusinessEventBlocked || !lineValidation.balanced} type="button" onClick={() => postDraft(voucher)}><CheckCircle size={16} />{memberBusinessEventBlocked ? `${terminology.member}模块关闭，暂不可入账` : "填写意见后复核入账"}</button>}
-                {!memberBusinessEventBlocked && voucher.status === "posted" && <button className="secondary-button" type="button" onClick={() => createRevision(voucher.id)}><Plus size={16} />创建更正草稿</button>}
+                {postable && <button className="primary-button" disabled={posting || !voucherNote.trim() || !lineValidation.balanced} type="button" onClick={() => postDraft(voucher)}><CheckCircle size={16} />{posting ? "正在复核…" : voucher.reconciliationCorrection ? "复核并确认核销更正" : "复核入账"}</button>}
+                {postable && voucher.revisionOf && <button className="secondary-button" type="button" disabled={!voucherNote.trim() || posting} onClick={() => cancelRevision(voucher.id)}>取消更正</button>}
+                {periodWritable && !memberBusinessEventBlocked && voucher.status === "posted" && <button className="secondary-button" type="button" disabled={!voucherNote.trim()} onClick={() => createRevision(voucher.id)}><Plus size={16} />创建更正草稿</button>}
               </div>
               <details>
                 <summary>查看来源与附件清单</summary>
@@ -1881,7 +2035,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
           );
         })}
       </div>
-      <AccountingLedgerPanel key={activeWorkspace.id} workspace={activeWorkspace} onToast={onToast} />
+      </details>
     </section>
   );
 }

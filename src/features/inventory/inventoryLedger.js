@@ -9,6 +9,7 @@ import {
   sumMoney,
 } from "../../domain/accounting/model.js";
 import { createManualVoucherDraft } from "../../domain/accounting/vouchers.js";
+import { syncManualVoucherEvidenceTasks } from "../evidence/evidenceEngine.js";
 
 export const INVENTORY_MOVEMENT_TYPES = Object.freeze({
   RECEIPT: "receipt",
@@ -302,6 +303,7 @@ export function recordInventoryMovement(workspace, input = {}, context = {}) {
     ...location,
     reason,
     note: String(input.note || "").trim(),
+    referenceNo: String(input.referenceNo || "").trim(),
     sourceIds: collectSourceIds(input.sourceIds),
     evidenceIds: collectSourceIds(input.evidenceIds),
     createdAt: resolvedContext.at,
@@ -479,6 +481,7 @@ export function createInventoryLossVoucherDraft(workspace, {
   savedMovement.updatedAt = resolvedContext.at;
   savedMovement.updatedBy = resolvedContext.actor;
   voucher.inventoryMovementId = movement.id;
+  syncManualVoucherEvidenceTasks(next, voucher, resolvedContext);
   appendAuditEntry(next, {
     action: "inventory.loss_voucher_create",
     entityType: "inventoryMovement",

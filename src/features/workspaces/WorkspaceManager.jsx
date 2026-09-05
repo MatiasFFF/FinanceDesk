@@ -15,6 +15,7 @@ import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
 import { BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS } from "../../domain/foundation.js";
 import { WORKSPACE_MODULE_OPTIONS, defaultWorkspaceModules } from "../../productWorkflow.js";
 import { copyWorkspaceLocalFiles, pruneUnreferencedLocalFiles, refreshLocalFileAvailability } from "../intake/documentIntake.js";
+import { generateWorkspaceBackup, restoreWorkspaceBackup } from "./workspaceBackup.js";
 import "./foundation-ui.css";
 
 const DEFAULT_TERMINOLOGY = Object.freeze({
@@ -45,13 +46,13 @@ function businessTermCopy(value, terminology) {
     .replaceAll("服务", terminology.service);
 }
 
-function downloadJson(text, fileName) {
-  const url = URL.createObjectURL(new Blob([text], { type: "application/json;charset=utf-8" }));
+function downloadBackup(bytes, fileName) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: "application/zip" }));
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = fileName;
   anchor.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 export function WorkspaceTrigger({ onClick, className = "brand" }) {
@@ -78,6 +79,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
   const [newFinanceContact, setNewFinanceContact] = useState("");
   const [renameValue, setRenameValue] = useState(activeWorkspace.name);
   const [importMode, setImportMode] = useState("merge");
+  const [backupBusy, setBackupBusy] = useState(false);
   const [error, setError] = useState("");
   const [pendingConfirmation, setPendingConfirmation] = useState(null);
   const [confirmationBusy, setConfirmationBusy] = useState(false);
@@ -306,7 +308,13 @@ export function WorkspaceManager({ open, onClose, onToast }) {
 
   async function applyBackupImport(file, mode) {
     setError("");
+    setBackupBusy(true);
     try {
+      if (/\.zip$/i.test(file.name)) {
+        const result = await restoreWorkspaceBackup({ store, fileVault, file, mode, actor: currentActorName() });
+        onToast?.(`已恢复 ${result.workspaces} 个工作台、${result.restored} 份原件${result.missing ? `；${result.missing} 份资料缺少原件` : ""}${result.retainedOldFiles ? "；部分旧原件仍保留在本机" : ""}`);
+        return;
+      }
       const text = await file.text();
       const previousWorkspaceIds = new Set(store.getState().workspaces.map((workspace) => workspace.id));
       actions.importBackup(text, { mode });
@@ -331,6 +339,8 @@ export function WorkspaceManager({ open, onClose, onToast }) {
       onToast?.(`${mode === "merge" ? "备份已合并" : "本地数据已替换"}；${availability.missing ? `${availability.missing} 份原文件需重新关联` : "本地原文件状态已核对"}`);
     } catch (caught) {
       setError(caught.message || "备份导入失败");
+    } finally {
+      setBackupBusy(false);
     }
   }
 
@@ -365,8 +375,9 @@ export function WorkspaceManager({ open, onClose, onToast }) {
     }
   }
 
-  function exportBackup() {
+  async function exportBackup() {
     setError("");
+    setBackupBusy(true);
     try {
       const current = store.getActiveWorkspace();
       actions.replaceWorkspace(current.id, current, {
@@ -375,13 +386,18 @@ export function WorkspaceManager({ open, onClose, onToast }) {
         audit: {
           actor: currentActorName(),
           action: "导出工作台备份",
-          detail: "导出业务数据、资料元数据和审计记录；原文件仍保存在当前浏览器",
+          detail: "导出全部工作台的业务数据、审计记录与可用原文件",
         },
       });
-      downloadJson(actions.exportBackup(), `财务工作台备份-${new Date().toISOString().slice(0, 10)}.json`);
-      onToast?.("工作台 JSON 备份已导出");
+      const result = await generateWorkspaceBackup({ store, fileVault });
+      downloadBackup(result.bytes, result.fileName);
+      onToast?.(result.manifest.complete
+        ? `完整备份已导出，包含 ${result.manifest.files.length} 份原件`
+        : `已导出不完整备份；${result.manifest.missingFiles.length} 份原件不可用：${result.manifest.missingFiles.slice(0, 3).map((item) => item.name).join("、")}${result.manifest.missingFiles.length > 3 ? "等" : ""}`);
     } catch (caught) {
       setError(caught.message || "备份导出失败");
+    } finally {
+      setBackupBusy(false);
     }
   }
 
@@ -404,7 +420,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
       eyebrow: "替换导入",
       title: "用这份备份替换本地数据？",
       summary: "当前所有工作台的业务数据和元数据会被覆盖。",
-      description: "只有仍能与导入记录匹配的原文件会保留；导入后会重新核对本地文件状态。",
+      description: "完整备份会恢复包内原件；旧 JSON 只恢复数据与原件索引。",
       confirmLabel: "确认替换并导入",
     },
   }[pendingConfirmation.type] : null;
@@ -436,6 +452,9 @@ export function WorkspaceManager({ open, onClose, onToast }) {
               ))}
             </div>
 
+            <details className="foundation-disclosure">
+              <summary><span><strong>当前工作台设置</strong></span><CaretDown size={16} /></summary>
+              <div className="foundation-disclosure-body">
             <label className="foundation-field"><span>重命名当前工作台</span><input value={renameValue} onChange={(event) => setRenameValue(event.target.value)} /></label>
             <div className="foundation-inline-actions">
               <button className="secondary-button" type="button" onClick={() => run(() => actions.renameWorkspace(activeWorkspace.id, renameValue), "工作台名称已更新")}>保存名称</button>
@@ -466,10 +485,14 @@ export function WorkspaceManager({ open, onClose, onToast }) {
               })}
             </div>
             <p className="foundation-hint">月结总览、报表中心、资料归档和基础资料始终保留。</p>
+              </div>
+            </details>
           </section>
 
           <section className="foundation-section">
-            <div className="foundation-section-heading"><div><small>创建</small><h3>新工作台</h3></div><Plus size={19} /></div>
+            <details className="foundation-disclosure">
+              <summary><span><strong>新建或复制工作台</strong></span><CaretDown size={16} /></summary>
+              <div className="foundation-disclosure-body">
             <form className="foundation-form" onSubmit={createWorkspace}>
               <label className="foundation-field"><span>名称</span><input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder={`例如：静安${newWorkspaceTerminology.location}`} /></label>
               <label className="foundation-field"><span>创建方式</span><select value={createMode} onChange={(event) => setCreationMode(event.target.value)}><option value="blank">空白工作台</option><option value="copy">复制现有工作台</option></select></label>
@@ -503,15 +526,17 @@ export function WorkspaceManager({ open, onClose, onToast }) {
               </div>
               <button className="primary-button" type="submit"><Plus size={17} />创建并切换</button>
             </form>
+              </div>
+            </details>
 
             <div className="foundation-divider" />
-            <div className="foundation-section-heading"><div><small>备份</small><h3>本地 JSON</h3></div></div>
-            <p className="foundation-hint">JSON 包含业务数据、资料元数据和审计记录；资料原文件仍留在本浏览器的 IndexedDB 文件保险箱。</p>
+            <div className="foundation-section-heading"><h3>备份与恢复</h3></div>
+            <p className="foundation-hint">备份包含所有工作台的数据与原文件，也可导入旧 JSON。</p>
             <div className="foundation-inline-actions wrap">
-              <button className="secondary-button" type="button" onClick={exportBackup}><DownloadSimple size={16} />导出备份</button>
-              <select className="compact-select" value={importMode} onChange={(event) => setImportMode(event.target.value)} aria-label="备份导入方式"><option value="merge">合并导入</option><option value="replace">替换本地数据</option></select>
-              <button ref={importButtonRef} className="secondary-button" type="button" onClick={() => importRef.current?.click()}><UploadSimple size={16} />导入备份</button>
-              <input ref={importRef} type="file" accept="application/json,.json" hidden onChange={importBackup} />
+              <button className="secondary-button" type="button" disabled={backupBusy} onClick={exportBackup}><DownloadSimple size={16} />导出备份</button>
+              <select className="compact-select" disabled={backupBusy} value={importMode} onChange={(event) => setImportMode(event.target.value)} aria-label="备份导入方式"><option value="merge">合并导入</option><option value="replace">替换本地数据</option></select>
+              <button ref={importButtonRef} className="secondary-button" type="button" disabled={backupBusy} onClick={() => importRef.current?.click()}><UploadSimple size={16} />导入备份</button>
+              <input ref={importRef} type="file" accept="application/zip,.zip,application/json,.json" hidden onChange={importBackup} />
             </div>
           </section>
         </div>

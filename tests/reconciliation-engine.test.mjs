@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { createAccountingFixture } from "../src/domain/accounting/fixtures.js";
 import { AccountingRuleError } from "../src/domain/accounting/model.js";
+import { buildGeneralLedger, effectivePostedVouchers } from "../src/domain/accounting/ledger.js";
 import { createVoucherDraft, postVoucher, vouchersForSource } from "../src/domain/accounting/vouchers.js";
 import { reviewTransactionEvidence } from "../src/features/evidence/evidenceEngine.js";
 import {
@@ -24,12 +25,15 @@ import {
   confirmBankTransactionBusinessEvent,
   confirmReconciliationSuggestion,
   confirmedAdvanceApplications,
+  cancelReconciliationCorrection,
+  createReconciliationCorrection,
   createSettlementBill,
   linkInternalTransfer,
   linkRefundToOriginal,
   handleReconciliationException,
   recordReconciliationSuggestions,
   redoReconciliation,
+  reverseReconciliation,
   suggestReconciliations,
   transactionSettlement,
 } from "../src/features/reconciliation/reconciliationEngine.js";
@@ -38,6 +42,15 @@ const context = { actor: "测试会计", at: "2026-09-06T12:00:00.000Z", mode: "
 
 function blankFixture() {
   return createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
+}
+
+function postedSplitReceiptFixture() {
+  let workspace = applyReconciliation(blankFixture(), {
+    transactionId: "txn-split",
+    allocations: [{ billId: "bill-ar-1", amount: 1000 }, { billId: "bill-ar-2", amount: 500 }],
+  }, context);
+  workspace = createVoucherDraft(workspace, { transactionId: "txn-split" }, context);
+  return postVoucher(workspace, { voucherId: workspace.vouchers[0].id, mode: "automatic" }, context);
 }
 
 function automaticMatchingFixture() {
@@ -231,6 +244,7 @@ test("new receivables persist with split and repeated payments and remain in vou
   let workspace = store.getActiveWorkspace();
   workspace = {
     ...workspace,
+    currentPeriod: "2026-08",
     transactions: [
       ...workspace.transactions,
       { id: "txn-new-split", accountId: workspace.accounts[0].id, date: "2026-08-20", counterparty: "新客户", summary: "两张账单合并回款", amount: 900, serial: "LOCAL-NEW-001", evidenceIds: [], allocations: [], status: "pending", classification: { eventType: "customerReceipt", account: "receivable", confidence: 100, reasons: ["人工确认客户回款"], riskFlags: [], candidateBillIds: [], requiresManualReview: false, source: "manual" } },
@@ -269,6 +283,7 @@ test("one receipt splits across bills and one bill accepts multiple cross-month 
   assert.equal(billSettlement(workspace, "bill-ar-1").remaining, 0);
   assert.equal(billSettlement(workspace, "bill-ar-2").remaining, 500);
 
+  workspace = { ...workspace, currentPeriod: "2026-09" };
   workspace = applyReconciliation(workspace, {
     transactionId: "txn-followup",
     allocations: [{ billId: "bill-ar-2", amount: 500 }],
@@ -693,6 +708,132 @@ test("reconciliation can be reversed and redone without deleting history", () =>
   assert.equal(billSettlement(workspace, "bill-ar-1").remaining, 0);
   assert.ok(workspace.auditLog.some((item) => item.action === "reconciliation.reverse"));
   assert.equal(workspace.auditLog.at(-1).action, "reconciliation.redo");
+});
+
+test("posted reconciliation correction replaces bill balances and the effective ledger together", () => {
+  let workspace = postedSplitReceiptFixture();
+  const original = structuredClone(workspace.vouchers[0]);
+  const originalAllocation = structuredClone(workspace.transactions.find((item) => item.id === "txn-split").allocations[0]);
+  const originalLedger = buildGeneralLedger(workspace, { period: "2026-08" });
+  assert.throws(() => reverseReconciliation(workspace, {
+    allocationId: originalAllocation.id, reason: "已入账核销不能单独撤销",
+  }, context), (error) => error instanceof AccountingRuleError && error.code === "POSTED_RECONCILIATION_CORRECTION_REQUIRED");
+
+  workspace = createReconciliationCorrection(workspace, {
+    allocationId: originalAllocation.id,
+    billId: "bill-deposit-1",
+    reason: "其中 1000 元实际为预收款",
+  }, context);
+  const revision = workspace.vouchers.at(-1);
+  assert.equal(revision.revisionOf, original.id);
+  assert.equal(revision.reconciliationCorrection.status, "pending");
+  assert.equal(billSettlement(workspace, "bill-ar-1").remaining, 0);
+  assert.equal(billSettlement(workspace, "bill-deposit-1").remaining, 2400);
+  assert.deepEqual(buildGeneralLedger(workspace, { period: "2026-08" }), originalLedger);
+
+  workspace = postVoucher(workspace, {
+    voucherId: revision.id, mode: "manual", reviewNote: "已核对预收账单和原核销金额",
+  }, { ...context, at: "2026-09-06T12:20:00.000Z" });
+  const allocations = workspace.transactions.find((item) => item.id === "txn-split").allocations;
+  const replacement = allocations.find((item) => item.correctionOf === originalAllocation.id);
+  assert.equal(allocations.find((item) => item.id === originalAllocation.id).status, "reversed");
+  assert.equal(replacement.billId, "bill-deposit-1");
+  assert.equal(replacement.amount, 1000);
+  assert.equal(replacement.voucherId, revision.id);
+  assert.equal(allocations.filter((item) => item.status !== "reversed").length, 2);
+  assert.equal(billSettlement(workspace, "bill-ar-1").remaining, 1000);
+  assert.equal(billSettlement(workspace, "bill-ar-2").remaining, 500);
+  assert.equal(billSettlement(workspace, "bill-deposit-1").remaining, 1400);
+
+  const ledger = buildGeneralLedger(workspace, { period: "2026-08" });
+  assert.equal(ledger.rows.find((row) => row.account === "bank:operating").debit, 1500);
+  assert.equal(ledger.rows.find((row) => row.account === "receivable").credit, 500);
+  assert.equal(ledger.rows.find((row) => row.account === "contractLiability").credit, 1000);
+  assert.deepEqual(effectivePostedVouchers(workspace).map((voucher) => voucher.id), [revision.id]);
+  const retainedOriginal = workspace.vouchers.find((voucher) => voucher.id === original.id);
+  assert.equal(retainedOriginal.status, "superseded");
+  assert.deepEqual(retainedOriginal.lines, original.lines);
+  assert.deepEqual(retainedOriginal.reviews, original.reviews);
+  assert.equal(workspace.vouchers.find((voucher) => voucher.id === revision.id).reconciliationCorrection.status, "committed");
+  assert.ok(workspace.auditLog.some((entry) => entry.action === "reconciliation.correct" && entry.sourceIds.includes(revision.id)));
+  assert.throws(() => postVoucher(workspace, {
+    voucherId: revision.id, mode: "manual", reviewNote: "不能重复入账",
+  }, context), (error) => error instanceof AccountingRuleError && error.code === "VOUCHER_NOT_POSTABLE");
+  assert.throws(() => createVoucherDraft(workspace, {
+    transactionId: "txn-split",
+  }, context), (error) => error instanceof AccountingRuleError && error.code === "SOURCE_ALREADY_VOUCHERED");
+});
+
+test("reversing an unposted reconciliation invalidates stale drafts and replacement posts once", () => {
+  let workspace = applyReconciliation(blankFixture(), {
+    transactionId: "txn-split",
+    allocations: [{ billId: "bill-ar-1", amount: 1000 }, { billId: "bill-ar-2", amount: 500 }],
+  }, context);
+  workspace = createVoucherDraft(workspace, { transactionId: "txn-split" }, context);
+  const staleDraft = structuredClone(workspace.vouchers[0]);
+  const originalAllocationId = workspace.transactions.find((item) => item.id === "txn-split").allocations[0].id;
+  workspace = reverseReconciliation(workspace, {
+    allocationId: originalAllocationId, reason: "草稿复核发现账单选错",
+  }, context);
+  const invalidated = workspace.vouchers.find((voucher) => voucher.id === staleDraft.id);
+  assert.equal(invalidated.status, "invalidated");
+  assert.deepEqual(invalidated.lines, staleDraft.lines);
+  assert.ok(invalidated.versions.length > staleDraft.versions.length);
+  assert.throws(() => postVoucher(workspace, {
+    voucherId: staleDraft.id, mode: "automatic",
+  }, context), (error) => error instanceof AccountingRuleError && error.code === "VOUCHER_NOT_POSTABLE");
+  assert.equal(effectivePostedVouchers(workspace).length, 0);
+
+  workspace = applyReconciliation(workspace, {
+    transactionId: "txn-split", allocations: [{ billId: "bill-deposit-1", amount: 1000 }],
+  }, context);
+  workspace = createVoucherDraft(workspace, { transactionId: "txn-split" }, context);
+  const replacementId = workspace.vouchers.at(-1).id;
+  assert.notEqual(replacementId, staleDraft.id);
+  assert.equal(workspace.vouchers.at(-1).sourceIds.includes(originalAllocationId), false);
+  workspace = postVoucher(workspace, { voucherId: replacementId, mode: "automatic" }, context);
+  assert.deepEqual(effectivePostedVouchers(workspace).map((voucher) => voucher.id), [replacementId]);
+  const ledger = buildGeneralLedger(workspace, { period: "2026-08" });
+  assert.equal(ledger.rows.find((row) => row.account === "bank:operating").debit, 1500);
+  assert.equal(ledger.rows.find((row) => row.account === "receivable").credit, 500);
+  assert.equal(ledger.rows.find((row) => row.account === "contractLiability").credit, 1000);
+  assert.equal(billSettlement(workspace, "bill-ar-1").remaining, 1000);
+  assert.equal(billSettlement(workspace, "bill-deposit-1").remaining, 1400);
+  assert.equal(workspace.vouchers.find((voucher) => voucher.id === staleDraft.id).status, "invalidated");
+  assert.throws(() => createVoucherDraft(workspace, { transactionId: "txn-split" }, context), (error) => error instanceof AccountingRuleError && error.code === "SOURCE_ALREADY_VOUCHERED");
+});
+
+test("blocked or cancelled reconciliation corrections preserve the original allocation and posting", async (t) => {
+  const original = postedSplitReceiptFixture();
+  const allocationId = original.transactions.find((item) => item.id === "txn-split").allocations[0].id;
+  const pending = createReconciliationCorrection(original, {
+    allocationId, billId: "bill-deposit-1", reason: "修正款项归属",
+  }, context);
+  const revisionId = pending.vouchers.at(-1).id;
+  for (const scenario of [
+    { name: "target no longer has enough balance", code: "BILL_OVER_ALLOCATED", change: (workspace) => { workspace.bills.find((bill) => bill.id === "bill-deposit-1").amount = 999; } },
+    { name: "original allocation changed", code: "CORRECTION_SOURCE_CHANGED", change: (workspace) => { workspace.transactions.find((item) => item.id === "txn-split").allocations[0].amount = 999; } },
+    { name: "period was archived", code: "PERIOD_ARCHIVED", change: (workspace) => { workspace.delivery = { archives: [{ period: "2026-08" }] }; } },
+    { name: "voucher belongs to a historical period", code: "HISTORICAL_PERIOD_IMMUTABLE", change: (workspace) => { workspace.currentPeriod = "2026-09"; } },
+  ]) {
+    await t.test(scenario.name, () => {
+      const workspace = structuredClone(pending);
+      scenario.change(workspace);
+      const before = structuredClone(workspace);
+      assert.throws(() => postVoucher(workspace, {
+        voucherId: revisionId, mode: "manual", reviewNote: "入账前重核当前来源和期间",
+      }, context), (error) => error instanceof AccountingRuleError && error.code === scenario.code);
+      assert.deepEqual(workspace, before);
+      assert.deepEqual(effectivePostedVouchers(workspace).map((voucher) => voucher.id), [original.vouchers[0].id]);
+      assert.deepEqual(buildGeneralLedger(workspace, { period: "2026-08" }), buildGeneralLedger(original, { period: "2026-08" }));
+    });
+  }
+  const cancelled = cancelReconciliationCorrection(pending, {
+    voucherId: revisionId, reason: "复核后保留原核销",
+  }, context);
+  assert.equal(cancelled.vouchers.find((voucher) => voucher.id === revisionId).status, "invalidated");
+  assert.deepEqual(cancelled.transactions, original.transactions);
+  assert.deepEqual(cancelled.vouchers.find((voucher) => voucher.id === original.vouchers[0].id), original.vouchers[0]);
 });
 
 test("refunds and internal transfers use dedicated traceable links", () => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Buildings,
   CaretDown,
@@ -38,11 +38,11 @@ import { DocumentIntakePanel } from "../intake/DocumentIntakePanel.jsx";
 import "./foundation-ui.css";
 
 const STAGES = [
-  { id: "s0", label: "S0 企业与权限" },
-  { id: "s1", label: "S1 账务规则" },
-  { id: "s2", label: "S2 往来与合同" },
-  { id: "s3", label: "S3 银行流水" },
-  { id: "s4", label: "S4 发票与组织" },
+  { id: "s0", label: "企业资料" },
+  { id: "s1", label: "账务规则" },
+  { id: "s2", label: "往来与合同" },
+  { id: "s3", label: "银行流水" },
+  { id: "s4", label: "发票与人员" },
   { id: "documents", label: "本地资料库" },
 ];
 
@@ -543,11 +543,15 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
   const [error, setError] = useState("");
   const [deleteError, setDeleteError] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
+  const draftContextRef = useRef({ workspaceId: activeWorkspace.id, collection });
   const pendingDeleteId = pendingDeletion?.workspaceId === activeWorkspace.id && pendingDeletion?.collection === collection
     ? pendingDeletion.itemId
     : null;
 
   useEffect(() => {
+    const context = draftContextRef.current;
+    if (context.workspaceId === activeWorkspace.id && context.collection === collection) return;
+    draftContextRef.current = { workspaceId: activeWorkspace.id, collection };
     setDraft(emptyDraft(config));
     setError("");
     setDeleteError("");
@@ -1124,7 +1128,7 @@ function LocalUserControl({ onToast }) {
       <div className="foundation-section-heading"><div><small>审计与最小权限</small><h3><UsersThree size={18} />当前本地操作身份</h3></div><span>{role?.name || "无有效角色"}</span></div>
       <label className="foundation-field"><span>以哪位{terminology.personnel}操作</span><select value={currentUser?.id || ""} onChange={(event) => switchUser(event.target.value)} disabled={!switchableUsers.length}>{switchableUsers.map((user) => <option value={user.id} key={user.id}>{user.name} · {roleForUser(user)?.name || "未分配角色"}</option>)}</select></label>
       <div className="permission-chip-list">{(role?.permissions || []).map((permission) => <span key={permission}>{PERMISSION_LABELS[permission] || permission}</span>)}</div>
-      <p className="foundation-hint">这是当前浏览器里的操作身份，用于真实权限拦截和审计归属；它不是联网登录或多因素认证。</p>
+      <p className="foundation-hint">操作权限和日志记录以此身份为准。这是本地身份，不代表已完成联网登录。</p>
       {unavailableUsers.length > 0 && <p className="foundation-hint">{unavailableUsers.map((user) => user.name).join("、")} 的角色已停用或不存在；请先在“{terminology.personnel}操作用户”中改为启用角色。</p>}
       {error && <p className="entity-error">{error}</p>}
     </section>
@@ -1134,14 +1138,15 @@ function LocalUserControl({ onToast }) {
 function TerminologyEditor({ onToast }) {
   const { activeWorkspace, actions } = useFinanceDesk();
   const membersEnabled = memberModuleEnabled(activeWorkspace);
+  const savedTerminology = JSON.stringify(normalizeWorkspaceTerminology(activeWorkspace.terminology));
   const [draft, setDraft] = useState(() => normalizeWorkspaceTerminology(activeWorkspace.terminology));
   const [error, setError] = useState("");
   const visibleFields = TERMINOLOGY_FIELDS.filter((field) => membersEnabled || !field.memberOnly);
 
   useEffect(() => {
-    setDraft(normalizeWorkspaceTerminology(activeWorkspace.terminology));
+    setDraft(JSON.parse(savedTerminology));
     setError("");
-  }, [activeWorkspace.id, activeWorkspace.terminology]);
+  }, [activeWorkspace.id, savedTerminology]);
 
   function save(event) {
     event.preventDefault();
@@ -1165,7 +1170,7 @@ function TerminologyEditor({ onToast }) {
   }
 
   return (
-    <section className="foundation-section foundation-terminology-editor">
+    <section className="foundation-section foundation-terminology-editor" data-unsaved-changes={JSON.stringify(draft) !== savedTerminology || undefined}>
       <div className="foundation-section-heading"><div><small>当前工作台界面称呼</small><h3><FileText size={18} />业务术语</h3></div><span>{visibleFields.length} 项可编辑</span></div>
       <form className="foundation-terminology-form" onSubmit={save}>
         <div className="foundation-terminology-grid">
@@ -1181,15 +1186,16 @@ function TerminologyEditor({ onToast }) {
 
 function ManagementReportDisplayEditor({ onToast }) {
   const { activeWorkspace, actions } = useFinanceDesk();
+  const savedDisplayConfig = JSON.stringify(normalizeManagementReportConfig(activeWorkspace.managementReport));
   const memberBusiness = memberModuleEnabled(activeWorkspace);
   const terminology = normalizeWorkspaceTerminology(activeWorkspace.terminology);
   const [draft, setDraft] = useState(() => normalizeManagementReportConfig(activeWorkspace.managementReport));
   const [error, setError] = useState("");
 
   useEffect(() => {
-    setDraft(normalizeManagementReportConfig(activeWorkspace.managementReport));
+    setDraft(JSON.parse(savedDisplayConfig));
     setError("");
-  }, [activeWorkspace.id, activeWorkspace.managementReport]);
+  }, [activeWorkspace.id, savedDisplayConfig]);
 
   function updateItem(itemId, patch) {
     setDraft((current) => ({
@@ -1247,7 +1253,7 @@ function ManagementReportDisplayEditor({ onToast }) {
   const itemById = new Map(draft.displayItems.map((item) => [item.id, item]));
 
   return (
-    <section className="foundation-section management-report-display-editor">
+    <section className="foundation-section management-report-display-editor" data-unsaved-changes={JSON.stringify(draft) !== savedDisplayConfig || undefined}>
       <div className="foundation-section-heading"><div><small>当前工作台报表偏好</small><h3><FileText size={18} />管理报表显示项</h3></div><span>{visibleCount} / {MANAGEMENT_REPORT_DISPLAY_ITEMS.length} 项显示</span></div>
       <form className="management-report-display-form" onSubmit={save}>
         <p className="foundation-hint">这里只控制老板报表中的显示与名称；金额、计算公式、来源明细和下钻关系保持原样。</p>
@@ -1290,6 +1296,7 @@ function CompanyProfile({ onToast, onBeginEditing }) {
 
   function edit() {
     onBeginEditing();
+    if (editorOpen) return;
     setDraft(activeWorkspace.company);
     setError("");
     setEditorOpen(true);
@@ -1314,15 +1321,13 @@ function CompanyProfile({ onToast, onBeginEditing }) {
   }
   return (
     <section className={`foundation-section company-profile${editorOpen ? " is-editing" : ""}`}>
-      <div className="foundation-section-heading"><div><small>企业初始化</small><h3><Buildings size={18} />企业主体</h3></div><span>{activeWorkspace.company.verificationStatus === "verified" ? "已核验" : "本地录入"}</span></div>
-      <div className="foundation-summary-grid">
+      <div className="foundation-section-heading"><div><h3><Buildings size={18} />{editorOpen ? "编辑企业资料" : "企业资料"}{activeWorkspace.company.verificationStatus === "verified" && <small>已核验</small>}</h3></div>{!editorOpen && <button className="secondary-button" type="button" aria-expanded={editorOpen} aria-controls="company-profile-editor" onClick={edit}><PencilSimple size={16} />编辑企业资料</button>}</div>
+      {!editorOpen && <div className="foundation-summary-grid">
         <article className="foundation-summary-card"><small>企业身份</small><h4>{activeWorkspace.company.legalName || "未填写主体名称"}</h4><p>统一社会信用代码：{activeWorkspace.company.taxId || "未填写"}</p></article>
         <article className="foundation-summary-card"><small>负责人</small><h4>{activeWorkspace.company.ownerName || "未填写经营者"}</h4><p>财务负责人：{activeWorkspace.company.financeContact || "未填写"}</p></article>
         <article className="foundation-summary-card"><small>企业属性</small><h4>{activeWorkspace.company.industry || "未填写行业"}</h4><p>纳税人类型：{activeWorkspace.company.taxpayerType || "未填写"}</p></article>
-      </div>
-      <button className="foundation-editor-toggle secondary-button" type="button" aria-expanded={editorOpen} aria-controls="company-profile-editor" onClick={edit}><PencilSimple size={16} />编辑企业资料</button>
+      </div>}
       {editorOpen && <div className="foundation-editor-panel" id="company-profile-editor">
-        <div className="foundation-section-heading"><div><small>编辑企业主体</small><h4>{draft.legalName || "企业资料"}</h4></div></div>
         <form className="entity-form company-form" onSubmit={save}>
           {[
             ["legalName", "企业 / 个体户全称"], ["taxId", "统一社会信用代码"], ["ownerName", "法定代表人 / 经营者"], ["financeContact", "财务负责人"], ["industry", "行业"], ["taxpayerType", "纳税人类型"],
@@ -1443,19 +1448,43 @@ function StageStatusControl({ stage, onToast }) {
   const { activeWorkspace, actions } = useFinanceDesk();
   const [error, setError] = useState("");
   const value = activeWorkspace.stages[stage]?.status || "not_started";
+  const stageLabel = STAGES.find((item) => item.id === stage)?.label || "资料";
   return (
-    <div className="stage-status-control"><span>阶段状态</span><select value={value} onChange={(event) => { setError(""); try { actions.setStageStatus(activeWorkspace.id, stage, event.target.value); onToast?.(`${stage.toUpperCase()} 状态已更新`); } catch (caught) { setError(caught.message || "阶段状态更新失败"); } }}><option value="not_started">未开始</option><option value="draft">草稿</option><option value="collecting">资料收集中</option><option value="in_progress">进行中</option><option value="needs_review">待复核</option><option value="complete">已完成</option></select>{error && <small className="entity-error">{error}</small>}</div>
+    <div className="stage-status-control"><span>资料进度</span><select aria-label={`${stageLabel}进度`} value={value} onChange={(event) => { setError(""); try { actions.setStageStatus(activeWorkspace.id, stage, event.target.value); onToast?.(`${stageLabel}进度已更新`); } catch (caught) { setError(caught.message || "资料进度更新失败"); } }}><option value="not_started">未开始</option><option value="draft">草稿</option><option value="collecting">资料收集中</option><option value="in_progress">进行中</option><option value="needs_review">待复核</option><option value="complete">已完成</option></select>{error && <small className="entity-error">{error}</small>}</div>
   );
 }
 
-export function FoundationRecordsPanel({ initialStage = "s0", onToast }) {
+export function FoundationRecordsPanel({ initialStage = "s0", onToast, onNavigate }) {
   const { activeWorkspace } = useFinanceDesk();
   const [stage, setStage] = useState(initialStage);
+  const [visitedStages, setVisitedStages] = useState([initialStage]);
+  const [documentSection, setDocumentSection] = useState("files");
   const [pendingDeletion, setPendingDeletion] = useState(null);
+  const [navigationNotice, setNavigationNotice] = useState("");
+  const pageRef = useRef(null);
 
   useEffect(() => setPendingDeletion(null), [stage, activeWorkspace.id]);
 
-  const body = useMemo(() => {
+  function navigateStage(nextStage) {
+    setNavigationNotice("");
+    setVisitedStages((current) => current.includes(nextStage) ? current : [...current, nextStage]);
+    setStage(nextStage);
+  }
+
+  function navigatePage(page) {
+    const pending = pageRef.current?.querySelector('.is-editing, [data-unsaved-changes="true"], .bank-import-file-workspace, .bank-import-panel [aria-label="取消当前结算文件"]');
+    if (pending) {
+      const pendingStage = pending.closest(".foundation-stage-panel")?.dataset.foundationStage;
+      if (pendingStage) navigateStage(pendingStage);
+      for (let details = pending.closest("details"); details; details = details.parentElement?.closest("details")) details.open = true;
+      setNavigationNotice("页面跳转尚未执行。请先完成或取消当前编辑或导入，输入内容已保留。");
+      return;
+    }
+    setNavigationNotice("");
+    onNavigate?.(page);
+  }
+
+  function renderStage(stageId) {
     const entityEditor = (collection) => <EntityEditor
       collection={collection}
       key={collection}
@@ -1464,22 +1493,28 @@ export function FoundationRecordsPanel({ initialStage = "s0", onToast }) {
       onRequestDelete={setPendingDeletion}
       onCancelDelete={() => setPendingDeletion(null)}
     />;
-    if (stage === "documents") return <div className="foundation-grid"><DocumentIntakePanel defaultCategory="其他资料" onToast={onToast} /></div>;
-    if (stage === "s0") return <div className="foundation-grid"><LocalUserControl onToast={onToast} /><CompanyProfile onToast={onToast} onBeginEditing={() => setPendingDeletion(null)} /><TerminologyEditor onToast={onToast} />{entityEditor("books")}{entityEditor("stores")}{entityEditor("users")}{entityEditor("roles")}<AuthorizationEditor onToast={onToast} onBeginEditing={() => setPendingDeletion(null)} /></div>;
-    if (stage === "s1") return <div className="foundation-grid"><AccountCatalogEditor onToast={onToast} /><AccountingRuleEditor onToast={onToast} /><ManagementReportDisplayEditor onToast={onToast} /></div>;
-    if (stage === "s2") return <div className="foundation-grid">{entityEditor("counterparties")}{entityEditor("contracts")}{entityEditor("bills")}{entityEditor("businessEvents")}<DocumentIntakePanel defaultCategory="合同" onToast={onToast} /></div>;
-    if (stage === "s3") return <div className="foundation-grid">{entityEditor("bankAccounts")}<BankImportPanel onToast={onToast} /></div>;
-    return <div className="foundation-grid">{entityEditor("invoices")}{entityEditor("approvals")}{entityEditor("personnelRecords")}<DocumentIntakePanel defaultCategory="人员资料" onToast={onToast} /></div>;
-  }, [stage, activeWorkspace.id, onToast, pendingDeletion]);
+    const disclosure = (title, description, children) => <details className="foundation-disclosure"><summary><span><strong>{title}</strong><small>{description}</small></span><CaretDown size={16} /></summary><div className="foundation-disclosure-body">{children}</div></details>;
+    if (stageId === "documents") return <DocumentIntakePanel onToast={onToast} onNavigate={onNavigate ? navigatePage : undefined} activeSection={documentSection} onSectionChange={setDocumentSection} />;
+    if (stageId === "s0") return <>
+      <CompanyProfile onToast={onToast} onBeginEditing={() => setPendingDeletion(null)} />
+      {disclosure("账套与门店", "会计制度、本位币与经营场所", <>{entityEditor("books")}{entityEditor("stores")}</>)}
+      {disclosure("操作身份与权限", "切换操作人，管理用户、角色与本地授权", <><LocalUserControl onToast={onToast} />{entityEditor("users")}{entityEditor("roles")}<AuthorizationEditor onToast={onToast} onBeginEditing={() => setPendingDeletion(null)} /></>)}
+      {disclosure("业务称呼", "调整当前工作台的客户、员工等称呼", <TerminologyEditor onToast={onToast} />)}
+    </>;
+    if (stageId === "s1") return <><AccountCatalogEditor onToast={onToast} /><AccountingRuleEditor onToast={onToast} />{disclosure("管理报表显示偏好", "选择管理指标与显示名称", <ManagementReportDisplayEditor onToast={onToast} />)}</>;
+    if (stageId === "s2") return <>{entityEditor("counterparties")}{entityEditor("contracts")}{entityEditor("bills")}{entityEditor("businessEvents")}</>;
+    if (stageId === "s3") return <>{entityEditor("bankAccounts")}<BankImportPanel onToast={onToast} /></>;
+    return <>{entityEditor("invoices")}{entityEditor("approvals")}{entityEditor("personnelRecords")}</>;
+  }
 
   return (
-    <div className="page-content foundation-page">
-      <section className="foundation-page-heading">
-        <div><p className="eyebrow">S0–S4 与本地资料库</p><h2>企业、规则、业务数据与原文件</h2><p>每一项修改都会保存在当前工作台并写入操作审计；不同工作台的数据与原文件互相隔离。</p></div>
-        {stage !== "documents" && <StageStatusControl stage={stage} onToast={onToast} />}
-      </section>
-      <nav className="foundation-stage-tabs" aria-label="基础资料阶段">{STAGES.map((item) => <button className={stage === item.id ? "active" : ""} key={item.id} type="button" onClick={() => setStage(item.id)}>{item.label}</button>)}</nav>
-      {body}
+    <div className="page-content foundation-page" ref={pageRef}>
+      <div className="foundation-navigation">
+        <nav className="foundation-stage-tabs" aria-label="基础资料分组">{STAGES.map((item) => <button className={stage === item.id ? "active" : ""} aria-pressed={stage === item.id} key={item.id} type="button" onClick={() => navigateStage(item.id)}>{item.label}</button>)}</nav>
+      </div>
+      {navigationNotice && <div className="foundation-notice" role="status"><WarningCircle size={18} /><span>{navigationNotice}</span></div>}
+      {STAGES.filter((item) => visitedStages.includes(item.id)).map((item) => <div className="foundation-grid foundation-stage-panel" data-foundation-stage={item.id} hidden={stage !== item.id} key={item.id}>{renderStage(item.id)}</div>)}
+      {stage !== "documents" && <StageStatusControl key={stage} stage={stage} onToast={onToast} />}
     </div>
   );
 }
