@@ -715,6 +715,112 @@ function voucherSnapshot(voucher, context, reason) {
   };
 }
 
+function normalizeManualVoucherLine(workspace, line) {
+  const account = resolvedVoucherAccount(workspace, line?.account, "MANUAL_VOUCHER_ACCOUNT_INVALID");
+  const rawTaxAmount = line?.taxAmount;
+  const taxAmount = rawTaxAmount == null || String(rawTaxAmount).trim() === ""
+    ? null
+    : roundMoney(Number(rawTaxAmount));
+  return {
+    ...(line?.id ? { id: String(line.id) } : {}),
+    account: account.id,
+    auxiliaryId: voucherLineDimension(line, "auxiliaryId", "counterpartyId"),
+    auxiliaryLabel: voucherLineDimension(line, "auxiliaryLabel", "counterparty", "counterpartyName"),
+    auxiliaryType: voucherLineDimension(line, "auxiliaryType", "counterpartyType"),
+    ...(line?.auxiliary !== undefined ? { auxiliary: structuredClone(line.auxiliary) } : {}),
+    storeId: voucherLineDimension(line, "storeId", "locationId"),
+    storeName: voucherLineDimension(line, "storeName", "store", "locationName"),
+    department: voucherLineDimension(line, "department", "departmentName"),
+    project: voucherLineDimension(line, "project", "projectName"),
+    debit: roundMoney(Number(line?.debit ?? 0)),
+    credit: roundMoney(Number(line?.credit ?? 0)),
+    taxAmount,
+    sourceIds: collectSourceIds(line?.sourceIds || []),
+  };
+}
+
+export function createManualVoucherDraft(workspace, {
+  date,
+  summary,
+  lines,
+  evidenceIds = [],
+  note = "",
+} = {}, context = {}) {
+  const next = cloneAccountingState(workspace);
+  const resolvedContext = operationContext({ ...context, mode: context.mode || "manual" });
+  if (resolvedContext.mode !== "manual") {
+    throw new AccountingRuleError("MANUAL_VOUCHER_DRAFT_MODE_REQUIRED", "独立手工凭证只能由财务人员手工创建");
+  }
+  const voucherDate = String(date || "").trim();
+  const parsedDate = Date.parse(`${voucherDate}T00:00:00Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(voucherDate)
+    || !Number.isFinite(parsedDate)
+    || new Date(parsedDate).toISOString().slice(0, 10) !== voucherDate) {
+    throw new AccountingRuleError("MANUAL_VOUCHER_DATE_INVALID", "手工凭证必须填写有效日期");
+  }
+  if (voucherDate.slice(0, 7) !== next.currentPeriod) {
+    throw new AccountingRuleError("MANUAL_VOUCHER_PERIOD_MISMATCH", `手工凭证日期必须属于当前账期 ${next.currentPeriod}`);
+  }
+  const voucherSummary = String(summary || "").trim();
+  if (!voucherSummary) throw new AccountingRuleError("MANUAL_VOUCHER_SUMMARY_REQUIRED", "手工凭证摘要必填");
+  const inputLines = Array.isArray(lines) ? lines : [];
+  const inputValidation = validateVoucherBalance({ lines: inputLines }, accountingRules(next).amountTolerance, next);
+  if (!inputValidation.balanced) {
+    throw new AccountingRuleError("MANUAL_VOUCHER_LINES_INVALID", inputValidation.errors.join("；"), inputValidation);
+  }
+  const normalizedLines = inputLines.map((line) => normalizeManualVoucherLine(next, line));
+  const validation = validateVoucherBalance({ lines: normalizedLines }, accountingRules(next).amountTolerance, next);
+  if (!validation.balanced) {
+    throw new AccountingRuleError("MANUAL_VOUCHER_LINES_INVALID", validation.errors.join("；"), validation);
+  }
+  const normalizedEvidenceIds = collectSourceIds(evidenceIds);
+  const sourceIds = collectSourceIds(normalizedLines.map((line) => line.sourceIds));
+  const voucher = {
+    id: nextRecordId(next.vouchers || [], "voucher"),
+    no: null,
+    date: voucherDate,
+    period: next.currentPeriod,
+    summary: voucherSummary,
+    status: "draft",
+    version: 1,
+    sourceType: "manual",
+    postingPolicy: "manual_only",
+    lines: normalizedLines,
+    sourceIds,
+    evidenceIds: normalizedEvidenceIds,
+    accountingAttributes: { sourceType: "manual" },
+    judgement: {
+      eventType: "manualVoucher",
+      ruleSource: "manual",
+      reasons: ["财务人员独立录入"],
+      note: String(note || "").trim(),
+    },
+    blockers: [],
+    createdAt: resolvedContext.at,
+    createdBy: resolvedContext.actor,
+    reviews: [],
+    versions: [],
+  };
+  synchronizeVoucherJudgementAccounts(next, voucher, resolvedContext, "创建独立手工凭证草稿");
+  voucher.versions.push(voucherSnapshot(voucher, resolvedContext, "创建独立手工凭证草稿"));
+  next.vouchers = [...(next.vouchers || []), voucher];
+  appendAuditEntry(next, {
+    action: "voucher.create_manual_draft",
+    entityType: "voucher",
+    entityId: voucher.id,
+    detail: `${voucher.summary}；借贷各 ${validation.debit.toFixed(2)}；仅允许人工复核入账`,
+    after: {
+      status: voucher.status,
+      version: voucher.version,
+      sourceType: voucher.sourceType,
+      postingPolicy: voucher.postingPolicy,
+      validation,
+    },
+    sourceIds: collectSourceIds(voucher.id, sourceIds, normalizedEvidenceIds),
+  }, resolvedContext);
+  return next;
+}
+
 export function createVoucherDraft(workspace, { transactionId, summary, note = "" }, context = {}) {
   const sourceTransaction = findTransaction(workspace, transactionId);
   const bankBusinessEvent = (workspace.businessEvents || []).find((event) => (
@@ -1014,6 +1120,9 @@ export function postVoucher(workspace, { voucherId, reviewNote, mode = "manual" 
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext({ ...context, mode });
   const voucher = findVoucher(next, voucherId);
+  if (voucher.sourceType === "manual" && mode !== "manual") {
+    throw new AccountingRuleError("MANUAL_VOUCHER_MANUAL_POST_REQUIRED", "独立手工凭证只能由财务人员填写复核意见后手工入账");
+  }
   if (voucher.bankBusinessEventId && mode !== "manual") {
     throw new AccountingRuleError("BANK_BUSINESS_EVENT_MANUAL_POST_REQUIRED", "银行业务事件凭证只能由财务人员填写复核意见后入账");
   }
@@ -1143,13 +1252,24 @@ export function reviseDraftVoucher(workspace, { voucherId, summary, lines, evide
   if (voucher.status === "posted") throw new AccountingRuleError("POSTED_VOUCHER_IMMUTABLE", "已入账凭证不能直接覆盖，请创建修订版");
   if (voucher.status === "superseded") throw new AccountingRuleError("SUPERSEDED_VOUCHER_IMMUTABLE", "已被替代的凭证不能修改");
   const before = voucherSnapshot(voucher, resolvedContext, reason);
-  if (summary != null) voucher.summary = summary;
+  if (summary != null) {
+    const revisedSummary = String(summary).trim();
+    if (voucher.sourceType === "manual" && !revisedSummary) {
+      throw new AccountingRuleError("MANUAL_VOUCHER_SUMMARY_REQUIRED", "手工凭证摘要必填");
+    }
+    voucher.summary = revisedSummary;
+  }
   if (lines != null) {
     const inputValidation = validateVoucherBalance({ lines }, accountingRules(next).amountTolerance, next);
     if (!inputValidation.balanced) {
       throw new AccountingRuleError("VOUCHER_LINES_INVALID", inputValidation.errors.join("；"), inputValidation);
     }
-    voucher.lines = aggregateLines(lines);
+    voucher.lines = voucher.sourceType === "manual"
+      ? lines.map((line) => normalizeManualVoucherLine(next, line))
+      : aggregateLines(lines);
+    if (voucher.sourceType === "manual") {
+      voucher.sourceIds = collectSourceIds(voucher.lines.map((line) => line.sourceIds || []));
+    }
   }
   if (evidenceIds != null) voucher.evidenceIds = collectSourceIds(evidenceIds);
   const validation = validateVoucherBalance(voucher, accountingRules(next).amountTolerance, next);

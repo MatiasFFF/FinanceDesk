@@ -20,6 +20,7 @@ import {
   buildAttachmentPackage,
   createAdvanceApplicationVoucherDraft,
   createBankBusinessEventVoucherDraft,
+  createManualVoucherDraft,
   createPostedVoucherRevision,
   createVoucherDraft,
   postVoucher,
@@ -41,6 +42,138 @@ import {
 } from "../src/features/reconciliation/reconciliationEngine.js";
 
 const context = { actor: "测试会计", at: "2026-09-06T13:00:00.000Z" };
+
+test("independent manual vouchers preserve dimensions and require reviewed manual posting", () => {
+  let workspace = createBlankWorkspace({
+    id: "workspace-manual-voucher",
+    name: "通用财务工作台",
+    currentPeriod: "2026-09",
+  }, { timestamp: context.at });
+  workspace.stores = [{ id: "location-main", name: "总部", status: "active" }];
+  workspace.documents = [{ id: "doc-manual", name: "月末计提依据.pdf", status: "active" }];
+
+  workspace = createManualVoucherDraft(workspace, {
+    date: "2026-09-30",
+    summary: "计提本月场地费用",
+    evidenceIds: ["doc-manual"],
+    note: "按合同计提",
+    lines: [
+      {
+        id: "line-expense",
+        account: "expenseRent",
+        debit: 1200,
+        credit: 0,
+        taxAmount: 0,
+        storeId: "location-main",
+        storeName: "总部",
+        department: "行政部",
+        project: "日常运营",
+        auxiliaryId: "supplier-space",
+        auxiliaryLabel: "场地供应方",
+        auxiliaryType: "supplier",
+        sourceIds: ["contract-2026-09"],
+      },
+      { account: "payable", debit: 0, credit: 1200, sourceIds: ["contract-2026-09"] },
+    ],
+  }, { ...context, mode: "manual" });
+
+  let voucher = workspace.vouchers[0];
+  assert.equal(voucher.sourceType, "manual");
+  assert.equal(voucher.postingPolicy, "manual_only");
+  assert.equal(voucher.status, "draft");
+  assert.equal(voucher.versions.length, 1);
+  assert.deepEqual(voucher.evidenceIds, ["doc-manual"]);
+  assert.ok(voucher.sourceIds.includes("contract-2026-09"));
+  assert.deepEqual(
+    {
+      id: voucher.lines[0].id,
+      storeId: voucher.lines[0].storeId,
+      storeName: voucher.lines[0].storeName,
+      department: voucher.lines[0].department,
+      project: voucher.lines[0].project,
+      auxiliaryId: voucher.lines[0].auxiliaryId,
+      taxAmount: voucher.lines[0].taxAmount,
+    },
+    {
+      id: "line-expense",
+      storeId: "location-main",
+      storeName: "总部",
+      department: "行政部",
+      project: "日常运营",
+      auxiliaryId: "supplier-space",
+      taxAmount: 0,
+    },
+  );
+  assert.equal(validateVoucherBalance(voucher, 0.01, workspace).balanced, true);
+  assert.ok(workspace.auditLog.some((entry) => entry.action === "voucher.create_manual_draft" && entry.entityId === voucher.id));
+
+  workspace = reviseDraftVoucher(workspace, {
+    voucherId: voucher.id,
+    summary: "修订本月场地费用计提",
+    lines: voucher.lines.map((line, index) => ({
+      ...line,
+      department: index === 0 ? "运营部" : line.department,
+      sourceIds: ["contract-revised-2026-09"],
+    })),
+    evidenceIds: ["doc-manual"],
+    reason: "依据补充协议更新来源和经营维度",
+  }, { ...context, at: "2026-09-30T11:00:00.000Z", mode: "manual" });
+  voucher = workspace.vouchers[0];
+  assert.equal(voucher.version, 2);
+  assert.equal(voucher.lines[0].id, "line-expense");
+  assert.equal(voucher.lines[0].department, "运营部");
+  assert.deepEqual(voucher.sourceIds, ["contract-revised-2026-09"]);
+
+  assert.throws(() => postVoucher(workspace, {
+    voucherId: voucher.id,
+    mode: "automatic",
+  }, context), (error) => error instanceof AccountingRuleError && error.code === "MANUAL_VOUCHER_MANUAL_POST_REQUIRED");
+  assert.throws(() => postVoucher(workspace, {
+    voucherId: voucher.id,
+    mode: "manual",
+  }, context), (error) => error instanceof AccountingRuleError && error.code === "REVIEW_NOTE_REQUIRED");
+
+  workspace = postVoucher(workspace, {
+    voucherId: voucher.id,
+    mode: "manual",
+    reviewNote: "已复核合同、期间、科目和金额",
+  }, { ...context, at: "2026-09-30T12:00:00.000Z" });
+  assert.equal(workspace.vouchers[0].status, "posted");
+  assert.equal(workspace.vouchers[0].no, "记-001");
+});
+
+test("independent manual voucher validation rejects wrong periods, inactive accounts, and imbalance", () => {
+  const workspace = createBlankWorkspace({
+    id: "workspace-manual-voucher-validation",
+    name: "通用财务工作台",
+    currentPeriod: "2026-09",
+  }, { timestamp: context.at });
+  const validLines = [
+    { account: "expenseOther", debit: 100, credit: 0 },
+    { account: "payable", debit: 0, credit: 100 },
+  ];
+
+  assert.throws(() => createManualVoucherDraft(workspace, {
+    date: "2026-08-31",
+    summary: "上期调整",
+    lines: validLines,
+  }, context), (error) => error instanceof AccountingRuleError && error.code === "MANUAL_VOUCHER_PERIOD_MISMATCH");
+  assert.throws(() => createManualVoucherDraft(workspace, {
+    date: "2026-09-30",
+    summary: "不平衡调整",
+    lines: validLines.map((line, index) => index === 1 ? { ...line, credit: 90 } : line),
+  }, context), (error) => error instanceof AccountingRuleError && error.code === "MANUAL_VOUCHER_LINES_INVALID");
+
+  const inactiveWorkspace = {
+    ...workspace,
+    chartOfAccounts: [{ id: "expenseOther", label: "其他费用", status: "inactive" }],
+  };
+  assert.throws(() => createManualVoucherDraft(inactiveWorkspace, {
+    date: "2026-09-30",
+    summary: "停用科目调整",
+    lines: validLines,
+  }, context), (error) => error instanceof AccountingRuleError && error.code === "MANUAL_VOUCHER_LINES_INVALID");
+});
 
 test("voucher tax amount stays optional but rejects invalid or negative values", () => {
   const baseLines = [
