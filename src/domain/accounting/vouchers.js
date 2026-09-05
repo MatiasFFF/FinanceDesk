@@ -430,8 +430,15 @@ function bankBusinessEventVoucherLines(workspace, event, transaction) {
     throw new AccountingRuleError("BUSINESS_EVENT_AMOUNT_MISMATCH", "业务事件金额与银行流水金额不一致，必须重新确认");
   }
   const taxAttributes = structuredClone(event.taxAttributes || {});
+  const eventDimensions = {
+    storeId: voucherLineDimension(event, "storeId", "locationId"),
+    storeName: voucherLineDimension(event, "storeName", "store", "locationName"),
+    department: voucherLineDimension(event, "department", "departmentName"),
+    project: voucherLineDimension(event, "project", "projectName"),
+  };
   const withEventAttributes = (lines) => lines.map((line) => ({
     ...line,
+    ...eventDimensions,
     businessEventId: event.id,
     taxAttributes,
   }));

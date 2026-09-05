@@ -57,6 +57,7 @@ import {
   reviewVoucher,
   reviewTransactionEvidence,
   reverseReconciliation,
+  setBankTransactionBusinessEventDimensions,
   suggestReconciliations,
   transactionSettlement,
   traceVoucherSources,
@@ -1141,6 +1142,9 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     referenceNo: "",
     relatedTransactionId: "",
     businessPeriod: "",
+    storeId: "",
+    department: "",
+    project: "",
     taxTreatment: "",
     invoiceStatus: "",
     evidenceIds: [],
@@ -1158,6 +1162,8 @@ export function AccountingWorkbench({ transactionId, onToast }) {
   const [refundSourceId, setRefundSourceId] = useState("");
   const [transferSourceId, setTransferSourceId] = useState("");
   const [error, setError] = useState("");
+  const businessDepartmentListId = useId();
+  const businessProjectListId = useId();
 
   const classification = useMemo(
     () => transaction ? effectiveBankTransactionClassification(activeWorkspace, transaction) : null,
@@ -1169,6 +1175,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     [activeWorkspace],
   );
   const accountOptions = useMemo(() => workspaceAccountOptions(activeWorkspace), [activeWorkspace]);
+  const businessDimensionOptions = useMemo(() => voucherDimensionOptions(activeWorkspace), [activeWorkspace]);
   const memberModuleEnabled = memberBusinessEnabled(activeWorkspace);
   const assessment = useMemo(
     () => transaction
@@ -1295,6 +1302,9 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         referenceNo: "",
         relatedTransactionId: transaction?.counterpartTransactionId || "",
         businessPeriod: transaction?.businessPeriod || String(transaction?.date || "").slice(0, 7),
+        storeId: voucherLineDimensionInput(transaction, "storeId", "locationId"),
+        department: voucherLineDimensionInput(transaction, "department", "departmentName"),
+        project: voucherLineDimensionInput(transaction, "project", "projectName"),
         taxTreatment: suggestedDefinition?.fixedTaxTreatment || "",
         invoiceStatus: suggestedDefinition?.invoiceRequired ? "" : "not_applicable",
         evidenceIds: [...(transaction?.evidenceIds || [])],
@@ -1320,6 +1330,12 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     }
   }
 
+  function confirmBusinessEvent(workspace, input) {
+    const context = { actor, mode: "manual" };
+    const confirmed = confirmBankTransactionBusinessEvent(workspace, input, context);
+    return setBankTransactionBusinessEventDimensions(confirmed, input, context);
+  }
+
   function inspect() {
     run(
       (workspace) => recordReconciliationSuggestions(
@@ -1335,7 +1351,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
     event.preventDefault();
     const needsExplicitReview = Number(judgement.confidence) < accountingPolicy.confidenceThreshold;
     run(
-      (workspace) => confirmBankTransactionBusinessEvent(workspace, {
+      (workspace) => confirmBusinessEvent(workspace, {
         transactionId,
         businessType: judgement.businessType,
         account: judgement.account,
@@ -1344,12 +1360,15 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         referenceNo: judgement.referenceNo,
         relatedTransactionId: judgement.relatedTransactionId,
         businessPeriod: judgement.businessPeriod,
+        storeId: judgement.storeId,
+        department: judgement.department,
+        project: judgement.project,
         taxTreatment: judgement.taxTreatment,
         invoiceStatus: judgement.invoiceStatus,
         evidenceIds: judgement.evidenceIds,
         confidence: judgement.confidence,
         reason: judgement.reason,
-      }, { actor, mode: "manual" }),
+      }),
       needsExplicitReview
         ? "业务事件已保存；低置信度保持不变，已进入 S7 人工复核，未生成或入账凭证"
         : "业务事件已人工确认；仅完成分类与留痕，未生成或入账凭证",
@@ -1395,7 +1414,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
         let resolvedTreatmentId = treatmentId;
         if (action === "adopt_treatment" && treatment?.kind === "classification" && selectedAccount !== treatment.account) {
           prepared = businessEvent
-            ? confirmBankTransactionBusinessEvent(prepared, {
+            ? confirmBusinessEvent(prepared, {
               transactionId: exceptionCase.transaction.id,
               businessType: businessEvent.businessType,
               account: selectedAccount,
@@ -1406,12 +1425,15 @@ export function AccountingWorkbench({ transactionId, onToast }) {
                 || businessEvent.originalTransactionId
                 || businessEvent.counterpartTransactionId,
               businessPeriod: businessEvent.businessPeriod,
+              storeId: businessEvent.storeId || null,
+              department: businessEvent.department || null,
+              project: businessEvent.project || null,
               taxTreatment: businessEvent.taxAttributes?.treatment,
               invoiceStatus: businessEvent.taxAttributes?.invoiceStatus || "not_applicable",
               evidenceIds: businessEvent.evidenceIds || [],
               confidence: businessEvent.confidence,
               reason: note,
-            }, { actor, mode: "manual" })
+            })
             : applyManualClassification(prepared, {
               transactionId: exceptionCase.transaction.id,
               eventType: treatment.eventType,
@@ -1650,6 +1672,9 @@ export function AccountingWorkbench({ transactionId, onToast }) {
               <label><span>会计属性 / 主科目 *</span><WorkspaceAccountSelect workspace={activeWorkspace} accounts={accountOptions} value={judgement.account} onChange={(account) => setJudgement((current) => ({ ...current, account }))} ariaLabel="人工确认业务主科目" required /><small>仅列出当前有效科目；用户新增科目与自定义名称会直接进入后续凭证分录。</small></label>
               <label><span>业务期间 *</span><input required type="month" value={judgement.businessPeriod} onChange={(event) => setJudgement((current) => ({ ...current, businessPeriod: event.target.value }))} /></label>
               <label><span>资金期间</span><input readOnly value={String(transaction.date || "").slice(0, 7)} /></label>
+              <label><span>{terminology.location}</span><select value={judgement.storeId} onChange={(event) => setJudgement((current) => ({ ...current, storeId: event.target.value }))}><option value="">不设置</option>{judgement.storeId && !businessDimensionOptions.stores.some((item) => item.id === judgement.storeId) && <option value={judgement.storeId}>{voucherLineDimensionInput(transaction, "storeName", "store", "locationName") || judgement.storeId}（历史）</option>}{businessDimensionOptions.stores.map((item) => <option value={item.id} key={item.id}>{item.name || item.id}</option>)}</select></label>
+              <label><span>部门</span><input list={businessDepartmentListId} value={judgement.department} onChange={(event) => setJudgement((current) => ({ ...current, department: event.target.value }))} placeholder="选择已有部门或手填" /><datalist id={businessDepartmentListId}>{businessDimensionOptions.departments.map((item) => <option value={item} key={item} />)}</datalist></label>
+              <label><span>项目</span><input list={businessProjectListId} value={judgement.project} onChange={(event) => setJudgement((current) => ({ ...current, project: event.target.value }))} placeholder="选择已有项目或手填" /><datalist id={businessProjectListId}>{businessDimensionOptions.projects.map((item) => <option value={item} key={item} />)}</datalist></label>
               {selectedBusinessDefinition.billKinds.length > 0 && <label><span>关联账单{selectedBusinessDefinition.referenceMode === "bill_or_reference" ? "（与编号至少一项）" : ""}</span><select value={judgement.relatedBillId} onChange={(event) => setJudgement((current) => ({ ...current, relatedBillId: event.target.value }))}><option value="">暂不选择账单</option>{businessEventBills.map((bill) => <option value={bill.id} key={bill.id}>{bill.no || bill.id} · {bill.counterparty} · ¥{money(bill.amount)}</option>)}</select></label>}
               {selectedBusinessDefinition.referenceMode !== "none" && <label><span>{displayText(selectedBusinessDefinition.referenceLabel)}{selectedBusinessDefinition.referenceMode === "reference" ? " *" : ""}</span><input value={judgement.referenceNo} onChange={(event) => setJudgement((current) => ({ ...current, referenceNo: event.target.value }))} placeholder="填写可追溯的订单、合同或审批编号" /></label>}
               {selectedBusinessDefinition.relatedTransactionRole && <label className="full"><span>{selectedBusinessDefinition.relatedTransactionRole === "original_transaction" ? "原业务流水 *" : "内部转账另一端流水 *"}</span><select required value={judgement.relatedTransactionId} onChange={(event) => setJudgement((current) => ({ ...current, relatedTransactionId: event.target.value }))}><option value="">请选择关联流水</option>{businessEventRelatedTransactions.map((item) => <option value={item.id} key={item.id}>{item.date} · {item.serial || item.id} · {item.counterparty} · {Number(item.amount) > 0 ? "+" : "−"}¥{money(item.amount)}</option>)}</select></label>}
@@ -1673,6 +1698,7 @@ export function AccountingWorkbench({ transactionId, onToast }) {
           <div className="engine-subheading"><strong>{businessEvent.businessEventNo} · {displayText(businessEvent.businessTypeLabel)}</strong><small>已形成人工业务事件；入账策略：仅允许后续人工复核</small></div>
           <div className="engine-summary">
             <span><small>业务期 / 资金期</small><strong>{businessEvent.businessPeriod} / {businessEvent.fundingPeriod}</strong></span>
+            <span><small>{terminology.location} / 部门 / 项目</small><strong>{[businessEvent.storeName, businessEvent.department, businessEvent.project].filter(Boolean).join(" · ") || "未设置"}</strong></span>
             <span><small>业务事件原判断</small><strong>{displayText(accountDefinition(businessEvent.accountingAttributes.primaryAccount, activeWorkspace).label)}</strong></span>
             <span><small>税务属性</small><strong>{BUSINESS_EVENT_TAX_TREATMENTS.find((item) => item.id === businessEvent.taxAttributes.treatment)?.label || businessEvent.taxAttributes.treatment}</strong></span>
             <span><small>证据 / 置信度</small><strong>{businessEvent.evidenceCompleteness}% / {businessEvent.confidence}%</strong></span>

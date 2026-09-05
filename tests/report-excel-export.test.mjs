@@ -104,6 +104,7 @@ test("member module controls fitness-specific content in the owner workbook shee
   });
   const blankOwnerRows = XLSX.utils.sheet_to_json(blankWorkbook.Sheets["老板管理报表"], { header: 1, defval: "" });
   assert.doesNotMatch(JSON.stringify(blankOwnerRows), /会员|教练|私教|团课|门店经营汇总/);
+  assert.match(JSON.stringify(blankOwnerRows), /场所经营汇总/);
   assert.notEqual(
     workflowSourceFingerprint({ ...blank, modules: { ...blank.modules, members: true } }),
     blankFingerprint,

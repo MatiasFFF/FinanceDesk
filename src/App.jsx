@@ -717,6 +717,52 @@ function StoreManagementReport({ report, terminology }) {
   );
 }
 
+function neutralOperatingCopy(value) {
+  return String(value || "")
+    .replaceAll("会员", "客户")
+    .replaceAll("教练", "业务人员")
+    .replaceAll("耗课", "服务履约");
+}
+
+function GenericStoreManagementReport({ report }) {
+  const metrics = [
+    { id: "revenue", label: "收入" },
+    { id: "cost", label: "成本" },
+    { id: "expenses", label: "费用" },
+    { id: "profit", label: "利润" },
+  ];
+  const stores = report.stores || [];
+  return (
+    <section className="panel store-management-report generic-store-management-report">
+      <div className="panel-heading"><div><p className="eyebrow">老板报表 · 场所经营</p><h2>按场所查看收入、成本、费用与利润</h2><p>基于本期已入账凭证汇总。展开场所可查看业务来源与凭证，未归属场所的数据会单独列示。</p></div><span>{stores.length ? `${stores.length} 个场所` : "等待经营数据"}</span></div>
+      {stores.length ? <div className="store-report-table">
+        <div className="store-report-row heading"><span>场所</span>{metrics.map((metric) => <span key={metric.id}>{metric.label}</span>)}</div>
+        {stores.map((store) => {
+          const sources = store.sources || [];
+          const voucherIds = store.voucherIds || [];
+          return (
+            <details className="store-report-store" key={store.id}>
+              <summary className="store-report-row"><span><strong>{store.name || "未归属场所"}</strong><small>{sources.length} 条来源 · {voucherIds.length} 张凭证</small></span>{metrics.map((metric) => <strong key={metric.id}>{formatCurrency(store.metrics?.[metric.id] || 0)}</strong>)}</summary>
+              <div className="store-report-drilldown generic-store-report-drilldown">
+                <section>
+                  <div className="subheading"><strong>业务与凭证明细</strong><span>{sources.length} 条</span></div>
+                  {sources.length ? <div className="store-source-list">{sources.map((source) => {
+                    const sourceMetrics = source.impacts || source.metrics || {};
+                    const impacts = metrics.filter((metric) => Number(sourceMetrics[metric.id] || 0) !== 0);
+                    const sourceVoucherIds = source.voucherIds || (source.voucherId ? [source.voucherId] : []);
+                    const sourceMeta = [source.date || "本期期初", source.counterparty, source.reference].filter(Boolean).map(neutralOperatingCopy).join(" · ");
+                    return <article key={source.id}><span><strong>{neutralOperatingCopy(source.label || source.summary || source.counterparty || source.reference || "本地业务记录")}</strong><small>{sourceMeta}</small><small>{sourceVoucherIds.length ? `凭证 ${sourceVoucherIds.join("、")}` : `来源 ${(source.sourceIds || []).join("、") || source.id}`}</small></span><span>{impacts.length ? impacts.map((metric) => <small key={metric.id}>{metric.label} {formatCurrency(sourceMetrics[metric.id], { sign: true })}</small>) : <small>金额已计入场所汇总</small>}</span></article>;
+                  })}</div> : <p className="quiet-copy">该场所已有汇总金额，当前没有可展开的单笔来源。</p>}
+                </section>
+              </div>
+            </details>
+          );
+        })}
+      </div> : <div className="management-report-empty"><EmptyState icon={ChartBar} title="当前期间还没有场所经营数据" description="已入账凭证形成收入、成本或费用后，这里会按场所汇总；未归属场所的数据会单独显示。" /></div>}
+    </section>
+  );
+}
+
 function BillSourceRows({ rows, terminology }) {
   return rows.length ? <div className="owner-source-rows">{rows.map((row) => {
     const timing = row.kind === "account"
@@ -895,7 +941,7 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
         </section>
         <aside className="panel version-panel"><div className="panel-heading"><div><p className="eyebrow">版本与差异</p><h2>不可覆盖的报表记录</h2></div><Clock size={21} /></div>{versions.length ? <div className="version-list">{versions.map((version, index) => <button className={version.id === versionId ? "active" : ""} key={version.id} onClick={() => setVersionId(version.id)} type="button"><span><strong>{version.label}</strong><small>{formatDateTime(version.createdAt)} · {version.actor}</small></span><TonePill tone="success">已冻结</TonePill>{index === 0 && <em>当前</em>}</button>)}</div> : <EmptyState title="还没有冻结版本" description="勾稽通过后冻结 V1，后续修改会形成 V2、V3，而不是覆盖旧数字。" />}<div className="version-diff"><div className="subheading"><strong>{previous ? `${latest.label} 对比 ${previous.label}` : "版本差异"}</strong><span>{differences.length} 项变化</span></div>{previous ? (differences.length ? differences.slice(0, 8).map((item) => <div key={item.id}><span><small>{businessTermCopy(item.section, terminology)}</small><strong>{businessTermCopy(item.label, terminology)}</strong></span><b className={item.delta > 0 ? "income" : "expense"}>{formatCurrency(item.delta, { sign: true })}</b></div>) : <p className="quiet-copy">最新两个版本的报表数字一致，时间与确认记录仍分别保留。</p>) : <p className="quiet-copy">冻结第二个版本后，这里会逐项显示与上一版本的差异。</p>}</div><div className="report-export-history"><div className="subheading"><strong>Excel 本地导出</strong><span>{reportExports.length} 次</span></div>{reportExports.length ? reportExports.slice(0, 3).map((item) => <article key={item.id}><DownloadSimple size={17} /><span><strong>{item.reportVersionLabel} · {item.fileName}</strong><small>{formatDateTime(item.exportedAt)} · {fileSize(item.size)} · 仅本地，未上传</small></span></article>) : <p className="quiet-copy">当前期间还没有 Excel 导出记录。</p>}</div>{taxEnabled && <button className="secondary-button wide" onClick={() => onPage("tax")} type="button">进入确认与申报<ArrowRight size={16} /></button>}</aside>
       </div>
-      {sectionId === "owner" && !managementReportAllHidden && <>{memberBusinessEnabled && <StoreManagementReport report={storeReport} terminology={terminology} />}<OwnerLiquidityReport management={management} terminology={terminology} /></>}
+      {sectionId === "owner" && !managementReportAllHidden && <>{memberBusinessEnabled ? <StoreManagementReport report={storeReport} terminology={terminology} /> : <GenericStoreManagementReport report={storeReport} />}<OwnerLiquidityReport management={management} terminology={terminology} /></>}
       <BoundaryNote />
       <DrilldownPanel row={drill} sectionLabel={section.label} terminology={terminology} onClose={() => setDrill(null)} />
     </div>

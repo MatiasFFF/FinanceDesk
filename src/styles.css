@@ -2450,6 +2450,11 @@ button.metric-card:hover {
   padding: 10px 12px;
 }
 
+.generic-store-management-report .store-report-row {
+  min-width: 680px;
+  grid-template-columns: minmax(180px, 1.45fr) repeat(4, minmax(105px, 1fr));
+}
+
 .store-report-row.heading {
   background: var(--sand);
   color: var(--quiet);
@@ -2499,6 +2504,10 @@ button.metric-card:hover {
   padding: 12px;
   border-top: 1px solid var(--line-soft);
   background: #faf6ef;
+}
+
+.generic-store-report-drilldown {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .store-report-drilldown > section {

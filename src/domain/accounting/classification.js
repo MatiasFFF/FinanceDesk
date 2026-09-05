@@ -446,3 +446,56 @@ export function applyManualClassification(workspace, {
   }, resolvedContext);
   return next;
 }
+
+export function setBankTransactionBusinessEventDimensions(workspace, {
+  transactionId,
+  storeId = "",
+  department = "",
+  project = "",
+}, context = {}) {
+  const next = cloneAccountingState(workspace);
+  const resolvedContext = operationContext({ ...context, mode: "manual" });
+  const transaction = (next.transactions || []).find((item) => item.id === transactionId);
+  if (!transaction) throw new AccountingRuleError("TRANSACTION_NOT_FOUND", `找不到银行流水：${transactionId}`);
+  const businessEvent = (next.businessEvents || []).find((event) => (
+    event.id === transaction.bankBusinessEventId
+    || (event.sourceType === "bankTransaction" && event.transactionId === transaction.id)
+  ));
+  if (!businessEvent) {
+    throw new AccountingRuleError("BUSINESS_EVENT_NOT_FOUND", "银行业务事件尚未形成，不能保存场所、部门和项目");
+  }
+
+  const normalizedStoreId = String(storeId || "").trim();
+  const store = normalizedStoreId
+    ? (next.stores || []).find((item) => item.id === normalizedStoreId)
+    : null;
+  if (normalizedStoreId && !store) {
+    throw new AccountingRuleError("BUSINESS_EVENT_STORE_NOT_FOUND", `当前工作台找不到所选场所：${normalizedStoreId}`);
+  }
+  const before = {
+    storeId: businessEvent.storeId || null,
+    storeName: businessEvent.storeName || null,
+    department: businessEvent.department || null,
+    project: businessEvent.project || null,
+  };
+  const dimensions = {
+    storeId: store?.id || null,
+    storeName: store?.name || null,
+    department: String(department || "").trim() || null,
+    project: String(project || "").trim() || null,
+  };
+  Object.assign(businessEvent, dimensions, {
+    updatedAt: resolvedContext.at,
+    updatedBy: resolvedContext.actor,
+  });
+  appendAuditEntry(next, {
+    action: "classification.business_event_dimensions_confirm",
+    entityType: "businessEvent",
+    entityId: businessEvent.id,
+    detail: [dimensions.storeName, dimensions.department, dimensions.project].filter(Boolean).join(" · ") || "未设置场所、部门或项目",
+    before,
+    after: dimensions,
+    sourceIds: collectSourceIds(businessEvent.id, transaction.id),
+  }, resolvedContext);
+  return next;
+}

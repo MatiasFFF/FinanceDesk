@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createAccountingFixture } from "../src/domain/accounting/fixtures.js";
+import { createBlankWorkspace } from "../src/domain/foundation.js";
 import { AccountingRuleError } from "../src/domain/accounting/model.js";
+import { setBankTransactionBusinessEventDimensions } from "../src/domain/accounting/classification.js";
 import {
   buildFinancialStatements,
   buildManagementMetrics,
   buildReceivablePayableAgeing,
+  buildStoreManagementReport,
   buildTaxWorkpaper,
   buildThirtyDayCashForecast,
   createCustomerConfirmationPackage,
@@ -89,6 +92,7 @@ test("reconciled split receipt produces a balanced traceable draft and attachmen
 
 test("confirmed bank businessEvent creates one manual-only traceable voucher and posted lines flow into existing reports", () => {
   let workspace = createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
+  workspace.stores = [{ id: "store-service", name: "服务中心", status: "active" }];
   workspace = confirmBankTransactionBusinessEvent(workspace, {
     transactionId: "txn-fee",
     businessType: "bankFee",
@@ -100,8 +104,18 @@ test("confirmed bank businessEvent creates one manual-only traceable voucher and
     confidence: 100,
     reason: "已核对银行收费回单，确认为账户管理手续费",
   }, context);
+  workspace = setBankTransactionBusinessEventDimensions(workspace, {
+    transactionId: "txn-fee",
+    storeId: "store-service",
+    department: "财务部",
+    project: "日常经营",
+  }, context);
   const transaction = workspace.transactions.find((item) => item.id === "txn-fee");
   const event = workspace.businessEvents.find((item) => item.id === transaction.bankBusinessEventId);
+  assert.deepEqual(
+    { storeId: event.storeId, storeName: event.storeName, department: event.department, project: event.project },
+    { storeId: "store-service", storeName: "服务中心", department: "财务部", project: "日常经营" },
+  );
   const beforeStatements = buildFinancialStatements(workspace, { period: "2026-08" });
 
   workspace = createBankBusinessEventVoucherDraft(workspace, {
@@ -114,6 +128,8 @@ test("confirmed bank businessEvent creates one manual-only traceable voucher and
     ["bank:operating", 0, 20],
     ["expenseFee", 20, 0],
   ]);
+  assert.equal(voucher.lines.every((line) => line.storeId === "store-service" && line.storeName === "服务中心"), true);
+  assert.equal(voucher.lines.every((line) => line.department === "财务部" && line.project === "日常经营"), true);
   assert.equal(voucher.bankBusinessEventId, event.id);
   assert.equal(voucher.period, "2026-08");
   assert.equal(voucher.postingPolicy, "manual_only");
@@ -158,6 +174,64 @@ test("confirmed bank businessEvent creates one manual-only traceable voucher and
   assert.equal(afterStatements.incomeStatement.profit.value, beforeStatements.incomeStatement.profit.value - 20);
   assert.equal(afterStatements.cashFlow.closingCash.value, beforeStatements.cashFlow.closingCash.value - 20);
   assert.ok(afterStatements.incomeStatement.profit.sourceIds.includes(event.id));
+});
+
+test("non-member workspaces calculate traceable profit by location from posted voucher lines", () => {
+  const workspace = createBlankWorkspace({
+    id: "workspace-location-profit",
+    name: "通用服务工作台",
+    currentPeriod: "2026-09",
+    modules: { members: false },
+  }, { timestamp: context.at });
+  workspace.stores = [
+    { id: "store-east", name: "东区", status: "active" },
+    { id: "store-west", name: "西区", status: "active" },
+  ];
+  workspace.vouchers = [
+    {
+      id: "voucher-east",
+      no: "记-001",
+      date: "2026-09-10",
+      period: "2026-09",
+      status: "posted",
+      sourceIds: ["source-east"],
+      lines: [
+        { account: "bank", debit: 1000, credit: 0, sourceIds: ["bank-east"] },
+        { account: "revenuePrivate", debit: 0, credit: 1000, storeId: "store-east", storeName: "东区", sourceIds: ["sale-east"] },
+        { account: "costOfSales", debit: 300, credit: 0, storeId: "store-east", storeName: "东区", sourceIds: ["cost-east"] },
+        { account: "payable", debit: 0, credit: 300, sourceIds: ["cost-east"] },
+        { account: "expenseRent", debit: 100, credit: 0, storeId: "store-east", storeName: "东区", sourceIds: ["rent-east"] },
+        { account: "payable", debit: 0, credit: 100, sourceIds: ["rent-east"] },
+      ],
+    },
+    {
+      id: "voucher-unassigned",
+      no: "记-002",
+      date: "2026-09-11",
+      period: "2026-09",
+      status: "posted",
+      sourceIds: ["source-unassigned"],
+      lines: [
+        { account: "bank", debit: 500, credit: 0, sourceIds: ["bank-unassigned"] },
+        { account: "revenuePrivate", debit: 0, credit: 500, sourceIds: ["sale-unassigned"] },
+      ],
+    },
+  ];
+
+  const report = buildStoreManagementReport(workspace, { period: "2026-09", asOf: "2026-09-30" });
+  const byStore = Object.fromEntries(report.stores.map((store) => [store.id, store]));
+  assert.deepEqual(
+    { revenue: byStore["store-east"].metrics.revenue, cost: byStore["store-east"].metrics.cost, expenses: byStore["store-east"].metrics.expenses, profit: byStore["store-east"].metrics.profit },
+    { revenue: 1000, cost: 300, expenses: 100, profit: 600 },
+  );
+  assert.equal(byStore.unassigned.metrics.revenue, 500);
+  assert.equal(byStore["store-west"], undefined);
+  assert.equal(byStore["store-east"].sources.every((source) => source.voucherId === "voucher-east"), true);
+  assert.ok(byStore["store-east"].sourceIds.includes("sale-east"));
+  assert.deepEqual(
+    { revenue: report.totals.revenue, cost: report.totals.cost, expenses: report.totals.expenses, profit: report.totals.profit },
+    { revenue: 1500, cost: 300, expenses: 100, profit: 1100 },
+  );
 });
 
 test("incomplete evidence and unfinished cross-period S7 review block bank businessEvent drafts", () => {

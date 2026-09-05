@@ -258,6 +258,27 @@ function storeReportDimensions(workspace, event, member = null) {
   };
 }
 
+function voucherLineStoreDimensions(workspace, line) {
+  const stored = line?.dimensions || {};
+  let storeId = String(line?.storeId || line?.locationId || stored.storeId || stored.locationId || "").trim();
+  let storeName = String(line?.storeName || line?.store || line?.locationName || stored.storeName || stored.store || stored.locationName || "").trim();
+  let store = (workspace.stores || []).find((item) => item.id === storeId)
+    || (workspace.stores || []).find((item) => storeName && item.name === storeName);
+  if (!storeId && !storeName && (workspace.stores || []).length === 1) store = workspace.stores[0];
+  if (store) {
+    storeId = store.id;
+    storeName = store.name || storeName || "未命名场所";
+  }
+  if (!storeId && storeName) storeId = `store-name:${storeName}`;
+  return {
+    storeId: storeId || "unassigned",
+    storeName: storeName || storeId || "未归属场所",
+    coach: "",
+    department: String(line?.department || stored.department || "").trim(),
+    project: String(line?.project || stored.project || "").trim(),
+  };
+}
+
 function emptyStoreMetrics() {
   return {
     collections: 0,
@@ -266,6 +287,16 @@ function emptyStoreMetrics() {
     coachCommission: 0,
     grossProfit: 0,
     unfulfilledBalance: 0,
+  };
+}
+
+function emptyVoucherStoreMetrics() {
+  return {
+    ...emptyStoreMetrics(),
+    revenue: 0,
+    cost: 0,
+    expenses: 0,
+    profit: 0,
   };
 }
 
@@ -326,8 +357,93 @@ export function buildStoreManagementReport(workspace, {
   };
   (workspace.stores || []).forEach((store) => ensureStore({
     storeId: store.id,
-    storeName: store.name || "未命名门店",
+    storeName: store.name || (memberBusinessEnabled ? "未命名门店" : "未命名场所"),
   }));
+
+  if (!memberBusinessEnabled) {
+    const periodVouchers = activePostedVouchers(workspace, period)
+      .filter((voucher) => !voucher.date || voucher.date <= resolvedAsOf);
+    let postedLineCount = 0;
+    periodVouchers.forEach((voucher) => {
+      (voucher.lines || []).forEach((line, lineIndex) => {
+        const account = accountDefinition(line.account, workspace);
+        if (!["revenue", "contraRevenue", "cost", "expense"].includes(account.category)) return;
+        postedLineCount += 1;
+        const dimensions = voucherLineStoreDimensions(workspace, line);
+        const store = ensureStore(dimensions);
+        if (!("cost" in store.metrics)) store.metrics = { ...emptyVoucherStoreMetrics(), ...store.metrics };
+        const debit = roundMoney(line.debit || 0);
+        const credit = roundMoney(line.credit || 0);
+        const impacts = emptyVoucherStoreMetrics();
+        if (["revenue", "contraRevenue"].includes(account.category)) {
+          impacts.revenue = roundMoney(credit - debit);
+          impacts.recognizedRevenue = impacts.revenue;
+        }
+        if (account.category === "cost") impacts.cost = roundMoney(debit - credit);
+        if (account.category === "expense") impacts.expenses = roundMoney(debit - credit);
+        impacts.grossProfit = roundMoney(impacts.revenue - impacts.cost);
+        impacts.profit = roundMoney(impacts.grossProfit - impacts.expenses);
+        Object.entries(impacts).forEach(([key, value]) => addStoreMetric(store.metrics, key, value));
+        const sourceIds = collectSourceIds(voucher.id, voucher.sourceIds || [], voucher.relatedSourceIds || [], line.sourceIds || []);
+        store.sourceIds.push(...sourceIds);
+        store.voucherIds.push(voucher.id);
+        store.sources.push({
+          id: `${voucher.id}:line:${lineIndex}`,
+          eventId: null,
+          kind: "voucherLine",
+          label: `${voucher.no || voucher.id} · ${account.label}`,
+          date: voucher.date || "",
+          memberId: null,
+          memberName: "",
+          ...dimensions,
+          accountId: line.account,
+          accountLabel: account.label,
+          accountCategory: account.category,
+          debit,
+          credit,
+          amount: roundMoney(impacts.recognizedRevenue || impacts.cost || impacts.expenses),
+          quantity: 0,
+          note: voucher.summary || "",
+          impacts,
+          voucherId: voucher.id,
+          voucherNo: voucher.no || voucher.id,
+          voucherIds: [voucher.id],
+          sourceIds,
+          voucherSourceIds: sourceIds,
+        });
+      });
+    });
+    const rows = [...stores.values()].filter((store) => store.sources.length > 0).map((store) => ({
+      ...store,
+      metrics: Object.fromEntries(Object.entries({ ...emptyVoucherStoreMetrics(), ...store.metrics }).map(([key, value]) => [key, roundMoney(value)])),
+      members: [],
+      sources: [...store.sources].sort((left, right) => String(right.date || "").localeCompare(String(left.date || ""))),
+      sourceIds: collectSourceIds(store.sourceIds),
+      voucherIds: collectSourceIds(store.voucherIds),
+    })).sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
+    const totals = rows.reduce((current, store) => {
+      Object.entries(store.metrics).forEach(([key, value]) => addStoreMetric(current, key, value));
+      return current;
+    }, emptyVoucherStoreMetrics());
+    return {
+      period,
+      asOf: resolvedAsOf,
+      stores: rows,
+      totals,
+      sourceIds: collectSourceIds(rows.map((store) => store.sourceIds)),
+      voucherIds: collectSourceIds(rows.map((store) => store.voucherIds)),
+      postingCoverage: {
+        recognizedEventCount: postedLineCount,
+        postedEventCount: postedLineCount,
+        unpostedEventCount: 0,
+        postedVoucherCount: periodVouchers.length,
+        postedLineCount,
+      },
+      grossProfitFormula: "净收入 − 成本",
+      profitFormula: "净收入 − 成本 − 费用",
+      basis: "posted_voucher_lines",
+    };
+  }
 
   const ensureMember = (store, member, dimensions) => {
     const memberId = member?.id || "unassigned-member";
@@ -1033,13 +1149,18 @@ export function buildFrozenReportExcelWorkbook(workspace, {
     XLSX.utils.book_append_sheet(workbook, exportSheet(workspace, version, sheetName, entries, [26, 18, 42, 11], generatedAt), sheetName);
   });
 
-  const storeMetrics = [
+  const storeMetrics = memberBusinessEnabled ? [
     ["collections", "本期收款"],
     ["recognizedRevenue", "确认收入"],
     ["refunds", "退款"],
-    ["coachCommission", memberBusinessEnabled ? "教练提成" : "业务提成"],
+    ["coachCommission", "教练提成"],
     ["grossProfit", "毛利"],
     ["unfulfilledBalance", "预收 / 未履约"],
+  ] : [
+    ["revenue", "净收入"],
+    ["cost", "成本"],
+    ["expenses", "费用"],
+    ["profit", "利润"],
   ];
   const ownerEntries = [
     { kind: "section", values: ["冻结老板报表"] },
@@ -1048,19 +1169,19 @@ export function buildFrozenReportExcelWorkbook(workspace, {
       const sourceIds = frozenSnapshotRowSourceIds(row);
       return { kind: /(利润|余额|缺口)/.test(row.label) ? "total" : "data", values: [row.label, addMetric("老板管理报表", `owner:${row.id}`, row.label, row.value, sourceIds), row.formula || "冻结管理报表汇总", sourceIds.length || 1] };
     }),
-    ...(memberBusinessEnabled ? [
-      { kind: "blank", values: [] },
-      { kind: "section", values: ["门店经营汇总"] },
-      { kind: "header", values: ["门店", ...storeMetrics.map(([, label]) => label), "来源数"] },
-      { kind: "total", values: ["全部门店", ...storeMetrics.map(([id, label]) => addMetric("老板管理报表", `store-total:${id}`, `全部门店 ${label}`, management.storeReport.totals[id], management.storeReport.sourceIds)), management.storeReport.sourceIds.length] },
-      ...management.storeReport.stores.map((store) => ({
-        kind: "data",
-        values: [store.name, ...storeMetrics.map(([id, label]) => addMetric("老板管理报表", `store:${store.id}:${id}`, `${store.name} ${label}`, store.metrics[id], store.sourceIds)), store.sourceIds.length],
-      })),
-      { kind: "note", values: ["入账覆盖", `本期已入账 ${management.storeReport.postingCoverage.postedEventCount} / 已确认 ${management.storeReport.postingCoverage.recognizedEventCount} 笔业务；未入账业务不进入本表。`] },
-    ] : []),
+    { kind: "blank", values: [] },
+    { kind: "section", values: [memberBusinessEnabled ? "门店经营汇总" : "场所经营汇总"] },
+    { kind: "header", values: [memberBusinessEnabled ? "门店" : "场所", ...storeMetrics.map(([, label]) => label), "来源数"] },
+    { kind: "total", values: [memberBusinessEnabled ? "全部门店" : "全部场所", ...storeMetrics.map(([id, label]) => addMetric("老板管理报表", `store-total:${id}`, `${memberBusinessEnabled ? "全部门店" : "全部场所"} ${label}`, management.storeReport.totals[id], management.storeReport.sourceIds)), management.storeReport.sourceIds.length] },
+    ...management.storeReport.stores.map((store) => ({
+      kind: "data",
+      values: [store.name, ...storeMetrics.map(([id, label]) => addMetric("老板管理报表", `store:${store.id}:${id}`, `${store.name} ${label}`, store.metrics[id], store.sourceIds)), store.sourceIds.length],
+    })),
+    { kind: "note", values: ["入账覆盖", memberBusinessEnabled
+      ? `本期已入账 ${management.storeReport.postingCoverage.postedEventCount} / 已确认 ${management.storeReport.postingCoverage.recognizedEventCount} 笔业务；未入账业务不进入本表。`
+      : `本期 ${management.storeReport.postingCoverage.postedVoucherCount} 张已入账凭证中，共 ${management.storeReport.postingCoverage.postedLineCount} 条收入、成本或费用分录进入场所经营汇总。`] },
   ];
-  XLSX.utils.book_append_sheet(workbook, exportSheet(workspace, version, "老板管理报表", ownerEntries, [25, 16, 16, 16, 16, 16, 18, 11], generatedAt), "老板管理报表");
+  XLSX.utils.book_append_sheet(workbook, exportSheet(workspace, version, "老板管理报表", ownerEntries, [25, ...storeMetrics.map(() => 16), 11], generatedAt), "老板管理报表");
 
   const ageing = management.ageing;
   const ageingEntries = [
