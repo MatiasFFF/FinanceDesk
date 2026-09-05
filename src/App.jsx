@@ -185,6 +185,66 @@ function enabledWorkflowChecks(workspace, checks) {
   return checks.filter((item) => !["payroll", "socialSecurity"].includes(item.id));
 }
 
+function workflowSummaryChecks(checks, flow) {
+  const payrollVoucherIds = new Set(flow.payrollAccounting?.voucherIds || []);
+  const payrollTarget = { page: "tax", section: "tax-payroll" };
+  const voucherTarget = { page: "reconcile", panel: "vouchers" };
+  return checks.flatMap((check) => {
+    if (check.ok) return [check];
+    if (check.id === "exceptions") {
+      const tasks = flow.openExceptionTasks || [];
+      const payrollTasks = tasks.filter((task) => payrollVoucherIds.has(task.sourceId));
+      const payrollData = flow.snapshot.taxWorkpaper.payrollSocialSummary;
+      const payrollImported = Boolean(payrollData?.counts.payroll || payrollData?.counts.socialSecurity);
+      const payrollDetail = !payrollImported ? "待导入" : payrollData.counts.issues
+        ? `${payrollData.counts.issues} 人待核对`
+        : flow.payrollAccounting?.draftVoucherId ? "计提凭证待复核" : "资料与计提待复核";
+      const remainingTasks = tasks.filter((task) => !payrollTasks.includes(task));
+      const bankTasks = remainingTasks.filter((task) => task.sourceType === "bankReconciliation");
+      const voucherTasks = remainingTasks.filter((task) => task.sourceType === "voucher" || task.code === "voucher_evidence");
+      const documentTasks = remainingTasks.filter((task) => !bankTasks.includes(task) && !voucherTasks.includes(task) && (task.sourceType === "document" || task.code === "missing_document"));
+      const otherTasks = remainingTasks.filter((task) => !bankTasks.includes(task) && !voucherTasks.includes(task) && !documentTasks.includes(task));
+      const groups = [
+        { id: "exceptions-payroll", label: "工资社保", detail: payrollDetail, count: (flow.payrollAccountingIssues?.length || 0) + payrollTasks.length, ...payrollTarget },
+        { id: "exceptions-transactions", label: "复核银行流水", count: flow.unresolved?.length || 0, unit: "笔待复核", page: "reconcile", panel: "transactions" },
+        { id: "exceptions-bank", label: "处理银行勾稽异常", count: bankTasks.length, unit: "项待处理", page: "setup", stage: "s3" },
+        { id: "exceptions-vouchers", label: "复核凭证依据", count: voucherTasks.length, unit: "项待处理", ...voucherTarget },
+        { id: "exceptions-documents", label: "补齐业务资料", count: documentTasks.length, unit: "项待处理", page: "setup", stage: "documents" },
+        { id: "exceptions-other", label: "处理业务异常", count: otherTasks.length, unit: "项待处理", page: "reconcile" },
+        { id: "exceptions-notices", label: "处理跨期待办", count: flow.openNotices?.length || 0, unit: "项待处理", page: "overview", section: "overview-carry-forward" },
+      ].filter((group) => group.count > 0);
+      return groups.length ? groups.map((group) => ({ ...check, ...group, detail: group.detail || `${group.count} ${group.unit}` })) : [check];
+    }
+    if (check.id === "bank") {
+      const incomplete = (flow.bankReconciliationSummary?.accounts || []).filter((account) => !account.passed).length;
+      return [{ ...check, stage: "s3", detail: incomplete ? `${incomplete} 个账户待核对` : "本期银行资料与勾稽待完成" }];
+    }
+    if (check.id === "vouchers") {
+      const payroll = (flow.pendingVouchers || []).filter((voucher) => voucher.payrollAccrual || payrollVoucherIds.has(voucher.id));
+      const otherCount = (flow.pendingVouchers?.length || 0) - payroll.length;
+      return [
+        ...(payroll.length ? [{ ...check, id: "vouchers-payroll", label: "复核工资计提凭证", detail: `${payroll.length} 张待入账`, ...payrollTarget }] : []),
+        ...(otherCount ? [{ ...check, detail: `${otherCount} 张待入账`, ...voucherTarget }] : []),
+      ];
+    }
+    if (["payroll", "socialSecurity"].includes(check.id)) {
+      const source = flow.snapshot.taxWorkpaper.payrollSourceState?.[check.id];
+      return [{ ...check, ...payrollTarget, section: source?.sourceStatus === "ready" ? "tax-initial-confirmation" : "tax-payroll", detail: source?.sourceStatus === "ready" ? "资料已核对，待逐项确认" : payrollAmountLabel(source) }];
+    }
+    if (check.id === "vatReconciliation") return [{ ...check, detail: `${flow.snapshot.taxWorkpaper.vatReconciliation.unresolvedItems.length} 项差异待核对` }];
+    return [check];
+  });
+}
+
+function payrollAmountLabel(source) {
+  if (source?.sourceStatus === "ready" && source.value != null) return formatCurrency(source.value);
+  return { missing: "待导入", incomplete: "资料不完整", unreconciled: "待核对" }[source?.sourceStatus] || "待核对";
+}
+
+function workflowCheckTarget(item) {
+  return { stage: item.stage || (item.id === "bank" ? "s3" : undefined), panel: item.panel || (item.id === "vouchers" ? "vouchers" : undefined), section: item.section };
+}
+
 function memberRoleCopy(value, terminology) {
   return String(value || "")
     .replaceAll("会员", terminology.member)
@@ -540,13 +600,13 @@ function OverviewPage({ workspace, onPage, onResolveNotice }) {
     ...(taxEnabled ? [Boolean(flow.checks.find((item) => item.id === "owner")?.ok)] : []),
   ];
   const progress = Math.round((completionItems.filter(Boolean).length / completionItems.length) * 100);
-  const preFreezeBlocker = flow.checks.find((item) => ["balanced", "bank", "exceptions", "vouchers"].includes(item.id) && !item.ok);
+  const preFreezeBlocker = workflowSummaryChecks(flow.checks.filter((item) => ["balanced", "bank", "exceptions", "vouchers"].includes(item.id) && !item.ok), flow)[0];
   const nextAction = openNotices.length
-    ? { title: `先处理 ${openNotices.length} 项上期结转事项`, body: "延期事项已带入本期，处理后会保留来源与审计记录。", page: "overview", action: "查看结转事项" }
+    ? { title: `先处理 ${openNotices.length} 项上期结转事项`, body: "延期事项已带入本期，处理后会保留来源与审计记录。", page: "overview", section: "overview-carry-forward", action: "查看结转事项" }
     : reconciliationEnabled && flow.unresolved.length
     ? { title: `先处理 ${flow.unresolved.length} 笔未完成流水`, body: "低置信度和证据不足事项不会自动入账。", page: "reconcile", action: "进入批量核销" }
     : preFreezeBlocker
-      ? { title: preFreezeBlocker.label, body: preFreezeBlocker.detail || "完成这项复核后，再冻结本期报表。", page: preFreezeBlocker.page, stage: preFreezeBlocker.id === "bank" ? "s3" : undefined, panel: preFreezeBlocker.id === "vouchers" ? "vouchers" : undefined, action: "去处理" }
+      ? { title: preFreezeBlocker.label, body: preFreezeBlocker.detail || "完成这项复核后，再冻结本期报表。", page: preFreezeBlocker.page, ...workflowCheckTarget(preFreezeBlocker), action: "去处理" }
     : !flow.version
       ? { title: "冻结本期第一版报表", body: "冻结后会保留不可覆盖的版本快照和后续差异。", page: "reports", action: "查看报表" }
       : taxEnabled && !financeConfirmationDone
@@ -561,23 +621,23 @@ function OverviewPage({ workspace, onPage, onResolveNotice }) {
   const focusTransaction = flow.unresolved[0] || periodTransactions[0];
   const linkedDocuments = focusTransaction ? workspace.documents.filter((document) => focusTransaction.evidenceIds?.includes(document.id)) : [];
   const tasks = [
-    { label: "完成本期银行资料与余额勾稽", meta: flow.bankReconciliationPassed ? "已完成" : flow.checks.find((item) => item.id === "bank")?.detail, done: flow.bankReconciliationPassed, page: "setup", stage: "s3" },
-    { label: "处理上期结转事项", meta: openNotices.length ? `${openNotices.length} 项待处理` : "已完成", done: openNotices.length === 0, page: "overview" },
-    ...(reconciliationEnabled ? [{ label: "完成异常与低置信度复核", meta: exceptionCheck?.detail || "待完成", done: Boolean(exceptionCheck?.ok), page: "reconcile" }] : []),
+    { label: "完成本期银行资料与余额勾稽", meta: flow.bankReconciliationPassed ? "已完成" : workflowSummaryChecks(flow.checks.filter((item) => item.id === "bank"), flow)[0]?.detail, done: flow.bankReconciliationPassed, page: "setup", stage: "s3" },
+    { label: "处理上期结转事项", meta: openNotices.length ? `${openNotices.length} 项待处理` : "已完成", done: openNotices.length === 0, page: "overview", section: "overview-carry-forward" },
+    ...(exceptionCheck && !exceptionCheck.ok ? workflowSummaryChecks([exceptionCheck], flow).filter((item) => item.id !== "exceptions-notices").map((item) => ({ label: item.label, meta: item.detail, done: false, page: item.page, ...workflowCheckTarget(item) })) : reconciliationEnabled ? [{ label: "完成异常与低置信度复核", meta: "已完成", done: true, page: "reconcile" }] : []),
     { label: "冻结月度报表版本", meta: flow.version ? `${flow.version.label} · ${formatDateTime(flow.version.createdAt)}` : "尚未冻结", done: Boolean(flow.version), page: "reports" },
     ...(taxEnabled ? [{ label: payrollEnabled ? `${terminology.customer}首次确认财务与工资社保` : `${terminology.customer}首次确认财务数据`, meta: financeConfirmationDone ? formatDateTime(workspace.tax.financeConfirmedAt) : "等待确认", done: financeConfirmationDone, page: "tax" }] : []),
     { label: taxEnabled ? "最终确认、回执与归档" : "完成本期归档", meta: workspace.delivery.filing.archivedAt ? formatDateTime(workspace.delivery.filing.archivedAt) : "尚未归档", done: Boolean(workspace.delivery.filing.archivedAt), page: "archive" },
-  ].sort((left, right) => Number(left.done) - Number(right.done));
+  ].filter((task) => !task.done);
   return (
     <div className="page-content overview-page">
       <StageRail workspace={workspace} onPage={onPage} />
       <section className="hero-grid">
         <article className="progress-card"><div className="section-heading compact"><div><h2>本月关账进度</h2><p>{progress === 100 ? "本期交付已完成" : "继续处理本期待办"}</p></div><span className="progress-number">{progress}%</span></div><div className="progress-track"><i style={{ width: `${progress}%` }} /></div><div className="progress-meta"><span><i className="dot sage" />已完成 {completionItems.filter(Boolean).length} / {completionItems.length} 个阶段</span>{reconciliationEnabled && <span><i className="dot clay" />{flow.unresolved.length} 笔待复核</span>}</div></article>
-        <article className="next-action-card"><h3 className="card-title"><Sparkle size={17} weight="fill" /><span>{nextAction.title}</span></h3><p>{nextAction.body}</p><button className="text-button" onClick={() => onPage(nextAction.page, { stage: nextAction.stage, panel: nextAction.panel })} type="button">{nextAction.action}<ArrowRight size={16} /></button></article>
+        <article className="next-action-card"><h3 className="card-title"><Sparkle size={17} weight="fill" /><span>{nextAction.title}</span></h3><p>{nextAction.body}</p><button className="text-button" onClick={() => onPage(nextAction.page, workflowCheckTarget(nextAction))} type="button">{nextAction.action}<ArrowRight size={16} /></button></article>
       </section>
-      {periodNotices.length > 0 && <section className="panel carry-forward-panel"><div className="panel-heading"><div><h2>跨期待办</h2></div><TonePill tone={openNotices.length ? "warning" : "success"}>{openNotices.length ? `${openNotices.length} 项待处理` : "全部处理完成"}</TonePill></div><div className="carry-forward-list">{periodNotices.map((notice) => <article className={notice.status === "resolved" ? "resolved" : ""} key={notice.id}><span><strong>{notice.message}</strong><small>来源 {notice.sourceId} · {formatCurrency(notice.amount, { sign: true })}</small></span>{notice.status === "resolved" ? <TonePill tone="success">已处理</TonePill> : <button className="secondary-button" onClick={() => onResolveNotice(notice.id)} type="button">标记已处理</button>}</article>)}</div></section>}
+      {periodNotices.length > 0 && <section className="panel carry-forward-panel" id="overview-carry-forward"><div className="panel-heading"><div><h2>跨期待办</h2></div><TonePill tone={openNotices.length ? "warning" : "success"}>{openNotices.length ? `${openNotices.length} 项待处理` : "全部处理完成"}</TonePill></div><div className="carry-forward-list">{periodNotices.map((notice) => <article className={notice.status === "resolved" ? "resolved" : ""} key={notice.id}><span><strong>{notice.message}</strong><small>来源 {notice.sourceId} · {formatCurrency(notice.amount, { sign: true })}</small></span>{notice.status === "resolved" ? <TonePill tone="success">已处理</TonePill> : <button className="secondary-button" onClick={() => onResolveNotice(notice.id)} type="button">标记已处理</button>}</article>)}</div></section>}
       <section className={`overview-grid ${reconciliationEnabled && focusTransaction ? "" : "tasks-only"}`}>
-        <article className="panel task-panel"><div className="panel-heading"><div><h2>本期待办</h2></div><TonePill tone={tasks.some((task) => !task.done) ? "warning" : "success"}>{tasks.some((task) => !task.done) ? `${tasks.filter((task) => !task.done).length} 项待办` : "已完成"}</TonePill></div><div className="task-list">{tasks.map((task) => <button className="task-row" key={task.label} onClick={() => onPage(task.page, { stage: task.stage })} type="button"><span className={`task-check ${task.done ? "done" : ""}`}>{task.done && <Check size={13} weight="bold" />}</span><span><strong>{task.label}</strong><small>{task.meta}</small></span><ArrowRight size={16} /></button>)}</div></article>
+        <article className="panel task-panel"><div className="panel-heading"><div><h2>本期待办</h2></div><TonePill tone={tasks.some((task) => !task.done) ? "warning" : "success"}>{tasks.some((task) => !task.done) ? `${tasks.filter((task) => !task.done).length} 项待办` : "已完成"}</TonePill></div><div className="task-list">{tasks.map((task) => <button className="task-row" key={task.label} onClick={() => onPage(task.page, workflowCheckTarget(task))} type="button"><span className={`task-check ${task.done ? "done" : ""}`}>{task.done && <Check size={13} weight="bold" />}</span><span><strong>{task.label}</strong><small>{task.meta}</small></span><ArrowRight size={16} /></button>)}</div></article>
         {reconciliationEnabled && focusTransaction && <article className="panel evidence-preview"><div className="panel-heading"><div><h2>单笔证据预览</h2><p>{focusTransaction ? focusTransaction.summary : "还没有流水"}</p></div>{focusTransaction && <TonePill tone={focusTransaction.status === "reconciled" ? "success" : "warning"}>{transactionStatus(focusTransaction).label}</TonePill>}</div>{focusTransaction ? <><div className="evidence-flow"><div className="flow-node good"><Bank size={19} /><span>银行流水</span><small>{formatCurrency(focusTransaction.amount, { sign: true })}</small></div><ArrowRight size={18} /><div className={`flow-node ${focusTransaction.allocations?.length || focusTransaction.directAccount ? "good" : "missing"}`}><Receipt size={19} /><span>业务判断</span><small>{focusTransaction.suggestion || "待确认"}</small></div><ArrowRight size={18} /><div className={`flow-node ${linkedDocuments.length ? "good" : "missing"}`}><FileText size={19} /><span>本地证据</span><small>{linkedDocuments.length ? `${linkedDocuments.length} 份已关联` : "等待补齐"}</small></div></div>{focusTransaction.exceptionReason && <div className="warning-note"><WarningCircle size={18} /><span><strong>待复核：</strong>{focusTransaction.exceptionReason}</span></div>}<button className="primary-button wide" onClick={() => onPage("reconcile")} type="button">打开单笔证据复核<ArrowRight size={17} /></button></> : <EmptyState title="等待本地流水" description="导入 CSV 后，这里会显示第一条证据链。" />}</article>}
       </section>
       <section className="metric-grid four">
@@ -1044,7 +1104,7 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
       <section className="panel report-reconciliation-panel">
         <div className="report-check-summary panel-heading"><div><h2>{readyToFreeze ? "本期已具备冻结条件" : "冻结前待办"}</h2><p>实时数据 · {statementChecks.filter((check) => check.passed).length} / {statementChecks.length} 项勾稽通过</p></div></div>
         {!balanced && <div className="report-failed-checks">{statementChecks.filter((check) => !check.passed).map((check) => <button className="text-button" key={check.id} onClick={() => openReconciliationSource(check)} type="button">{check.label} · 差额 {formatCurrency(check.difference)}<ArrowRight size={15} /></button>)}</div>}
-        <CheckRows items={freezeBlockers.filter((item) => item.id !== "balanced")} onNavigate={onPage} />
+        <CheckRows items={workflowSummaryChecks(freezeBlockers.filter((item) => item.id !== "balanced"), flow)} onNavigate={onPage} />
         <details className="inline-details"><summary>查看全部勾稽口径与来源</summary>
         <div className="check-rows report-check-rows">{statementChecks.map((check) => (
           <button key={check.id} onClick={() => openReconciliationSource(check)} type="button">
@@ -1080,15 +1140,16 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
 function CheckRows({ items, onNavigate }) {
   return <div className="check-rows">{items.map((item) => {
     const actionable = !item.ok && Boolean(item.page) && Boolean(onNavigate);
-    return <button className={actionable ? "actionable" : "complete"} disabled={!actionable} key={item.id} onClick={() => onNavigate?.(item.page, item.id === "bank" ? { stage: "s3" } : item.id === "vouchers" ? { panel: "vouchers" } : {})} type="button"><span className={`check-icon ${item.ok ? "ok" : ""}`}>{item.ok ? <Check size={13} weight="bold" /> : <WarningCircle size={15} />}</span><span><strong>{item.label}</strong>{item.detail && <small>{item.detail}</small>}</span>{actionable && <ArrowRight size={15} />}</button>;
+    return <button className={actionable ? "actionable" : "complete"} disabled={!actionable} key={item.id} onClick={() => onNavigate?.(item.page, workflowCheckTarget(item))} type="button"><span className={`check-icon ${item.ok ? "ok" : ""}`}>{item.ok ? <Check size={13} weight="bold" /> : <WarningCircle size={15} />}</span><span><strong>{item.label}</strong>{item.detail && <small>{item.detail}</small>}</span>{actionable && <ArrowRight size={15} />}</button>;
   })}</div>;
 }
 
-function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecision, onPrepareDraft, onFinalConfirm, onExport, onReceipt, onToast }) {
+function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecision, onPrepareDraft, onFinalConfirm, onExport, onReceipt, onToast, focusRequest }) {
   const terminology = workspaceTerminology(workspace);
   const flow = workflowChecks(workspace);
   const payrollEnabled = workspaceModuleEnabled(workspace, "payroll");
   const [payrollDetailsOpen, setPayrollDetailsOpen] = useState(false);
+  useEffect(() => { if (focusRequest?.page === "tax" && focusRequest.section === "tax-payroll") setPayrollDetailsOpen(true); }, [focusRequest, workspace.id]);
   const version = flow.version;
   const snapshot = version?.snapshot || flow.snapshot;
   const prerequisiteChecks = flow.checks.slice(0, 5);
@@ -1168,16 +1229,16 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
     { id: "vat", label: "应交税额", amount: formatCurrency(confirmationSections.vat.value), sourceSummary: summarizeSources(confirmationSections.vat.rows, "来自当前冻结税务底稿"), majorByDefault: true },
     { id: "inputVat", label: "进项税", amount: formatCurrency(confirmationSections.inputVat.value), sourceSummary: summarizeSources(confirmationSections.inputVat.rows, "来自进项发票或进项税科目"), majorByDefault: false },
     ...(payrollEnabled ? [
-      { id: "payroll", label: `${terminology.personnel}工资`, amount: formatCurrency(confirmationSections.payroll.value), sourceSummary: summarizeSources(confirmationSections.payroll.rows, `来自当前期间${terminology.personnel}工资表`), majorByDefault: true },
-      { id: "socialSecurity", label: `${terminology.personnel}社保`, amount: formatCurrency(confirmationSections.socialSecurity.value), sourceSummary: summarizeSources(confirmationSections.socialSecurity.rows, `来自当前期间${terminology.personnel}社保表`), majorByDefault: true },
+      { id: "payroll", label: `${terminology.personnel}工资`, amount: payrollAmountLabel(confirmationSections.payroll), sourceIncomplete: confirmationSections.payroll.sourceStatus !== "ready" || confirmationSections.payroll.value == null, sourceSummary: confirmationSections.payroll.sourceMessage || summarizeSources(confirmationSections.payroll.rows, `来自当前期间${terminology.personnel}工资表`), majorByDefault: true },
+      { id: "socialSecurity", label: `${terminology.personnel}社保`, amount: payrollAmountLabel(confirmationSections.socialSecurity), sourceIncomplete: confirmationSections.socialSecurity.sourceStatus !== "ready" || confirmationSections.socialSecurity.value == null, sourceSummary: confirmationSections.socialSecurity.sourceMessage || summarizeSources(confirmationSections.socialSecurity.rows, `来自当前期间${terminology.personnel}社保表`), majorByDefault: true },
     ] : []),
     { id: "finance", label: "财务报表", amount: `资产 ${formatCurrency(confirmationSections.finance.metrics.assets.value)} · 利润 ${formatCurrency(confirmationSections.finance.metrics.profit.value)}`, sourceSummary: summarizeSources(confirmationSections.finance.rows, "来自当前冻结的资产负债表与利润表"), majorByDefault: true },
     { id: "openItems", label: "待核实事项", amount: `${confirmationSections.openItems.value} 项`, sourceSummary: pendingSources.length ? businessTermCopy(pendingSources.slice(0, 2).map((item) => item.label || item.id).join("；"), terminology) : "异常任务、未决流水与跨期事项均为 0", majorByDefault: false },
   ];
   const localizedPrerequisiteChecks = prerequisiteChecks.map((item) => ({ ...item, label: businessTermCopy(item.label, terminology), detail: businessTermCopy(item.detail, terminology) }));
   const localizedExportChecks = exportChecks.map((item) => ({ ...item, label: businessTermCopy(item.label, terminology), detail: businessTermCopy(item.detail, terminology) }));
-  const approvedCount = confirmationItems.filter((item) => activeConfirmation?.sections?.[item.id]?.status === "approved").length;
-  const packageApproved = Boolean(activeConfirmation) && confirmationItems.every((item) => activeConfirmation.sections?.[item.id]?.status === "approved");
+  const approvedCount = confirmationItems.filter((item) => !item.sourceIncomplete && activeConfirmation?.sections?.[item.id]?.status === "approved").length;
+  const packageApproved = Boolean(activeConfirmation) && confirmationItems.every((item) => !item.sourceIncomplete && activeConfirmation.sections?.[item.id]?.status === "approved");
   const workflowConfirmationDone = ["finance", ...(payrollEnabled ? ["payroll", "socialSecurity"] : [])].every((id) => flow.checks.find((item) => item.id === id)?.ok);
   const initialDone = Boolean(packageApproved && workflowConfirmationDone && filing.initialConfirmationId === activeConfirmation?.id);
   const canStartFinalConfirmation = Boolean(initialDone && version && filing.draftCreatedAt && filing.draftVersionId === version.id);
@@ -1186,10 +1247,10 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
     && ["authorize_external", "do_not_authorize"].includes(deductionAuthorization)
     && confirmer.trim().length > 0;
   const exportReady = finalConfirmationCurrent && exportChecks.every((item) => item.ok);
-  const blockers = localizedPrerequisiteChecks.filter((item) => !item.ok);
+  const blockers = workflowSummaryChecks(localizedPrerequisiteChecks.filter((item) => !item.ok), flow);
   const jumpTo = (id) => { const target = document.getElementById(id); if (target?.tagName === "DETAILS") target.open = true; target?.scrollIntoView({ block: "start" }); };
   const nextStep = blockers.length
-    ? { title: "先完成本期复核", label: blockers[0].label, run: () => onPage(blockers[0].page, blockers[0].id === "bank" ? { stage: "s3" } : blockers[0].id === "vouchers" ? { panel: "vouchers" } : {}) }
+    ? { title: "先完成本期复核", label: blockers[0].label, run: () => onPage(blockers[0].page, workflowCheckTarget(blockers[0])) }
     : !initialDone ? { title: "第一次数据确认", label: "开始逐项确认", run: () => jumpTo("tax-initial-confirmation") }
     : !filing.draftCreatedAt ? { title: "首次确认已完成", label: "生成本地申报底稿", run: onPrepareDraft }
     : !finalConfirmationCurrent ? { title: "提交前最终确认", label: "复核并签字", run: () => jumpTo("tax-final-confirmation") }
@@ -1201,8 +1262,8 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
   return (
     <div className="page-content tax-page">
       <StageRail workspace={workspace} onPage={onPage} />
-      <section className="tax-stage-summary panel"><div className="stage-next-action"><div><h2>{nextStep.title}</h2><p>{version ? version.label : "尚未冻结"}</p></div><button className="primary-button" onClick={nextStep.run} type="button">{nextStep.label}<ArrowRight size={16} /></button></div><p className="local-filing-note"><CloudSlash size={17} />仅生成本地申报包；税额为本地底稿，尚未提交税务局。</p>{blockers.length > 0 && <div className="stage-blockers">{blockers.map((item) => <button key={item.id} onClick={() => onPage(item.page, item.id === "bank" ? { stage: "s3" } : item.id === "vouchers" ? { panel: "vouchers" } : {})} type="button"><WarningCircle size={16} /><span><strong>{item.label}</strong><small>{item.detail}</small></span><ArrowRight size={15} /></button>)}</div>}{!blockers.length && !exportReady && initialDone && <p className="toolbar-explanation">{localizedExportChecks.find((item) => !item.ok)?.detail || localizedExportChecks.find((item) => !item.ok)?.label}</p>}</section>
-      {payrollEnabled && <details className="workpaper-details" open={payrollDetailsOpen} onToggle={(event) => { if (event.target === event.currentTarget) setPayrollDetailsOpen(event.currentTarget.open); }}>
+      <section className="tax-stage-summary panel"><div className="stage-next-action"><div><h2>{nextStep.title}</h2><p>{version ? version.label : "尚未冻结"}</p></div><button className="primary-button" onClick={nextStep.run} type="button">{nextStep.label}<ArrowRight size={16} /></button></div><p className="local-filing-note"><CloudSlash size={17} />仅生成本地申报包；税额为本地底稿，尚未提交税务局。</p>{blockers.length > 0 && <div className="stage-blockers">{blockers.map((item) => <button key={item.id} onClick={() => onPage(item.page, workflowCheckTarget(item))} type="button"><WarningCircle size={16} /><span><strong>{item.label}</strong><small>{item.detail}</small></span><ArrowRight size={15} /></button>)}</div>}{!blockers.length && !exportReady && initialDone && <p className="toolbar-explanation">{localizedExportChecks.find((item) => !item.ok)?.detail || localizedExportChecks.find((item) => !item.ok)?.label}</p>}</section>
+      {payrollEnabled && <details className="workpaper-details" id="tax-payroll" open={payrollDetailsOpen} onToggle={(event) => { if (event.target === event.currentTarget) setPayrollDetailsOpen(event.currentTarget.open); }}>
         <summary>工资社保核对与计提</summary>
         <DeferredView active={payrollDetailsOpen} label="工资与社保"><DocumentIntakePanel payrollOnly onToast={onToast} onNavigate={onPage} /></DeferredView>
       </details>}
@@ -1225,14 +1286,14 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
               const expanded = expandedConfirmationId === item.id;
               const updateDraft = (fields) => setSectionDrafts((current) => ({ ...current, [item.id]: { ...(current[item.id] || {}), ...fields } }));
               const decisionActor = isMajor ? responsibleName.trim() : initialConfirmer.trim();
-              const canSave = canConfirmSections && !locked && Boolean(decision) && note.trim().length > 0 && decisionActor.length > 0;
+              const canSave = canConfirmSections && !item.sourceIncomplete && !locked && Boolean(decision) && note.trim().length > 0 && decisionActor.length > 0;
               return (
                 <div className="confirmation-item-group" key={item.id}>
                   {["revenue", "payroll", "finance"].includes(item.id) && <h3 className="confirmation-group-heading">{item.id === "revenue" ? "税务与经营数据" : item.id === "payroll" ? `${terminology.personnel}工资与社保` : "财务报表与未决事项"}</h3>}
                 <article className={`confirmation-item ${status} ${expanded ? "expanded" : "collapsed"}`} key={item.id}>
-                  <button aria-expanded={expanded} className="confirmation-item-heading confirmation-item-toggle" onClick={() => setExpandedConfirmationId((current) => current === item.id ? null : item.id)} type="button"><div><span>{item.label}</span><strong>{item.amount}</strong></div><span className="confirmation-heading-actions"><TonePill tone={status === "approved" ? "success" : status === "rejected" ? "danger" : "neutral"}>{status === "approved" ? "已确认" : status === "rejected" ? "有异议" : "待确认"}</TonePill><CaretDown className="confirmation-caret" size={15} /></span></button>
+                  <button aria-expanded={expanded} className="confirmation-item-heading confirmation-item-toggle" onClick={() => setExpandedConfirmationId((current) => current === item.id ? null : item.id)} type="button"><div><span>{item.label}</span><strong className={item.sourceIncomplete ? "confirmation-data-state" : undefined}>{item.amount}</strong></div><span className="confirmation-heading-actions">{!item.sourceIncomplete && <TonePill tone={status === "approved" ? "success" : status === "rejected" ? "danger" : "neutral"}>{status === "approved" ? "已确认" : status === "rejected" ? "有异议" : "待确认"}</TonePill>}<CaretDown className="confirmation-caret" size={15} /></span></button>
                   {expanded && <div className="confirmation-item-body"><p className="confirmation-source"><FileText size={15} /><span><strong>来源摘要</strong>{item.sourceSummary}</span></p>
-                  {locked ? (
+                  {item.sourceIncomplete ? <button className="secondary-button" type="button" onClick={() => onPage("tax", { section: "tax-payroll" })}>导入或核对工资社保<ArrowRight size={16} /></button> : locked ? (
                     <div className={`confirmation-record ${status}`}><span>{status === "approved" ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} weight="fill" />}</span><div><strong>{status === "approved" ? "本项已单独确认" : "本项异议已形成待办"}</strong><small>{savedSection.confirmedBy || savedDecision?.actor || `${terminology.customer}负责人`} · {formatDateTime(savedSection.confirmedAt || savedDecision?.at)}</small><p>{savedDecision?.note || "已记录到本地确认链"}</p></div></div>
                   ) : (
                     <div className="confirmation-form">
@@ -1253,7 +1314,7 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
             <p className={`confirmation-summary ${initialDone ? "done" : ""}`}>{initialDone ? `${confirmationItems.length} 项已全部逐项确认，完成时间 ${formatDateTime(workspace.tax.financeConfirmedAt)}` : `还需确认 ${confirmationItems.length - approvedCount} 项；全部完成前不能生成申报底稿。`}</p>
           </section>
           <details className="workpaper-details" id="tax-workpaper"><summary>底稿明细与本地参数</summary>
-          <section className="panel workpaper-panel"><div className="panel-heading"><div><h2>本地申报底稿</h2><p>{formatPeriod(workspace.currentPeriod)}</p></div>{version ? <TonePill tone="success">基于 {version.label}</TonePill> : <TonePill tone="warning">尚未冻结报表</TonePill>}</div><div className="workpaper-groups">{[{ label: "税务金额与差异", rows: visibleWorkpaperRows.filter((row) => !PAYROLL_WORKPAPER_ROW_IDS.has(row.id)) }, ...(payrollEnabled ? [{ label: `${terminology.personnel}工资与社保`, rows: visibleWorkpaperRows.filter((row) => PAYROLL_WORKPAPER_ROW_IDS.has(row.id)) }] : [])].map((group) => <section key={group.label}><h3>{group.label}</h3><div className="workpaper-grid">{group.rows.map((row) => <div key={row.id}><span>{businessTermCopy(row.label, terminology)}</span><strong>{formatCurrency(row.value)}</strong></div>)}</div></section>)}</div><p className="workpaper-disclaimer"><WarningCircle size={16} />{businessTermCopy(snapshot.taxWorkpaper.disclaimer, terminology)}</p><div className="tax-input-grid"><div className="tax-rate-settings"><div className="tax-rate-settings-heading"><strong>本地估算税率</strong><small>仅用于当前工作台的本地估算。</small></div><div className="tax-rate-grid"><label><span>增值税率（%）</span><input type="number" min="0" max="100" step="0.01" inputMode="decimal" value={Number((Number(workspace.tax.vatRate ?? 0.03) * 100).toFixed(4))} onChange={(event) => onTaxChange("vatRate", Number(event.target.value) / 100)} onBlur={() => onTaxCommit("vatRate")} /></label><label><span>附加税率（%）</span><input type="number" min="0" max="100" step="0.01" inputMode="decimal" value={Number((Number(workspace.tax.surtaxRate ?? 0.12) * 100).toFixed(4))} onChange={(event) => onTaxChange("surtaxRate", Number(event.target.value) / 100)} onBlur={() => onTaxCommit("surtaxRate")} /></label><label><span>所得税率（%）</span><input type="number" min="0" max="100" step="0.01" inputMode="decimal" value={Number((Number(workspace.tax.incomeTaxRate ?? 0.05) * 100).toFixed(4))} onChange={(event) => onTaxChange("incomeTaxRate", Number(event.target.value) / 100)} onBlur={() => onTaxCommit("incomeTaxRate")} /></label></div></div><label><span>增值税计税基础调整</span><input type="number" step="0.01" value={workspace.tax.adjustments} onChange={(event) => onTaxChange("adjustments", Number(event.target.value))} onBlur={() => onTaxCommit("adjustments")} /></label>{payrollEnabled && <><label><span>{terminology.personnel}工资薪金</span><input type="number" step="0.01" value={workspace.tax.payroll} onChange={(event) => onTaxChange("payroll", Number(event.target.value))} onBlur={() => onTaxCommit("payroll")} /></label><label><span>{terminology.personnel}社保数据</span><input type="number" step="0.01" value={workspace.tax.socialSecurity} onChange={(event) => onTaxChange("socialSecurity", Number(event.target.value))} onBlur={() => onTaxCommit("socialSecurity")} /></label></>}<label className="full"><span>复核备注</span><textarea value={workspace.tax.note} onChange={(event) => onTaxChange("note", event.target.value)} onBlur={() => onTaxCommit("note")} placeholder="记录本期特殊口径或待说明事项" /></label></div><p className="edit-warning">修改底稿会撤销后续确认与导出状态；请重新冻结报表版本后再继续。</p></section>
+          <section className="panel workpaper-panel"><div className="panel-heading"><div><h2>本地申报底稿</h2><p>{formatPeriod(workspace.currentPeriod)}</p></div>{version ? <TonePill tone="success">基于 {version.label}</TonePill> : <TonePill tone="warning">尚未冻结报表</TonePill>}</div><div className="workpaper-groups">{[{ label: "税务金额与差异", rows: visibleWorkpaperRows.filter((row) => !PAYROLL_WORKPAPER_ROW_IDS.has(row.id)) }, ...(payrollEnabled ? [{ label: `${terminology.personnel}工资与社保`, rows: visibleWorkpaperRows.filter((row) => PAYROLL_WORKPAPER_ROW_IDS.has(row.id)) }] : [])].map((group) => <section key={group.label}><h3>{group.label}</h3><div className="workpaper-grid">{group.rows.map((row) => <div key={row.id}><span>{businessTermCopy(row.label, terminology)}</span><strong>{PAYROLL_WORKPAPER_ROW_IDS.has(row.id) ? payrollAmountLabel(row) : formatCurrency(row.value)}</strong></div>)}</div></section>)}</div><p className="workpaper-disclaimer"><WarningCircle size={16} />{businessTermCopy(snapshot.taxWorkpaper.disclaimer, terminology)}</p><div className="tax-input-grid"><div className="tax-rate-settings"><div className="tax-rate-settings-heading"><strong>本地估算税率</strong><small>仅用于当前工作台的本地估算。</small></div><div className="tax-rate-grid"><label><span>增值税率（%）</span><input type="number" min="0" max="100" step="0.01" inputMode="decimal" value={Number((Number(workspace.tax.vatRate ?? 0.03) * 100).toFixed(4))} onChange={(event) => onTaxChange("vatRate", Number(event.target.value) / 100)} onBlur={() => onTaxCommit("vatRate")} /></label><label><span>附加税率（%）</span><input type="number" min="0" max="100" step="0.01" inputMode="decimal" value={Number((Number(workspace.tax.surtaxRate ?? 0.12) * 100).toFixed(4))} onChange={(event) => onTaxChange("surtaxRate", Number(event.target.value) / 100)} onBlur={() => onTaxCommit("surtaxRate")} /></label><label><span>所得税率（%）</span><input type="number" min="0" max="100" step="0.01" inputMode="decimal" value={Number((Number(workspace.tax.incomeTaxRate ?? 0.05) * 100).toFixed(4))} onChange={(event) => onTaxChange("incomeTaxRate", Number(event.target.value) / 100)} onBlur={() => onTaxCommit("incomeTaxRate")} /></label></div></div><label><span>增值税计税基础调整</span><input type="number" step="0.01" value={workspace.tax.adjustments} onChange={(event) => onTaxChange("adjustments", Number(event.target.value))} onBlur={() => onTaxCommit("adjustments")} /></label>{payrollEnabled && <><label><span>{terminology.personnel}工资参考参数</span><input type="number" step="0.01" value={workspace.tax.payroll} onChange={(event) => onTaxChange("payroll", Number(event.target.value))} onBlur={() => onTaxCommit("payroll")} /></label><label><span>{terminology.personnel}社保参考参数</span><input type="number" step="0.01" value={workspace.tax.socialSecurity} onChange={(event) => onTaxChange("socialSecurity", Number(event.target.value))} onBlur={() => onTaxCommit("socialSecurity")} /></label></>}<label className="full"><span>复核备注</span><textarea value={workspace.tax.note} onChange={(event) => onTaxChange("note", event.target.value)} onBlur={() => onTaxCommit("note")} placeholder="记录本期特殊口径或待说明事项" /></label></div><p className="edit-warning">修改底稿会撤销后续确认与导出状态；请重新冻结报表版本后再继续。</p></section>
           </details>
         </div>
         <aside className="tax-side-column" hidden={!initialDone}>
@@ -1268,9 +1329,9 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
         <div className="final-context-strip"><div><span>申报所属期</span><strong>{formatPeriod(displayedFinalSnapshot.period)}</strong></div><div><span>冻结报表</span><strong>{displayedFinalSnapshot.reportVersionLabel || "尚未冻结"}</strong></div><div><span>本地底稿</span><strong>{displayedFinalSnapshot.filingDraftCreatedAt ? formatDateTime(displayedFinalSnapshot.filingDraftCreatedAt) : "尚未生成"}</strong></div><div><span>税务局状态</span><strong>尚未提交</strong></div></div>
         <div className="final-review-grid">
           <div className="final-review-main">
-            <section className="final-review-section"><div className="subheading"><strong>各税种金额</strong><span>当前冻结底稿</span></div><div className="final-tax-grid">{Object.entries(displayedFinalSnapshot.taxes).filter(([id]) => payrollEnabled || id !== "individualIncomeTax").map(([id, item]) => <article className={id === "total" ? "total" : ""} key={id}><span>{businessTermCopy(item.label, terminology)}</span><strong>{formatCurrency(item.value)}</strong><small>{businessTermCopy(item.basis, terminology)}</small></article>)}</div></section>
+            <section className="final-review-section"><div className="subheading"><strong>各税种金额</strong><span>当前冻结底稿</span></div><div className="final-tax-grid">{Object.entries(displayedFinalSnapshot.taxes).filter(([id]) => payrollEnabled || id !== "individualIncomeTax").map(([id, item]) => <article className={id === "total" ? "total" : ""} key={id}><span>{businessTermCopy(item.label, terminology)}</span><strong>{item.value == null ? payrollAmountLabel(item) : formatCurrency(item.value)}</strong><small>{businessTermCopy(item.sourceMessage || item.basis, terminology)}</small></article>)}</div></section>
             <section className="final-review-section"><div className="subheading"><strong>三大报表关键数字</strong><span>与最终确认记录绑定</span></div><div className="final-statement-grid">{Object.values(displayedFinalSnapshot.statements).map((statement) => <article key={statement.label}><strong>{businessTermCopy(statement.label, terminology)}</strong><dl>{statement.metrics.map((metric) => <div key={metric.label}><dt>{businessTermCopy(metric.label, terminology)}</dt><dd>{formatCurrency(metric.value)}</dd></div>)}</dl></article>)}</div></section>
-            {payrollEnabled && <section className="final-review-section"><div className="subheading"><strong>{terminology.personnel}工资与社保总额</strong><span>当前冻结数据</span></div><div className="final-payroll-grid"><div><span>{terminology.personnel}工资</span><strong>{formatCurrency(displayedFinalSnapshot.payrollSocial?.payroll)}</strong></div><div><span>{terminology.personnel}社保</span><strong>{formatCurrency(displayedFinalSnapshot.payrollSocial?.socialSecurity)}</strong></div><div className="total"><span>合计</span><strong>{formatCurrency(displayedFinalSnapshot.payrollSocial?.total)}</strong></div></div></section>}
+            {payrollEnabled && <section className="final-review-section"><div className="subheading"><strong>{terminology.personnel}工资与社保总额</strong><span>当前冻结数据</span></div><div className="final-payroll-grid"><div><span>{terminology.personnel}工资</span><strong>{displayedFinalSnapshot.payrollSocial?.payroll == null ? payrollAmountLabel({ sourceStatus: displayedFinalSnapshot.payrollSocial?.payrollSourceStatus }) : formatCurrency(displayedFinalSnapshot.payrollSocial.payroll)}</strong></div><div><span>{terminology.personnel}社保</span><strong>{displayedFinalSnapshot.payrollSocial?.socialSecurity == null ? payrollAmountLabel({ sourceStatus: displayedFinalSnapshot.payrollSocial?.socialSecuritySourceStatus }) : formatCurrency(displayedFinalSnapshot.payrollSocial.socialSecurity)}</strong></div><div className="total"><span>合计</span><strong>{displayedFinalSnapshot.payrollSocial?.total == null ? "资料待补齐或核对" : formatCurrency(displayedFinalSnapshot.payrollSocial.total)}</strong></div></div></section>}
           </div>
           <div className="final-review-side">
             <section className={`final-deduction-summary ${displayedFinalSnapshot.deduction.required ? "required" : ""}`}><span>是否需要扣款</span><strong>{displayedFinalSnapshot.deduction.required ? "预计需要在外部办理扣款" : "当前预计无需扣款"}</strong><b>{formatCurrency(displayedFinalSnapshot.deduction.amount)}</b><small>这里只判断当前底稿金额，不会发起银行或税务扣款。</small></section>
@@ -1386,7 +1447,7 @@ function ArchivePage({ workspace, onPage, onDocuments, onDownloadDocument, onRec
         ))}</div> : <EmptyState title="还没有历史归档" description={taxEnabled ? "本期回执导入并通过校验后，可以形成第一条归档记录。" : "冻结报表和本地资料通过校验后，可以形成第一条归档记录。"} />)}
       </section>
       {taxEnabled && !filing.receipt && <section className="receipt-upload-card"><span><Receipt size={25} /></span><div><strong>导入真实外部办理回执</strong><p>选择在电子税务局或本地安全执行器中取得的 PDF、XML、JSON 或文本回执。文件只在本地读取并记录哈希。</p></div><input ref={receiptInput} hidden type="file" accept=".pdf,.json,.xml,.txt,.csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) onReceipt(file); event.target.value = ""; }} /><button className="primary-button" disabled={!filing.exportedAt} onClick={() => receiptInput.current?.click()} type="button"><UploadSimple size={17} />选择回执</button></section>}
-      {!archived && !archiveReady && <div className="archive-check-panel panel"><div className="panel-heading"><div><h2>待完成的归档条件</h2></div><TonePill tone={archiveReady ? "success" : "warning"}>{archiveChecks.filter((item) => item.ok).length} / {archiveChecks.length}</TonePill></div><CheckRows items={archiveChecks.filter((item) => !item.ok)} onNavigate={onPage} /></div>}
+      {!archived && !archiveReady && <div className="archive-check-panel panel"><div className="panel-heading"><div><h2>待完成的归档条件</h2></div><TonePill tone={archiveReady ? "success" : "warning"}>{archiveChecks.filter((item) => item.ok).length} / {archiveChecks.length}</TonePill></div><CheckRows items={workflowSummaryChecks(archiveChecks.filter((item) => !item.ok), flow)} onNavigate={onPage} /></div>}
       <BoundaryNote />
     </div>
   );
@@ -1556,6 +1617,7 @@ function App() {
   const [importOpen, setImportOpen] = useState(false);
   const [setupInitialStage, setSetupInitialStage] = useState("s0");
   const [reconcilePanelRequest, setReconcilePanelRequest] = useState(null);
+  const [pageFocusRequest, setPageFocusRequest] = useState(null);
   const [toast, setToast] = useState(null);
   const workspace = activeWorkspace ? ensureWorkspace(activeWorkspace) : null;
   const terminology = workspaceTerminology(workspace);
@@ -1571,7 +1633,11 @@ function App() {
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
     if (["localhost", "127.0.0.1"].includes(window.location.hostname)) document.title = "财务工作台 · 本地预览";
-  }, [activePage, workspace?.id]);
+    if (pageFocusRequest?.page === activePage && pageFocusRequest.section) {
+      const frame = window.requestAnimationFrame(() => document.getElementById(pageFocusRequest.section)?.scrollIntoView({ block: "start" }));
+      return () => window.cancelAnimationFrame(frame);
+    }
+  }, [activePage, workspace?.id, pageFocusRequest]);
   useEffect(() => { if (!toast) return undefined; const timer = window.setTimeout(() => setToast(null), 3200); return () => window.clearTimeout(timer); }, [toast]);
   useEffect(() => {
     if (!workspaceDialog && !managerOpen && !importOpen) return undefined;
@@ -1582,6 +1648,7 @@ function App() {
   function navigateToPage(nextPage, options = {}) {
     const panelAliases = { vouchers: "vouchers", bills: "business", manualVouchers: "manual" };
     const destination = panelAliases[nextPage] ? "reconcile" : nextPage;
+    setPageFocusRequest({ page: destination, section: options.section });
     if (destination === "setup") setSetupInitialStage(options.stage || "s0");
     if (destination === "reconcile") setReconcilePanelRequest({ panel: panelAliases[nextPage] || options.panel || "transactions" });
     setPage(enabledPageIds.has(destination) ? destination : "overview");
@@ -2184,7 +2251,7 @@ function App() {
         {workspaceModuleEnabled(workspace, "inventory") && <DeferredView key={`${workspace.id}-inventory`} active={activePage === "inventory"} label="库存" fullPage><InventoryPage workspace={workspace} onPage={navigateToPage} onToast={(message) => setToast({ tone: "success", message })} /></DeferredView>}
         <DeferredView key={`${workspace.id}-reconcile`} active={activePage === "reconcile"} label="核销工作区" fullPage><ReconcilePage workspace={workspace} onPage={navigateToPage} panelRequest={reconcilePanelRequest} onStatus={setTransactionStatus} onReview={reviewTransactions} onSaveReview={saveTransactionReview} onEvidence={addEvidence} onLinkEvidence={linkExistingEvidence} onDownloadEvidence={downloadLinkedEvidence} onUnlinkEvidence={unlinkEvidenceFromTransaction} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} /></DeferredView>
         {activePage === "reports" && <ReportsPage workspace={workspace} onPage={navigateToPage} onFreeze={freezeReport} onExportExcel={exportReportExcel} />}
-        <DeferredView key={`${workspace.id}-tax`} active={activePage === "tax"} label="确认与申报" fullPage><TaxPage workspace={workspace} onPage={navigateToPage} onTaxChange={changeTax} onTaxCommit={commitTax} onSectionDecision={recordInitialConfirmationSection} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} onToast={(message) => setToast({ tone: "success", message })} /></DeferredView>
+        <DeferredView key={`${workspace.id}-tax`} active={activePage === "tax"} label="确认与申报" fullPage><TaxPage workspace={workspace} onPage={navigateToPage} onTaxChange={changeTax} onTaxCommit={commitTax} onSectionDecision={recordInitialConfirmationSection} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} onToast={(message) => setToast({ tone: "success", message })} focusRequest={pageFocusRequest} /></DeferredView>
         {activePage === "archive" && <ArchivePage workspace={workspace} onPage={navigateToPage} onDocuments={addDocuments} onDownloadDocument={downloadArchiveDocument} onReceipt={receiveReceipt} onArchive={completeArchive} onNextPeriod={goNextPeriod} onExportIndex={exportArchiveIndex} onExportArchive={exportArchivedPeriod} />}
         {activePage === "setup" && <Suspense fallback={<div className="page-content"><p className="quiet-copy" role="status" style={{ margin: 0, fontSize: "var(--font-body, 14px)" }}>正在加载基础资料…</p></div>}><FoundationRecordsPanel initialStage={setupInitialStage} key={`${workspace.id}-${setupInitialStage}`} onNavigate={navigateToPage} onToast={(message) => setToast({ tone: "success", message })} /></Suspense>}
       </div>

@@ -14,6 +14,7 @@ import { buildPayrollSocialSummary, buildStructuredInvoiceVatSummary, verifyPayr
 import { buildPayrollAccountingSummary, payrollAccrualLines } from "./domain/accounting/payrollAccounting.js";
 import { assertAccountingPeriodWritable, createManualVoucherDraft, createPostedVoucherRevision, reviseDraftVoucher } from "./domain/accounting/vouchers.js";
 import { AccountingRuleError, appendAuditEntry, operationContext } from "./domain/accounting/model.js";
+import { buildPayrollSourceState, payrollSourceMetric } from "./domain/accounting/payrollSource.js";
 export { buildPayrollAccountingSummary } from "./domain/accounting/payrollAccounting.js";
 import { buildBankAccountReconciliationSummary, buildBankMonthlyReconciliation } from "./features/intake/bankStatementImport.js";
 import { buildInventorySummary } from "./features/inventory/inventoryLedger.js";
@@ -805,13 +806,12 @@ export function buildReportSnapshot(workspace) {
     engineTax,
     invoiceVatSummary,
   });
-  const payrollSocialSummary = buildPayrollSocialSummary(workspace, { period: workspace.currentPeriod });
-  const payrollAmount = payrollSocialSummary.payrollRecords.length
-    ? payrollSocialSummary.totals.payroll.grossSalary
-    : Number(workspace.tax.payroll || 0);
-  const socialSecurityAmount = payrollSocialSummary.socialSecurityRecords.length
-    ? payrollSocialSummary.totals.socialSecurityPayable
-    : Number(workspace.tax.socialSecurity || 0);
+  const payrollSourceState = engineTax.payrollSourceState;
+  const payrollSocialSummary = payrollSourceState.summary;
+  const payrollRow = (id, label, source, amount, details, formula) => ({
+    ...makeTraceableRow(id, label, amount, details, formula),
+    ...payrollSourceMetric(source, amount),
+  });
   const usesStructuredInvoiceVat = invoiceVatSummary.usesStructuredInvoices;
   const cashMovements = statements.cashFlow.movements || [];
   const cashIn = roundMoney(cashMovements.filter((item) => item.amount > 0).reduce((sum, item) => sum + item.amount, 0));
@@ -1030,6 +1030,7 @@ export function buildReportSnapshot(workspace) {
       invoiceVatSummary,
       vatReconciliation,
       payrollSocialSummary,
+      payrollSourceState,
       disclaimer: usesStructuredInvoiceVat
         ? "增值税数据来自本地人工录入并关联的结构化发票；查验状态不代表已联网查验，附加税费与所得税仍为本地估算。"
         : "本期没有已人工分类且关联业务的结构化发票，增值税仍采用本地估算；未连接税务平台。",
@@ -1088,12 +1089,12 @@ export function buildReportSnapshot(workspace) {
         ),
         makeTraceableRow("surtax", "附加税费估算", estimatedSurtax, surtaxDetails, `增值税估算额 × ${surtaxRatePercent}`),
         makeTraceableRow("incomeTax", "所得税估算", estimatedIncomeTax, incomeTaxDetails, `max(0，本月利润) × ${incomeTaxRatePercent}`),
-        makeTraceableRow("payroll", "应发工资", payrollAmount, grossSalaryDetails, payrollSocialSummary.payrollRecords.length ? "当前期间工资表逐人应发工资合计，需客户单独确认" : "财务人员在本地底稿中单独录入并由客户确认"),
-        makeTraceableRow("personalSocialSecurity", "个人社保", payrollSocialSummary.totals.socialSecurity.personalSocial, personalSocialDetails, "当前期间社保表逐人个人承担社保合计"),
-        makeTraceableRow("employerSocialSecurity", "企业社保", payrollSocialSummary.totals.socialSecurity.employerSocial, employerSocialDetails, "当前期间社保表逐人企业承担社保合计"),
-        makeTraceableRow("socialSecurity", "社保合计", socialSecurityAmount, socialSecurityDetails, payrollSocialSummary.socialSecurityRecords.length ? "个人社保 + 企业社保，需客户单独确认" : "财务人员在本地底稿中单独录入并由客户确认"),
-        makeTraceableRow("individualIncomeTax", "代扣个税", payrollSocialSummary.totals.payroll.individualIncomeTax, individualIncomeTaxDetails, "当前期间工资表逐人个税合计"),
-        makeTraceableRow("netSalary", "实发工资", payrollSocialSummary.totals.payroll.netSalary, netSalaryDetails, "当前期间工资表逐人实发工资合计"),
+        payrollRow("payroll", "应发工资", payrollSourceState.payroll, payrollSourceState.payroll.value, grossSalaryDetails, "当前期间工资表逐人应发工资合计；来源与两表核对通过后供客户单独确认"),
+        payrollRow("personalSocialSecurity", "个人社保", payrollSourceState.socialSecurity, payrollSourceState.socialSecurity.amounts.personalSocial, personalSocialDetails, "当前期间社保表逐人个人承担社保合计"),
+        payrollRow("employerSocialSecurity", "企业社保", payrollSourceState.socialSecurity, payrollSourceState.socialSecurity.amounts.employerSocial, employerSocialDetails, "当前期间社保表逐人企业承担社保合计"),
+        payrollRow("socialSecurity", "社保合计", payrollSourceState.socialSecurity, payrollSourceState.socialSecurity.value, socialSecurityDetails, "当前期间个人社保 + 企业社保；来源与两表核对通过后供客户单独确认"),
+        payrollRow("individualIncomeTax", "代扣个税", payrollSourceState.payroll, payrollSourceState.payroll.amounts.individualIncomeTax, individualIncomeTaxDetails, "当前期间工资表逐人个税合计"),
+        payrollRow("netSalary", "实发工资", payrollSourceState.payroll, payrollSourceState.payroll.amounts.netSalary, netSalaryDetails, "当前期间工资表逐人实发工资合计"),
         makeTraceableRow("taxTotal", "预计税费合计", estimatedTax, taxEstimateDetails, "增值税估算 + 附加税费估算 + 所得税估算"),
       ],
     },
@@ -1301,24 +1302,25 @@ export function workflowSourceFingerprint(workspace) {
 
 export function getPayrollSocialConfirmationState(workspace) {
   const current = ensureWorkspace(workspace);
-  const summary = buildPayrollSocialSummary(current, { period: current.currentPeriod });
+  const payrollSources = buildPayrollSourceState(current);
+  const summary = payrollSources.summary;
   const latestVersion = getLatestReportVersion(current);
-  const sourceIsCurrent = latestVersion?.sourceFingerprint
+  const sourceIsCurrent = payrollVersionHasCurrentSources(current, latestVersion, payrollSources) && (latestVersion?.sourceFingerprint
     ? workflowSourceMatches(latestVersion.sourceFingerprint, current)
     : Boolean(latestVersion)
       && current.tax?.frozenAt === latestVersion.createdAt
-      && comparableSnapshot(latestVersion.snapshot) === comparableSnapshot(buildReportSnapshot(current));
+      && comparableSnapshot(latestVersion.snapshot) === comparableSnapshot(buildReportSnapshot(current)));
   const version = sourceIsCurrent ? latestVersion : null;
   const payrollConfirmed = Boolean(
     version
-    && summary.payrollRecords.length
+    && payrollSources.payroll.available
     && current.tax.payrollConfirmedAt
     && current.tax.payrollConfirmedVersionId === version.id
     && current.tax.payrollConfirmedFingerprint === summary.fingerprints.payroll
   );
   const socialSecurityConfirmed = Boolean(
     version
-    && summary.socialSecurityRecords.length
+    && payrollSources.socialSecurity.available
     && current.tax.socialSecurityConfirmedAt
     && current.tax.socialSecurityConfirmedVersionId === version.id
     && current.tax.socialSecurityConfirmedFingerprint === summary.fingerprints.socialSecurity
@@ -1329,16 +1331,29 @@ export function getPayrollSocialConfirmationState(workspace) {
     sourceIsCurrent,
     summary,
     payroll: {
-      available: summary.payrollRecords.length > 0,
+      ...payrollSourceMetric(payrollSources.payroll),
       confirmed: payrollConfirmed,
       confirmedAt: payrollConfirmed ? current.tax.payrollConfirmedAt : null,
     },
     socialSecurity: {
-      available: summary.socialSecurityRecords.length > 0,
+      ...payrollSourceMetric(payrollSources.socialSecurity),
       confirmed: socialSecurityConfirmed,
       confirmedAt: socialSecurityConfirmed ? current.tax.socialSecurityConfirmedAt : null,
     },
   };
+}
+
+function payrollVersionHasCurrentSources(workspace, version, sources = buildPayrollSourceState(workspace)) {
+  if (!workspaceModuleEnabled(workspace, "payroll")) return true;
+  const workpaper = version?.snapshot?.taxWorkpaper;
+  if (workpaper?.payrollSourceState) return workpaper.payrollSourceState.fingerprint === sources.fingerprint;
+  // Keep a genuine earlier freeze valid; legacy tax parameters without payroll evidence are not current sources.
+  if (!sources.payroll.available || !sources.socialSecurity.available || !workpaper?.payrollSocialSummary) return false;
+  const saved = workpaper.payrollSocialSummary;
+  const rows = Object.fromEntries((workpaper.rows || []).map((row) => [row.id, row]));
+  return saved.fingerprints?.payroll === sources.summary.fingerprints.payroll
+    && saved.fingerprints?.socialSecurity === sources.summary.fingerprints.socialSecurity
+    && rows.payroll?.value === sources.payroll.value && rows.socialSecurity?.value === sources.socialSecurity.value;
 }
 
 export function confirmPayrollSocialData(workspace, input = {}, context = {}) {
@@ -1351,7 +1366,7 @@ export function confirmPayrollSocialData(workspace, input = {}, context = {}) {
   const state = getPayrollSocialConfirmationState(current);
   const sectionState = state[section];
   if (confirmed && !state.version) throw new Error("请先按当前工资社保数据重新冻结报表版本");
-  if (confirmed && !sectionState.available) throw new Error(section === "payroll" ? "当前期间还没有工资表记录" : "当前期间还没有社保表记录");
+  if (confirmed && !sectionState.available) throw new Error(sectionState.sourceMessage);
   const at = context.at || new Date().toISOString();
   const actor = context.actor || "本地用户";
   const isPayroll = section === "payroll";
@@ -1469,11 +1484,11 @@ export function workflowChecks(workspace) {
     (voucher.period || String(voucher.date || "").slice(0, 7)) === workspace.currentPeriod && !["posted", "superseded", "invalidated", "replaced"].includes(voucher.status)
   ));
   const latestVersion = getLatestReportVersion(workspace);
-  const sourceIsCurrent = latestVersion?.sourceFingerprint
+  const sourceIsCurrent = payrollVersionHasCurrentSources(workspace, latestVersion) && (latestVersion?.sourceFingerprint
     ? workflowSourceMatches(latestVersion.sourceFingerprint, workspace)
     : Boolean(latestVersion)
       && workspace.tax?.frozenAt === latestVersion.createdAt
-      && comparableSnapshot(latestVersion.snapshot) === comparableSnapshot(snapshot);
+      && comparableSnapshot(latestVersion.snapshot) === comparableSnapshot(snapshot));
   const version = sourceIsCurrent ? latestVersion : null;
   const filing = workspace.delivery.filing;
   const initialConfirmation = (workspace.confirmations || []).find((item) => item.id === filing.initialConfirmationId);
@@ -1490,8 +1505,8 @@ export function workflowChecks(workspace) {
     && finalConfirmation.filingDraftCreatedAt === filing.draftCreatedAt);
   const payrollSocialConfirmation = payrollEnabled ? getPayrollSocialConfirmationState(workspace) : null;
   const payrollChecks = payrollEnabled ? [
-    { id: "payroll", label: `${terminology.customer}已单独确认工资表`, ok: Boolean(version && payrollSocialConfirmation.payroll.confirmed), page: "tax", detail: payrollSocialConfirmation.payroll.available ? (payrollSocialConfirmation.payroll.confirmed ? "工资表已绑定当前冻结版本" : `工资表待${terminology.customer}勾选确认`) : "当前期间尚未导入工资表" },
-    { id: "socialSecurity", label: `${terminology.customer}已单独确认社保表`, ok: Boolean(version && payrollSocialConfirmation.socialSecurity.confirmed), page: "tax", detail: payrollSocialConfirmation.socialSecurity.available ? (payrollSocialConfirmation.socialSecurity.confirmed ? "社保表已绑定当前冻结版本" : `社保表待${terminology.customer}勾选确认`) : "当前期间尚未导入社保表" },
+    { id: "payroll", label: `${terminology.customer}已单独确认工资表`, ok: Boolean(version && payrollSocialConfirmation.payroll.confirmed), page: "tax", detail: payrollSocialConfirmation.payroll.available ? (payrollSocialConfirmation.payroll.confirmed ? "工资表已绑定当前冻结版本" : `工资表待${terminology.customer}勾选确认`) : payrollSocialConfirmation.payroll.sourceMessage },
+    { id: "socialSecurity", label: `${terminology.customer}已单独确认社保表`, ok: Boolean(version && payrollSocialConfirmation.socialSecurity.confirmed), page: "tax", detail: payrollSocialConfirmation.socialSecurity.available ? (payrollSocialConfirmation.socialSecurity.confirmed ? "社保表已绑定当前冻结版本" : `社保表待${terminology.customer}勾选确认`) : payrollSocialConfirmation.socialSecurity.sourceMessage },
   ] : [];
   const pendingLabels = {
     balanced: "核对报表勾稽",
@@ -1660,7 +1675,7 @@ export function buildFinalConfirmationSnapshot(workspace, existingFlow = workflo
     vat: frozenMetric("应交增值税", taxRows.vatPayable),
     surtax: frozenMetric("附加税费", taxRows.surtax),
     incomeTax: frozenMetric("所得税", taxRows.incomeTax),
-    ...(payrollEnabled ? { individualIncomeTax: frozenMetric("代扣个税", taxRows.individualIncomeTax) } : {}),
+    ...(payrollEnabled ? { individualIncomeTax: { ...frozenMetric("代扣个税", taxRows.individualIncomeTax), value: taxRows.individualIncomeTax?.value ?? null, sourceStatus: taxRows.individualIncomeTax?.sourceStatus, sourceMessage: taxRows.individualIncomeTax?.sourceMessage } } : {}),
     total: frozenMetric("预计申报税费合计", taxRows.taxTotal, report.summary?.estimatedTax),
   };
   const unresolvedItems = confirmationSections.openItems.items;
@@ -1704,9 +1719,11 @@ export function buildFinalConfirmationSnapshot(workspace, existingFlow = workflo
     },
     payrollSocial: payrollEnabled ? {
       applicable: true,
-      payroll: numberValue(taxRows.payroll?.value),
-      socialSecurity: numberValue(taxRows.socialSecurity?.value),
-      total: numberValue(taxRows.payroll?.value) + numberValue(taxRows.socialSecurity?.value),
+      payroll: taxRows.payroll?.value ?? null,
+      socialSecurity: taxRows.socialSecurity?.value ?? null,
+      total: taxRows.payroll?.value == null || taxRows.socialSecurity?.value == null ? null : numberValue(taxRows.payroll.value) + numberValue(taxRows.socialSecurity.value),
+      payrollSourceStatus: confirmationSections.payroll.sourceStatus,
+      socialSecuritySourceStatus: confirmationSections.socialSecurity.sourceStatus,
       sourceIds: [...new Set([...confirmationSections.payroll.sourceIds, ...confirmationSections.socialSecurity.sourceIds])],
     } : { applicable: false },
     deduction: {

@@ -7336,3 +7336,9 @@ summary.forecast-week-row {
   white-space: normal;
   line-height: 1.5;
 }
+
+.tax-page .confirmation-item-heading .confirmation-data-state {
+  color: var(--muted);
+  font-size: var(--font-body, 14px);
+  font-weight: 600;
+}

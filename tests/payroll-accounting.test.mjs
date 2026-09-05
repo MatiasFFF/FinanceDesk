@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { createBlankWorkspace } from "../src/financeData.js";
 import { createMemoryFileVault } from "../src/features/intake/browserFileVault.js";
 import { createDocumentMetadata, preparePayrollSocialImport, applyPayrollSocialImport } from "../src/features/intake/documentIntake.js";
-import { buildPayrollAccountingSummary, createPayrollAccrualDraft, ensureWorkspace, workflowChecks, freezeReportVersion, confirmPayrollSocialData } from "../src/productWorkflow.js";
-import { buildFinancialStatements } from "../src/domain/accounting/reporting.js";
+import { buildPayrollAccountingSummary, createPayrollAccrualDraft, ensureWorkspace, workflowChecks, freezeReportVersion, confirmPayrollSocialData, buildReportSnapshot, buildFinalConfirmationSnapshot, getPayrollSocialConfirmationState, workflowSourceFingerprint } from "../src/productWorkflow.js";
+import { buildFinancialStatements, buildTaxWorkpaper, buildCustomerConfirmationSections } from "../src/domain/accounting/reporting.js";
 import { upsertWorkspaceAccount } from "../src/domain/accounting/model.js";
 import { createManualVoucherDraft, createPostedVoucherRevision, reviseDraftVoucher, postVoucher, postVoucherWithEvidence } from "../src/domain/accounting/vouchers.js";
 
@@ -178,4 +178,124 @@ test("计提后新的直接工资费用付款被拒绝，正常冲减应付款�
   assert.equal(summary.postedAndMatched, true);
   assert.equal(summary.rows.find((row) => row.key === "payrollPayable").closing, 1300);
   assert.equal(buildFinancialStatements(paid).incomeStatement.expenses.value, 2400);
+});
+
+const payrollRowIds = ["payroll", "personalSocialSecurity", "employerSocialSecurity", "socialSecurity", "individualIncomeTax", "netSalary"];
+
+test("工资来源：缺本期两表时不回退旧税参数或上期值，六行与独立确认均为缺失而非零", async () => {
+  const { workspace } = await fixture();
+  workspace.tax = { ...workspace.tax, payroll: 28600, socialSecurity: 6200, vatRate: 0.07 };
+  workspace.payrollRecords = workspace.payrollRecords.map((record) => ({ ...record, period: "2026-08" }));
+  const snapshot = buildReportSnapshot(workspace);
+  for (const row of snapshot.taxWorkpaper.rows.filter((row) => payrollRowIds.includes(row.id))) {
+    assert.equal(row.value, null, row.id);
+    assert.equal(row.sourceStatus, "missing", row.id);
+    assert.equal(row.amountStatus, "missing", row.id);
+    assert.deepEqual(row.sourceIds, []);
+  }
+  const sections = buildCustomerConfirmationSections(snapshot);
+  const confirmations = getPayrollSocialConfirmationState(workspace);
+  const workpaper = buildTaxWorkpaper(workspace);
+  for (const id of ["payroll", "socialSecurity"]) {
+    assert.equal(sections[id].value, null);
+    assert.equal(sections[id].available, false);
+    assert.equal(confirmations[id].sourceStatus, "missing");
+    assert.equal(confirmations[id].imported, false);
+    assert.equal(workpaper[id].value, null);
+  }
+  assert.equal(buildFinalConfirmationSnapshot(workspace).payrollSocial.total, null);
+  assert.equal(workpaper.vatRate, 0.07);
+  assert.equal(workspace.tax.payroll, 28600);
+  assert.equal(workspace.tax.socialSecurity, 6200);
+});
+
+test("工资来源：仅一侧导入与本侧字段缺失分别标为待核对和资料不完整", async () => {
+  const { workspace } = await fixture();
+  const onlyPayroll = { ...workspace, payrollRecords: workspace.payrollRecords.filter((record) => record.sourceKind === "payroll") };
+  let sections = buildCustomerConfirmationSections(buildReportSnapshot(onlyPayroll));
+  assert.equal(sections.payroll.sourceStatus, "unreconciled");
+  assert.equal(sections.payroll.imported, true);
+  assert.equal(sections.payroll.value, null);
+  assert.equal(sections.socialSecurity.sourceStatus, "missing");
+  assert.equal(sections.socialSecurity.imported, false);
+  const incomplete = structuredClone(workspace);
+  incomplete.payrollRecords.find((record) => record.sourceKind === "payroll").netSalary = null;
+  sections = buildCustomerConfirmationSections(buildReportSnapshot(incomplete));
+  assert.equal(sections.payroll.sourceStatus, "incomplete");
+  assert.equal(sections.payroll.value, null);
+  assert.equal(sections.socialSecurity.sourceStatus, "unreconciled");
+  assert.equal(sections.socialSecurity.value, null);
+  assert.match(getPayrollSocialConfirmationState(incomplete).payroll.sourceMessage, /资料不完整/);
+});
+
+test("工资来源：原件两表明确零与实际金额分开，来源ready不绕过计提入账", async () => {
+  const zero = await fixture({ gross: 0, personal: 0, employer: 0, tax: 0 });
+  zero.workspace.tax = { ...zero.workspace.tax, payroll: 28600, socialSecurity: 6200 };
+  const zeroSnapshot = buildReportSnapshot(zero.workspace);
+  for (const row of zeroSnapshot.taxWorkpaper.rows.filter((row) => payrollRowIds.includes(row.id))) {
+    assert.equal(row.value, 0);
+    assert.equal(row.sourceStatus, "ready");
+    assert.equal(row.amountStatus, "zero");
+    assert.ok(row.sourceIds.some((id) => id.startsWith("doc-")));
+  }
+  let frozen = freezeReportVersion(zero.workspace);
+  frozen = confirmPayrollSocialData(frozen, { section: "payroll" }, context);
+  assert.equal(getPayrollSocialConfirmationState(frozen).payroll.confirmed, true);
+  assert.equal(getPayrollSocialConfirmationState(frozen).socialSecurity.confirmed, false);
+  frozen = confirmPayrollSocialData(frozen, { section: "socialSecurity" }, context);
+  assert.equal(getPayrollSocialConfirmationState(frozen).socialSecurity.confirmed, true);
+  const { workspace } = await fixture();
+  workspace.tax = { ...workspace.tax, payroll: 28600, socialSecurity: 6200 };
+  const actual = buildCustomerConfirmationSections(buildReportSnapshot(workspace));
+  assert.equal(actual.payroll.value, 2000);
+  assert.equal(actual.socialSecurity.value, 700);
+  assert.equal(actual.payroll.amountStatus, "actual");
+  assert.equal(actual.payroll.available, true);
+  assert.equal(buildTaxWorkpaper(workspace).payroll.value, 2000);
+  assert.equal(buildTaxWorkpaper(workspace).socialSecurity.value, 700);
+  assert.throws(() => freezeReportVersion(workspace), (error) => error.code === "PAYROLL_CLOSE_BLOCKED");
+});
+
+test("工资来源：缺来源旧冻结失效，真实历史与未启用工资版本保留，资料变化不改写V1", async () => {
+  const { workspace } = await fixture();
+  workspace.payrollRecords = [];
+  workspace.tax = { ...workspace.tax, payroll: 28600, socialSecurity: 6200 };
+  const legacySnapshot = buildReportSnapshot(workspace);
+  delete legacySnapshot.taxWorkpaper.payrollSourceState;
+  for (const row of legacySnapshot.taxWorkpaper.rows.filter((row) => payrollRowIds.includes(row.id))) {
+    delete row.sourceStatus; delete row.amountStatus; delete row.sourceMessage; delete row.available; delete row.imported;
+    row.value = row.id === "payroll" ? 28600 : row.id === "socialSecurity" ? 6200 : 0;
+  }
+  const legacy = { id: "legacy-v1", period: workspace.currentPeriod, label: "V1", frozen: true, createdAt: context.at, snapshot: legacySnapshot, sourceFingerprint: workflowSourceFingerprint(workspace) };
+  workspace.delivery.reportVersions = [legacy];
+  workspace.tax.frozenAt = context.at;
+  const history = structuredClone(workspace.delivery.reportVersions);
+  assert.equal(workflowChecks(workspace).version, null);
+  assert.equal(getPayrollSocialConfirmationState(workspace).version, null);
+  assert.deepEqual(workspace.delivery.reportVersions, history);
+  assert.equal(workflowChecks(workspace).snapshot.taxWorkpaper.rows.find((row) => row.id === "payroll").value, null);
+
+  const withoutPayroll = structuredClone(workspace);
+  withoutPayroll.modules.payroll = false;
+  withoutPayroll.delivery.reportVersions[0].sourceFingerprint = workflowSourceFingerprint(withoutPayroll);
+  assert.equal(workflowChecks(withoutPayroll).version.id, legacy.id);
+
+  const posted = await postedFixture();
+  let current = freezeReportVersion(posted.workspace);
+  current = confirmPayrollSocialData(current, { section: "payroll" }, context);
+  const before = structuredClone(current.delivery.reportVersions);
+  // Round-six freezes already carried genuine source records; they remain valid without rewriting history.
+  const validLegacy = structuredClone(current);
+  delete validLegacy.delivery.reportVersions[0].snapshot.taxWorkpaper.payrollSourceState;
+  for (const row of validLegacy.delivery.reportVersions[0].snapshot.taxWorkpaper.rows.filter((row) => payrollRowIds.includes(row.id))) {
+    delete row.sourceStatus; delete row.amountStatus; delete row.sourceMessage; delete row.available; delete row.imported;
+  }
+  assert.ok(workflowChecks(validLegacy).version);
+  assert.equal(buildCustomerConfirmationSections(workflowChecks(validLegacy).version.snapshot).payroll.available, true);
+  const changed = await importTables(current, posted.fileVault, { gross: 2100, suffix: "-source-change" });
+  assert.equal(workflowChecks(changed).version, null);
+  assert.equal(getPayrollSocialConfirmationState(changed).payroll.confirmed, false);
+  assert.deepEqual(changed.delivery.reportVersions, before);
+  assert.equal(before[0].snapshot.taxWorkpaper.rows.find((row) => row.id === "payroll").value, 2000);
+  assert.equal(buildReportSnapshot(changed).taxWorkpaper.rows.find((row) => row.id === "payroll").value, 2100);
 });

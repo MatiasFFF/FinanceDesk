@@ -13,6 +13,7 @@ import {
   workspaceUsesMemberBusinessTerms,
 } from "./model.js";
 import * as XLSX from "xlsx";
+import { buildPayrollSourceState, payrollSourceMetric } from "./payrollSource.js";
 import { buildAdvanceBalances, buildAgeingSchedule } from "../../features/reconciliation/reconciliationEngine.js";
 import {
   MEMBER_EVENT_DEFINITIONS,
@@ -1374,8 +1375,9 @@ export function buildTaxWorkpaper(workspace, { period = workspace.currentPeriod 
     roundMoney(vatPayable.value + estimatedSurtax.value + estimatedIncomeTax.value),
     collectSourceIds(vatPayable.sourceIds, estimatedSurtax.sourceIds, estimatedIncomeTax.sourceIds),
   );
-  const payroll = valueWithSources(workspace.tax?.payroll || 0, workspace.tax?.payrollSourceIds || workspace.tax?.sourceIds || []);
-  const socialSecurity = valueWithSources(workspace.tax?.socialSecurity || 0, workspace.tax?.socialSecuritySourceIds || workspace.tax?.sourceIds || []);
+  const payrollSourceState = buildPayrollSourceState(workspace, { period });
+  const payroll = payrollSourceMetric(payrollSourceState.payroll);
+  const socialSecurity = payrollSourceMetric(payrollSourceState.socialSecurity);
   const unresolved = (workspace.exceptionTasks || []).filter((task) => task.status !== "resolved");
   const confirmation = [...(workspace.confirmations || [])]
     .filter((item) => item.period === period && item.kind === "tax")
@@ -1398,6 +1400,7 @@ export function buildTaxWorkpaper(workspace, { period = workspace.currentPeriod 
     estimatedTax,
     payroll,
     socialSecurity,
+    payrollSourceState,
     financialStatementSourceIds: collectSourceIds(
       statements.balanceSheet.assets.sourceIds,
       statements.balanceSheet.liabilities.sourceIds,
@@ -1450,6 +1453,19 @@ export function buildCustomerConfirmationSections(snapshot, { payrollEnabled = t
     sourceIds: collectSourceIds(rows.filter(Boolean).map((row) => [row.sourceIds, (row.details || []).map((detail) => [detail.sourceIds, detail.voucherId, detail.documentId])])),
   });
   const openItems = snapshot.confirmationContext?.openItems || [];
+  const savedPayroll = snapshot.taxWorkpaper?.payrollSocialSummary;
+  const legacyPayrollAvailable = Boolean(savedPayroll?.rows?.length && savedPayroll.rows.every((row) => row.matched)
+    && savedPayroll.payrollRecords?.length && savedPayroll.socialSecurityRecords?.length
+    && [...savedPayroll.payrollRecords, ...savedPayroll.socialSecurityRecords].every((record) => record.sourceDocumentId && record.sourceDocumentHash && record.sourceDocumentVersion != null));
+  const payrollMetric = (row) => ({
+    ...metric(row?.value, [row]),
+    value: row?.value ?? null,
+    sourceStatus: row?.sourceStatus || (legacyPayrollAvailable ? "ready" : "unreconciled"),
+    amountStatus: row?.amountStatus || (legacyPayrollAvailable ? (row?.value === 0 ? "zero" : "actual") : "unreconciled"),
+    sourceMessage: row?.sourceMessage || (legacyPayrollAvailable ? "来自冻结时已核对且保留原件依据的两表" : "旧快照缺少工资来源核对状态，请重新冻结当前数据"),
+    available: row?.available ?? legacyPayrollAvailable,
+    imported: row?.imported ?? legacyPayrollAvailable,
+  });
   const sections = {
     finance: {
       ...metric(snapshot.summary?.profit, [balance.assets, income.profit]),
@@ -1463,8 +1479,8 @@ export function buildCustomerConfirmationSections(snapshot, { payrollEnabled = t
     vat: metric(tax.vatPayable?.value, [tax.vatPayable]),
     inputVat: metric(tax.inputVat?.value, [tax.inputVat]),
     ...((snapshot.confirmationContext?.payrollEnabled ?? payrollEnabled) ? {
-      payroll: metric(tax.payroll?.value, [tax.payroll]),
-      socialSecurity: metric(tax.socialSecurity?.value, [tax.socialSecurity]),
+      payroll: payrollMetric(tax.payroll),
+      socialSecurity: payrollMetric(tax.socialSecurity),
     } : {}),
     openItems: { value: openItems.length, items: openItems, sourceIds: collectSourceIds(openItems.map((item) => [item.id, item.sourceIds])) },
   };
@@ -1532,6 +1548,10 @@ export function recordCustomerConfirmation(workspace, {
   const confirmation = (next.confirmations || []).find((item) => item.id === confirmationId);
   if (!confirmation) throw new AccountingRuleError("CONFIRMATION_NOT_FOUND", `找不到客户确认包：${confirmationId}`);
   if (!confirmation.sections[section]) throw new AccountingRuleError("CONFIRMATION_SECTION_NOT_FOUND", `找不到确认项目：${section}`);
+  if (decision === "approve" && ["payroll", "socialSecurity"].includes(section)) {
+    const sourceSection = buildCustomerConfirmationSections(confirmation.snapshot || {}, { payrollEnabled: true })[section];
+    if (sourceSection?.available !== true) throw new AccountingRuleError("PAYROLL_SOURCE_REQUIRED", sourceSection?.sourceMessage || "工资社保确认需要本期完整且已核对的真实来源");
+  }
   const before = { ...confirmation.sections[section] };
   const record = {
     id: nextRecordId(confirmation.decisions || [], "decision"),

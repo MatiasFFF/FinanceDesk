@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   Archive,
   CheckCircle,
@@ -65,9 +65,9 @@ import {
   refreshDocumentMissingTasks,
   removeLocalDocument,
   saveLocalDocument,
-  saveLocalDocumentRecognition,
   updateLocalDocumentMetadata,
 } from "./documentIntake.js";
+import { getDocumentRecognitionTask, isRecognitionTaskPending } from "./documentRecognitionTask.js";
 import "./document-intake-panel.css";
 import "../workspaces/foundation-ui.css";
 
@@ -324,7 +324,6 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const selectedSection = payrollOnly ? "payroll" : (activeSection ?? localSection);
   const [uploadOpen, setUploadOpen] = useState(false);
   function selectSection(nextSection) {
-    if (nextSection !== "files") cancelRecognition();
     setLocalSection(nextSection);
     onSectionChange?.(nextSection);
   }
@@ -342,13 +341,14 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const [editing, setEditing] = useState(null);
   const [preview, setPreview] = useState(null);
   const [detailDocumentId, setDetailDocumentId] = useState(null);
-  const [recognitionProgress, setRecognitionProgress] = useState(null);
   const [recognitionView, setRecognitionView] = useState(null);
   const [recognitionNotice, setRecognitionNotice] = useState("");
   const [recognitionPage, setRecognitionPage] = useState(0);
-  const recognitionJobRef = useRef(null);
-  const recognitionContextRef = useRef(null);
-  recognitionContextRef.current = { workspaceId: activeWorkspace.id, period: activeWorkspace.currentPeriod, section: selectedSection, documentId: detailDocumentId };
+  const recognitionRunner = useMemo(() => getDocumentRecognitionTask(store), [store]);
+  const recognitionTask = useSyncExternalStore(recognitionRunner.subscribe, recognitionRunner.getSnapshot, recognitionRunner.getSnapshot);
+  const selectedRecognitionTask = recognitionTask?.workspaceId === activeWorkspace.id && recognitionTask.documentId === detailDocumentId ? recognitionTask : null;
+  const recognitionProgress = selectedRecognitionTask?.progress || null;
+  const recognitionPending = isRecognitionTaskPending(recognitionTask);
   const detailDocument = activeWorkspace.documents.find((document) => document.id === detailDocumentId);
   const standaloneFile = typeof window !== "undefined" && window.location.protocol === "file:";
   const [pendingDocumentAction, setPendingDocumentAction] = useState(null);
@@ -488,20 +488,15 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     : filteredDocuments;
 
   function cancelRecognition() {
-    recognitionJobRef.current?.controller.abort();
-    recognitionJobRef.current = null;
-    setRecognitionProgress(null);
+    setRecognitionNotice("");
+    void recognitionRunner.cancel({ workspaceId: activeWorkspace.id, documentId: detailDocumentId });
   }
 
   useEffect(() => {
-    return () => {
-      recognitionJobRef.current?.controller.abort();
-      recognitionJobRef.current = null;
-    };
-  }, [activeWorkspace.id, activeWorkspace.currentPeriod, selectedSection, detailDocumentId]);
+    void recognitionRunner.resume();
+  }, [recognitionRunner, activeWorkspace.id]);
 
   useEffect(() => {
-    setRecognitionProgress(null);
     setRecognitionView(null);
     setRecognitionNotice("");
     setRecognitionPage(0);
@@ -517,40 +512,18 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
 
   useEffect(() => {
     if (detailDocumentId && !visibleDocuments.some((document) => document.id === detailDocumentId)) {
-      cancelRecognition();
       setDetailDocumentId(null);
     }
   }, [detailDocumentId, visibleDocuments]);
 
-  async function recognizeDocument(document) {
+  function recognizeDocument(document) {
     if (standaloneFile) { setRecognitionNotice("请从本地网页打开 FinanceDesk 后使用文字识别。"); return; }
-    if (recognitionJobRef.current) return;
-    const controller = new AbortController();
-    const job = { controller, ...recognitionContextRef.current };
-    recognitionJobRef.current = job;
-    const isCurrent = () => {
-      const context = recognitionContextRef.current;
-      return recognitionJobRef.current === job && !controller.signal.aborted
-        && context.workspaceId === job.workspaceId && context.period === job.period
-        && context.documentId === document.id && context.section === "files";
-    };
     setRecognitionNotice("");
-    setRecognitionProgress({ stage: "preparing", progress: 0 });
     try {
-      const record = await getStoredDocumentRecord({ fileVault, workspaceId: job.workspaceId, document });
-      if (!isCurrent()) return;
-      const { recognizeLocalDocument } = await import("./localDocumentRecognition.js");
-      if (!isCurrent()) return;
-      const result = await recognizeLocalDocument({ blob: record.blob, name: document.name, mimeType: document.mimeType, category: document.category,
-        signal: controller.signal, onProgress: (progress) => { if (isCurrent()) setRecognitionProgress(progress); } });
-      if (!isCurrent()) return;
-      const saved = await saveLocalDocumentRecognition({ store, fileVault, workspaceId: job.workspaceId, documentId: document.id,
-        sourceHash: document.hash, category: document.category, result, signal: controller.signal, isCurrent });
-      if (isCurrent()) { setRecognitionView(saved); setRecognitionPage(0); }
+      // The task owns async work; panel navigation only changes its subscription/view.
+      void recognitionRunner.start({ workspaceId: activeWorkspace.id, document, fileVault });
     } catch (caught) {
-      if (isCurrent() && caught.name !== "AbortError") setRecognitionNotice(caught.message || "本地识别失败，请保留原件并人工填写。");
-    } finally {
-      if (recognitionJobRef.current === job) { recognitionJobRef.current = null; setRecognitionProgress(null); }
+      setRecognitionNotice(caught.message || "本地识别暂不可用。");
     }
   }
 
@@ -694,7 +667,6 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   }
 
   async function showPreview(document) {
-    if (detailDocumentId !== document.id) cancelRecognition();
     setDetailDocumentId(document.id);
     clearPendingDocumentAction();
     setError("");
@@ -734,7 +706,6 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   }
 
   function requestDocumentAction(document, action, trigger) {
-    cancelRecognition();
     const usage = getLocalDocumentUsage(activeWorkspace, document.id);
     if (action === "delete" && usage.length) {
       clearPendingDocumentAction();
@@ -787,14 +758,12 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     }
     clearPendingDocumentAction();
     setError("");
-    if (detailDocumentId !== document.id) cancelRecognition();
     setDetailDocumentId(document.id);
     setEditing(documentEditDraft(document, activeWorkspace));
   }
 
   function changeEditCategory(nextCategory) {
     if (!payrollEnabled && isPayrollDocumentCategory(nextCategory)) return;
-    cancelRecognition();
     setEditing((current) => {
       const currentKind = documentStructuredKind(current.category);
       const nextKind = documentStructuredKind(nextCategory);
@@ -1248,7 +1217,6 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                 <div className="document-state-row"><span>{archived ? "已归档" : "未归档"}</span><span className={locallyAvailable ? "original-available" : "original-missing"}>原件：{locallyAvailable ? "本机可用" : "本机缺失"}</span></div>
                 <details className="document-trace-details" open={detailDocumentId === document.id}><summary onClick={(event) => {
                   event.preventDefault();
-                  cancelRecognition();
                   setDetailDocumentId((current) => current === document.id ? null : document.id);
                 }}>资料详情与追溯</summary>
                   {!archived && <div className="document-secondary-actions">
@@ -1264,16 +1232,18 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                   {(recognisable || recognition?.resultId) && <div className="document-recognition">
                     <div className="document-recognition-actions">
                       <strong>本地文字识别</strong>
-                      {recognisable && !archived && <button type="button" className="secondary-button" disabled={!canReadOriginal || Boolean(recognitionProgress) || isEditing || standaloneFile}
+                      {recognisable && !archived && <button type="button" className="secondary-button" disabled={!canReadOriginal || recognitionPending || isEditing || standaloneFile}
                         onClick={() => recognizeDocument(document)}>{recognition?.resultId ? "重新识别" : "识别文字"}</button>}
-                      {recognitionBusy && <button type="button" className="secondary-button" onClick={() => { cancelRecognition(); setRecognitionNotice("已取消，原件和已有字段已保留。"); }}>取消识别</button>}
+                      {detailDocumentId === document.id && selectedRecognitionTask?.status === "ready" && <button type="button" className="secondary-button" onClick={() => { setRecognitionNotice(""); void recognitionRunner.resume({ explicit: true }); }}>保存识别结果</button>}
+                      {detailDocumentId === document.id && isRecognitionTaskPending(selectedRecognitionTask) && <button type="button" className="secondary-button" disabled={selectedRecognitionTask.status === "cancelling"} onClick={cancelRecognition}>取消识别</button>}
                     </div>
                     {standaloneFile ? <p>请从本地网页打开 FinanceDesk 后使用文字识别。</p> : !recognition?.resultId && <p>首次使用需加载本地引擎。最多 30 MB、30 页；文件在本机处理，候选需人工核对。</p>}
                     {recognitionBusy && <div className="document-recognition-progress" role="status">
                       <span>{recognitionProgressLabel(recognitionProgress)}</span>
                       <progress aria-label="当前识别步骤进度" max="1" value={Math.max(0, Math.min(1, recognitionProgress.progress || 0))} />
                     </div>}
-                    {detailDocumentId === document.id && recognitionNotice && <p role="status">{recognitionNotice}</p>}
+                    {detailDocumentId === document.id && (recognitionNotice || selectedRecognitionTask?.notice) && <p role="status">{recognitionNotice || selectedRecognitionTask.notice}</p>}
+                    {detailDocumentId === document.id && recognitionPending && !selectedRecognitionTask && <p role="status">已有其他资料正在识别或等待保存，请返回该资料查看。</p>}
                     {recognition?.resultId && !recognitionCurrent && <p>资料类别或原件已变化，请重新识别后再使用候选。</p>}
                     {candidates.length > 0 && <>
                       <p>候选只填入空白草稿，核对后保存；已有内容可在“编辑资料”中调整。</p>
