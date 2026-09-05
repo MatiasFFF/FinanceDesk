@@ -16,7 +16,7 @@ test("合同候选保留页码和原文，歧义金额不代替人工选择", ()
   assert.equal(result.suggestedFields.amount, undefined);
   assert.equal(result.suggestedFields.settlementCycle.value, "按月");
   assert.equal(result.suggestedFields.refundTerms.value, "提前七日申请退款");
-  assert.equal(result.warnings.length, 1);
+  assert.equal(result.warnings.length, 2);
 
   const sourceText = "服务期限 : 2026-09-01 至 2026-09-30";
   const dates = extractDocumentFieldSuggestions([{ pageNumber: 2, text: sourceText }], "合同");
@@ -46,6 +46,36 @@ test("发票只建议明确字段，不推断销进项或查验完成", () => {
   assert.equal(suggestedFields.taxDirection, undefined);
   assert.equal(suggestedFields.verificationStatus, undefined);
   assert.equal(suggestedFields.amount.pageNumber, 3);
+});
+
+test("四类合同条款保留多行与跨页条件，不计算折扣或佣金金额", () => {
+  const pages = [
+    { pageNumber: 1, text: "退款条款：提前七日申请。\n扣除已经履约的服务费。\n折扣条款：全年预付享九折，" },
+    { pageNumber: 2, text: "提前终止时按原价重算。\n佣金规则：按实际到账额的3%计提。\n退款部分不计佣金。\n履约条件：每月交付两次服务。\n经双方验收后结算。\n争议解决：另行协商。" },
+  ];
+  const result = extractDocumentFieldSuggestions(pages, "合同");
+  assert.equal(result.suggestedFields.refundTerms.value, "提前七日申请。\n扣除已经履约的服务费。");
+  assert.equal(result.suggestedFields.discountTerms.value, "全年预付享九折，\n提前终止时按原价重算。");
+  assert.deepEqual(result.suggestedFields.discountTerms.sourcePages, [1, 2]);
+  assert.equal(result.suggestedFields.discountTerms.sourceText, "折扣条款：全年预付享九折，\n提前终止时按原价重算。");
+  assert.equal(result.suggestedFields.commissionTerms.value, "按实际到账额的3%计提。\n退款部分不计佣金。");
+  assert.equal(result.suggestedFields.performanceTerms.value, "每月交付两次服务。\n经双方验收后结算。");
+  assert.equal(result.suggestedFields.amount, undefined);
+  assert.deepEqual(result.reviewItems, []);
+});
+
+test("多处金额日期与条件条款保留所有来源，交人工判断适用条件", () => {
+  const result = extractDocumentFieldSuggestions([
+    { pageNumber: 1, text: "合同金额：1000元\n服务开始日期：2026-09-01\n退款条款：首期可全退。" },
+    { pageNumber: 2, text: "合同金额：2000元\n服务开始日期：2026-10-01\n退款条款：后续期扣除已履约金额。" },
+    { pageNumber: 3, text: "合同金额：3000元\n退款条款：特殊订单另行约定。" },
+  ], "合同");
+  assert.equal(result.suggestedFields.amount, undefined);
+  assert.equal(result.suggestedFields.serviceStartDate, undefined);
+  assert.equal(result.suggestedFields.refundTerms, undefined);
+  assert.deepEqual(result.reviewItems.find((item) => item.field === "amount").sources.map((source) => source.value), [1000, 2000, 3000]);
+  assert.deepEqual(result.reviewItems.find((item) => item.field === "refundTerms").sources.map((source) => source.pageNumber), [1, 2, 3]);
+  assert.ok(result.reviewItems.every((item) => !item.reason.includes("矛盾")));
 });
 
 function installBrowser(t, { stall = false } = {}) {

@@ -14,6 +14,16 @@
   min-width: 0;
 }
 
+.foundation-section.document-intake-panel.payroll-embedded,
+.document-intake-panel.payroll-embedded > .bank-import-workspace {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 .document-recognition {
   display: grid;
   gap: 10px;
@@ -40,6 +50,19 @@
 .document-recognition-candidates small { display: block; margin-top: 4px; }
 .document-recognition-text pre { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: var(--font-body, 14px); line-height: 1.7; }
 .document-recognition-text select { margin: 8px; }
+
+.document-contract-terms {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.document-contract-terms textarea { resize: vertical; min-height: 96px; }
+.document-intake-panel .document-contract-terms .foundation-field > span:first-child { min-height: 0; }
+.document-clause-source { white-space: pre-wrap; overflow-wrap: anywhere; }
+.document-recognition-review > summary { cursor: pointer; font-weight: 600; }
+.document-recognition-review p { margin-top: 6px; }
 
 .document-intake-panel [hidden] {
   display: none !important;
@@ -614,6 +637,7 @@
 }
 
 @container document-intake (max-width: 560px) {
+  .document-contract-terms { grid-template-columns: minmax(0, 1fr); }
   .document-intake-panel {
     gap: 12px;
   }

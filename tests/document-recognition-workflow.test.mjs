@@ -5,10 +5,12 @@ import {
   saveLocalDocument, saveLocalDocumentRecognition, getLocalDocumentRecognition, updateLocalDocumentMetadata,
 } from "../src/foundation.js";
 import { workflowSourceFingerprint } from "../src/productWorkflow.js";
+import { applyContractBillingPlan, buildContractBillingPlan } from "../src/features/intake/documentIntake.js";
+import { extractDocumentFieldSuggestions } from "../src/features/intake/localDocumentRecognition.js";
 
 const now = () => new Date("2026-09-05T08:00:00.000Z");
 
-async function fixture() {
+async function fixture(category = "发票") {
   const storage = createMemoryStorage();
   const repository = createLocalFoundationRepository({ storage, now });
   const store = createFinanceDeskStore({ repository });
@@ -16,7 +18,7 @@ async function fixture() {
   const workspaceId = store.getState().activeWorkspaceId;
   const file = Object.assign(new Blob(["original invoice"], { type: "application/pdf" }), { name: "本地发票.pdf" });
   const document = await saveLocalDocument({ store, fileVault, workspaceId, file,
-    metadata: { category: "发票", structuredData: { counterparty: "人工单位" } } });
+    metadata: { category, structuredData: category === "合同" ? { partyA: "人工甲方" } : { counterparty: "人工单位" } } });
   return { store, fileVault, workspaceId, document, storage, file };
 }
 
@@ -137,4 +139,68 @@ test("更换原件或跨工作台不会读到旧正文，旧候选不能冒充�
     structuredData: { amount: 200 }, recognitionConfirmation: { resultId: `${saved.id}-stale`, fields: ["amount"] },
   } }), /候选已变化/);
   assert.equal(currentDocument(context).structuredData.amount, null);
+});
+
+test("四类条款候选经人工保存后成为合同与账单依据，金额仍取人工计划", async () => {
+  const context = await fixture("合同");
+  const beforeBillCount = context.store.getActiveWorkspace().bills.length;
+  const text = "退款条款：七日内申请。\n扣除已履约金额。\n折扣条款：符合全年预付条件享九折。\n佣金条款：实际到账的3%。\n退款不计佣金。\n履约条件：每月交付并经双方验收。" + "每次服务均须保留交付和验收记录。".repeat(160);
+  const pages = [{ pageNumber: 2, method: "ocr", text, confidence: 90 }];
+  const extracted = extractDocumentFieldSuggestions(pages, "合同");
+  const saved = await saveLocalDocumentRecognition(saveInput(context, { result: { version: 1, mode: "local", pages, text, ...extracted, recognizedAt: now().toISOString() } }));
+  assert.equal(currentDocument(context).structuredData.discountTerms, "");
+  assert.equal(currentDocument(context).contentRecognition.suggestedFields.performanceTerms.truncated, true);
+  assert.equal(context.store.getActiveWorkspace().bills.length, beforeBillCount);
+  const terms = Object.fromEntries(Object.entries(extracted.suggestedFields).map(([key, candidate]) => [key, candidate.value]));
+  updateLocalDocumentMetadata({ ...context, documentId: context.document.id, actor: "核对人", patch: {
+    structuredData: { ...terms, partyB: "合同对方", contractType: "sales", amount: 1000, periodAmount: 1000, settlementMode: "one_time", firstBillDate: "2026-09-01", billingEndDate: "2026-09-30" },
+    recognitionConfirmation: { resultId: saved.id, fields: Object.keys(terms) },
+  } });
+  const reloaded = createFinanceDeskStore({ repository: createLocalFoundationRepository({ storage: context.storage, now }) });
+  const document = reloaded.getActiveWorkspace().documents.find((item) => item.id === context.document.id);
+  for (const [key, value] of Object.entries(terms)) {
+    assert.equal(document.structuredData[key], value);
+    assert.equal(document.contentRecognition.confirmation.fields[key], value);
+    assert.deepEqual(document.contentRecognition.confirmation.sources[key].sourcePages, [2]);
+  }
+  const next = applyContractBillingPlan(reloaded.getActiveWorkspace(), { documentId: document.id, asOf: "2026-09-01" }, { actor: "账单确认人", at: now().toISOString() });
+  const bill = next.bills.find((item) => item.contractDocumentId === document.id);
+  assert.equal(bill.amount, 1000, "识别到九折、3%不会自动改账单金额");
+  assert.deepEqual(bill.contractBasis.terms, terms);
+  assert.equal(bill.contractBasis.documentHash, context.document.hash);
+  assert.equal(bill.contractBasis.acceptedBy, "账单确认人");
+  assert.equal(next.workspace.vouchers.length, reloaded.getActiveWorkspace().vouchers.length);
+  assert.equal((await context.fileVault.get(context.document.id)).blob, context.file);
+});
+
+test("条款多处表述进入复核待办，人工整理保存后解除账单阻塞并保留原文", async () => {
+  const context = await fixture("合同");
+  const pages = [
+    { pageNumber: 1, method: "pdf-text", text: "合同金额：1000元\n退款条款：首期可全退。" },
+    { pageNumber: 2, method: "pdf-text", text: "合同金额：2000元\n退款条款：后续期扣除已履约金额。" },
+  ];
+  const extracted = extractDocumentFieldSuggestions(pages, "合同");
+  const result = { version: 1, mode: "local", pages, text: pages.map((page) => page.text).join("\n"), ...extracted, recognizedAt: now().toISOString() };
+  const saved = await saveLocalDocumentRecognition(saveInput(context, { result }));
+  const contract = { partyB: "合同对方", contractType: "sales", amount: 1000, periodAmount: 1000, settlementMode: "one_time", firstBillDate: "2026-09-01", billingEndDate: "2026-09-30" };
+  updateLocalDocumentMetadata({ ...context, documentId: context.document.id, patch: { structuredData: contract } });
+  let workspace = context.store.getActiveWorkspace();
+  assert.equal(workspace.exceptionTasks.filter((task) => task.code === "document_recognition_review" && task.status === "open").length, 2);
+  assert.equal(buildContractBillingPlan(workspace, { documentId: context.document.id, asOf: "2026-09-01" }).canConfirm, false);
+  assert.throws(() => applyContractBillingPlan(workspace, { documentId: context.document.id, asOf: "2026-09-01" }), /待复核/);
+  updateLocalDocumentMetadata({ ...context, documentId: context.document.id, actor: "合同核对人", patch: {
+    structuredData: { refundTerms: "本次为首期1000元，可全退；后续期另按2000元及已履约情况处理。" },
+    recognitionReview: { resultId: saved.id, note: "两处金额适用于不同期次，本次只生成首期账单。" },
+  } });
+  workspace = context.store.getActiveWorkspace();
+  const tasks = workspace.exceptionTasks.filter((task) => task.code === "document_recognition_review");
+  assert.ok(tasks.every((task) => task.status === "resolved" && task.resolvedBy === "合同核对人"));
+  assert.deepEqual(tasks.find((task) => task.recognitionFinding.field === "amount").recognitionFinding.sources.map((source) => source.value), [1000, 2000]);
+  assert.ok(tasks.every((task) => task.history.at(-1).note.includes("不同期次")));
+  assert.equal(buildContractBillingPlan(workspace, { documentId: context.document.id, asOf: "2026-09-01" }).canConfirm, true);
+  const next = applyContractBillingPlan(workspace, { documentId: context.document.id, asOf: "2026-09-01" });
+  assert.equal(next.bills.find((bill) => bill.contractDocumentId === context.document.id).amount, 1000);
+  assert.deepEqual((await getLocalDocumentRecognition({ ...context, document: currentDocument(context) })).result.reviewItems, result.reviewItems);
+  await saveLocalDocumentRecognition(saveInput(context, { result }));
+  assert.ok(context.store.getActiveWorkspace().exceptionTasks.filter((task) => task.code === "document_recognition_review").every((task) => task.status === "resolved"), "相同原文再次识别不抹掉人工复核");
 });

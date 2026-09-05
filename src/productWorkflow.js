@@ -1365,12 +1365,23 @@ export function workflowChecks(workspace) {
     && (!task.period || task.period === workspace.currentPeriod)
   ));
   const bankStageComplete = workspace.stages?.s3?.status === "complete";
-  const bankReconciliationPassed = bankReconciliationSummary.passed
+  const isBankAccount = (accountId) => String(accountId || "").split(":")[0] === "bank"
+    || (String(accountId || "").split(":")[0] !== "cash" && accountDefinition(accountId, workspace).cash);
+  const hasBankData = Boolean(
+    workspace.bankAccounts?.length || workspace.accounts?.length || workspace.transactions?.length || workspace.bankImports?.length
+    || Object.entries(workspace.openingLedger || {}).some(([accountId, balance]) => Number(balance) !== 0 && isBankAccount(accountId))
+    || (workspace.vouchers || []).some((voucher) => (voucher.lines || []).some((line) =>
+      (Number(line.debit || 0) !== 0 || Number(line.credit || 0) !== 0) && isBankAccount(line.account)))
+  );
+  const bankReconciliationApplicable = workspaceModuleEnabled(workspace, "reconcile") || hasBankData || openBankReconciliationTasks.length > 0;
+  const bankReconciliationPassed = !bankReconciliationApplicable || (bankReconciliationSummary.passed
     && openBankReconciliationTasks.length === 0
-    && bankStageComplete;
+    && bankStageComplete);
   const incompleteBankAccounts = bankReconciliationSummary.accounts.filter((account) => !account.passed);
   let bankReconciliationDetail = `${bankReconciliationSummary.completedCount} 个账户已完成本期月度勾稽`;
-  if (incompleteBankAccounts.length) {
+  if (!bankReconciliationApplicable) {
+    bankReconciliationDetail = "未启用流水核销，且无银行数据";
+  } else if (incompleteBankAccounts.length) {
     bankReconciliationDetail = incompleteBankAccounts
       .map((account) => `${account.accountName}：${account.message}`)
       .join("；");
@@ -1432,7 +1443,7 @@ export function workflowChecks(workspace) {
   };
   const checks = [
     { id: "balanced", label: "试算、资产负债与现金变动勾稽通过", ok: statementsBalanced, page: "reports", detail: statementsBalanced ? "三项校验通过" : "至少一项校验存在差异" },
-    { id: "bank", label: "本期银行流水余额勾稽通过", ok: bankReconciliationPassed, page: "setup", detail: bankReconciliationDetail },
+    { id: "bank", label: bankReconciliationApplicable ? "本期银行流水余额勾稽通过" : "银行勾稽不适用", applicable: bankReconciliationApplicable, ok: bankReconciliationPassed, page: "setup", detail: bankReconciliationDetail },
     { id: "exceptions", label: "流水、异常与跨期事项已完成复核", ok: unresolved.length === 0 && openExceptionTasks.length === 0 && openNotices.length === 0, page: openNotices.length ? "overview" : "reconcile", detail: unresolved.length || openExceptionTasks.length || openNotices.length ? `${unresolved.length} 笔流水、${openExceptionTasks.length} 项异常、${openNotices.length} 项跨期待办未完成` : "已完成" },
     { id: "vouchers", label: "本期凭证已全部复核入账", ok: pendingVouchers.length === 0, page: "reconcile", detail: pendingVouchers.length ? `${pendingVouchers.length} 张草稿或更正待处理` : "已完成" },
     { id: "frozen", label: "本期当前数据已有冻结版本", ok: Boolean(version), page: "reports", detail: latestVersion && !version ? "上游数据已变化，请重新冻结" : undefined },
@@ -1461,6 +1472,7 @@ export function workflowChecks(workspace) {
     openExceptionTasks,
     openNotices,
     bankReconciliationSummary,
+    bankReconciliationApplicable,
     openBankReconciliationTasks,
     bankReconciliationPassed,
     bankReconciliationIssues,

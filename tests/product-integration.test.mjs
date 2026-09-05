@@ -27,6 +27,10 @@ import {
   preparePayrollSocialImport,
 } from "../src/features/intake/documentIntake.js";
 import { buildBankMonthlyReconciliation, prepareBankImport, reconcileBankAccountPeriod } from "../src/features/intake/bankStatementImport.js";
+import { billSettlement, buildAdvanceBalances, buildAgeingSchedule } from "../src/features/reconciliation/reconciliationEngine.js";
+import { buildMemberLedger, buildMemberServiceReconciliation } from "../src/features/members/memberLedger.js";
+import { activeAccountingRuleSet } from "../src/domain/accounting/model.js";
+import { createBlankWorkspace } from "../src/financeData.js";
 import {
   PRIMARY_NAV,
   PRODUCT_NAME,
@@ -220,6 +224,149 @@ function archiveWithoutTax(workspace = closeableWorkspace()) {
   const localClose = { ...workspace, modules: { ...workspace.modules, tax: false, payroll: false } };
   return archivePeriod(freezeReportVersion(localClose, "测试会计"), "测试会计");
 }
+
+function nonBankCarryForwardFixture() {
+  const workspace = closeableWorkspace();
+  workspace.members = [{ id: "carry-member", name: "跨期会员", status: "active", openingSessions: 24, openingBalance: 2400 }];
+  workspace.bills.push({ id: "carry-payable", kind: "payable", counterparty: "跨期供应商", amount: 450, date: "2026-08-01", dueDate: "2026-09-10" });
+  workspace.openingLedger.payable = Number(workspace.openingLedger.payable || 0) - 450;
+  workspace.openingLedger.loan = -6000;
+  workspace.openingLedger.equity += 6450;
+  workspace.ruleSets = [{ id: "carry-industry-v7", name: "当前行业规则", version: 7, status: "active", updatedAt: fixedNow().toISOString(), confidenceThreshold: 88, amountTolerance: 0.01 }];
+  return archiveWithoutTax(workspace);
+}
+
+test("关闭核销且无银行数据时银行勾稽不适用，已有银行数据不能借关闭模块绕过确认前置", () => {
+  const blank = normalizeWorkspace(ensureWorkspace(createBlankWorkspace({ name: "无银行工资确认", industry: "其他服务业", taxpayerType: "小规模纳税人" })), { now: fixedNow });
+  blank.modules = { ...blank.modules, reconcile: false, payroll: true, tax: true, members: false, inventory: false };
+  const check = (workspace) => workflowChecks(workspace).checks.find((item) => item.id === "bank");
+  assert.equal(blank.bankAccounts.length, 0);
+  assert.notEqual(blank.stages?.s3?.status, "complete");
+  assert.equal(check(blank).ok, true);
+  assert.equal(check(blank).applicable, false);
+  assert.equal(check(blank).label, "银行勾稽不适用");
+  assert.equal(workflowChecks(blank).bankReconciliationSummary.passed, false);
+  const confirmFinance = (workspace) => {
+    const frozen = freezeReportVersion(workspace, "测试会计");
+    return recordInitialConfirmationSection(frozen, {
+      reportVersionId: workflowChecks(frozen).version.id, section: "finance", decision: "approve",
+      note: "已核对本地财务数据", confirmationName: "实际确认人",
+    }, { actor: "测试会计", at: fixedNow().toISOString() });
+  };
+  const confirmed = confirmFinance(blank);
+  assert.equal(confirmed.confirmations.at(-1).sections.finance.status, "approved");
+  const nonBankPayroll = structuredClone(blank);
+  nonBankPayroll.vouchers.push({ id: "salary-accrual", date: `${blank.currentPeriod}-01`, status: "posted", lines: [
+    { account: "expenseSalary", debit: 100, credit: 0 }, { account: "payable", debit: 0, credit: 100 },
+  ] });
+  assert.equal(check(nonBankPayroll).applicable, false);
+  for (const [label, addBankData] of [
+    ["账户", (workspace) => workspace.bankAccounts.push({ id: "existing-bank", name: "已有账户", openingBalance: 0 })],
+    ["流水", (workspace) => workspace.transactions.push({ id: "existing-transaction", date: `${workspace.currentPeriod}-01`, amount: 5, status: "ignored" })],
+    ["导入记录", (workspace) => workspace.bankImports.push({ id: "existing-import", period: workspace.currentPeriod })],
+    ["银行期初余额", (workspace) => { workspace.openingLedger.bank = 100; workspace.openingLedger.equity = -100; }],
+    ["银行凭证", (workspace) => workspace.vouchers.push({ id: "existing-bank-voucher", date: `${workspace.currentPeriod}-01`, status: "posted", lines: [{ account: "bank", debit: 100, credit: 0 }, { account: "equity", debit: 0, credit: 100 }] })],
+    ["自定义银行科目余额", (workspace) => {
+      workspace.chartOfAccounts.push({ id: "custom-settlement", name: "自定义结算资金", category: "asset", normalSide: "debit", cash: true, status: "active" });
+      workspace.openingLedger["custom-settlement"] = 100;
+      workspace.openingLedger.equity = -100;
+    }],
+  ]) {
+    const workspace = structuredClone(blank);
+    addBankData(workspace);
+    assert.equal(check(workspace).applicable, true, label);
+    assert.equal(check(workspace).ok, false, label);
+    assert.throws(() => confirmFinance(workspace), /核对银行流水/, label);
+  }
+  assert.equal(check({ ...blank, modules: { ...blank.modules, reconcile: true } }).ok, false);
+});
+
+test("非银行跨期保留往来余额、预收预付来源、会员未履约、借款、延期事项与行业规则版本", () => {
+  const archived = nonBankCarryForwardFixture();
+  const history = structuredClone(archived.delivery.archives);
+  const next = enterNextPeriod(archived, "测试会计");
+  const statements = buildFinancialStatements(next);
+  for (const accountId of ["receivable", "payable", "prepayment", "contractLiability", "loan"]) {
+    const account = statements.ledger.accounts.find((item) => item.accountId === accountId);
+    assert.equal(account.opening, history[0].closingLedger[accountId], accountId);
+    assert.equal(account.closing, account.opening, accountId);
+    assert.deepEqual(account.entries, [], accountId);
+  }
+  assert.equal(next.openingLedger.loan, -6000);
+  assert.equal(next.openingCarryForward.archiveId, history[0].id);
+  assert.equal(next.openingCarryForward.fromPeriod, archived.currentPeriod);
+  const asOf = `${next.currentPeriod}-01`;
+  for (const bill of archived.bills) {
+    assert.deepEqual(billSettlement(next, bill.id, { asOf }), billSettlement(archived, bill.id, { asOf }));
+  }
+  const ageing = buildAgeingSchedule(next, { asOf });
+  assert.equal(ageing.rows.find((row) => row.billId === "bill-ar-3").balance, 900);
+  assert.equal(ageing.rows.find((row) => row.billId === "carry-payable").balance, 450);
+  assert.ok(ageing.rows.find((row) => row.billId === "bill-ar-3").sourceIds.includes("txn-partial"));
+  const advances = buildAdvanceBalances(next);
+  assert.deepEqual(advances, buildAdvanceBalances(archived));
+  assert.equal(advances.rows.find((row) => row.billId === "bill-deposit-1").availableBalance, 2400);
+  assert.equal(advances.rows.find((row) => row.billId === "bill-prepay-1").availableBalance, 1800);
+  assert.ok(advances.rows.find((row) => row.billId === "bill-deposit-1").sourceIds.includes("txn-deposit"));
+  assert.equal(buildMemberLedger(next).totals.remainingSessions, 24);
+  assert.equal(buildMemberLedger(next).totals.unfulfilledBalance, 2400);
+  assert.equal(buildMemberServiceReconciliation(next).passed, true);
+  assert.equal(activeAccountingRuleSet(next).id, "carry-industry-v7");
+  assert.equal(activeAccountingRuleSet(next).version, 7);
+  assert.deepEqual(next.ruleSets, archived.ruleSets);
+  for (const item of history[0].carryForwardItems) {
+    const notices = next.delivery.notices.filter((notice) => notice.period === next.currentPeriod && notice.sourceId === item.id);
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].status, "open");
+    assert.equal(notices[0].amount, item.amount);
+  }
+  assert.ok(history[0].carryForwardItems.length > 0);
+  assert.equal(workflowChecks(next).checks.find((check) => check.id === "exceptions").ok, false);
+  assert.deepEqual(next.vouchers, archived.vouchers);
+  assert.deepEqual(next.businessEvents, archived.businessEvents);
+  assert.deepEqual(next.delivery.archives, history);
+  assert.deepEqual(archived.delivery.archives, history);
+  assert.equal(enterNextPeriod(next), next);
+});
+
+test("下一期收付、履约和还款仅改变剩余余额，不重复旧期分录或改写历史档案", () => {
+  const archived = nonBankCarryForwardFixture();
+  const history = structuredClone(archived.delivery.archives);
+  const opening = enterNextPeriod(archived, "测试会计");
+  const next = structuredClone(opening);
+  const date = `${next.currentPeriod}-02`;
+  next.transactions.push(
+    { id: "carry-receipt", date, accountId: "bank:operating", amount: 200, allocations: [{ id: "carry-ar-allocation", billId: "bill-ar-3", amount: 200, status: "confirmed" }] },
+    { id: "carry-payment", date, accountId: "bank:operating", amount: -150, allocations: [{ id: "carry-ap-allocation", billId: "carry-payable", amount: 150, status: "confirmed" }] },
+    { id: "loan-repayment", date, accountId: "bank:operating", amount: -500, summary: "归还上期借款", allocations: [] },
+  );
+  next.businessEvents.push({ id: "carry-consumption", kind: "consumption", memberId: "carry-member", date, amount: 100, quantity: 1, status: "confirmed" });
+  next.vouchers.push(
+    { id: "carry-voucher-ar", date, status: "posted", sourceIds: ["carry-receipt", "bill-ar-3"], lines: [{ account: "bank:operating", debit: 200, credit: 0 }, { account: "receivable", debit: 0, credit: 200 }] },
+    { id: "carry-voucher-ap", date, status: "posted", sourceIds: ["carry-payment", "carry-payable"], lines: [{ account: "payable", debit: 150, credit: 0 }, { account: "bank:operating", debit: 0, credit: 150 }] },
+    { id: "carry-voucher-service", date, status: "posted", sourceIds: ["carry-consumption"], lines: [{ account: "contractLiability", debit: 100, credit: 0 }, { account: "revenuePrivate", debit: 0, credit: 100 }] },
+    { id: "carry-voucher-loan", date, status: "posted", sourceIds: ["loan-repayment"], lines: [{ account: "loan", debit: 500, credit: 0 }, { account: "bank:operating", debit: 0, credit: 500 }] },
+  );
+  const statements = buildFinancialStatements(next);
+  const balance = (id) => statements.ledger.accounts.find((account) => account.accountId === id).closing;
+  assert.equal(balance("receivable"), opening.openingLedger.receivable - 200);
+  assert.equal(balance("payable"), -300);
+  assert.equal(balance("loan"), -5500);
+  assert.equal(balance("contractLiability"), -2300);
+  assert.equal(balance("prepayment"), 1800);
+  assert.equal(statements.incomeStatement.profit.value, 100);
+  assert.equal(statements.ledger.vouchers.length, 4);
+  assert.equal(billSettlement(next, "bill-ar-3", { asOf: date }).remaining, 700);
+  assert.equal(billSettlement(next, "carry-payable", { asOf: date }).remaining, 300);
+  assert.equal(buildMemberLedger(next).totals.remainingSessions, 23);
+  assert.equal(buildMemberLedger(next).totals.unfulfilledBalance, 2300);
+  assert.equal(buildMemberServiceReconciliation(next).passed, true);
+  assert.deepEqual(buildAdvanceBalances(next), buildAdvanceBalances(opening));
+  next.ruleSets[0].version = 8;
+  assert.deepEqual(next.delivery.archives, history);
+  assert.deepEqual(archived.delivery.archives, history);
+  assert.equal(activeAccountingRuleSet(opening).version, 7);
+});
 
 test("跨期按银行账户承接已核实结存，新期对账单余额仍待提供", () => {
   const workspace = closeableWorkspace();

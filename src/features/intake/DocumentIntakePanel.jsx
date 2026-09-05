@@ -66,6 +66,7 @@ import {
   updateLocalDocumentMetadata,
 } from "./documentIntake.js";
 import "./document-intake-panel.css";
+import "../workspaces/foundation-ui.css";
 
 const CATEGORIES = ["主体资料", "合同", "银行流水", "业务资料", "发票", "审批资料", "人员资料", "工资表", "社保数据", "会计资料", "申报回执", "其他资料"];
 const PAYROLL_DOCUMENT_CATEGORIES = new Set(["工资表", "社保表", "社保数据", "工资社保数据", "payroll", "socialSecurity"]);
@@ -74,6 +75,7 @@ const RECOGNITION_FIELD_LABELS = {
   counterparty: "往来单位", taxAmount: "税额", taxRate: "税率（%）", applicant: "申请人", supplier: "收付款对象",
   approvalDate: "审批日期", serviceStartDate: "服务开始日期", serviceEndDate: "服务结束日期",
   refundTerms: "退款条款", commissionTerms: "佣金条款", firstBillDate: "首次账单日", periodAmount: "每期金额", settlementCycle: "结算周期",
+  discountTerms: "折扣条款", performanceTerms: "履约条件",
 };
 
 function documentEditDraft(document, workspace) {
@@ -158,7 +160,9 @@ function structuredDetailLines(document, workspace) {
       `账单计划：每期 ${amountLabel(details.periodAmount)} · 首次 ${details.firstBillDate || "未填写"} · 结束 ${details.billingEndDate || "未填写"} · ${displayText(CONTRACT_DUE_DATE_RULES[details.dueDateRule] || "未设置到期规则")}${details.dueDateRule === "days_after" ? ` ${details.dueDays || 0} 天` : ""}`,
       `${terminology.service}期限：${details.serviceStartDate || "未填写"} 至 ${details.serviceEndDate || "未填写"}`,
       `退款条款：${details.refundTerms || "未填写"}`,
+      `折扣条款：${details.discountTerms || "未填写"}`,
       `佣金条款：${details.commissionTerms || "未填写"}`,
+      `履约条件：${details.performanceTerms || "未填写"}`,
     ];
   }
   if (kind === "invoice") {
@@ -207,8 +211,11 @@ function StructuredDataFields({ category, value, onChange, workspace, currentDoc
         <label className="foundation-field"><span>账单结束日期</span><input type="date" value={details.billingEndDate || ""} onChange={(event) => update("billingEndDate", event.target.value)} /></label>
         <label className="foundation-field"><span>{terminology.service}开始日期</span><input type="date" value={details.serviceStartDate || ""} onChange={(event) => update("serviceStartDate", event.target.value)} /></label>
         <label className="foundation-field"><span>{terminology.service}结束日期</span><input type="date" value={details.serviceEndDate || ""} onChange={(event) => update("serviceEndDate", event.target.value)} /></label>
-        <label className="foundation-field"><span>退款条款</span><input value={details.refundTerms || ""} onChange={(event) => update("refundTerms", event.target.value)} placeholder="退款条件、扣费与时限" /></label>
-        <label className="foundation-field"><span>佣金条款</span><input value={details.commissionTerms || ""} onChange={(event) => update("commissionTerms", event.target.value)} placeholder="佣金比例、计提与支付条件" /></label>
+        <div className="document-contract-terms">
+          {[["refundTerms", "退款条款"], ["discountTerms", "折扣条款"], ["commissionTerms", "佣金条款"], ["performanceTerms", "履约条件"]].map(([key, label]) => (
+            <label className="foundation-field" key={key}><span>{label}</span><textarea rows={3} value={details[key] || ""} onChange={(event) => update(key, event.target.value)} /></label>
+          ))}
+        </div>
       </div>
     );
   }
@@ -296,7 +303,7 @@ function documentKindLabel(kind) {
   return { contract: "合同", invoice: "发票", approval: "审批单" }[kind] || "资料";
 }
 
-export function DocumentIntakePanel({ defaultCategory = "其他资料", compact = false, onToast, onNavigate, activeSection, onSectionChange }) {
+export function DocumentIntakePanel({ defaultCategory = "其他资料", compact = false, payrollOnly = false, onToast, onNavigate, activeSection, onSectionChange }) {
   const { state, activeWorkspace, actions, store, fileVault } = useFinanceDesk();
   const terminology = workspaceTerminology(activeWorkspace);
   const displayText = (value) => applyWorkspaceTerminology(value, activeWorkspace);
@@ -309,7 +316,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const inputRef = useRef(null);
   const voucherExportRef = useRef(null);
   const [localSection, setLocalSection] = useState("files");
-  const selectedSection = activeSection ?? localSection;
+  const selectedSection = payrollOnly ? "payroll" : (activeSection ?? localSection);
   const [uploadOpen, setUploadOpen] = useState(false);
   function selectSection(nextSection) {
     if (nextSection !== "files") cancelRecognition();
@@ -536,6 +543,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   }
 
   function fillRecognitionCandidate(document, key, candidate) {
+    if (candidate.truncated) return;
     if (editing && editing.id !== document.id) { setError("请先保存或取消当前资料的编辑。"); return; }
     const draft = editing || documentEditDraft(document, activeWorkspace);
     if (draft.category !== document.category || document.contentRecognition?.sourceHash !== document.hash) return;
@@ -807,6 +815,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           relatedObjectIds: editing.relatedObjectIds,
           structuredData: editing.structuredData,
           recognitionConfirmation: editing.recognitionConfirmation,
+          recognitionReview: editing.recognitionReview?.note?.trim() ? editing.recognitionReview : undefined,
         },
       });
       closeEditing();
@@ -1106,15 +1115,15 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   }
 
   return (
-    <section className={`foundation-section document-intake-panel ${compact ? "compact" : "intake-wide"}`} data-unsaved-changes={hasPendingInput || undefined}>
-      <div className="foundation-section-heading"><div><h3><FileText size={18} />本地资料库</h3></div><button className="primary-button" type="button" aria-expanded={uploadOpen && selectedSection === "files"} disabled={!fileVault || busy} onClick={() => { selectSection("files"); setUploadOpen((open) => selectedSection === "files" ? !open : true); }}><FileArrowUp size={17} />上传原文件</button></div>
+    <section className={`foundation-section document-intake-panel ${compact ? "compact" : "intake-wide"} ${payrollOnly ? "payroll-embedded" : ""}`} data-unsaved-changes={hasPendingInput || undefined}>
+      {!payrollOnly && <><div className="foundation-section-heading"><div><h3><FileText size={18} />本地资料库</h3></div><button className="primary-button" type="button" aria-expanded={uploadOpen && selectedSection === "files"} disabled={!fileVault || busy} onClick={() => { selectSection("files"); setUploadOpen((open) => selectedSection === "files" ? !open : true); }}><FileArrowUp size={17} />上传原文件</button></div>
       <nav className="document-section-nav" aria-label="资料库分组">{[
         { id: "files", label: "文件", count: activeWorkspace.documents.length },
         { id: "business", label: "合同与发票" },
         ...(payrollEnabled ? [{ id: "payroll", label: "工资社保" }] : []),
         { id: "missing", label: "缺件与匹配", count: openDocumentTasks.length || null },
         { id: "exports", label: "导出归档" },
-      ].map((item) => <button key={item.id} type="button" className={selectedSection === item.id ? "active" : ""} aria-pressed={selectedSection === item.id} onClick={() => selectSection(item.id)}>{item.label}{item.count != null && <span>{item.count}</span>}</button>)}</nav>
+      ].map((item) => <button key={item.id} type="button" className={selectedSection === item.id ? "active" : ""} aria-pressed={selectedSection === item.id} onClick={() => selectSection(item.id)}>{item.label}{item.count != null && <span>{item.count}</span>}</button>)}</nav></>}
       {editing && selectedSection !== "files" && <div className="document-draft-reminder"><span>“{editing.name}”的编辑内容已保留。</span><button className="secondary-button" type="button" onClick={() => selectSection("files")}>继续编辑</button></div>}
       {!payrollEnabled && payrollFilePreview && <div className="document-draft-reminder"><span>工资社保模块已停用，未导入的文件预览已保留。</span><button className="secondary-button" type="button" onClick={() => { setPayrollFilePreview(null); setPayrollFieldMapping({}); }}>取消此次导入</button></div>}
       {error && <div className="foundation-error" role="alert"><WarningCircle size={18} /><span>{displayText(error)}</span></div>}
@@ -1165,7 +1174,10 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           const recognitionCurrent = recognition?.sourceHash === document.hash && recognition?.category === document.category;
           const recognitionBusy = detailDocumentId === document.id && Boolean(recognitionProgress);
           const recognisable = document.mimeType === "application/pdf" || /^image\/(png|jpeg|webp|bmp|tiff|gif)$/.test(document.mimeType || "") || /\.(pdf|png|jpe?g|webp|bmp|tiff?|gif)$/i.test(document.name || "");
-          const candidates = recognitionCurrent ? Object.entries(recognition.suggestedFields || {}).filter(([key]) => RECOGNITION_FIELD_LABELS[key]) : [];
+          const fullRecognition = detailDocumentId === document.id && recognitionView?.id === recognition?.resultId && recognitionView?.sourceHash === document.hash ? recognitionView.result : null;
+          const candidates = recognitionCurrent ? Object.entries(fullRecognition?.suggestedFields || recognition.suggestedFields || {}).filter(([key]) => RECOGNITION_FIELD_LABELS[key]) : [];
+          const documentReviews = (activeWorkspace.exceptionTasks || []).filter((task) => task.code === "document_recognition_review" && task.sourceId === document.id && task.sourceHash === document.hash);
+          const hasPendingReview = documentReviews.some((task) => task.status !== "resolved");
           return (
             <article className="document-record" key={document.id}>
               <span className="document-record-icon"><FileText size={20} /></span>
@@ -1209,14 +1221,21 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                         const occupied = draftValue !== null && draftValue !== undefined && draftValue !== "";
                         const applied = isEditing && editing.recognitionConfirmation?.fields?.includes(key);
                         return <li key={key}><div><span>{RECOGNITION_FIELD_LABELS[key]}：<strong>{String(candidate.value)}</strong></span>
-                          <small>第 {candidate.pageNumber || 1} 页 · {candidate.sourceText}</small></div>
-                          {!archived && (key === "settlementCycle" || occupied
-                            ? <small>{key === "settlementCycle" ? "请人工选择结算方式" : applied ? "已填入草稿" : "已有内容"}</small>
+                          <small className="document-clause-source">第 {(candidate.sourcePages || [candidate.pageNumber || 1]).join("、")} 页 · {candidate.sourceText}{candidate.sourceTruncated ? "…" : ""}</small></div>
+                          {!archived && (key === "settlementCycle" || occupied || candidate.truncated
+                            ? <small>{candidate.truncated ? "读取完整原文后填写" : key === "settlementCycle" ? "请人工选择结算方式" : applied ? "已填入草稿" : "已有内容"}</small>
                             : (!editing || (isEditing && editing.category === document.category)) && <button type="button" className="secondary-button" onClick={() => fillRecognitionCandidate(document, key, candidate)}>填入草稿</button>)}
                         </li>;
                       })}</ul>
                     </>}
                     {recognition?.confirmation && <p>上次人工确认：{recognition.confirmation.actor} · {recognition.confirmation.confirmedAt?.slice(0, 10)}</p>}
+                    {documentReviews.map((task) => <details className="document-recognition-review" key={task.id}>
+                      <summary>{task.recognitionFinding.label} · {task.status === "resolved" ? "已复核" : "待复核"}</summary>
+                      <p>{task.recognitionFinding.reason}</p>
+                      {task.recognitionFinding.sources.map((source, index) => <p className="document-clause-source" key={index}>第 {(source.sourcePages || [source.pageNumber]).join("、")} 页 · {source.sourceText}</p>)}
+                      {task.status === "resolved" && <p>{task.resolvedBy}：{task.history.at(-1)?.note}</p>}
+                    </details>)}
+                    {hasPendingReview && !isEditing && <p>请在“编辑资料”中核对条款，填写复核说明后保存。</p>}
                     {detailDocumentId === document.id && recognitionView?.sourceHash === document.hash && <>
                       {recognitionView.result.warnings?.map((warning, index) => <p key={index}>{warning}</p>)}
                       {!candidates.length && recognitionCurrent && <p>未找到可直接填写的字段，请参照正文人工录入。</p>}
@@ -1237,8 +1256,9 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                       <label className="foundation-field"><span>添加关联对象</span><select value="" onChange={(event) => addEditRelation(event.target.value)}><option value="">选择后加入</option>{relatedGroups.map((group) => <optgroup label={group.label} key={group.collection}>{group.items.filter((item) => !editing.relatedObjectIds.includes(item.id)).map((item) => <option value={item.id} key={item.id}>{relatedLabel(item)}</option>)}</optgroup>)}</select></label>
                     </div>
                     <StructuredDataFields category={editing.category} value={editing.structuredData} onChange={(structuredData) => setEditing((current) => ({ ...current, structuredData }))} workspace={activeWorkspace} currentDocumentId={editing.id} />
+                    {hasPendingReview && editing.category === "合同" && <label className="foundation-field"><span>条款复核说明</span><textarea rows={2} value={editing.recognitionReview?.note || ""} onChange={(event) => setEditing((current) => ({ ...current, recognitionReview: { resultId: recognition.resultId, note: event.target.value } }))} placeholder="说明采用哪种条件、金额或日期；保存后解决对应待办" /></label>}
                     <div className="permission-chip-list">{editing.relatedObjectIds.map((objectId) => <span key={objectId}>{relatedLabels.get(objectId) || objectId} <button type="button" aria-label={`解除 ${relatedLabels.get(objectId) || objectId} 关联`} onClick={() => removeEditRelation(objectId)}>×</button></span>)}</div>
-                    <div className="foundation-inline-actions document-editor-actions"><button className="primary-button" type="button" onClick={saveEdit}>{editing.recognitionConfirmation?.fields?.length ? "确认所填候选并保存" : "保存资料详情"}</button><button className="secondary-button" type="button" onClick={closeEditing}>取消</button></div>
+                    <div className="foundation-inline-actions document-editor-actions"><button className="primary-button" type="button" onClick={saveEdit}>{editing.recognitionReview?.note?.trim() ? "保存并完成复核" : editing.recognitionConfirmation?.fields?.length ? "确认所填候选并保存" : "保存资料详情"}</button><button className="secondary-button" type="button" onClick={closeEditing}>取消</button></div>
                   </div>
                 )}
                 {pendingAction && (
@@ -1501,21 +1521,26 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           <span>{payrollSocialSummary.hasDifferences ? `${payrollSocialSummary.counts.issues} 人待核对` : `${terminology.personnel}与金额一致`}</span>
         </div>
         <div className="foundation-record-list">
-          {payrollSocialSummary.rows.map((row) => (
+          {payrollSocialSummary.rows.map((row) => {
+            const hasRecords = Boolean(row.payrollRecord || row.socialSecurityRecord);
+            return (
             <article className="foundation-record" key={row.key}>
               <div>
                 <strong>{row.employeeName}</strong>
-                <small>{!row.person ? `${terminology.personnel}档案缺失` : (row.personnelStatus === "active" || !row.personnelStatus ? `在职 · ${row.person.department || "未填写部门"}` : `离职／非在职 · 状态 ${row.personnelStatus}`)}</small>
+                <small>{!hasRecords ? row.person?.department || "未填写部门" : !row.person ? `${terminology.personnel}档案缺失` : (row.personnelStatus === "active" || !row.personnelStatus ? `在职 · ${row.person.department || "未填写部门"}` : `离职／非在职 · 状态 ${row.personnelStatus}`)}</small>
+                {hasRecords && <>
                 <p>工资表：应发 {amountLabel(row.payrollRecord?.grossSalary)} · 个人社保 {amountLabel(row.payrollRecord?.personalSocial)} · 企业社保 {amountLabel(row.payrollRecord?.employerSocial)} · 个税 {amountLabel(row.payrollRecord?.individualIncomeTax)} · 实发 {amountLabel(row.payrollRecord?.netSalary)}</p>
                 <p>社保表：工资／基数 {amountLabel(row.socialSecurityRecord?.grossSalary)} · 个人社保 {amountLabel(row.socialSecurityRecord?.personalSocial)} · 企业社保 {amountLabel(row.socialSecurityRecord?.employerSocial)}</p>
                 <p>金额差异（工资表 − 社保表）：应发／基数 {row.differences.grossSalary == null ? "不可比" : amountLabel(row.differences.grossSalary)} · 个人社保 {row.differences.personalSocial == null ? "不可比" : amountLabel(row.differences.personalSocial)} · 企业社保 {row.differences.employerSocial == null ? "不可比" : amountLabel(row.differences.employerSocial)}</p>
+                </>}
               </div>
-              <span><strong>{row.matched ? "一致" : row.issues.map((issue) => displayText(issue.label)).join("；")}</strong><small>{row.payrollRecord?.sourceFileName || "缺工资表"} · {row.socialSecurityRecord?.sourceFileName || "缺社保表"}</small></span>
+              <span><strong>{!hasRecords ? "工资表、社保表均缺失" : row.matched ? "一致" : row.issues.map((issue) => displayText(issue.label)).join("；")}</strong>{hasRecords && <small>{row.payrollRecord?.sourceFileName || "缺工资表"} · {row.socialSecurityRecord?.sourceFileName || "缺社保表"}</small>}</span>
             </article>
-          ))}
+            );
+          })}
           {!payrollSocialSummary.rows.length && <p className="foundation-empty">当前期间没有工资或社保记录，也没有在职{terminology.personnel}可核对。</p>}
         </div>
-        <div className="foundation-section-heading" style={{ marginTop: 18 }}>
+        {!payrollOnly && <><div className="foundation-section-heading" style={{ marginTop: 18 }}>
           <div><h3>{terminology.customer}确认</h3></div>
           <span>{payrollSocialConfirmation.version ? payrollSocialConfirmation.version.label : "需先重新冻结报表"}</span>
         </div>
@@ -1530,6 +1555,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
             <span><strong>{payrollSocialConfirmation.socialSecurity.confirmed ? "已确认" : "未确认"}</strong><small>{payrollSocialConfirmation.socialSecurity.available ? `${payrollSocialSummary.counts.socialSecurity} 人 · 社保合计 ${amountLabel(payrollSocialSummary.totals.socialSecurityPayable)}` : "请先导入社保表"}</small></span>
           </article>
         </div>
+        </>}
         {!!(activeWorkspace.payrollImports || []).length && <p className="foundation-hint">当前工作台已记录 {(activeWorkspace.payrollImports || []).length} 个本地导入批次；最近一次为 {(activeWorkspace.payrollImports || []).at(-1).fileName}。</p>}
       </div>}
       <div className="bank-import-workspace" hidden={selectedSection !== "missing"}>

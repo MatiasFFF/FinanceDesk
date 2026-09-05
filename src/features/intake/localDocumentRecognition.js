@@ -153,7 +153,9 @@ export function extractDocumentFieldSuggestions(pages, category) {
     ["partyA", "合同甲方|甲方", "text"], ["partyB", "合同乙方|乙方", "text"],
     ["amount", "合同总金额|合同金额|合同总价", "money"],
     ["serviceStartDate", "服务开始日期|服务起始日期", "date"], ["serviceEndDate", "服务结束日期|服务截止日期", "date"],
-    ["settlementCycle", "结算周期|结算方式", "text"], ["refundTerms", "退款条款|退款条件", "text"], ["commissionTerms", "佣金条款|佣金规则", "text"],
+    ["settlementCycle", "结算周期|结算方式", "text"],
+    ["refundTerms", "退款条款|退款条件|退款规则|退款", "clause"], ["discountTerms", "折扣条款|折扣条件|折扣规则|优惠规则|折扣", "clause"],
+    ["commissionTerms", "佣金条款|佣金规则|佣金条件|佣金", "clause"], ["performanceTerms", "履约条件|履约条款|履约要求", "clause"],
   ] : category === "发票" ? [
     ["invoiceNumber", "发票号码", "invoice"], ["invoiceDate", "开票日期|发票日期", "date"],
     ["amount", "价税合计(?:（小写）|\\(小写\\))?", "money"], ["taxAmount", "税额|合计税额", "money"], ["taxRate", "税率", "rate"],
@@ -161,14 +163,30 @@ export function extractDocumentFieldSuggestions(pages, category) {
   const suggestedFields = {};
   const conflicts = new Set();
   const warnings = [];
-  const addCandidate = (key, value, sourceText, pageNumber, label) => {
-    if (conflicts.has(key)) return;
+  const reviewItems = [];
+  const requestReview = (key, label, sources, reason) => {
+    let review = reviewItems.find((item) => item.field === key);
+    if (!review) {
+      review = { field: key, label, reason, sources: [] };
+      reviewItems.push(review);
+      warnings.push(`${label}待人工核对，请查看各处原文。`);
+    }
+    for (const source of [...(suggestedFields[key] ? [suggestedFields[key]] : []), ...sources]) {
+      if (!review.sources.some((item) => JSON.stringify(item) === JSON.stringify(source))) review.sources.push(source);
+    }
+    conflicts.add(key);
+    delete suggestedFields[key];
+  };
+  const addCandidate = (key, value, sourceText, pageNumber, label, sourcePages) => {
+    const source = { value, sourceText: sourceText.trim(), pageNumber, ...(sourcePages ? { sourcePages } : {}) };
+    if (conflicts.has(key)) {
+      requestReview(key, label, [source], "同一字段有多处表述，请核对适用条件。");
+      return;
+    }
     if (suggestedFields[key] && suggestedFields[key].value !== value) {
-      delete suggestedFields[key];
-      conflicts.add(key);
-      warnings.push(`${label}出现不同值，请对照原件填写。`);
+      requestReview(key, label, [suggestedFields[key], source], "同一字段有多处表述，请核对适用条件。");
     } else if (!suggestedFields[key]) {
-      suggestedFields[key] = { value, sourceText: sourceText.trim(), pageNumber };
+      suggestedFields[key] = source;
     }
   };
   const otherLabels = rules.map(([, labels]) => labels).join("|");
@@ -184,14 +202,16 @@ export function extractDocumentFieldSuggestions(pages, category) {
             addCandidate("serviceStartDate", start, sourceText, page.pageNumber, "服务开始日期");
             addCandidate("serviceEndDate", end, sourceText, page.pageNumber, "服务结束日期");
           } else {
-            warnings.push(`第 ${page.pageNumber} 页服务期限的日期或顺序有误，请对照原件填写。`);
+            requestReview("serviceEndDate", "服务期限", [{ value: range[0], sourceText, pageNumber: page.pageNumber, sourcePages: [page.pageNumber] }], "日期或先后顺序需要人工核对。");
           }
         }
       }
       for (const [key, labels, type] of rules) {
+        if (type === "clause") continue;
         const match = line.match(new RegExp(`(?:^|\\s|[;；])(?:${labels})\\s*[:：]\\s*(.*?)(?=\\s+(?:${otherLabels})\\s*[:：]|$)`));
-        if (!match || conflicts.has(key)) continue;
+        if (!match) continue;
         let value = match[1].trim();
+        const originalValue = value;
         if (type === "date") value = validDate(value.replace(/\s/g, ""));
         if (type === "invoice") value = /^\d{8,20}$/.test(value.replace(/\s/g, "")) ? value.replace(/\s/g, "") : null;
         if (type === "money") {
@@ -199,12 +219,47 @@ export function extractDocumentFieldSuggestions(pages, category) {
           value = money ? Number(money[1].replaceAll(",", "")) : null;
         }
         if (type === "rate") value = /^\d{1,2}(?:\.\d{1,2})?\s*%$|^100\s*%$/.test(value) ? Number(value.replace(/\s|%/g, "")) : null;
-        if (value === null || value === "" || typeof value === "number" && !Number.isFinite(value)) continue;
+        if (value === null || value === "" || typeof value === "number" && !Number.isFinite(value)) {
+          if (category === "合同" && originalValue && ["money", "date"].includes(type)) {
+            requestReview(key, labels.split("|")[0], [{ value: originalValue, sourceText, pageNumber: page.pageNumber, sourcePages: [page.pageNumber] }], "原文无法唯一确定金额或日期，请按适用条件人工填写。");
+          }
+          continue;
+        }
         addCandidate(key, value, sourceText, page.pageNumber, labels.split("|")[0]);
       }
     }
   }
-  return { suggestedFields, warnings };
+  // Explicitly headed clauses stay as text. Never turn percentages/conditions into bill amounts.
+  const clauseRules = rules.filter((rule) => rule[2] === "clause");
+  const clauseLabels = clauseRules.map((rule) => rule[1]).join("|");
+  const canonical = (text) => text.normalize("NFKC").replace(/([\u3400-\u9fff])[ \t]+(?=[\u3400-\u9fff])/g, "$1").trim();
+  const headingPrefix = "(?:(?:第[一二三四五六七八九十百\\d]+条|[一二三四五六七八九十\\d]+[、.])\\s*)?";
+  const records = clauseRules.length ? pages.flatMap((page) => page.text.split(/\r?\n/)
+    .flatMap((text) => text.split(new RegExp(`[;；](?=\\s*(?:${clauseLabels})\\s*[:：])`)))
+    .map((text) => ({ text, pageNumber: page.pageNumber }))) : [];
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    const rule = clauseRules.find(([, labels]) => new RegExp(`^${headingPrefix}(?:${labels})\\s*(?::|$)`).test(canonical(record.text)));
+    if (!rule) continue;
+    const [key, labels] = rule;
+    // Normalize only for locating the heading; clause text keeps its original punctuation.
+    const separator = record.text.search(/[:：]/);
+    const values = [separator >= 0 ? record.text.slice(separator + 1).trim() : ""];
+    const sources = [record];
+    let end = index + 1;
+    for (; end < records.length; end += 1) {
+      const next = canonical(records[end].text);
+      if (new RegExp(`^${headingPrefix}(?:${otherLabels}|服务期限)\\s*(?::|$)`).test(next)) break;
+      if (/^第[一二三四五六七八九十百\d]+条/.test(next)) break;
+      if (/^[^:]{1,20}:/.test(next) && !/^(?:说明|补充|补充约定|例外|例外情况|条件|其中)\s*:/.test(next)) break;
+      values.push(records[end].text.trim());
+      sources.push(records[end]);
+    }
+    const value = values.join("\n").trim();
+    if (value) addCandidate(key, value, sources.map((source) => source.text).join("\n"), record.pageNumber, labels.split("|")[0], [...new Set(sources.map((source) => source.pageNumber))]);
+    index = end - 1;
+  }
+  return { suggestedFields, warnings, reviewItems };
 }
 
 // Runtime import: Vite/standalone HTML never preload or inline this large module.
@@ -328,7 +383,7 @@ export async function recognizeLocalDocument({ blob, name = "", mimeType = blob?
     assertNotAborted(signal);
     const candidates = extractDocumentFieldSuggestions(pages, category);
     return { version: 1, mode: "local", text: pages.map((page) => page.text).join("\n\n"), pages,
-      suggestedFields: candidates.suggestedFields, warnings: [...warnings, ...candidates.warnings], recognizedAt: new Date().toISOString() };
+      suggestedFields: candidates.suggestedFields, reviewItems: candidates.reviewItems, warnings: [...warnings, ...candidates.warnings], recognizedAt: new Date().toISOString() };
   } catch (error) {
     if (signal?.aborted) throw abortError();
     if (error?.name === "PasswordException") throw new Error("这份 PDF 有密码保护，请在本地解除保护后再识别。");

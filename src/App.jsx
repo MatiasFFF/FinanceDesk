@@ -52,8 +52,6 @@ import {
   vouchersForSource,
   workspaceAccountDefinitions,
 } from "./domain/accounting/index.js";
-import { AccountingWorkbench, ReceivablesPayablesPanel } from "./features/accounting/AccountingWorkbench.jsx";
-import { ManualVoucherPanel } from "./features/accounting/ManualVoucherPanel.jsx";
 import {
   copyWorkspaceLocalFiles,
   downloadStoredDocument,
@@ -63,8 +61,6 @@ import {
   saveLocalDocument,
   updateLocalDocumentMetadata,
 } from "./features/intake/documentIntake.js";
-import { MemberLedgerPage } from "./features/members/MemberLedgerPage.jsx";
-import { InventoryPage } from "./features/inventory/InventoryPage.jsx";
 import {
   MEMBER_EVENT_DEFINITIONS,
   MEMBER_STATUS_OPTIONS,
@@ -106,6 +102,25 @@ import { useFinanceDesk } from "./store/FinanceDeskProvider.jsx";
 const FoundationRecordsPanel = lazy(() => import("./features/workspaces/FoundationRecordsPanel.jsx").then((module) => ({ default: module.FoundationRecordsPanel })));
 const BankImportPanel = lazy(() => import("./features/intake/BankImportPanel.jsx").then((module) => ({ default: module.BankImportPanel })));
 const WorkspaceManager = lazy(() => import("./features/workspaces/WorkspaceManager.jsx").then((module) => ({ default: module.WorkspaceManager })));
+const MemberLedgerPage = lazy(() => import("./features/members/MemberLedgerPage.jsx").then((module) => ({ default: module.MemberLedgerPage })));
+const InventoryPage = lazy(() => import("./features/inventory/InventoryPage.jsx").then((module) => ({ default: module.InventoryPage })));
+const ManualVoucherPanel = lazy(() => import("./features/accounting/ManualVoucherPanel.jsx").then((module) => ({ default: module.ManualVoucherPanel })));
+const AccountingWorkbench = lazy(() => import("./features/accounting/AccountingWorkbench.jsx").then((module) => ({ default: module.AccountingWorkbench })));
+const ReceivablesPayablesPanel = lazy(() => import("./features/accounting/AccountingWorkbench.jsx").then((module) => ({ default: module.ReceivablesPayablesPanel })));
+const DocumentIntakePanel = lazy(() => import("./features/intake/DocumentIntakePanel.jsx").then((module) => ({ default: module.DocumentIntakePanel })));
+
+function DeferredView({ active, children, label, fullPage = false }) {
+  const [hasOpened, setHasOpened] = useState(active);
+  useEffect(() => { if (active) setHasOpened(true); }, [active]);
+  if (!active && !hasOpened) return null;
+  return (
+    <div hidden={!active}>
+      <Suspense fallback={<div className={fullPage ? "page-content" : undefined}><p className="quiet-copy" role="status" style={{ margin: 0, fontSize: "var(--font-body, 14px)" }}>正在加载{label}…</p></div>}>
+        {children}
+      </Suspense>
+    </div>
+  );
+}
 
 const PAGE_ICONS = {
   overview: HouseLine,
@@ -123,7 +138,7 @@ const PAGE_HEADINGS = {
   inventory: ["库存与损耗", "记录库存商品、出入库、盘点差异与损耗。"],
   reconcile: ["批量核销", "先处理整月流水，再深入单笔证据。"],
   reports: ["报表中心", "三大报表、老板视角、版本冻结与差异都在这里。"],
-  tax: ["确认与申报", "本地准备底稿、两次确认和申报包，不伪装连接税务局。"],
+  tax: ["确认与申报", "核对税务底稿，完成客户确认并导出申报资料。"],
   archive: ["资料归档", "把真实回执、报表版本、确认记录和操作日志收拢归档。"],
 };
 
@@ -700,7 +715,7 @@ function TransactionDetail({ workspace, transaction, onClose, onStatus, onSaveRe
           </div>
           <p className="quiet-copy transaction-review-boundary">保存备注不会自动分类、核销或入账；当前无法判断时，流水会继续保留在待处理链路。</p>
         </section>
-        <AccountingWorkbench transactionId={transaction.id} onToast={onToast} />
+        <Suspense fallback={<p className="quiet-copy" role="status" style={{ margin: 0, fontSize: "var(--font-body, 14px)" }}>正在加载会计处理…</p>}><AccountingWorkbench transactionId={transaction.id} onToast={onToast} /></Suspense>
       </div>
       <div className="detail-actions"><button className="secondary-button" onClick={() => onStatus([transaction.id], transaction.status === "ignored" ? "pending" : "ignored")} type="button">{transaction.status === "ignored" ? "恢复为待处理" : "暂不处理"}</button><span className="detail-action-note">核销与入账请使用上方真实会计处理区</span></div>
     </aside>
@@ -740,13 +755,13 @@ function ReconcilePage({ workspace, onPage, panelRequest, onStatus, onReview, on
       <div className="reconcile-main">
         {customerDisputes.length > 0 && <section className="panel dispute-review-panel"><div><h2>{terminology.customer}确认异议</h2></div>{customerDisputes.map((task) => <article key={task.id}><span><strong>{task.message}</strong><small>{formatDateTime(task.createdAt)}</small></span><button className="secondary-button" type="button" onClick={() => onResolveException(task.id)}>已处理，关闭异议</button></article>)}</section>}
         <div className="reconcile-panel" id="reconcile-panel-business" role="tabpanel" aria-labelledby="reconcile-tab-business" hidden={activePanel !== "business"}>
-        <ReceivablesPayablesPanel showMemberBusiness={workspaceModuleEnabled(workspace, "members")} onToast={onToast} />
+        <DeferredView active={activePanel === "business"} label="往来业务"><ReceivablesPayablesPanel showMemberBusiness={workspaceModuleEnabled(workspace, "members")} onToast={onToast} /></DeferredView>
         </div>
         <div className="reconcile-panel" id="reconcile-panel-manual" role="tabpanel" aria-labelledby="reconcile-tab-manual" hidden={activePanel !== "manual"}>
-        <ManualVoucherPanel onToast={onToast} />
+        <DeferredView active={activePanel === "manual"} label="手工凭证"><ManualVoucherPanel onToast={onToast} /></DeferredView>
         </div>
         <div className="reconcile-panel" id="reconcile-panel-vouchers" role="tabpanel" aria-labelledby="reconcile-tab-vouchers" hidden={activePanel !== "vouchers"}>
-          <AccountingWorkbench onToast={onToast} />
+          <DeferredView active={activePanel === "vouchers"} label="凭证与账簿"><AccountingWorkbench onToast={onToast} /></DeferredView>
         </div>
         <div className="reconcile-panel" id="reconcile-panel-transactions" role="tabpanel" aria-labelledby="reconcile-tab-transactions" hidden={activePanel !== "transactions"}>
         <section className="workspace-toolbar"><div className="filter-tabs" role="tablist" aria-label="流水状态筛选">{FILTERS.map((item) => <button className={filter === item.id ? "active" : ""} key={item.id} onClick={() => setFilter(item.id)} role="tab" type="button">{item.label}<span>{counts[item.id]}</span></button>)}</div><label className="search-field"><MagnifyingGlass size={17} /><input aria-label="搜索流水" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索对方、摘要或流水号" />{query && <button className="visible" onClick={() => setQuery("")} type="button" aria-label="清空流水搜索"><X size={15} /></button>}</label></section>
@@ -1069,10 +1084,11 @@ function CheckRows({ items, onNavigate }) {
   })}</div>;
 }
 
-function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecision, onPrepareDraft, onFinalConfirm, onExport, onReceipt }) {
+function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecision, onPrepareDraft, onFinalConfirm, onExport, onReceipt, onToast }) {
   const terminology = workspaceTerminology(workspace);
   const flow = workflowChecks(workspace);
   const payrollEnabled = workspaceModuleEnabled(workspace, "payroll");
+  const [payrollDetailsOpen, setPayrollDetailsOpen] = useState(false);
   const version = flow.version;
   const snapshot = version?.snapshot || flow.snapshot;
   const prerequisiteChecks = flow.checks.slice(0, 5);
@@ -1186,6 +1202,10 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
     <div className="page-content tax-page">
       <StageRail workspace={workspace} onPage={onPage} />
       <section className="tax-stage-summary panel"><div className="stage-next-action"><div><h2>{nextStep.title}</h2><p>{version ? version.label : "尚未冻结"}</p></div><button className="primary-button" onClick={nextStep.run} type="button">{nextStep.label}<ArrowRight size={16} /></button></div><p className="local-filing-note"><CloudSlash size={17} />仅生成本地申报包；税额为本地底稿，尚未提交税务局。</p>{blockers.length > 0 && <div className="stage-blockers">{blockers.map((item) => <button key={item.id} onClick={() => onPage(item.page, item.id === "bank" ? { stage: "s3" } : item.id === "vouchers" ? { panel: "vouchers" } : {})} type="button"><WarningCircle size={16} /><span><strong>{item.label}</strong><small>{item.detail}</small></span><ArrowRight size={15} /></button>)}</div>}{!blockers.length && !exportReady && initialDone && <p className="toolbar-explanation">{localizedExportChecks.find((item) => !item.ok)?.detail || localizedExportChecks.find((item) => !item.ok)?.label}</p>}</section>
+      {payrollEnabled && <details className="workpaper-details" open={payrollDetailsOpen} onToggle={(event) => { if (event.target === event.currentTarget) setPayrollDetailsOpen(event.currentTarget.open); }}>
+        <summary>工资表与社保逐人核对</summary>
+        <DeferredView active={payrollDetailsOpen} label="工资与社保"><DocumentIntakePanel payrollOnly onToast={onToast} /></DeferredView>
+      </details>}
       <div className={`tax-layout ${initialDone ? "with-filing-actions" : "confirmation-only"}`}>
         <div className="tax-main-column">
           <section className="panel confirmation-panel" id="tax-initial-confirmation">
@@ -2160,11 +2180,11 @@ function App() {
         <Topbar state={state} workspace={workspace} page={activePage} workspaceOverlayOpen={Boolean(workspaceDialog || managerOpen)} onImport={() => setImportOpen(true)} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={openWorkspaceDialog} />
         {loadReport.recovered && <div className="danger-banner recovery-banner"><WarningCircle size={18} /><span><strong>{loadReport.source === "backup" ? "本地数据已从上一次有效副本恢复。" : "本地主副本与备用副本均无法读取，当前已加载初始模板。"}</strong>{loadReport.errors?.length ? ` 原因：${loadReport.errors.join("；")}` : " 请先核对数据并导出备份。"}</span></div>}
         {activePage === "overview" && <OverviewPage workspace={workspace} onPage={navigateToPage} onResolveNotice={resolveNotice} />}
-        {activePage === "members" && workspaceModuleEnabled(workspace, "members") && <MemberLedgerPage workspace={workspace} onAddMember={addLedgerMember} onMemberStatus={changeLedgerMemberStatus} onAddEvent={addLedgerEvent} onEventStatus={changeLedgerEventStatus} />}
-        {activePage === "inventory" && workspaceModuleEnabled(workspace, "inventory") && <InventoryPage workspace={workspace} onPage={navigateToPage} onToast={(message) => setToast({ tone: "success", message })} />}
-        {activePage === "reconcile" && <ReconcilePage workspace={workspace} onPage={navigateToPage} panelRequest={reconcilePanelRequest} onStatus={setTransactionStatus} onReview={reviewTransactions} onSaveReview={saveTransactionReview} onEvidence={addEvidence} onLinkEvidence={linkExistingEvidence} onDownloadEvidence={downloadLinkedEvidence} onUnlinkEvidence={unlinkEvidenceFromTransaction} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} />}
+        {workspaceModuleEnabled(workspace, "members") && <DeferredView key={`${workspace.id}-members`} active={activePage === "members"} label="会员台账" fullPage><MemberLedgerPage workspace={workspace} onAddMember={addLedgerMember} onMemberStatus={changeLedgerMemberStatus} onAddEvent={addLedgerEvent} onEventStatus={changeLedgerEventStatus} /></DeferredView>}
+        {workspaceModuleEnabled(workspace, "inventory") && <DeferredView key={`${workspace.id}-inventory`} active={activePage === "inventory"} label="库存" fullPage><InventoryPage workspace={workspace} onPage={navigateToPage} onToast={(message) => setToast({ tone: "success", message })} /></DeferredView>}
+        <DeferredView key={`${workspace.id}-reconcile`} active={activePage === "reconcile"} label="核销工作区" fullPage><ReconcilePage workspace={workspace} onPage={navigateToPage} panelRequest={reconcilePanelRequest} onStatus={setTransactionStatus} onReview={reviewTransactions} onSaveReview={saveTransactionReview} onEvidence={addEvidence} onLinkEvidence={linkExistingEvidence} onDownloadEvidence={downloadLinkedEvidence} onUnlinkEvidence={unlinkEvidenceFromTransaction} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} /></DeferredView>
         {activePage === "reports" && <ReportsPage workspace={workspace} onPage={navigateToPage} onFreeze={freezeReport} onExportExcel={exportReportExcel} />}
-        {activePage === "tax" && <TaxPage workspace={workspace} onPage={navigateToPage} onTaxChange={changeTax} onTaxCommit={commitTax} onSectionDecision={recordInitialConfirmationSection} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} />}
+        <DeferredView key={`${workspace.id}-tax`} active={activePage === "tax"} label="确认与申报" fullPage><TaxPage workspace={workspace} onPage={navigateToPage} onTaxChange={changeTax} onTaxCommit={commitTax} onSectionDecision={recordInitialConfirmationSection} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} onToast={(message) => setToast({ tone: "success", message })} /></DeferredView>
         {activePage === "archive" && <ArchivePage workspace={workspace} onPage={navigateToPage} onDocuments={addDocuments} onDownloadDocument={downloadArchiveDocument} onReceipt={receiveReceipt} onArchive={completeArchive} onNextPeriod={goNextPeriod} onExportIndex={exportArchiveIndex} onExportArchive={exportArchivedPeriod} />}
         {activePage === "setup" && <Suspense fallback={<div className="page-content"><p className="quiet-copy" role="status" style={{ margin: 0, fontSize: "var(--font-body, 14px)" }}>正在加载基础资料…</p></div>}><FoundationRecordsPanel initialStage={setupInitialStage} key={`${workspace.id}-${setupInitialStage}`} onNavigate={navigateToPage} onToast={(message) => setToast({ tone: "success", message })} /></Suspense>}
       </div>

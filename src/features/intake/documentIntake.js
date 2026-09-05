@@ -507,7 +507,9 @@ export function normalizeDocumentStructuredData(category, input = {}) {
       dueDays: dueDays ?? 0,
       billingEndDate,
       refundTerms: String(input.refundTerms || "").trim(),
+      discountTerms: String(input.discountTerms || "").trim(),
       commissionTerms: String(input.commissionTerms || "").trim(),
+      performanceTerms: String(input.performanceTerms || "").trim(),
     };
   }
   if (kind === "invoice") {
@@ -617,6 +619,9 @@ export function buildContractBillingPlan(workspace, options = {}) {
     return { documentId, document, items: [], existingBills: [], duplicatePeriods: [], errors: [error.message], canConfirm: false };
   }
   const billKind = contractBillKind(details.contractType);
+  if ((workspace.exceptionTasks || []).some((task) => task.code === "document_recognition_review" && task.sourceId === documentId && task.status !== "resolved")) {
+    errors.push("合同识别条款待复核，请在资料详情核对并保存复核说明");
+  }
   const contractAmount = Math.round(Number(details.amount || 0) * 100) / 100;
   const periodAmount = Math.round(Number(details.periodAmount || 0) * 100) / 100;
   const firstBillDate = details.firstBillDate;
@@ -733,6 +738,16 @@ export function applyContractBillingPlan(workspace, input = {}, context = {}) {
       billingPeriod: item.billingPeriod,
       contractType: plan.contractType,
       contractDocumentId: plan.documentId,
+      contractBasis: {
+        documentId: plan.documentId,
+        documentHash: plan.document.hash,
+        documentVersion: plan.document.version,
+        terms: Object.fromEntries(["refundTerms", "discountTerms", "commissionTerms", "performanceTerms"].map((key) => [key, plan.details[key]])),
+        recognitionConfirmation: plan.document.contentRecognition?.confirmation ? structuredClone(plan.document.contentRecognition.confirmation) : null,
+        recognitionReview: plan.document.contentRecognition?.review ? structuredClone(plan.document.contentRecognition.review) : null,
+        acceptedBy: actor,
+        acceptedAt: at,
+      },
       evidenceIds: [plan.documentId],
       documentIds: [plan.documentId],
       sourceIds: [plan.documentId],
@@ -2431,6 +2446,34 @@ export async function saveLocalDocument(input) {
   }
 }
 
+function syncRecognitionReviewTasks(workspace, document, result, resultId, at) {
+  const reviews = document.category === "合同" ? (result.reviewItems || []).filter((item) => Object.hasOwn(normalizeDocumentStructuredData("合同", {}), item.field)) : [];
+  if (!reviews.length) return workspace.exceptionTasks || [];
+  const tasks = [...(workspace.exceptionTasks || [])];
+  for (const review of reviews) {
+    const identity = `document-recognition-review:${document.id}:${document.hash}:${review.field}`;
+    const index = tasks.findIndex((task) => task.identity === identity);
+    const previous = index < 0 ? null : tasks[index];
+    const finding = structuredClone(review);
+    if (previous && JSON.stringify(previous.recognitionFinding) === JSON.stringify(finding)) continue;
+    const message = `${document.name} · ${review.label}待复核：${review.reason}`;
+    const history = [...(previous?.history || []), {
+      at, actor: "本地识别", action: previous ? "recognition_updated" : "created", note: message,
+      ...(previous?.recognitionFinding ? { previousFinding: previous.recognitionFinding } : {}),
+    }];
+    const task = {
+      ...previous, id: previous?.id || createId("document-review"), identity, code: "document_recognition_review",
+      sourceType: "document", sourceId: document.id, sourceIds: [document.id], period: document.period || workspace.currentPeriod,
+      sourceHash: document.hash, recognitionResultId: resultId, recognitionFinding: finding,
+      message, status: "open", resolution: null, resolvedAt: null, resolvedBy: null,
+      createdAt: previous?.createdAt || at, updatedAt: at, history,
+    };
+    if (index < 0) tasks.push(task);
+    else tasks[index] = task;
+  }
+  return tasks;
+}
+
 export async function saveLocalDocumentRecognition({ store, fileVault, workspaceId, documentId, sourceHash, category, result, signal, isCurrent = () => true }) {
   const currentDocument = () => {
     signal?.throwIfAborted();
@@ -2457,16 +2500,23 @@ export async function saveLocalDocumentRecognition({ store, fileVault, workspace
     const allowedFields = normalizeDocumentStructuredData(category, {}) || {};
     const suggestedFields = Object.fromEntries(Object.entries(result.suggestedFields || {})
       .filter(([key, candidate]) => key !== "kind" && Object.hasOwn(allowedFields, key) && candidate && ["string", "number"].includes(typeof candidate.value))
-      .map(([key, candidate]) => [key, { value: typeof candidate.value === "string" ? candidate.value.slice(0, 2000) : candidate.value, sourceText: String(candidate.sourceText || "").slice(0, 300), pageNumber: candidate.pageNumber }]));
+      .map(([key, candidate]) => [key, { value: typeof candidate.value === "string" ? candidate.value.slice(0, 2000) : candidate.value,
+        sourceText: String(candidate.sourceText || "").slice(0, 300), pageNumber: candidate.pageNumber,
+        sourcePages: candidate.sourcePages || [candidate.pageNumber],
+        truncated: typeof candidate.value === "string" && candidate.value.length > 2000,
+        sourceTruncated: String(candidate.sourceText || "").length > 300,
+      }]));
     const contentRecognition = {
       mode: "local", ocrStatus: "completed", resultId: id, sourceHash, category,
       recognizedAt: result.recognizedAt || new Date().toISOString(),
       pageCount: result.pages.length, suggestedFields,
       confirmation: latest.document.contentRecognition?.confirmation || null,
+      review: latest.document.contentRecognition?.review || null,
     };
     store.actions.replaceWorkspace(workspaceId, {
       ...latest.workspace,
       documents: latest.workspace.documents.map((item) => item.id === documentId ? { ...item, contentRecognition } : item),
+      exceptionTasks: syncRecognitionReviewTasks(latest.workspace, latest.document, result, id, contentRecognition.recognizedAt),
     }, { requiredPermission: "documents.add", audit: { action: "保存本地识别候选", detail: `${latest.document.name} · 未修改业务字段` } });
     return envelope;
   } catch (error) {
@@ -2539,7 +2589,8 @@ export function updateLocalDocumentMetadata(input) {
     const fields = Object.fromEntries((patch.recognitionConfirmation.fields || [])
       .filter((key) => Object.hasOwn(recognition.suggestedFields || {}, key) && Object.hasOwn(updatedDocument.structuredData || {}, key))
       .map((key) => [key, updatedDocument.structuredData[key]]));
-    updatedDocument.contentRecognition = { ...recognition, confirmation: { resultId: recognition.resultId, sourceHash: document.hash, category, fields, confirmedAt: timestamp, actor } };
+    const sources = Object.fromEntries(Object.keys(fields).map((key) => [key, structuredClone(recognition.suggestedFields[key])]));
+    updatedDocument.contentRecognition = { ...recognition, confirmation: { resultId: recognition.resultId, sourceHash: document.hash, category, fields, sources, confirmedAt: timestamp, actor } };
   }
   assertUniqueInvoiceNumber(workspace, updatedDocument, documentId);
   const evidenceLinks = (workspace.evidenceLinks || []).flatMap((link) => {
@@ -2576,6 +2627,22 @@ export function updateLocalDocumentMetadata(input) {
       };
     }),
   };
+  if (patch.recognitionReview) {
+    const recognition = updatedDocument.contentRecognition;
+    const note = String(patch.recognitionReview.note || "").trim();
+    if (!note) throw new Error("请填写条款复核说明");
+    if (category !== "合同" || recognition?.category !== category || recognition?.resultId !== patch.recognitionReview.resultId || recognition.sourceHash !== document.hash) throw new Error("识别内容已变化，请重新复核");
+    const fields = {};
+    next.exceptionTasks = (next.exceptionTasks || []).map((task) => {
+      if (task.code !== "document_recognition_review" || task.sourceId !== documentId || task.sourceHash !== document.hash || task.status === "resolved") return task;
+      const key = task.recognitionFinding.field;
+      fields[key] = updatedDocument.structuredData[key];
+      return { ...task, status: "resolved", resolution: "document_terms_reviewed", resolvedAt: timestamp, resolvedBy: actor, updatedAt: timestamp,
+        history: [...(task.history || []), { at: timestamp, actor, action: "resolved", note, reviewedValue: updatedDocument.structuredData[key] }],
+      };
+    });
+    updatedDocument.contentRecognition = { ...updatedDocument.contentRecognition, review: { resultId: recognition.resultId, sourceHash: document.hash, fields, note, reviewedAt: timestamp, actor } };
+  }
   new Set([...previousTransactionIds, ...nextTransactionIds]).forEach((transactionId) => {
     next = reviewTransactionEvidence(next, transactionId, { actor, mode: "manual" });
   });
