@@ -701,7 +701,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
 
       {parsed && inspection && (
         <div className="bank-import-workspace bank-import-file-workspace">
-          <div className="bank-file-summary"><span><strong>{parsed.fileName}</strong><small>{parsed.sheetName ? `工作表：${parsed.sheetName} · ` : ""}${inspection.rowCount} 行</small></span><span className={inspection.missingFields.length ? "mapping-badge warning" : "mapping-badge"}>{inspection.missingFields.length ? `缺 ${inspection.missingFields.length} 项映射` : "必要字段已识别"}</span></div>
+          <div className="bank-file-summary"><span><strong>{parsed.fileName}</strong><small>{parsed.sheetName ? `工作表：${parsed.sheetName} · ` : ""}{inspection.rowCount} 行</small></span><span className={inspection.missingFields.length ? "mapping-badge warning" : "mapping-badge"}>{inspection.missingFields.length ? `缺 ${inspection.missingFields.length} 项映射` : "必要字段已识别"}</span></div>
 
           <div className="mapping-grid bank-field-mapping-grid">
             {MAPPING_FIELDS.map((field) => (
@@ -728,7 +728,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
                 return (
                   <div className="counterparty-mapping-card" key={group.key}>
                     <div className="bank-file-summary">
-                      <span><strong>{group.rawName || "未提供对方名称"}</strong><small>{group.counterpartyAccount ? `账号 ${group.counterpartyAccount} · ` : ""}${group.rowCount} 笔流水</small></span>
+                      <span><strong>{group.rawName || "未提供对方名称"}</strong><small>{group.counterpartyAccount ? `账号 ${group.counterpartyAccount} · ` : ""}{group.rowCount} 笔流水</small></span>
                       <span className={group.mappingSource ? "mapping-badge" : "mapping-badge warning"}>{group.mappingSource ? `已套用：${group.standardName}` : "尚未标准化"}</span>
                     </div>
                     <div className="mapping-grid bank-counterparty-fields">

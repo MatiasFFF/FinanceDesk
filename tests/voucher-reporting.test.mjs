@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createAccountingFixture } from "../src/domain/accounting/fixtures.js";
-import { createBlankWorkspace, createInitialState, setWorkspacePeriod } from "../src/domain/foundation.js";
+import { assertWorkspacePermission, createBlankWorkspace, createInitialState, normalizeWorkspace, setWorkspacePeriod } from "../src/domain/foundation.js";
 import { AccountingRuleError } from "../src/domain/accounting/model.js";
 import { buildGeneralLedger, effectivePostedVouchers } from "../src/domain/accounting/ledger.js";
 import { setBankTransactionBusinessEventDimensions } from "../src/domain/accounting/classification.js";
@@ -50,11 +50,28 @@ const context = { actor: "测试会计", at: "2026-09-06T13:00:00.000Z" };
 
 function setFixturePeriod(workspace, period) {
   const state = createInitialState({ timestamp: context.at });
-  return setWorkspacePeriod({
+  const configured = createBlankWorkspace({
+    id: workspace.id,
+    name: workspace.name,
+    currentPeriod: workspace.currentPeriod,
+    initialUserName: context.actor,
+    initialUserRoleId: "role-finance",
+  }, { timestamp: context.at });
+  const current = normalizeWorkspace({
+    ...workspace,
+    users: configured.users,
+    roles: configured.roles,
+  }, { timestamp: context.at });
+  const selected = {
     ...state,
     activeWorkspaceId: workspace.id,
-    workspaces: [workspace],
-  }, workspace.id, period, { actor: context.actor, timestamp: context.at }).workspaces[0];
+    activeUserId: configured.users[0].id,
+    workspaces: [current],
+  };
+  assertWorkspacePermission(selected, workspace.id, "data.write");
+  const next = setWorkspacePeriod(selected, workspace.id, period, { actor: context.actor, timestamp: context.at });
+  assert.equal(next.activeUserId, selected.activeUserId);
+  return next.workspaces[0];
 }
 
 async function manualOriginalFixture() {

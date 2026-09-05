@@ -286,9 +286,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     user.id === state.activeUserId
     && user.status === "active"
     && String(user.name || "").trim()
-  ))?.name?.trim() || activeWorkspace.users?.find((user) => (
-    user.status === "active" && String(user.name || "").trim()
-  ))?.name?.trim() || "本地用户";
+  ))?.name?.trim() || (activeWorkspace.localUsersConfigured || activeWorkspace.users?.length ? "未选择操作身份" : "本地用户");
   const inputRef = useRef(null);
   const voucherExportRef = useRef(null);
   const [localSection, setLocalSection] = useState("files");

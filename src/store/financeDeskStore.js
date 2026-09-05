@@ -61,7 +61,7 @@ export function createFinanceDeskStore(options = {}) {
 
   function assertWorkspaceAccess(workspaceId, permission) {
     const workspace = getWorkspace(state, workspaceId);
-    if (!workspace?.users?.some((user) => user.status === "active")) return null;
+    if (workspace && !workspace.localUsersConfigured && !workspace.users?.length) return null;
     return assertWorkspacePermission(state, workspaceId, permission);
   }
 
@@ -91,11 +91,12 @@ export function createFinanceDeskStore(options = {}) {
     },
     switchWorkspace(workspaceId, actionOptions) {
       const sourceActor = activeWorkspaceUser(state)?.name || "本地用户";
-      assertWorkspaceAccess(workspaceId, "data.read");
-      return commit(switchWorkspace(state, workspaceId, {
+      const next = switchWorkspace(state, workspaceId, {
         ...(actionOptions || {}),
         actor: actionOptions?.actor || sourceActor,
-      }));
+      });
+      if (next.activeUserId) assertWorkspacePermission(next, workspaceId, "data.read");
+      return commit(next);
     },
     switchUser(workspaceId, userId, actionOptions) {
       return commit(switchActiveUser(state, workspaceId, userId, actionOptions));

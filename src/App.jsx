@@ -34,15 +34,22 @@ import {
 import { transactionStatus, uid } from "./financeData.js";
 import { BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS } from "./domain/foundation.js";
 import {
+  EVENT_TYPES,
+  accountDefinition,
+  activeAllocations,
+  assessTransactionEvidence,
   attachEvidenceDocument,
   buildCustomerConfirmationSections,
   buildManagementMetrics,
   customerConfirmationMatchesVersion,
+  effectiveBankTransactionClassification,
   exportFrozenReportExcel,
   freezeReportVersion as freezeAccountingReportVersion,
   recordFrozenReportExcelExport,
   recordReconciliationSuggestions,
   reviewTransactionEvidence,
+  unresolvedExceptionTasks,
+  vouchersForSource,
   workspaceAccountDefinitions,
 } from "./domain/accounting/index.js";
 import { AccountingWorkbench, ReceivablesPayablesPanel } from "./features/accounting/AccountingWorkbench.jsx";
@@ -293,12 +300,11 @@ function Sidebar({ state, workspace, page, onPage, onSwitchWorkspace, onSwitchUs
   const terminology = workspaceTerminology(workspace);
   const activeUsers = (workspace?.users || []).filter((user) => user.status === "active");
   const operator = activeUsers.find((user) => user.id === state.activeUserId)
-    || activeUsers[0]
     || null;
   const roleName = (user) => workspace.roles?.find((role) => role.id === user?.roleId || role.name === user?.role)?.name || user?.role || "未设置角色";
   const operatorRole = operator
     ? roleName(operator)
-    : "可在基础资料中设置";
+    : activeUsers.length ? "请选择启用的操作人" : "暂无启用账户";
   useEffect(() => {
     setMenuOpen(false);
     setAccountOpen(false);
@@ -364,7 +370,7 @@ function Sidebar({ state, workspace, page, onPage, onSwitchWorkspace, onSwitchUs
       <div className="sidebar-bottom">
         {workspace && <div className="period-card"><CalendarBlank size={18} /><div><small>当前账期</small><strong>{formatPeriod(workspace.currentPeriod)}</strong></div></div>}
         <div className="account-switcher" ref={accountSwitcherRef}>
-          <button ref={accountTriggerRef} className="account-card account-switcher-trigger" aria-expanded={accountOpen} aria-haspopup="menu" aria-label={`切换当前${terminology.personnel}操作人`} onClick={() => { setMenuOpen(false); setAccountOpen((value) => !value); }} type="button"><span className="avatar">{operator?.name?.trim()?.slice(0, 1) || "—"}</span><div aria-live="polite" aria-atomic="true"><strong>{operator?.name || `未设置${terminology.personnel}操作人`}</strong><small>{operatorRole}</small></div><CaretDown size={14} /></button>
+          <button ref={accountTriggerRef} className="account-card account-switcher-trigger" aria-expanded={accountOpen} aria-haspopup="menu" aria-label={`切换当前${terminology.personnel}操作人`} onClick={() => { setMenuOpen(false); setAccountOpen((value) => !value); }} type="button"><span className="avatar">{operator?.name?.trim()?.slice(0, 1) || "—"}</span><div aria-live="polite" aria-atomic="true"><strong>{operator?.name || "未选择操作身份"}</strong><small>{operatorRole}</small></div><CaretDown size={14} /></button>
           {accountOpen && (
             <div className="account-switcher-menu" role="menu">
               {activeUsers.length ? (
@@ -569,20 +575,54 @@ function OverviewPage({ workspace, onPage, onResolveNotice }) {
   );
 }
 
-function EvidenceMeter({ transaction }) {
-  const total = 3;
-  const value = 1 + (transaction.allocations?.length || transaction.directAccount ? 1 : 0) + (transaction.evidenceIds?.length ? 1 : 0);
-  return <div className="evidence-meter" aria-label={`证据完整度 ${value}/${total}`}><span>{value}/{total}</span><div className="meter-track"><i style={{ width: `${(value / total) * 100}%` }} /></div></div>;
+function transactionReviewSummary(workspace, transaction) {
+  const classification = effectiveBankTransactionClassification(workspace, transaction);
+  const assessment = assessTransactionEvidence(workspace, transaction, classification);
+  const exceptions = unresolvedExceptionTasks(workspace, transaction.id);
+  const businessEvent = (workspace.businessEvents || []).find((event) => (
+    event.id === transaction.bankBusinessEventId
+    || (event.sourceType === "bankTransaction" && event.transactionId === transaction.id)
+  ));
+  const unknown = classification.eventType === EVENT_TYPES.UNKNOWN;
+  const needsReview = unknown || classification.requiresManualReview || exceptions.length > 0;
+  const manuallyConfirmed = String(classification.source || "").startsWith("manual")
+    || transaction.manualConfirmation?.decision === "approve";
+  const businessLabel = businessEvent?.businessTypeLabel || classification.accountLabel || accountDefinition(classification.account, workspace).label;
+  const judgementStatus = exceptions.length ? `${exceptions.length} 项待复核`
+    : needsReview ? "待人工复核" : manuallyConfirmed ? "已人工确认" : "规则建议";
+  const hasDraft = vouchersForSource(workspace, transaction.id).some((voucher) => ["draft", "changes_requested"].includes(voucher.status));
+  const status = ["posted", "ignored"].includes(transaction.status) ? transactionStatus(transaction)
+    : needsReview ? { label: "待复核", tone: "warning" }
+      : hasDraft ? { label: "凭证待入账", tone: "warning" }
+        : transactionStatus({ ...transaction, status: transaction.status === "exception" ? "pending" : transaction.status });
+  const importNotes = [...new Set([transaction.suggestion, transaction.exceptionReason]
+    .flatMap((value) => String(value || "").split(/[；;\n]/))
+    .map((value) => value.trim()).filter((value) => value.includes("导入异常")))];
+  return {
+    classification,
+    assessment,
+    status,
+    importNotes,
+    summary: unknown ? "待确认业务性质" : `${businessLabel} · ${judgementStatus}`,
+    detail: exceptions.map((task) => task.message).join("；") || (classification.reasons || []).join("；"),
+  };
 }
 
-function TransactionList({ items, selectedIds, focusedId, onToggle, onToggleAll, onFocus }) {
+function EvidenceMeter({ assessment }) {
+  const label = !assessment.required.length ? "待核对" : assessment.missing.length ? `待补 ${assessment.missing.length} 类` : "资料已关联";
+  return <TonePill tone={!assessment.required.length ? "neutral" : assessment.missing.length ? "warning" : "success"}>{label}</TonePill>;
+}
+
+function TransactionList({ workspace, items, selectedIds, focusedId, onToggle, onToggleAll, onFocus }) {
+  const terminology = workspaceTerminology(workspace);
   const allSelected = items.length > 0 && items.every((item) => selectedIds.has(item.id));
   return (
     <div className="transaction-list">
       <div className="transaction-head transaction-grid-row"><label className="check-cell"><input type="checkbox" checked={allSelected} onChange={(event) => onToggleAll(event.target.checked, items)} aria-label="选择当前列表全部流水" /></label><span>日期</span><span>交易对象 / 摘要</span><span>建议处理</span><span>金额</span><span>证据</span><span>状态</span></div>
       {items.map((item) => {
-        const status = transactionStatus(item);
-        return <div aria-selected={focusedId === item.id} className={`transaction-grid-row transaction-row ${focusedId === item.id ? "focused" : ""}`} key={item.id} onClick={() => onFocus(item.id)} onKeyDown={(event) => (event.key === "Enter" || event.key === " ") && onFocus(item.id)} role="button" tabIndex={0}><label className="check-cell" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selectedIds.has(item.id)} onChange={(event) => onToggle(item.id, event.target.checked)} aria-label={`选择 ${item.counterparty}`} /></label><span className="date-cell" data-label="日期">{dateLabel(item.date)}</span><span className="transaction-main" data-label="交易"><strong>{item.counterparty}</strong><small>{item.summary}</small></span><span className="suggestion-cell" data-label="建议处理"><strong>{item.suggestion || "待确认"}</strong><small>{item.classification?.confidence ?? item.confidence ?? 0}% 置信度</small></span><span className={Number(item.amount) < 0 ? "amount expense" : "amount income"} data-label="金额">{formatCurrency(item.amount, { sign: true })}</span><span data-label="证据"><EvidenceMeter transaction={item} /></span><span data-label="状态"><TonePill tone={status.tone}>{status.label}</TonePill></span></div>;
+        const review = transactionReviewSummary(workspace, item);
+        const status = review.status;
+        return <div aria-selected={focusedId === item.id} className={`transaction-grid-row transaction-row ${focusedId === item.id ? "focused" : ""}`} key={item.id} onClick={() => onFocus(item.id)} onKeyDown={(event) => (event.key === "Enter" || event.key === " ") && onFocus(item.id)} role="button" tabIndex={0}><label className="check-cell" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selectedIds.has(item.id)} onChange={(event) => onToggle(item.id, event.target.checked)} aria-label={`选择 ${item.counterparty}`} /></label><span className="date-cell" data-label="日期">{dateLabel(item.date)}</span><span className="transaction-main" data-label="交易"><strong>{item.counterparty}</strong><small>{item.summary}</small></span><span className="suggestion-cell" data-label="建议处理"><strong title={review.detail}>{businessTermCopy(review.summary, terminology)}</strong><small>{review.classification.confidence ?? 0}% 置信度</small></span><span className={Number(item.amount) < 0 ? "amount expense" : "amount income"} data-label="金额">{formatCurrency(item.amount, { sign: true })}</span><span data-label="证据"><EvidenceMeter assessment={review.assessment} /></span><span data-label="状态"><TonePill tone={status.tone}>{status.label}</TonePill></span></div>;
       })}
       {!items.length && <EmptyState icon={MagnifyingGlass} title="没有符合条件的流水" description="换一个筛选条件或关键词试试。" />}
     </div>
@@ -610,11 +650,12 @@ function TransactionDetail({ workspace, transaction, onClose, onStatus, onSaveRe
   }, [payrollEnabled, evidenceCategory]);
   if (!transaction) return null;
   const savedReviewNote = String(transaction.manualReview?.note || "").trim();
+  const review = transactionReviewSummary(workspace, transaction);
   const normalizedReviewNote = reviewNote.trim();
   const reviewNoteChanged = normalizedReviewNote !== savedReviewNote;
-  const linkedDocuments = workspace.documents.filter((item) => transaction.evidenceIds?.includes(item.id));
-  const availableDocuments = workspace.documents.filter((item) => !transaction.evidenceIds?.includes(item.id));
-  const allocations = (transaction.allocations || []).map((allocation) => ({ ...allocation, bill: workspace.bills.find((bill) => bill.id === allocation.billId) }));
+  const linkedDocuments = workspace.documents.filter((item) => review.assessment.linkedDocumentIds.includes(item.id));
+  const availableDocuments = workspace.documents.filter((item) => !review.assessment.linkedDocumentIds.includes(item.id));
+  const allocations = activeAllocations(transaction).map((allocation) => ({ ...allocation, bill: workspace.bills.find((bill) => bill.id === allocation.billId) }));
   async function runEvidenceAction(action, documentId) {
     const actionKey = `${action}:${documentId}`;
     setEvidenceAction(actionKey);
@@ -629,8 +670,8 @@ function TransactionDetail({ workspace, transaction, onClose, onStatus, onSaveRe
     <aside className="detail-panel transaction-detail-panel">
       <div className="detail-heading"><div><p className="eyebrow">单笔证据复核</p><h2>{transaction.counterparty}</h2></div><button className="icon-button compact" onClick={onClose} aria-label="关闭详情" type="button"><X size={19} /></button></div>
       <div className="detail-scroll">
-        <section className="detail-section"><div className="detail-section-title"><i className="section-mark sage" />银行流水</div><dl className="detail-list"><div><dt>交易日期</dt><dd>{transaction.date}</dd></div><div><dt>流水号</dt><dd>{transaction.serial}</dd></div><div><dt>摘要</dt><dd>{businessTermCopy(transaction.summary, terminology)}</dd></div><div><dt>金额</dt><dd className={Number(transaction.amount) < 0 ? "expense" : "income"}>{formatCurrency(transaction.amount, { sign: true })}</dd></div><div><dt>置信度</dt><dd>{transaction.classification?.confidence ?? transaction.confidence ?? 0}%</dd></div></dl></section>
-        <section className="detail-section"><div className="detail-section-title"><i className="section-mark clay" />会计判断与核销</div><p className="match-reason"><Sparkle size={16} weight="fill" />{businessTermCopy(transaction.suggestion || "尚未形成建议处理", terminology)}</p>{allocations.length ? <div className="allocation-list">{allocations.map((allocation) => <div key={`${allocation.billId}-${allocation.amount}`}><span><strong>{allocation.bill?.no || allocation.billId}</strong><small>{businessTermCopy(allocation.bill?.summary || "本地账单", terminology)}</small></span><b>{formatCurrency(allocation.amount)}</b></div>)}</div> : <p className="quiet-copy">当前没有关联账单；人工复核后可以暂存判断，但不会伪造外部匹配。</p>}</section>
+        <section className="detail-section"><div className="detail-section-title"><i className="section-mark sage" />银行流水</div><dl className="detail-list"><div><dt>交易日期</dt><dd>{transaction.date}</dd></div><div><dt>流水号</dt><dd>{transaction.serial}</dd></div><div><dt>摘要</dt><dd>{businessTermCopy(transaction.summary, terminology)}</dd></div><div><dt>金额</dt><dd className={Number(transaction.amount) < 0 ? "expense" : "income"}>{formatCurrency(transaction.amount, { sign: true })}</dd></div><div><dt>置信度</dt><dd>{review.classification.confidence ?? 0}%</dd></div>{review.importNotes.length > 0 && <div><dt>原始导入提示</dt><dd>{review.importNotes.join("；")}</dd></div>}</dl></section>
+        <section className="detail-section"><div className="detail-section-title"><i className="section-mark clay" />会计判断与核销</div><p className="match-reason" title={review.detail}><Sparkle size={16} weight="fill" />{businessTermCopy(review.summary, terminology)}</p>{allocations.length ? <div className="allocation-list">{allocations.map((allocation) => <div key={`${allocation.billId}-${allocation.amount}`}><span><strong>{allocation.bill?.no || allocation.billId}</strong><small>{businessTermCopy(allocation.bill?.summary || "本地账单", terminology)}</small></span><b>{formatCurrency(allocation.amount)}</b></div>)}</div> : <p className="quiet-copy">当前没有关联账单；人工复核后可以暂存判断，但不会伪造外部匹配。</p>}</section>
         <section className="detail-section">
           <div className="detail-section-title"><i className="section-mark sage" />本地证据</div>
           {linkedDocuments.length ? <div className="evidence-file-list">{linkedDocuments.map((document) => {
@@ -643,7 +684,7 @@ function TransactionDetail({ workspace, transaction, onClose, onStatus, onSaveRe
                 <button className="text-button evidence-unlink-button" disabled={Boolean(evidenceAction)} onClick={() => runEvidenceAction("unlink", document.id)} type="button"><X size={14} />{unlinking ? "正在解除…" : "解除与本流水关联"}</button>
               </div>
             </div>;
-          })}</div> : <div className="missing-evidence"><WarningCircle size={20} /><span><strong>还没有关联证据</strong><small>{businessTermCopy(transaction.exceptionReason || "请选择本地文件补充证据。", terminology)}</small></span></div>}
+          })}</div> : <div className="missing-evidence"><WarningCircle size={20} /><span><strong>还没有关联证据</strong><small>{businessTermCopy(review.assessment.missing.length ? `待补：${review.assessment.missing.map((item) => item.label).join("、")}` : "请选择本地文件补充证据。", terminology)}</small></span></div>}
           {availableDocuments.length > 0 && <div className="existing-evidence-link"><label className="field-label"><span>关联资料库中的已有文件</span><select value={existingEvidenceId} onChange={(event) => setExistingEvidenceId(event.target.value)}><option value="">请选择已有资料</option>{availableDocuments.map((document) => <option value={document.id} key={document.id}>{document.name} · {businessTermCopy(document.category || document.type || "本地资料", terminology)}</option>)}</select></label><button className="secondary-button wide" disabled={!existingEvidenceId} onClick={() => { if (onLinkEvidence(transaction.id, existingEvidenceId)) setExistingEvidenceId(""); }} type="button"><FileText size={17} />关联已有资料</button></div>}
           <label className="field-label"><span>上传新证据的类别</span><select value={evidenceCategory} onChange={(event) => setEvidenceCategory(event.target.value)}><option>发票</option><option>合同</option><option>审批单</option><option>采购单</option><option>结算单</option>{workspaceModuleEnabled(workspace, "members") && <><option value="会员协议">{terminology.member}协议</option><option value="签到记录">{terminology.member}签到记录</option></>}{payrollEnabled && <><option value="工资表">{terminology.personnel}工资表</option><option value="社保数据">{terminology.personnel}社保数据</option></>}<option>退款申请</option><option>内部转账回单</option><option>其他资料</option></select></label>
           <input ref={evidenceInput} hidden type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) onEvidence(transaction.id, file, evidenceCategory); event.target.value = ""; }} />
@@ -707,9 +748,9 @@ function ReconcilePage({ workspace, onPage, panelRequest, onStatus, onReview, on
           <AccountingWorkbench onToast={onToast} />
         </div>
         <div className="reconcile-panel" id="reconcile-panel-transactions" role="tabpanel" aria-labelledby="reconcile-tab-transactions" hidden={activePanel !== "transactions"}>
-        <section className="workspace-toolbar"><div className="filter-tabs" role="tablist" aria-label="流水状态筛选">{FILTERS.map((item) => <button className={filter === item.id ? "active" : ""} key={item.id} onClick={() => setFilter(item.id)} role="tab" type="button">{item.label}<span>{counts[item.id]}</span></button>)}</div><label className="search-field"><MagnifyingGlass size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索对方、摘要或流水号" /><button className={query ? "visible" : ""} onClick={() => setQuery("")} type="button" aria-label="清空搜索"><X size={15} /></button></label></section>
+        <section className="workspace-toolbar"><div className="filter-tabs" role="tablist" aria-label="流水状态筛选">{FILTERS.map((item) => <button className={filter === item.id ? "active" : ""} key={item.id} onClick={() => setFilter(item.id)} role="tab" type="button">{item.label}<span>{counts[item.id]}</span></button>)}</div><label className="search-field"><MagnifyingGlass size={17} /><input aria-label="搜索流水" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索对方、摘要或流水号" />{query && <button className="visible" onClick={() => setQuery("")} type="button" aria-label="清空流水搜索"><X size={15} /></button>}</label></section>
         {selection.length > 0 && <div className="batch-bar"><span><strong>已选择 {selection.length} 笔</strong><small>批量动作只作用于当前选择</small></span><div><button className="soft-button" onClick={() => onExportSelected(selection)} type="button"><DownloadSimple size={16} />导出所选</button><button className="secondary-button" onClick={() => onStatus([...selectedIds], "ignored")} type="button">暂不处理</button><button className="primary-button" onClick={() => onReview([...selectedIds])} type="button">运行规则复核</button><button className="icon-button compact" onClick={() => setSelectedIds(new Set())} type="button" aria-label="清除选择"><X size={17} /></button></div></div>}
-        <section className="panel table-panel"><div className="table-heading"><span>本期流水</span><span>{filtered.length} / {periodTransactions.length} 笔</span></div><TransactionList items={filtered} selectedIds={selectedIds} focusedId={focusedId} onToggle={toggle} onToggleAll={toggleAll} onFocus={setFocusedId} /></section>
+        <section className="panel table-panel"><div className="table-heading"><span>本期流水</span><span>{filtered.length} / {periodTransactions.length} 笔</span></div><TransactionList workspace={workspace} items={filtered} selectedIds={selectedIds} focusedId={focusedId} onToggle={toggle} onToggleAll={toggleAll} onFocus={setFocusedId} /></section>
         </div>
         <BoundaryNote />
       </div>
@@ -1034,6 +1075,7 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
   const version = flow.version;
   const snapshot = version?.snapshot || flow.snapshot;
   const prerequisiteChecks = flow.checks.slice(0, 5);
+  const canConfirmSections = Boolean(version) && prerequisiteChecks.every((item) => item.ok);
   const exportChecks = enabledWorkflowChecks(workspace, flow.export);
   const filing = workspace.delivery.filing;
   const activeConfirmation = [...(workspace.confirmations || [])].reverse().find((confirmation) => (
@@ -1061,7 +1103,7 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
   const defaultInitialConfirmer = workspace.company?.ownerName?.trim() || workspace.company?.financeContact?.trim() || "";
   const [sectionDrafts, setSectionDrafts] = useState({});
   const [initialConfirmer, setInitialConfirmer] = useState(defaultInitialConfirmer);
-  const [expandedConfirmationId, setExpandedConfirmationId] = useState("revenue");
+  const [expandedConfirmationId, setExpandedConfirmationId] = useState(canConfirmSections ? "revenue" : null);
   const [finalChecks, setFinalChecks] = useState({
     numbersReviewed: Boolean(finalConfirmationCurrent && storedFinalConfirmation.selections?.numbersReviewed),
     risksAcknowledged: Boolean(finalConfirmationCurrent && storedFinalConfirmation.selections?.risksAcknowledged),
@@ -1073,7 +1115,6 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
   useEffect(() => {
     setSectionDrafts({});
     setInitialConfirmer(defaultInitialConfirmer);
-    setExpandedConfirmationId("revenue");
     setFinalChecks({
       numbersReviewed: Boolean(finalConfirmationCurrent && storedFinalConfirmation?.selections?.numbersReviewed),
       risksAcknowledged: Boolean(finalConfirmationCurrent && storedFinalConfirmation?.selections?.risksAcknowledged),
@@ -1082,6 +1123,9 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
     setDeductionAuthorization(finalConfirmationCurrent ? storedFinalConfirmation?.selections?.deductionAuthorization || "" : "");
     setConfirmer(finalConfirmationCurrent ? storedFinalConfirmation?.signature?.name || workspace.tax.confirmedBy || "" : "");
   }, [workspace.id, workspace.currentPeriod, version?.id, filing.draftCreatedAt, finalConfirmationCurrent, defaultInitialConfirmer]);
+  useEffect(() => {
+    setExpandedConfirmationId(canConfirmSections ? "revenue" : null);
+  }, [workspace.id, workspace.currentPeriod, version?.id, canConfirmSections]);
 
   const summarizeSources = (rows, fallback) => {
     const seen = new Set();
@@ -1119,7 +1163,6 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
   const packageApproved = Boolean(activeConfirmation) && confirmationItems.every((item) => activeConfirmation.sections?.[item.id]?.status === "approved");
   const workflowConfirmationDone = ["finance", ...(payrollEnabled ? ["payroll", "socialSecurity"] : [])].every((id) => flow.checks.find((item) => item.id === id)?.ok);
   const initialDone = Boolean(packageApproved && workflowConfirmationDone && filing.initialConfirmationId === activeConfirmation?.id);
-  const canConfirmSections = Boolean(version) && prerequisiteChecks.every((item) => item.ok);
   const canStartFinalConfirmation = Boolean(initialDone && version && filing.draftCreatedAt && filing.draftVersionId === version.id);
   const finalReady = canStartFinalConfirmation
     && Object.values(finalChecks).every(Boolean)
@@ -1282,7 +1325,7 @@ function ArchivePage({ workspace, onPage, onDocuments, onDownloadDocument, onRec
             <button aria-selected={tab === "periods"} className={tab === "periods" ? "active" : ""} onClick={() => showArchiveTab("periods")} role="tab" type="button">历史归档</button>
           </div>
           {tab === "documents" && <div className="archive-tools">
-            <label className="search-field"><MagnifyingGlass size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件" /><button aria-label="清空资料搜索" className={query ? "visible" : ""} onClick={() => setQuery("")} type="button"><X size={15} /></button></label>
+            <label className="search-field"><MagnifyingGlass size={17} /><input aria-label="搜索资料" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件" />{query && <button aria-label="清空资料搜索" className="visible" onClick={() => setQuery("")} type="button"><X size={15} /></button>}</label>
             <input ref={docsInput} hidden type="file" multiple onChange={(event) => { onDocuments(Array.from(event.target.files || [])); event.target.value = ""; }} />
             <button className="secondary-button" onClick={() => docsInput.current?.click()} type="button"><FileArrowUp size={17} />添加本地资料</button>
           </div>}
@@ -1294,7 +1337,7 @@ function ArchivePage({ workspace, onPage, onDocuments, onDownloadDocument, onRec
             <div><small>{document.type || document.category || "本地资料"} · {document.period || "未分期"}</small><strong>{document.name}</strong><p>{fileSize(document.size)} · {originalAvailable ? "原件保存在当前设备" : "当前设备缺少原件"}</p></div>
             <div className="archive-document-actions">
               <TonePill tone={document.status?.includes("待") ? "warning" : "success"}>{[document.status, document.lifecycleStatus].includes("已归档") || document.archiveStatus === "archived" ? "记录已归档" : document.status || "记录已获取"}</TonePill>
-              <button className="secondary-button archive-document-download" disabled={!originalAvailable} title={originalAvailable ? "下载当前设备保存的原文件" : "当前设备没有这份资料的原文件"} onClick={() => onDownloadDocument?.(document.id)} type="button"><DownloadSimple size={15} />下载原文件</button>
+              {originalAvailable && <button className="secondary-button archive-document-download" title="下载当前设备保存的原文件" onClick={() => onDownloadDocument?.(document.id)} type="button"><DownloadSimple size={15} />下载原文件</button>}
             </div>
           </article>;
         })}</div> : <EmptyState title="没有符合条件的资料" description="添加本地文件或清空搜索条件。" />)}

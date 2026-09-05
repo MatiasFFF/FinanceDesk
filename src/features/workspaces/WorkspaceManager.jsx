@@ -98,7 +98,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
     const latest = store.getState();
     const currentWorkspace = latest.workspaces.find((workspace) => workspace.id === latest.activeWorkspaceId);
     const activeUsers = currentWorkspace?.users?.filter((user) => user.status === "active") || [];
-    return (activeUsers.find((user) => user.id === latest.activeUserId) || activeUsers[0])?.name?.trim() || "本地用户";
+    return activeUsers.find((user) => user.id === latest.activeUserId)?.name?.trim() || "未选择操作身份";
   }
 
   useEffect(() => {

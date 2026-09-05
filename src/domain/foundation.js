@@ -227,6 +227,30 @@ function timestamped(item, timestamp) {
   };
 }
 
+function inactivePersonnelForUser(workspace, user) {
+  return (workspace.personnelRecords || []).find((personnel) => (
+    ["inactive", "departed"].includes(personnel.status)
+    && (personnel.id === user.personnelRecordId || personnel.userId === user.id)
+  ));
+}
+
+function revokePersonnelUserAccess(workspace, user, personnel, timestamp, actor) {
+  if (user.status !== "active") return user;
+  workspace.auditLog.push(timestamped({
+    id: createId("log"),
+    at: timestamp,
+    actor: actor || "本地人员资料同步",
+    action: "人员状态收回本地权限",
+    detail: `${personnel.name || personnel.id}已${personnel.status === "departed" ? "离职" : "停用"}，停用关联操作用户「${user.name}」`,
+    objectType: "users",
+    objectId: user.id,
+    personnelRecordId: personnel.id,
+    before: { status: user.status },
+    after: { status: "inactive" },
+  }, timestamp));
+  return { ...user, status: "inactive", updatedAt: timestamp };
+}
+
 function normalizeDocuments(documents, timestamp) {
   return uniqueById((documents || []).map((document) => timestamped({
     ...document,
@@ -403,6 +427,7 @@ export function normalizeWorkspace(input, options = {}) {
     books: uniqueById(books.map((item) => timestamped(item, timestamp))),
     stores: uniqueById(stores.map((item) => timestamped(item, timestamp))),
     users: uniqueById(users.map((item) => timestamped(item, timestamp))),
+    localUsersConfigured: workspace.localUsersConfigured === true || users.length > 0,
     roles: uniqueById(roles.map((item) => timestamped(item, timestamp))),
     authorizations: uniqueById(authorizations.map((item) => timestamped(item, timestamp))),
     ruleSets: uniqueById(ruleSets.map((item) => timestamped(item, timestamp))),
@@ -460,6 +485,10 @@ export function normalizeWorkspace(input, options = {}) {
       ...(workspace.integrations || {}),
     },
   };
+  normalized.users = normalized.users.map((user) => {
+    const personnel = inactivePersonnelForUser(normalized, user);
+    return personnel ? revokePersonnelUserAccess(normalized, user, personnel, timestamp, options.actor) : user;
+  });
   return normalized;
 }
 
@@ -594,7 +623,7 @@ export function migrateState(rawState, options = {}) {
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId) || workspaces[0];
   const activeUserId = activeWorkspace.users.some((user) => user.id === source.activeUserId && user.status === "active")
     ? source.activeUserId
-    : activeWorkspace.users.find((user) => user.status === "active")?.id || null;
+    : null;
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     activeWorkspaceId,
@@ -625,7 +654,7 @@ export function validateState(state) {
   if (state.workspaces?.length && !ids.has(state.activeWorkspaceId)) errors.push("当前工作台不存在");
   const activeWorkspace = state.workspaces?.find((workspace) => workspace.id === state.activeWorkspaceId);
   const activeUsers = activeWorkspace?.users?.filter((user) => user.status === "active") || [];
-  if (activeUsers.length && !activeUsers.some((user) => user.id === state.activeUserId)) {
+  if (state.activeUserId != null && !activeUsers.some((user) => user.id === state.activeUserId)) {
     errors.push("当前本地操作用户不属于活动工作台或已停用");
   }
   if (!activeUsers.length && state.activeUserId != null) errors.push("没有启用用户时，当前本地操作用户必须为空");
@@ -645,9 +674,7 @@ export function getWorkspace(state, workspaceId = state.activeWorkspaceId) {
 export function activeWorkspaceUser(state, workspaceId = state.activeWorkspaceId) {
   const workspace = getWorkspace(state, workspaceId);
   if (!workspace) return null;
-  return workspace.users.find((user) => user.id === state.activeUserId && user.status === "active")
-    || workspace.users.find((user) => user.status === "active")
-    || null;
+  return workspace.users.find((user) => user.id === state.activeUserId && user.status === "active" && !inactivePersonnelForUser(workspace, user)) || null;
 }
 
 export function workspaceUserPermissions(state, workspaceId = state.activeWorkspaceId) {
@@ -673,7 +700,7 @@ export function switchActiveUser(state, workspaceId, userId, options = {}) {
   const timestamp = options.timestamp || nowIso(options.now);
   const workspace = getWorkspace(state, workspaceId);
   const user = workspace?.users?.find((candidate) => candidate.id === userId);
-  if (!user || user.status !== "active") throw new Error("只能切换到当前工作台中的启用用户");
+  if (!user || user.status !== "active" || inactivePersonnelForUser(workspace, user)) throw new Error("只能切换到当前工作台中的启用用户");
   const role = workspace.roles.find((candidate) => candidate.id === user.roleId || candidate.name === user.role);
   if (!role || role.status !== "active") throw new Error(`人员「${user.name}」没有可用的启用角色，请先调整其角色`);
   const next = { ...state, activeWorkspaceId: workspaceId, activeUserId: userId, updatedAt: timestamp };
@@ -712,8 +739,9 @@ export function updateWorkspace(state, workspaceId, updater, audit, options = {}
     const updated = normalizeWorkspace({
       ...updater(deepClone(workspace)),
       id: workspace.id,
+      localUsersConfigured: workspace.localUsersConfigured === true || workspace.users.length > 0,
       updatedAt: timestamp,
-    }, { timestamp });
+    }, { timestamp, actor: audit?.actor || options.actor });
     if (!audit) return updated;
     return {
       ...updated,
@@ -737,7 +765,7 @@ export function updateWorkspace(state, workspaceId, updater, audit, options = {}
   const activeWorkspace = workspaces.find((workspace) => workspace.id === state.activeWorkspaceId);
   const activeUserId = activeWorkspace?.users?.some((user) => user.id === state.activeUserId && user.status === "active")
     ? state.activeUserId
-    : activeWorkspace?.users?.find((user) => user.status === "active")?.id || null;
+    : null;
   const next = { ...state, workspaces, activeUserId, updatedAt: timestamp };
   return assertValidState(audit ? appendRootAudit(next, { ...audit, workspaceId }, timestamp) : next);
 }
@@ -825,7 +853,7 @@ export function switchWorkspace(state, workspaceId, options = {}) {
   const sourceActor = activeWorkspaceUser(state)?.name || "本地用户";
   const timestamp = options.timestamp || nowIso(options.now);
   const activeUserId = target.users.find((user) => user.id === state.activeUserId && user.status === "active")?.id
-    || target.users.find((user) => user.status === "active")?.id
+    || (workspaceId !== state.activeWorkspaceId ? target.users.find((user) => user.status === "active" && !inactivePersonnelForUser(target, user))?.id : null)
     || null;
   return assertValidState(appendRootAudit({ ...state, activeWorkspaceId: workspaceId, activeUserId, updatedAt: timestamp }, {
     actor: options.actor || sourceActor,
@@ -1030,12 +1058,15 @@ export function upsertWorkspaceEntity(state, workspaceId, collection, values, op
     if (duplicateAccount) throw new Error(`账号后四位 ${accountNumber} 已被其他银行账户使用`);
   }
   const effectiveStatus = item.status || existingItem?.status || "active";
-  const hasActiveUser = (currentWorkspace.users || []).some((user) => user.status === "active");
-  const bootstrappingFirstUser = collection === "users" && !hasActiveUser && effectiveStatus === "active";
+  const bootstrappingFirstUser = collection === "users" && !currentWorkspace.localUsersConfigured && !currentWorkspace.users.length && effectiveStatus === "active";
   let assignedRole = null;
   if (collection === "users" && effectiveStatus === "active") {
+    const proposedUser = { ...existingItem, ...item };
+    if (inactivePersonnelForUser(currentWorkspace, proposedUser)) {
+      throw new Error("关联人员已离职或停用；请先恢复人员资料，再明确启用本地操作用户");
+    }
     assignedRole = currentWorkspace.roles.find((candidate) => (
-      candidate.id === item.roleId || candidate.name === item.role
+      candidate.id === proposedUser.roleId || candidate.name === proposedUser.role
     ));
     if (!assignedRole || assignedRole.status !== "active") {
       throw new Error("启用人员必须选择一个已启用的有效角色");
@@ -1076,6 +1107,7 @@ export function upsertWorkspaceEntity(state, workspaceId, collection, values, op
       ? [...prepared, item]
       : prepared.map((candidate) => candidate.id === item.id ? { ...candidate, ...item, createdAt: candidate.createdAt, updatedAt: timestamp } : candidate);
     const updatedWorkspace = { ...workspace, [collection]: items };
+    const savedItem = items.find((candidate) => candidate.id === item.id);
     if (collection === "roles") {
       return {
         ...updatedWorkspace,
@@ -1088,7 +1120,7 @@ export function upsertWorkspaceEntity(state, workspaceId, collection, values, op
     }
     if (collection === "users") {
       const relationWasProvided = Object.prototype.hasOwnProperty.call(values, "personnelRecordId");
-      const previousPersonnelRecordId = existingItem?.personnelRecordId || null;
+      const previousPersonnelRecordId = existingItem?.personnelRecordId || workspace.personnelRecords.find((personnel) => personnel.userId === item.id)?.id || null;
       const personnelRecordId = relationWasProvided ? (item.personnelRecordId || null) : previousPersonnelRecordId;
       return {
         ...updatedWorkspace,
@@ -1098,7 +1130,7 @@ export function upsertWorkspaceEntity(state, workspaceId, collection, values, op
           return user;
         }),
         personnelRecords: (workspace.personnelRecords || []).map((personnel) => {
-          if (personnel.id === personnelRecordId) return { ...personnel, userId: item.id, name: item.name, updatedAt: timestamp };
+          if (personnel.id === personnelRecordId) return { ...personnel, userId: item.id, name: savedItem.name || personnel.name, updatedAt: timestamp };
           if (personnel.userId === item.id || personnel.id === previousPersonnelRecordId) return { ...personnel, userId: null, updatedAt: timestamp };
           return personnel;
         }),
@@ -1106,7 +1138,7 @@ export function upsertWorkspaceEntity(state, workspaceId, collection, values, op
     }
     if (collection === "personnelRecords") {
       const relationWasProvided = Object.prototype.hasOwnProperty.call(values, "userId");
-      const previousUserId = existingItem?.userId || null;
+      const previousUserId = existingItem?.userId || workspace.users.find((user) => user.personnelRecordId === item.id)?.id || null;
       const userId = relationWasProvided ? (item.userId || null) : previousUserId;
       return {
         ...updatedWorkspace,
@@ -1116,8 +1148,12 @@ export function upsertWorkspaceEntity(state, workspaceId, collection, values, op
           return personnel;
         }),
         users: (workspace.users || []).map((user) => {
-          if (user.id === userId) return { ...user, personnelRecordId: item.id, name: item.name, updatedAt: timestamp };
-          if (user.personnelRecordId === item.id || user.id === previousUserId) return { ...user, personnelRecordId: null, updatedAt: timestamp };
+          const linked = user.id === userId || user.id === previousUserId || user.personnelRecordId === item.id;
+          const updatedUser = linked && ["inactive", "departed"].includes(savedItem.status)
+            ? revokePersonnelUserAccess(updatedWorkspace, user, savedItem, timestamp, options.actor)
+            : user;
+          if (user.id === userId) return { ...updatedUser, personnelRecordId: item.id, name: savedItem.name || user.name, updatedAt: timestamp };
+          if (user.personnelRecordId === item.id || user.id === previousUserId) return { ...updatedUser, personnelRecordId: null, updatedAt: timestamp };
           return user;
         }),
       };

@@ -57,6 +57,7 @@ const STATUS_OPTIONS = [
 
 const STATUS_LABELS = Object.freeze({
   ...Object.fromEntries(STATUS_OPTIONS),
+  departed: "离职",
   recorded: "已记录",
   revoked: "已撤回",
   not_connected: "未连接",
@@ -296,7 +297,7 @@ const COLLECTION_CONFIG = {
       { key: "role", label: "岗位" },
       { key: "socialSecurityLocation", label: "社保归属" },
       { key: "userId", label: "关联操作用户", type: "select", options: [] },
-      { key: "status", label: "状态", type: "status" },
+      { key: "status", label: "状态", type: "status", options: [...STATUS_OPTIONS, ["departed", "离职"]] },
     ],
   },
   bankAccounts: {
@@ -431,7 +432,7 @@ function Field({ field, value, onChange }) {
     );
   }
   const common = { value: value ?? "", onChange: (event) => onChange(event.target.value), required: field.required };
-  if (field.type === "status") return <select {...common}>{STATUS_OPTIONS.map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select>;
+  if (field.type === "status") return <select {...common}>{(field.options || STATUS_OPTIONS).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select>;
   if (field.type === "select") return <select {...common}>{field.options.map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select>;
   return <input {...common} type={field.type === "number" ? "number" : field.type === "date" ? "date" : field.type === "month" ? "month" : "text"} step={field.type === "number" ? "0.01" : undefined} placeholder={field.placeholder || ""} />;
 }
@@ -493,17 +494,17 @@ function recordDescription(item, collection, workspace, terminology = DEFAULT_WO
 function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, onCancelDelete }) {
   const { activeWorkspace, actions } = useFinanceDesk();
   const membersEnabled = memberModuleEnabled(activeWorkspace);
-  const hasActiveUsers = activeWorkspace.users.some((user) => user.status === "active");
+  const isInitialUserSetup = !activeWorkspace.localUsersConfigured && activeWorkspace.users.length === 0;
   const terminology = useMemo(() => normalizeWorkspaceTerminology(activeWorkspace.terminology), [activeWorkspace.terminology]);
   const config = useMemo(() => {
     const base = localizedCollectionConfig(collection, terminology);
     if (collection === "users") {
       const activeRoles = activeWorkspace.roles.filter((role) => role.status === "active");
-      const selectableRoles = hasActiveUsers
-        ? activeRoles
-        : activeRoles.filter((role) => (
+      const selectableRoles = isInitialUserSetup
+        ? activeRoles.filter((role) => (
           (role.permissions || []).includes("*") || (role.permissions || []).includes("workspace.manage")
-        ));
+        ))
+        : activeRoles;
       return {
         ...base,
         fields: base.fields.map((field) => field.key === "roleId"
@@ -534,7 +535,7 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
       };
     }
     return base;
-  }, [collection, activeWorkspace.roles, activeWorkspace.users, activeWorkspace.modules, activeWorkspace.enabledModules, activeWorkspace.moduleSettings, hasActiveUsers, membersEnabled, terminology]);
+  }, [collection, activeWorkspace.roles, activeWorkspace.users, activeWorkspace.modules, activeWorkspace.enabledModules, activeWorkspace.moduleSettings, isInitialUserSetup, membersEnabled, terminology]);
   const Icon = config.icon;
   const items = collection === "businessEvents" && !membersEnabled
     ? (activeWorkspace[collection] || []).filter((item) => !isMemberBusinessEvent(item))
@@ -604,7 +605,7 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
         throw new Error(`当前工作台未启用${terminology.member}业务，不能新增${terminology.member}充值、${terminology.service}核销或${terminology.coach}提成事件`);
       }
       const savedItem = actions.upsertEntity(activeWorkspace.id, collection, values, { label: config.title });
-      const becameFirstUser = collection === "users" && !hasActiveUsers && savedItem.status === "active";
+      const becameFirstUser = collection === "users" && isInitialUserSetup && savedItem.status === "active";
       setDraft(emptyDraft(config));
       setEditorOpen(false);
       onToast?.(becameFirstUser ? `首位${terminology.personnel}操作用户「${savedItem.name}」已保存并成为当前本地操作身份` : `${config.title}已保存`);
@@ -663,7 +664,7 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
         status: "active",
         personnelRecordId: personnel.id,
       }, { label: `${terminology.personnel}操作用户` });
-      onToast?.(`「${personnel.name}」已成为操作用户，角色为「${role.name}」${!hasActiveUsers ? "，并已切换为当前身份" : ""}`);
+      onToast?.(`「${personnel.name}」已成为操作用户，角色为「${role.name}」${isInitialUserSetup ? "，并已切换为当前身份" : ""}`);
     } catch (caught) {
       setError(caught.message || "创建操作用户失败");
     }
@@ -671,14 +672,14 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
 
   const conversionRoles = activeWorkspace.roles.filter((role) => (
     role.status === "active"
-    && (hasActiveUsers || (role.permissions || []).includes("*") || (role.permissions || []).includes("workspace.manage"))
+    && (!isInitialUserSetup || (role.permissions || []).includes("*") || (role.permissions || []).includes("workspace.manage"))
   ));
 
   return (
     <section className={`foundation-section entity-editor foundation-entity-editor${collection === "users" ? " foundation-user-editor" : ""}${editorOpen ? " is-editing" : ""}`}>
       <div className="foundation-section-heading"><div><small>{collection === "users" ? "可新增、改名、调整角色、停用或删除" : "本地资料"}</small><h3><Icon size={18} />{config.title}</h3></div><span>{items.length} 条</span></div>
-      {collection === "users" && !hasActiveUsers && <p className="foundation-hint">当前没有启用{terminology.personnel}操作用户。首位启用用户需选择具备“管理工作台”权限的启用角色；保存后会自动成为当前本地操作身份。</p>}
-      {collection === "personnelRecords" && <p className="foundation-hint">关联后两处共用同一姓名；{terminology.personnel}资料状态与操作用户权限状态仍分别管理。</p>}
+      {collection === "users" && isInitialUserSetup && <p className="foundation-hint">尚未配置操作用户。首位用户需选择具备“管理工作台”权限的启用角色；保存后会成为当前本地操作身份。</p>}
+      {collection === "personnelRecords" && <p className="foundation-hint">关联后共用姓名。{terminology.personnel}停用或离职会停用关联本地用户；恢复权限需明确启用用户。</p>}
       <div className="foundation-record-list foundation-entity-record-list">
         {items.map((item, index) => {
           const name = displayName(item, collection, config.title, terminology);
@@ -1104,12 +1105,13 @@ function LocalUserControl({ onToast }) {
   const terminology = useMemo(() => normalizeWorkspaceTerminology(activeWorkspace.terminology), [activeWorkspace.terminology]);
   const [error, setError] = useState("");
   const activeUsers = activeWorkspace.users.filter((user) => user.status === "active");
+  const isInitialUserSetup = !activeWorkspace.localUsersConfigured && activeWorkspace.users.length === 0;
   const roleForUser = (user) => activeWorkspace.roles.find((item) => (
     item.status === "active" && (item.id === user?.roleId || item.name === user?.role)
   ));
   const switchableUsers = activeUsers.filter((user) => roleForUser(user));
   const unavailableUsers = activeUsers.filter((user) => !roleForUser(user));
-  const currentUser = switchableUsers.find((user) => user.id === state.activeUserId) || switchableUsers[0];
+  const currentUser = switchableUsers.find((user) => user.id === state.activeUserId);
   const role = roleForUser(currentUser);
 
   function switchUser(userId) {
@@ -1125,8 +1127,8 @@ function LocalUserControl({ onToast }) {
 
   return (
     <section className="foundation-section local-user-control">
-      <div className="foundation-section-heading"><div><small>审计与最小权限</small><h3><UsersThree size={18} />当前本地操作身份</h3></div><span>{role?.name || "无有效角色"}</span></div>
-      <label className="foundation-field"><span>以哪位{terminology.personnel}操作</span><select value={currentUser?.id || ""} onChange={(event) => switchUser(event.target.value)} disabled={!switchableUsers.length}>{switchableUsers.map((user) => <option value={user.id} key={user.id}>{user.name} · {roleForUser(user)?.name || "未分配角色"}</option>)}</select></label>
+      <div className="foundation-section-heading"><div><small>审计与最小权限</small><h3><UsersThree size={18} />当前本地操作身份</h3></div>{role && <span>{role.name}</span>}</div>
+      <label className="foundation-field"><span>以哪位{terminology.personnel}操作</span><select value={currentUser?.id || ""} onChange={(event) => switchUser(event.target.value)} disabled={!switchableUsers.length}>{!currentUser && <option value="" disabled>{switchableUsers.length ? "请选择操作身份" : isInitialUserSetup ? "尚未配置操作身份" : "暂无可用操作身份"}</option>}{switchableUsers.map((user) => <option value={user.id} key={user.id}>{user.name} · {roleForUser(user)?.name || "未分配角色"}</option>)}</select></label>
       <div className="permission-chip-list">{(role?.permissions || []).map((permission) => <span key={permission}>{PERMISSION_LABELS[permission] || permission}</span>)}</div>
       <p className="foundation-hint">操作权限和日志记录以此身份为准。这是本地身份，不代表已完成联网登录。</p>
       {unavailableUsers.length > 0 && <p className="foundation-hint">{unavailableUsers.map((user) => user.name).join("、")} 的角色已停用或不存在；请先在“{terminology.personnel}操作用户”中改为启用角色。</p>}

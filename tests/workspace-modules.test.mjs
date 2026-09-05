@@ -144,7 +144,7 @@ test("app wiring uses workspace modules for creation, navigation, operator ident
   assert.match(appSource, /mode: "blank"/);
   assert.match(appSource, /industry: "其他服务业"/);
   assert.match(appSource, /primaryNavigationForWorkspace\(workspace\)/);
-  assert.match(appSource, /未设置\$\{terminology\.personnel\}操作人/);
+  assert.match(appSource, /未选择操作身份/);
   assert.doesNotMatch(appSource, /<strong>周会计<\/strong>/);
   assert.match(appSource, /showMemberBusiness=\{workspaceModuleEnabled\(workspace, "members"\)\}/);
   assert.match(appSource, /management-report-empty/);
