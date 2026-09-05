@@ -30,6 +30,7 @@ test("blank workspaces start neutral while the fitness example keeps all optiona
   assert.equal(blank.modules.members, false);
   assert.equal(blank.modules.reconcile, true);
   assert.equal(blank.modules.tax, true);
+  assert.equal(blank.modules.payroll, false);
   assert.deepEqual(
     { vatRate: blank.tax.vatRate, surtaxRate: blank.tax.surtaxRate, incomeTaxRate: blank.tax.incomeTaxRate },
     { vatRate: 0.03, surtaxRate: 0.12, incomeTaxRate: 0.05 },
@@ -49,7 +50,7 @@ test("blank workspaces start neutral while the fitness example keeps all optiona
 
   const fitness = createInitialState({ now: fixedNow }).workspaces[0];
   assert.equal(fitness.templateId, "fitness-studio");
-  assert.ok(["members", "reconcile", "tax"].every((id) => fitness.modules[id]));
+  assert.ok(["members", "reconcile", "tax", "payroll"].every((id) => fitness.modules[id]));
 });
 
 test("module choices persist per workspace and a workspace without an operator remains configurable", () => {
@@ -60,7 +61,7 @@ test("module choices persist per workspace and a workspace without an operator r
   const created = store.actions.createWorkspace({
     id: "workspace-configurable",
     name: "中性服务工作台",
-    modules: { members: true, reconcile: false, tax: false },
+    modules: { members: true, reconcile: false, tax: false, payroll: true },
   });
 
   assert.deepEqual(created.users, []);
@@ -70,7 +71,7 @@ test("module choices persist per workspace and a workspace without an operator r
   const reloaded = createFinanceDeskStore({ repository });
   assert.deepEqual(
     { ...reloaded.getActiveWorkspace().modules },
-    { overview: true, members: false, reconcile: false, reports: true, tax: true, archive: true, setup: true },
+    { overview: true, members: false, reconcile: false, reports: true, tax: true, payroll: true, archive: true, setup: true },
   );
   assert.equal(reloaded.getState().activeUserId, null);
 
@@ -91,13 +92,18 @@ test("workspace navigation and archive requirements follow the persisted module 
   const workspace = createBlankWorkspace({
     id: "workspace-navigation",
     name: "导航测试",
-    modules: { members: false, reconcile: false, tax: false },
+    modules: { members: false, reconcile: false, tax: false, payroll: false },
   }, { now: fixedNow });
   assert.deepEqual(primaryNavigationForWorkspace(workspace).map((item) => item.id), ["overview", "reports", "archive", "setup"]);
   assert.equal(workflowChecks(workspace).archive.some((check) => check.page === "tax"), false);
+  assert.equal(workflowChecks(workspace).checks.some((check) => ["payroll", "socialSecurity"].includes(check.id)), false);
 
   const withMembers = { ...workspace, modules: { ...workspace.modules, members: true } };
   assert.equal(primaryNavigationForWorkspace(withMembers).some((item) => item.id === "members"), true);
+
+  const withPayroll = { ...workspace, modules: { ...workspace.modules, payroll: true } };
+  assert.equal(workflowChecks(withPayroll).checks.some((check) => check.id === "payroll"), true);
+  assert.equal(workflowChecks(withPayroll).checks.some((check) => check.id === "socialSecurity"), true);
 });
 
 test("reports stay neutral when member business is disabled", () => {
@@ -133,6 +139,7 @@ test("app wiring uses workspace modules for creation, navigation, operator ident
   const managerSource = readFileSync(new URL("../src/features/workspaces/WorkspaceManager.jsx", import.meta.url), "utf8");
   const accountingSource = readFileSync(new URL("../src/features/accounting/AccountingWorkbench.jsx", import.meta.url), "utf8");
   const bankImportSource = readFileSync(new URL("../src/features/intake/BankImportPanel.jsx", import.meta.url), "utf8");
+  const documentIntakeSource = readFileSync(new URL("../src/features/intake/DocumentIntakePanel.jsx", import.meta.url), "utf8");
 
   assert.match(appSource, /mode: "blank"/);
   assert.match(appSource, /industry: "其他服务业"/);
@@ -151,6 +158,7 @@ test("app wiring uses workspace modules for creation, navigation, operator ident
   assert.match(appSource, /downloadStoredDocument\(record\)/);
   assert.match(appSource, /setSetupInitialStage\("s3"\)/);
   assert.match(appSource, /onRequestAccountSetup=\{requestBankAccountSetup\}/);
+  assert.match(appSource, /workspaceModuleEnabled\(workspace, "payroll"\)/);
   assert.match(managerSource, /actions\.updateWorkspaceModules/);
   assert.match(accountingSource, /showMemberBusiness && memberBusinessEnabled\(activeWorkspace\) && <MemberBusinessAccountingQueue/);
   assert.match(accountingSource, /workspaceAccountOptions\(activeWorkspace\)/);
@@ -160,4 +168,5 @@ test("app wiring uses workspace modules for creation, navigation, operator ident
   assert.match(bankImportSource, /下载平台结算 CSV 模板/);
   assert.match(bankImportSource, /\["日期", "对方", "摘要", "收入", "支出", "流水号", "余额"\]/);
   assert.match(bankImportSource, /\["结算日期", "结算单号", "交易总额", "手续费", "退款", "净结算额"\]/);
+  assert.match(documentIntakeSource, /workspaceModuleEnabled\(activeWorkspace, "payroll"\)/);
 });

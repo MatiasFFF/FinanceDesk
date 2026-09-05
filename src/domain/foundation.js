@@ -39,6 +39,7 @@ export const WORKSPACE_OPERATIONAL_COLLECTIONS = Object.freeze([
 export const WORKSPACE_MODULE_DEFAULTS = Object.freeze({
   overview: true,
   members: false,
+  payroll: false,
   reconcile: true,
   reports: true,
   tax: true,
@@ -49,6 +50,7 @@ export const WORKSPACE_MODULE_DEFAULTS = Object.freeze({
 export const FITNESS_WORKSPACE_MODULE_DEFAULTS = Object.freeze({
   ...WORKSPACE_MODULE_DEFAULTS,
   members: true,
+  payroll: true,
 });
 
 export const DEFAULT_WORKSPACE_TERMINOLOGY = Object.freeze({
@@ -115,11 +117,14 @@ export function normalizeWorkspaceTerminology(terminology) {
 }
 
 const ALWAYS_ENABLED_WORKSPACE_MODULES = Object.freeze(["overview", "reports", "archive", "setup"]);
-const CONFIGURABLE_WORKSPACE_MODULES = Object.freeze(["members", "reconcile", "tax"]);
+const CONFIGURABLE_WORKSPACE_MODULES = Object.freeze(["members", "payroll", "reconcile", "tax"]);
 
 export function normalizeWorkspaceModules(modules, options = {}) {
   const defaults = options.fitnessTemplate ? FITNESS_WORKSPACE_MODULE_DEFAULTS : WORKSPACE_MODULE_DEFAULTS;
   const normalized = { ...defaults };
+  if (typeof options.payrollDefault === "boolean" && typeof modules?.payroll !== "boolean") {
+    normalized.payroll = options.payrollDefault;
+  }
   CONFIGURABLE_WORKSPACE_MODULES.forEach((id) => {
     if (typeof modules?.[id] === "boolean") normalized[id] = modules[id];
   });
@@ -383,7 +388,7 @@ export function normalizeWorkspace(input, options = {}) {
     isDemo: Boolean(workspace.isDemo),
     createdAt: workspace.createdAt || timestamp,
     updatedAt: workspace.updatedAt || timestamp,
-    modules: normalizeWorkspaceModules(workspace.modules, { fitnessTemplate: hasMemberBusiness }),
+    modules: normalizeWorkspaceModules(workspace.modules, { fitnessTemplate: hasMemberBusiness, payrollDefault: isFitnessTemplate }),
     terminology: normalizeWorkspaceTerminology(workspace.terminology),
     managementReport: normalizeManagementReportConfig(workspace.managementReport),
     currentPeriod,
@@ -800,7 +805,7 @@ export function updateWorkspaceModules(state, workspaceId, modules, options = {}
   return updateWorkspace(state, workspaceId, (current) => ({ ...current, modules: nextModules }), {
     actor: options.actor,
     action: "更新工作台模块",
-    detail: `会员业务${nextModules.members ? "启用" : "停用"}；流水核销${nextModules.reconcile ? "启用" : "停用"}；确认与申报${nextModules.tax ? "启用" : "停用"}`,
+    detail: `会员业务${nextModules.members ? "启用" : "停用"}；工资与社保${nextModules.payroll ? "启用" : "停用"}；流水核销${nextModules.reconcile ? "启用" : "停用"}；确认与申报${nextModules.tax ? "启用" : "停用"}`,
   }, options);
 }
 

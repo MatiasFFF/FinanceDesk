@@ -65,7 +65,12 @@ import {
 } from "./documentIntake.js";
 import "./document-intake-panel.css";
 
-const CATEGORIES = ["主体资料", "合同", "银行流水", "业务资料", "发票", "审批资料", "人员资料", "会计资料", "申报回执", "其他资料"];
+const CATEGORIES = ["主体资料", "合同", "银行流水", "业务资料", "发票", "审批资料", "人员资料", "工资表", "社保数据", "会计资料", "申报回执", "其他资料"];
+const PAYROLL_DOCUMENT_CATEGORIES = new Set(["工资表", "社保表", "社保数据", "工资社保数据", "payroll", "socialSecurity"]);
+
+function isPayrollDocumentCategory(category) {
+  return PAYROLL_DOCUMENT_CATEGORIES.has(String(category || "").trim());
+}
 
 const RELATED_GROUPS = [
   ["凭证", "vouchers"],
@@ -276,6 +281,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const { state, activeWorkspace, actions, store, fileVault } = useFinanceDesk();
   const terminology = workspaceTerminology(activeWorkspace);
   const displayText = (value) => applyWorkspaceTerminology(value, activeWorkspace);
+  const payrollEnabled = workspaceModuleEnabled(activeWorkspace, "payroll");
   const actor = activeWorkspace.users?.find((user) => (
     user.id === state.activeUserId
     && user.status === "active"
@@ -287,7 +293,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const payrollFileInputRef = useRef(null);
   const documentActionCancelRef = useRef(null);
   const documentActionTriggerRef = useRef(null);
-  const [category, setCategory] = useState(defaultCategory);
+  const [category, setCategory] = useState(() => payrollEnabled || !isPayrollDocumentCategory(defaultCategory) ? defaultCategory : "其他资料");
   const [period, setPeriod] = useState(activeWorkspace.currentPeriod || "");
   const [relatedObjectId, setRelatedObjectId] = useState("");
   const [query, setQuery] = useState("");
@@ -325,7 +331,9 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     item.id,
     `${group.label} · ${relatedLabel(item)}`,
   ]))), [relatedGroups]);
-  const categories = useMemo(() => [...new Set([...CATEGORIES, ...activeWorkspace.documents.map((document) => document.category).filter(Boolean)])], [activeWorkspace.documents]);
+  const selectableCategories = useMemo(() => CATEGORIES.filter((item) => payrollEnabled || !isPayrollDocumentCategory(item)), [payrollEnabled]);
+  const categories = useMemo(() => [...new Set([...CATEGORIES, ...activeWorkspace.documents.map((document) => document.category).filter(Boolean)])]
+    .filter((item) => payrollEnabled || !isPayrollDocumentCategory(item)), [activeWorkspace.documents, payrollEnabled]);
   const filteredDocuments = useMemo(() => filterLocalDocuments(activeWorkspace, {
     query,
     category: categoryFilter,
@@ -367,9 +375,9 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     .filter((document) => documentStructuredKind(document.category) === "contract")
     .map((document) => buildContractBillingPlan(activeWorkspace, { documentId: document.id })), [activeWorkspace]);
   const vatReconciliation = useMemo(() => buildVatReconciliationSummary(activeWorkspace, { period: activeWorkspace.currentPeriod }), [activeWorkspace]);
-  const payrollSocialSummary = useMemo(() => buildPayrollSocialSummary(activeWorkspace, { period: activeWorkspace.currentPeriod }), [activeWorkspace]);
-  const payrollSocialConfirmation = useMemo(() => getPayrollSocialConfirmationState(activeWorkspace), [activeWorkspace]);
-  const payrollImportPlan = useMemo(() => payrollFilePreview ? preparePayrollSocialImport(activeWorkspace, {
+  const payrollSocialSummary = useMemo(() => payrollEnabled ? buildPayrollSocialSummary(activeWorkspace, { period: activeWorkspace.currentPeriod }) : null, [activeWorkspace, payrollEnabled]);
+  const payrollSocialConfirmation = useMemo(() => payrollEnabled ? getPayrollSocialConfirmationState(activeWorkspace) : null, [activeWorkspace, payrollEnabled]);
+  const payrollImportPlan = useMemo(() => payrollEnabled && payrollFilePreview ? preparePayrollSocialImport(activeWorkspace, {
     table: payrollFilePreview.table,
     inspection: payrollFilePreview.inspection,
     mapping: payrollFieldMapping,
@@ -378,7 +386,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     fileName: payrollFilePreview.fileName,
     importedAt: payrollFilePreview.importedAt,
     id: payrollFilePreview.id,
-  }) : null, [activeWorkspace, payrollFilePreview, payrollFieldMapping, payrollImportKind, payrollImportPeriod]);
+  }) : null, [activeWorkspace, payrollEnabled, payrollFilePreview, payrollFieldMapping, payrollImportKind, payrollImportPeriod]);
   const vatReconciliationSignature = useMemo(() => JSON.stringify(vatReconciliation.items.map((item) => [
     item.kind,
     item.sourceFingerprint,
@@ -405,7 +413,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     .filter((record) => record.period === selectedArchivePeriod);
 
   useEffect(() => {
-    setCategory(defaultCategory);
+    setCategory(payrollEnabled || !isPayrollDocumentCategory(defaultCategory) ? defaultCategory : "其他资料");
     setPeriod(activeWorkspace.currentPeriod || "");
     setRelatedObjectId("");
     setQuery("");
@@ -420,10 +428,11 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     setPayrollImportPeriod(activeWorkspace.currentPeriod || "");
     setPayrollFilePreview(null);
     setPayrollFieldMapping({});
+    setPayrollImportBusy(false);
     setError("");
     setUploadFeedback(null);
     setMatchFeedback(null);
-  }, [activeWorkspace.id, activeWorkspace.currentPeriod, defaultCategory]);
+  }, [activeWorkspace.id, activeWorkspace.currentPeriod, defaultCategory, payrollEnabled]);
 
   useEffect(() => {
     if (pendingDocumentAction) documentActionCancelRef.current?.focus();
@@ -464,6 +473,10 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     const files = [...(event.target.files || [])];
     event.target.value = "";
     if (!files.length) return;
+    if (!payrollEnabled && isPayrollDocumentCategory(category)) {
+      setError("当前工作台未启用工资与社保模块，不能新增对应类别资料");
+      return;
+    }
     setBusy(true);
     setError("");
     setUploadFeedback(null);
@@ -612,6 +625,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   }
 
   function changeEditCategory(nextCategory) {
+    if (!payrollEnabled && isPayrollDocumentCategory(nextCategory)) return;
     setEditing((current) => {
       const currentKind = documentStructuredKind(current.category);
       const nextKind = documentStructuredKind(nextCategory);
@@ -774,7 +788,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   async function choosePayrollSocialFile(event) {
     const file = event.target.files?.[0];
     event.target.value = "";
-    if (!file) return;
+    if (!file || !payrollEnabled) return;
     setError("");
     setPayrollImportBusy(true);
     try {
@@ -797,11 +811,12 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   }
 
   function updatePayrollFieldMapping(field, value) {
+    if (!payrollEnabled) return;
     setPayrollFieldMapping((current) => ({ ...current, [field]: value === "" ? null : Number(value) }));
   }
 
   function commitPayrollSocialImport() {
-    if (!payrollImportPlan) return;
+    if (!payrollEnabled || !payrollImportPlan) return;
     setError("");
     try {
       const current = store.getActiveWorkspace();
@@ -826,6 +841,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   }
 
   function togglePayrollSocialConfirmation(section, confirmed) {
+    if (!payrollEnabled) return;
     setError("");
     try {
       const current = store.getActiveWorkspace();
@@ -903,7 +919,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
       {!fileVault && <div className="foundation-error"><WarningCircle size={18} />当前环境不支持浏览器本地文件保险箱，只能查看已有资料元数据。</div>}
       <div className="document-intake-upload-zone">
         <div className="document-intake-controls document-upload-controls">
-          <label className="foundation-field"><span>资料类别</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{CATEGORIES.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
+          <label className="foundation-field"><span>资料类别</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{selectableCategories.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
           <label className="foundation-field"><span>业务期间</span><input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} /></label>
           <label className="foundation-field"><span>关联业务对象（可选）</span><select value={relatedObjectId} onChange={(event) => setRelatedObjectId(event.target.value)}><option value="">暂不关联</option>{relatedGroups.map((group) => <optgroup label={group.label} key={group.collection}>{group.items.map((item) => <option value={item.id} key={item.id}>{relatedLabel(item)} · {item.id}</option>)}</optgroup>)}</select></label>
           <button className="secondary-button" type="button" disabled={!fileVault || busy} onClick={() => inputRef.current?.click()}><FileArrowUp size={17} />{busy ? "正在保存…" : "上传原文件"}</button>
@@ -1095,7 +1111,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           })}
         </div>
       </div>
-      <div className="bank-import-workspace">
+      {payrollEnabled && <div className="bank-import-workspace">
         <div className="foundation-section-heading">
           <div><small>{activeWorkspace.currentPeriod} · CSV / XLS / XLSX · 仅本地</small><h3>工资与社保导入核对</h3></div>
           <span>工资 {payrollSocialSummary.counts.payroll} 人 · 社保 {payrollSocialSummary.counts.socialSecurity} 人 · 差异 {payrollSocialSummary.counts.issues} 人</span>
@@ -1165,7 +1181,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           </article>
         </div>
         {!!(activeWorkspace.payrollImports || []).length && <p className="foundation-hint">当前工作台已记录 {(activeWorkspace.payrollImports || []).length} 个本地导入批次；最近一次为 {(activeWorkspace.payrollImports || []).at(-1).fileName}，原文件没有上传。</p>}
-      </div>
+      </div>}
       <div className="bank-import-workspace">
         <div className="foundation-section-heading">
           <div><small>本地规则建议 · 必须人工确认</small><h3>资料匹配与缺件待办</h3></div>
@@ -1287,7 +1303,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                   <div className="bank-import-workspace document-editor-panel">
                     <div className="document-intake-controls document-edit-controls">
                       <label className="foundation-field"><span>文件名称</span><input value={editing.name} onChange={(event) => setEditing((current) => ({ ...current, name: event.target.value }))} /></label>
-                      <label className="foundation-field"><span>资料类别</span><select value={editing.category} onChange={(event) => changeEditCategory(event.target.value)}>{CATEGORIES.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
+                      <label className="foundation-field"><span>资料类别</span><select value={editing.category} onChange={(event) => changeEditCategory(event.target.value)}>{selectableCategories.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
                       <label className="foundation-field"><span>业务期间</span><input type="month" value={editing.period} onChange={(event) => setEditing((current) => ({ ...current, period: event.target.value }))} /></label>
                       <label className="foundation-field"><span>添加关联对象</span><select value="" onChange={(event) => addEditRelation(event.target.value)}><option value="">选择后加入</option>{relatedGroups.map((group) => <optgroup label={group.label} key={group.collection}>{group.items.filter((item) => !editing.relatedObjectIds.includes(item.id)).map((item) => <option value={item.id} key={item.id}>{relatedLabel(item)}</option>)}</optgroup>)}</select></label>
                     </div>

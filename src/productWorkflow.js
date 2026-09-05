@@ -82,6 +82,7 @@ export const PRIMARY_NAV = [
 
 export const WORKSPACE_MODULE_OPTIONS = Object.freeze([
   { id: "members", label: "会员业务", description: "会员台账、履约、退款与业务提成" },
+  { id: "payroll", label: "工资与社保", description: "工资表、社保表、逐人核对与独立确认" },
   { id: "reconcile", label: "流水核销", description: "银行流水、往来账单与会计处理" },
   { id: "tax", label: "确认与申报", description: "客户确认、申报底稿与本地申报包" },
 ]);
@@ -91,12 +92,14 @@ export function defaultWorkspaceModules(mode = "blank") {
 }
 
 export function workspaceModuleEnabled(workspace, moduleId) {
+  const fitnessTemplate = workspace?.templateId === "fitness-studio" || Boolean(workspace?.isDemo);
   const hasMemberBusiness = workspace?.templateId === "fitness-studio"
     || workspace?.isDemo
     || (workspace?.members || []).length > 0
     || (workspace?.businessEvents || []).some((event) => event.memberId || event.memberName || event.coach);
   return normalizeWorkspaceModules(workspace?.modules, {
     fitnessTemplate: hasMemberBusiness,
+    payrollDefault: fitnessTemplate,
   })[moduleId] !== false;
 }
 
@@ -1265,6 +1268,7 @@ function comparableSnapshot(snapshot) {
 export function workflowChecks(workspace) {
   const terminology = workspaceTerminology(workspace);
   const taxEnabled = workspaceModuleEnabled(workspace, "tax");
+  const payrollEnabled = workspaceModuleEnabled(workspace, "payroll");
   const snapshot = buildReportSnapshot(workspace);
   const statementsBalanced = Object.values(snapshot.summary.engineChecks || {}).every((check) => check.passed);
   const currentTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
@@ -1315,7 +1319,11 @@ export function workflowChecks(workspace) {
       && comparableSnapshot(latestVersion.snapshot) === comparableSnapshot(snapshot);
   const version = sourceIsCurrent ? latestVersion : null;
   const filing = workspace.delivery.filing;
-  const payrollSocialConfirmation = getPayrollSocialConfirmationState(workspace);
+  const payrollSocialConfirmation = payrollEnabled ? getPayrollSocialConfirmationState(workspace) : null;
+  const payrollChecks = payrollEnabled ? [
+    { id: "payroll", label: `${terminology.customer}已单独确认工资表`, ok: Boolean(version && payrollSocialConfirmation.payroll.confirmed), page: "tax", detail: payrollSocialConfirmation.payroll.available ? (payrollSocialConfirmation.payroll.confirmed ? "工资表已绑定当前冻结版本" : `工资表待${terminology.customer}勾选确认`) : "当前期间尚未导入工资表" },
+    { id: "socialSecurity", label: `${terminology.customer}已单独确认社保表`, ok: Boolean(version && payrollSocialConfirmation.socialSecurity.confirmed), page: "tax", detail: payrollSocialConfirmation.socialSecurity.available ? (payrollSocialConfirmation.socialSecurity.confirmed ? "社保表已绑定当前冻结版本" : `社保表待${terminology.customer}勾选确认`) : "当前期间尚未导入社保表" },
+  ] : [];
   const checks = [
     { id: "balanced", label: "试算、资产负债与现金变动勾稽通过", ok: statementsBalanced, page: "reports", detail: statementsBalanced ? "三项校验通过" : "至少一项校验存在差异" },
     { id: "bank", label: "本期银行流水余额勾稽通过", ok: bankReconciliationPassed, page: "setup", detail: bankReconciliationDetail },
@@ -1323,8 +1331,7 @@ export function workflowChecks(workspace) {
     { id: "vouchers", label: "本期凭证已全部复核入账", ok: pendingVouchers.length === 0, page: "reconcile", detail: pendingVouchers.length ? `${pendingVouchers.length} 张草稿或更正待处理` : "已完成" },
     { id: "frozen", label: "本期当前数据已有冻结版本", ok: Boolean(version), page: "reports", detail: latestVersion && !version ? "上游数据已变化，请重新冻结" : undefined },
     { id: "finance", label: `${terminology.customer}已完成首次财务确认`, ok: Boolean(version && workspace.tax.financeConfirmedAt && workspace.tax.financeConfirmedVersionId === version.id), page: "tax" },
-    { id: "payroll", label: `${terminology.customer}已单独确认工资表`, ok: Boolean(version && payrollSocialConfirmation.payroll.confirmed), page: "tax", detail: payrollSocialConfirmation.payroll.available ? (payrollSocialConfirmation.payroll.confirmed ? "工资表已绑定当前冻结版本" : `工资表待${terminology.customer}勾选确认`) : "当前期间尚未导入工资表" },
-    { id: "socialSecurity", label: `${terminology.customer}已单独确认社保表`, ok: Boolean(version && payrollSocialConfirmation.socialSecurity.confirmed), page: "tax", detail: payrollSocialConfirmation.socialSecurity.available ? (payrollSocialConfirmation.socialSecurity.confirmed ? "社保表已绑定当前冻结版本" : `社保表待${terminology.customer}勾选确认`) : "当前期间尚未导入社保表" },
+    ...payrollChecks,
     { id: "owner", label: `${terminology.customer}已完成最终责任确认`, ok: Boolean(version && workspace.tax.ownerConfirmedAt && workspace.tax.ownerConfirmedVersionId === version.id && filing.finalConfirmedVersionId === version.id), page: "tax" },
     { id: "vatReconciliation", label: "增值税差异均已解释", ok: !snapshot.taxWorkpaper.vatReconciliation.hasUnexplainedDifferences, page: "tax", detail: snapshot.taxWorkpaper.vatReconciliation.hasUnexplainedDifferences ? snapshot.taxWorkpaper.vatReconciliation.unresolvedItems.map((item) => `${item.label}（差额 ${item.differenceBeforeAdjustment.toFixed(2)}）`).join("、") : "两项差异均已核对" },
     { id: "exported", label: "本地申报包已导出", ok: Boolean(version && filing.exportedAt && filing.exportedPackage?.reportVersionId === version.id), page: "tax" },
@@ -1336,10 +1343,12 @@ export function workflowChecks(workspace) {
   const archiveChecks = taxEnabled
     ? checks
     : checks.filter((check) => !["finance", "payroll", "socialSecurity", "owner", "vatReconciliation", "exported", "receipt"].includes(check.id));
+  const prepareCheckIds = new Set(["balanced", "bank", "exceptions", "vouchers", "frozen", "finance", "payroll", "socialSecurity"]);
+  const exportCheckIds = new Set([...prepareCheckIds, "owner", "vatReconciliation"]);
   return {
     checks,
-    prepare: checks.slice(0, 8),
-    export: checks.slice(0, 10),
+    prepare: checks.filter((check) => prepareCheckIds.has(check.id)),
+    export: checks.filter((check) => exportCheckIds.has(check.id)),
     archive: archiveChecks,
     snapshot,
     unresolved,
