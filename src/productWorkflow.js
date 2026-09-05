@@ -10,7 +10,11 @@ import {
   createCustomerConfirmationPackage,
   recordCustomerConfirmation,
 } from "./domain/accounting/index.js";
-import { buildPayrollSocialSummary, buildStructuredInvoiceVatSummary } from "./features/intake/documentIntake.js";
+import { buildPayrollSocialSummary, buildStructuredInvoiceVatSummary, verifyPayrollSocialEvidence } from "./features/intake/documentIntake.js";
+import { buildPayrollAccountingSummary, payrollAccrualLines } from "./domain/accounting/payrollAccounting.js";
+import { assertAccountingPeriodWritable, createManualVoucherDraft, createPostedVoucherRevision, reviseDraftVoucher } from "./domain/accounting/vouchers.js";
+import { AccountingRuleError, appendAuditEntry, operationContext } from "./domain/accounting/model.js";
+export { buildPayrollAccountingSummary } from "./domain/accounting/payrollAccounting.js";
 import { buildBankAccountReconciliationSummary, buildBankMonthlyReconciliation } from "./features/intake/bankStatementImport.js";
 import { buildInventorySummary } from "./features/inventory/inventoryLedger.js";
 import {
@@ -31,6 +35,62 @@ import {
 
 export const PRODUCT_NAME = "财务工作台";
 export const PRODUCT_STATE_VERSION = 4;
+
+export async function createPayrollAccrualDraft(workspace, { reason = "", accounts } = {}, context = {}) {
+  assertAccountingPeriodWritable(workspace);
+  const originalFingerprint = buildPayrollAccountingSummary(workspace).sourceFingerprint;
+  let next = structuredClone(workspace);
+  if (accounts) next.rules = { ...next.rules, payrollAccounts: { ...next.rules?.payrollAccounts, ...accounts } };
+  const summary = buildPayrollAccountingSummary(next);
+  if (!summary.applicable || summary.createBlockers.length) throw new AccountingRuleError("PAYROLL_NOT_READY", summary.message, summary);
+  const evidence = await verifyPayrollSocialEvidence(next, { period: next.currentPeriod, fileVault: context.fileVault });
+  if (buildPayrollAccountingSummary(workspace).sourceFingerprint !== originalFingerprint) throw new AccountingRuleError("PAYROLL_SOURCE_CHANGED", "核验期间工资社保数据已变化，请重新生成草稿");
+  if (!evidence.verified || !evidence.canGenerate) throw new AccountingRuleError("PAYROLL_ORIGINAL_REQUIRED", evidence.issues.map((issue) => issue.message).join("；"), evidence);
+  if (evidence.fingerprint !== summary.evidence.fingerprint) throw new AccountingRuleError("PAYROLL_SOURCE_CHANGED", "工资社保原件已变化，请重新载入当前数据");
+  if (summary.postedAndMatched || (!summary.readyToDraft && summary.draftVoucherId)) return next;
+  const resolvedContext = operationContext({ ...context, mode: "manual" });
+  const note = String(reason || "").trim();
+  if (summary.postedVoucherId && !note) throw new AccountingRuleError("REVISION_REASON_REQUIRED", "已入账工资计提发生变化，请填写更正原因；原凭证将保留历史");
+  const basis = {
+    kind: "business",
+    description: "按当前工资表应发、实发、代扣个税和社保表个人、企业社保计提；不计算新税率。应发＝实发＋个人社保＋个税。",
+    payrollSourceFingerprint: summary.sourceFingerprint,
+    payrollRuleSnapshot: structuredClone(summary.ruleSnapshot),
+    voucherIds: summary.postedVoucherId ? [summary.postedVoucherId] : [],
+  };
+  let voucherId = summary.draftVoucherId;
+  if (!voucherId && summary.postedVoucherId) {
+    next = createPostedVoucherRevision(next, { voucherId: summary.postedVoucherId, reason: note }, resolvedContext);
+    voucherId = next.vouchers.find((voucher) => voucher.revisionOf === summary.postedVoucherId && voucher.status === "draft").id;
+  }
+  const payload = {
+    summary: `${summary.period} 工资与企业社保计提`,
+    lines: payrollAccrualLines(summary), evidenceIds: evidence.documentIds, basis,
+  };
+  if (voucherId) {
+    next = reviseDraftVoucher(next, { ...payload, voucherId, reason: note || "依据当前两表及科目规则更新未入账工资计提草稿" }, resolvedContext);
+  } else {
+    const [year, month] = summary.period.split("-").map(Number);
+    const date = `${summary.period}-${new Date(Date.UTC(year, month, 0)).getUTCDate()}`;
+    next = createManualVoucherDraft(next, { ...payload, date, note: note || basis.description }, resolvedContext);
+    voucherId = next.vouchers.at(-1).id;
+  }
+  const voucher = next.vouchers.find((item) => item.id === voucherId);
+  voucher.payrollAccrual = {
+    period: summary.period, sourceFingerprint: summary.sourceFingerprint,
+    accounts: structuredClone(summary.accounts), expected: structuredClone(summary.expected),
+    sourceIds: [...summary.sourceIds], sourceDocumentIds: [...summary.documentIds],
+    ruleSnapshot: structuredClone(summary.ruleSnapshot), originalVerification: { at: resolvedContext.at, documents: evidence.documents },
+  };
+  voucher.accountingAttributes = { ...voucher.accountingAttributes, payrollAccrual: true };
+  voucher.versions.at(-1).payrollAccrual = structuredClone(voucher.payrollAccrual);
+  appendAuditEntry(next, {
+    action: "payroll.create_accrual_draft", entityType: "voucher", entityId: voucherId,
+    detail: `${payload.summary}；费用 ${summary.expected.expenseTotal}，实发应付 ${summary.expected.netSalary}，社保应付 ${summary.expected.socialSecurityPayable}，个税应付 ${summary.expected.individualIncomeTax}；${note || "待财务复核入账"}`,
+    sourceIds: [...summary.sourceIds, ...summary.documentIds], after: structuredClone(voucher.payrollAccrual),
+  }, resolvedContext);
+  return next;
+}
 
 export const DEFAULT_WORKSPACE_TERMINOLOGY = Object.freeze({
   customer: "客户",
@@ -1043,6 +1103,8 @@ export function buildReportSnapshot(workspace) {
 
 export function freezeReportVersion(workspace, actor = "本地用户") {
   const current = ensureWorkspace(workspace);
+  const payrollAccounting = buildPayrollAccountingSummary(current);
+  if (payrollAccounting.applicable && !payrollAccounting.postedAndMatched) throw new AccountingRuleError("PAYROLL_CLOSE_BLOCKED", payrollAccounting.message, payrollAccounting);
   const payrollSocialBefore = buildPayrollSocialSummary(current, { period: current.currentPeriod });
   const previousVersion = getLatestReportVersion(current);
   const invalidatedConfirmations = [
@@ -1284,6 +1346,8 @@ export function confirmPayrollSocialData(workspace, input = {}, context = {}) {
   const section = input.section;
   if (!["payroll", "socialSecurity"].includes(section)) throw new Error("请选择工资表或社保表确认项");
   const confirmed = input.confirmed !== false;
+  const payrollAccounting = buildPayrollAccountingSummary(current);
+  if (confirmed && payrollAccounting.applicable && !payrollAccounting.postedAndMatched) throw new AccountingRuleError("PAYROLL_CLOSE_BLOCKED", payrollAccounting.message, payrollAccounting);
   const state = getPayrollSocialConfirmationState(current);
   const sectionState = state[section];
   if (confirmed && !state.version) throw new Error("请先按当前工资社保数据重新冻结报表版本");
@@ -1354,6 +1418,8 @@ export function workflowChecks(workspace) {
   const currentTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
   const unresolved = currentTransactions.filter((item) => !["posted", "ignored"].includes(item.status));
   const openExceptionTasks = (workspace.exceptionTasks || []).filter((task) => task.status !== "resolved");
+  const payrollAccounting = buildPayrollAccountingSummary(workspace);
+  const payrollAccountingIssues = payrollAccounting.applicable && !payrollAccounting.postedAndMatched ? payrollAccounting.issues : [];
   const openNotices = (workspace.delivery.notices || []).filter((notice) => (
     notice.period === workspace.currentPeriod && notice.status !== "resolved"
   ));
@@ -1444,7 +1510,7 @@ export function workflowChecks(workspace) {
   const checks = [
     { id: "balanced", label: "试算、资产负债与现金变动勾稽通过", ok: statementsBalanced, page: "reports", detail: statementsBalanced ? "三项校验通过" : "至少一项校验存在差异" },
     { id: "bank", label: bankReconciliationApplicable ? "本期银行流水余额勾稽通过" : "银行勾稽不适用", applicable: bankReconciliationApplicable, ok: bankReconciliationPassed, page: "setup", detail: bankReconciliationDetail },
-    { id: "exceptions", label: "流水、异常与跨期事项已完成复核", ok: unresolved.length === 0 && openExceptionTasks.length === 0 && openNotices.length === 0, page: openNotices.length ? "overview" : "reconcile", detail: unresolved.length || openExceptionTasks.length || openNotices.length ? `${unresolved.length} 笔流水、${openExceptionTasks.length} 项异常、${openNotices.length} 项跨期待办未完成` : "已完成" },
+    { id: "exceptions", label: "流水、异常、工资与跨期事项已完成复核", ok: unresolved.length === 0 && openExceptionTasks.length === 0 && openNotices.length === 0 && payrollAccountingIssues.length === 0, page: payrollAccountingIssues.length ? "tax" : openNotices.length ? "overview" : "reconcile", detail: payrollAccountingIssues.length ? payrollAccounting.message : unresolved.length || openExceptionTasks.length || openNotices.length ? `${unresolved.length} 笔流水、${openExceptionTasks.length} 项异常、${openNotices.length} 项跨期待办未完成` : "已完成" },
     { id: "vouchers", label: "本期凭证已全部复核入账", ok: pendingVouchers.length === 0, page: "reconcile", detail: pendingVouchers.length ? `${pendingVouchers.length} 张草稿或更正待处理` : "已完成" },
     { id: "frozen", label: "本期当前数据已有冻结版本", ok: Boolean(version), page: "reports", detail: latestVersion && !version ? "上游数据已变化，请重新冻结" : undefined },
     { id: "finance", label: `${terminology.customer}已完成首次财务确认`, ok: Boolean(initialConfirmationCurrent && workspace.tax.financeConfirmedAt && workspace.tax.financeConfirmedVersionId === version.id), page: "tax" },
@@ -1470,6 +1536,8 @@ export function workflowChecks(workspace) {
     snapshot,
     unresolved,
     openExceptionTasks,
+    payrollAccounting,
+    payrollAccountingIssues,
     openNotices,
     bankReconciliationSummary,
     bankReconciliationApplicable,

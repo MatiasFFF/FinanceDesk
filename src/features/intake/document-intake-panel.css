@@ -689,3 +689,21 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.payroll-accounting-summary { display: grid; min-width: 0; gap: 12px; padding: 14px 0; border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
+.payroll-accounting-summary > .foundation-section-heading { margin: 0; }
+.payroll-accounting-summary h3 { font-size: var(--font-card-title, 16px); font-weight: 600; }
+.payroll-accounting-summary p { margin: 0; font-size: var(--font-helper, 12px); color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; }
+.payroll-accounting-issues { display: grid; gap: 6px; margin: 0; padding-left: 18px; color: var(--clay-dark); font-size: var(--font-body, 14px); line-height: 1.5; }
+.payroll-accounting-actions { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; }
+.payroll-accounting-actions > label { min-width: 0; flex: 1 1 280px; }
+.payroll-accounting-actions > button { flex-shrink: 0; }
+.payroll-review-details { min-width: 0; }
+.payroll-review-details > summary { padding: 10px 0; color: var(--espresso); font-size: var(--font-body, 14px); font-weight: 600; line-height: 1.5; cursor: pointer; overflow-wrap: anywhere; }
+.payroll-review-details > .foundation-record-list { padding-top: 8px; }
+.payroll-book-comparison { max-width: 100%; overflow-x: auto; }
+.payroll-book-comparison table { width: 100%; min-width: 480px; border-collapse: collapse; font-size: var(--font-body, 14px); font-variant-numeric: tabular-nums; }
+.payroll-book-comparison th, .payroll-book-comparison td { padding: 9px 10px; border-bottom: 1px solid var(--line-soft); text-align: right; }
+.payroll-book-comparison th { color: var(--muted); font-size: var(--font-label, 13px); font-weight: 600; }
+.payroll-book-comparison th:first-child, .payroll-book-comparison td:first-child { text-align: left; }
+.payroll-accounting-summary .workspace-voucher-panel { padding: 0; border: 0; background: transparent; }

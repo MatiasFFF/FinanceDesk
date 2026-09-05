@@ -25,6 +25,7 @@ import {
   unresolvedExceptionTasks,
 } from "../../features/evidence/evidenceEngine.js";
 import { commitReconciliationCorrection } from "../../features/reconciliation/reconciliationEngine.js";
+import { assertPayrollVoucherPosting } from "./payrollAccounting.js";
 import {
   MEMBER_EVENT_DEFINITIONS,
   MEMBER_EVENT_KINDS,
@@ -808,6 +809,7 @@ function voucherSnapshot(voucher, context, reason) {
     reconciliationCorrection: structuredClone(voucher.reconciliationCorrection || null),
     judgement: structuredClone(voucher.judgement || {}),
     accountingAttributes: structuredClone(voucher.accountingAttributes || {}),
+    payrollAccrual: structuredClone(voucher.payrollAccrual || null),
     status: voucher.status,
   };
 }
@@ -1257,6 +1259,13 @@ export async function postVoucherWithEvidence(workspace, input, context = {}) {
   const voucher = findVoucher(snapshot, input.voucherId);
   if (!isManualVoucher(voucher)) return postVoucher(snapshot, input, context);
   assertAccountingPeriodWritable(snapshot, voucher.period);
+  if (voucher.payrollAccrual) {
+    assertPayrollVoucherPosting(snapshot, voucher);
+    const { verifyPayrollSocialEvidence } = await import("../../features/intake/documentIntake.js");
+    const evidence = await verifyPayrollSocialEvidence(snapshot, { period: voucher.period, fileVault: context.fileVault });
+    if (!evidence.verified || !evidence.canGenerate) throw new AccountingRuleError("PAYROLL_ORIGINAL_REQUIRED", evidence.issues.map((issue) => issue.message).join("；"), evidence);
+    assertPayrollVoucherPosting(workspace, voucher);
+  }
   const assessment = assessManualVoucherEvidence(snapshot, voucher);
   if (!assessment.complete) throw new AccountingRuleError("VOUCHER_EVIDENCE_REQUIRED", assessment.issues.map((issue) => issue.message).join("；"), assessment);
   const { getStoredDocumentRecord, hashLocalFile } = await import("../../features/intake/documentIntake.js");
@@ -1311,6 +1320,7 @@ export function postVoucher(workspace, { voucherId, reviewNote, mode = "manual" 
   if (!validation.balanced) throw new AccountingRuleError("VOUCHER_UNBALANCED", validation.errors.join("；"), validation);
   if (voucher.reconciliationCorrection) commitReconciliationCorrection(next, voucher, resolvedContext);
   ensurePostingAllowed(next, voucher, mode);
+  assertPayrollVoucherPosting(next, voucher);
   const before = { status: voucher.status, version: voucher.version };
   const review = {
     id: nextRecordId(voucher.reviews || [], "review"),

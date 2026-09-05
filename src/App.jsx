@@ -1203,8 +1203,8 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
       <StageRail workspace={workspace} onPage={onPage} />
       <section className="tax-stage-summary panel"><div className="stage-next-action"><div><h2>{nextStep.title}</h2><p>{version ? version.label : "尚未冻结"}</p></div><button className="primary-button" onClick={nextStep.run} type="button">{nextStep.label}<ArrowRight size={16} /></button></div><p className="local-filing-note"><CloudSlash size={17} />仅生成本地申报包；税额为本地底稿，尚未提交税务局。</p>{blockers.length > 0 && <div className="stage-blockers">{blockers.map((item) => <button key={item.id} onClick={() => onPage(item.page, item.id === "bank" ? { stage: "s3" } : item.id === "vouchers" ? { panel: "vouchers" } : {})} type="button"><WarningCircle size={16} /><span><strong>{item.label}</strong><small>{item.detail}</small></span><ArrowRight size={15} /></button>)}</div>}{!blockers.length && !exportReady && initialDone && <p className="toolbar-explanation">{localizedExportChecks.find((item) => !item.ok)?.detail || localizedExportChecks.find((item) => !item.ok)?.label}</p>}</section>
       {payrollEnabled && <details className="workpaper-details" open={payrollDetailsOpen} onToggle={(event) => { if (event.target === event.currentTarget) setPayrollDetailsOpen(event.currentTarget.open); }}>
-        <summary>工资表与社保逐人核对</summary>
-        <DeferredView active={payrollDetailsOpen} label="工资与社保"><DocumentIntakePanel payrollOnly onToast={onToast} /></DeferredView>
+        <summary>工资社保核对与计提</summary>
+        <DeferredView active={payrollDetailsOpen} label="工资与社保"><DocumentIntakePanel payrollOnly onToast={onToast} onNavigate={onPage} /></DeferredView>
       </details>}
       <div className={`tax-layout ${initialDone ? "with-filing-actions" : "confirmation-only"}`}>
         <div className="tax-main-column">

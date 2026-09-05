@@ -310,7 +310,7 @@ export const MANUAL_VOUCHER_BASIS_KINDS = Object.freeze({
 });
 
 export function manualVoucherSourceOptions(workspace) {
-  const labels = { transactions: "银行流水", businessEvents: "业务事件", bills: "往来账单", contracts: "合同", invoices: "发票", approvals: "审批单", inventoryItems: "库存物料", inventoryMovements: "库存流水" };
+  const labels = { transactions: "银行流水", businessEvents: "业务事件", bills: "往来账单", contracts: "合同", invoices: "发票", approvals: "审批单", inventoryItems: "库存物料", inventoryMovements: "库存流水", payrollRecords: "工资社保记录", payrollImports: "工资社保导入" };
   const records = Object.entries(labels).flatMap(([collection, label]) => (workspace[collection] || [])
     .filter((record) => !["deleted", "voided", "cancelled", "reversed", "rejected", "withdrawn"].includes(record.status)
       && record.voidStatus !== "voided")
@@ -380,7 +380,7 @@ export function assessManualVoucherEvidence(workspace, voucher) {
   if (!documentIds.size) {
     references.forEach(addReferenceDocuments);
     sources.filter(Boolean).forEach(({ record }) => {
-      collectSourceIds(record.evidenceIds, record.documentIds, record.documentId).forEach((id) => documentIds.add(id));
+      collectSourceIds(record.evidenceIds, record.documentIds, record.documentId, record.sourceDocumentId).forEach((id) => documentIds.add(id));
     });
   }
   const documents = [...documentIds].map((id) => (workspace.documents || []).find((document) => document.id === id));

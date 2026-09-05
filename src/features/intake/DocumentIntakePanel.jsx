@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
   CheckCircle,
@@ -14,9 +14,12 @@ import {
 } from "@phosphor-icons/react";
 
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
+import { assertWorkspacePermission } from "../../domain/foundation.js";
 import {
   applyWorkspaceTerminology,
   buildVatReconciliationSummary,
+  buildPayrollAccountingSummary,
+  createPayrollAccrualDraft,
   confirmPayrollSocialData,
   getPayrollSocialConfirmationState,
   recordVatReconciliation,
@@ -67,6 +70,8 @@ import {
 } from "./documentIntake.js";
 import "./document-intake-panel.css";
 import "../workspaces/foundation-ui.css";
+
+const PayrollVoucherWorkbench = lazy(() => import("../accounting/AccountingWorkbench.jsx").then((module) => ({ default: module.AccountingWorkbench })));
 
 const CATEGORIES = ["主体资料", "合同", "银行流水", "业务资料", "发票", "审批资料", "人员资料", "工资表", "社保数据", "会计资料", "申报回执", "其他资料"];
 const PAYROLL_DOCUMENT_CATEGORIES = new Set(["工资表", "社保表", "社保数据", "工资社保数据", "payroll", "socialSecurity"]);
@@ -324,6 +329,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     onSectionChange?.(nextSection);
   }
   const payrollFileInputRef = useRef(null);
+  const payrollImportJobRef = useRef(null);
   const documentActionCancelRef = useRef(null);
   const documentActionTriggerRef = useRef(null);
   const [category, setCategory] = useState(() => payrollEnabled || !isPayrollDocumentCategory(defaultCategory) ? defaultCategory : "其他资料");
@@ -357,6 +363,10 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const [payrollFilePreview, setPayrollFilePreview] = useState(null);
   const [payrollFieldMapping, setPayrollFieldMapping] = useState({});
   const [payrollImportBusy, setPayrollImportBusy] = useState(false);
+  const [payrollAccrualBusy, setPayrollAccrualBusy] = useState(false);
+  const [payrollAccrualReason, setPayrollAccrualReason] = useState("");
+  const [payrollVouchersOpen, setPayrollVouchersOpen] = useState(false);
+  const [payrollVouchersVisited, setPayrollVouchersVisited] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [uploadFeedback, setUploadFeedback] = useState(null);
@@ -420,6 +430,8 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     .map((document) => buildContractBillingPlan(activeWorkspace, { documentId: document.id })), [activeWorkspace]);
   const vatReconciliation = useMemo(() => buildVatReconciliationSummary(activeWorkspace, { period: activeWorkspace.currentPeriod }), [activeWorkspace]);
   const payrollSocialSummary = useMemo(() => payrollEnabled ? buildPayrollSocialSummary(activeWorkspace, { period: activeWorkspace.currentPeriod }) : null, [activeWorkspace, payrollEnabled]);
+  const payrollAccounting = useMemo(() => payrollEnabled ? buildPayrollAccountingSummary(activeWorkspace, { period: activeWorkspace.currentPeriod }) : null, [activeWorkspace, payrollEnabled]);
+  const payrollVoucherIds = [...new Set([...(payrollAccounting?.voucherIds || []), payrollAccounting?.draftVoucherId, payrollAccounting?.postedVoucherId, ...(payrollAccounting?.issues || []).flatMap((item) => item.voucherIds || [])].filter(Boolean))];
   const payrollSocialConfirmation = useMemo(() => payrollEnabled ? getPayrollSocialConfirmationState(activeWorkspace) : null, [activeWorkspace, payrollEnabled]);
   const payrollImportPlan = useMemo(() => payrollEnabled && payrollFilePreview ? preparePayrollSocialImport(activeWorkspace, {
     table: payrollFilePreview.table,
@@ -568,6 +580,11 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     setSelectedVoucherId(activeWorkspace.vouchers?.[0]?.id || "");
     setSelectedArchivePeriod(activeWorkspace.currentPeriod || "");
     setPayrollImportPeriod(activeWorkspace.currentPeriod || "");
+    payrollImportJobRef.current = null;
+    setPayrollAccrualBusy(false);
+    setPayrollAccrualReason("");
+    setPayrollVouchersOpen(false);
+    setPayrollVouchersVisited(false);
     setPayrollFilePreview(null);
     setPayrollFieldMapping({});
     setPayrollImportBusy(false);
@@ -943,13 +960,19 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   async function choosePayrollSocialFile(event) {
     const file = event.target.files?.[0];
     event.target.value = "";
-    if (!file || !payrollEnabled) return;
+    if (!file || !payrollEnabled || payrollImportBusy) return;
+    const job = { workspaceId: activeWorkspace.id, period: activeWorkspace.currentPeriod };
+    payrollImportJobRef.current = job;
     setError("");
     setPayrollImportBusy(true);
     try {
       const result = await readPayrollSocialFile(file);
+      if (payrollImportJobRef.current !== job || store.getActiveWorkspace()?.id !== job.workspaceId || store.getActiveWorkspace()?.currentPeriod !== job.period) return;
       const preview = {
         ...result,
+        file,
+        workspaceId: job.workspaceId,
+        period: job.period,
         id: `payroll-import-${Date.now()}`,
         importedAt: new Date().toISOString(),
       };
@@ -957,11 +980,12 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
       setPayrollFieldMapping(result.inspection.mapping);
       onToast?.(`${result.fileName} 已在当前浏览器读取，请核对字段映射后写入`);
     } catch (caught) {
+      if (payrollImportJobRef.current !== job) return;
       setPayrollFilePreview(null);
       setPayrollFieldMapping({});
       setError(caught.message || "工资社保文件读取失败");
     } finally {
-      setPayrollImportBusy(false);
+      if (payrollImportJobRef.current === job) { payrollImportJobRef.current = null; setPayrollImportBusy(false); }
     }
   }
 
@@ -970,28 +994,65 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     setPayrollFieldMapping((current) => ({ ...current, [field]: value === "" ? null : Number(value) }));
   }
 
-  function commitPayrollSocialImport() {
-    if (!payrollEnabled || !payrollImportPlan) return;
+  async function commitPayrollSocialImport() {
+    if (!payrollEnabled || !payrollImportPlan || payrollImportBusy) return;
+    const preview = payrollFilePreview;
+    const job = { workspaceId: activeWorkspace.id, period: activeWorkspace.currentPeriod, userId: store.getState().activeUserId };
+    const isCurrent = () => payrollImportJobRef.current === job && store.getActiveWorkspace()?.id === job.workspaceId && store.getActiveWorkspace()?.currentPeriod === job.period && store.getState().activeUserId === job.userId;
+    payrollImportJobRef.current = job;
+    setPayrollImportBusy(true);
     setError("");
     try {
       const current = store.getActiveWorkspace();
-      const currentPlan = preparePayrollSocialImport(current, {
-        table: payrollFilePreview.table,
-        inspection: payrollFilePreview.inspection,
+      if (!preview.file || preview.workspaceId !== current.id || preview.period !== current.currentPeriod) throw new Error("所属工作台或账期已变化，请重新选择工资社保原文件");
+      assertWorkspacePermission(store.getState(), current.id, "data.write");
+      const input = {
+        table: preview.table,
+        inspection: preview.inspection,
         mapping: payrollFieldMapping,
         sourceKind: payrollImportKind,
         defaultPeriod: payrollImportPeriod,
-        fileName: payrollFilePreview.fileName,
-        importedAt: payrollFilePreview.importedAt,
-        id: payrollFilePreview.id,
-      });
-      const next = applyPayrollSocialImport(current, currentPlan, { actor });
-      actions.replaceWorkspace(current.id, next, { requiredPermission: "data.write" });
+        fileName: preview.fileName,
+        importedAt: preview.importedAt,
+        id: preview.id,
+      };
+      const previewPlan = preparePayrollSocialImport(current, input);
+      if (!previewPlan.canApply) throw new Error([...previewPlan.mappingErrors, ...previewPlan.errors.map((item) => `第 ${item.rowNumber} 行：${item.message}`)].join("；") || "工资社保数据尚未通过导入校验");
+      const document = await saveLocalDocument({ store, fileVault, workspaceId: current.id, file: preview.file, metadata: { category: "其他资料", period: payrollImportPeriod, actor }, isCurrent });
+      if (!isCurrent()) return;
+      const latest = store.getActiveWorkspace();
+      const currentPlan = preparePayrollSocialImport(latest, { ...input, sourceDocumentId: document.id, sourceDocumentHash: document.hash, sourceDocumentVersion: document.version });
+      const next = applyPayrollSocialImport(latest, currentPlan, { actor });
+      actions.replaceWorkspace(latest.id, next, { requiredPermission: "data.write" });
       setPayrollFilePreview(null);
       setPayrollFieldMapping({});
       onToast?.(`${displayText(PAYROLL_SOCIAL_IMPORT_KINDS[currentPlan.sourceKind])}已写入 ${currentPlan.rows.length} 人次；旧冻结与确认已撤销`);
     } catch (caught) {
-      setError(caught.message || "工资社保数据写入失败");
+      if (payrollImportJobRef.current === job && store.getActiveWorkspace()?.id === job.workspaceId && store.getActiveWorkspace()?.currentPeriod === job.period) setError(caught.message || "工资社保数据写入失败");
+    } finally {
+      if (payrollImportJobRef.current === job) { payrollImportJobRef.current = null; setPayrollImportBusy(false); }
+    }
+  }
+
+  async function generatePayrollAccrual() {
+    if (payrollAccrualBusy || payrollImportBusy || payrollFilePreview) return;
+    const current = store.getActiveWorkspace();
+    const activeUserId = store.getState().activeUserId;
+    setPayrollAccrualBusy(true);
+    setError("");
+    try {
+      assertWorkspacePermission(store.getState(), current.id, "data.write");
+      const next = await createPayrollAccrualDraft(current, { reason: payrollAccrualReason.trim() }, { actor, fileVault });
+      if (store.getActiveWorkspace() !== current || store.getState().activeUserId !== activeUserId) throw new Error("生成期间工作台数据或操作身份已变化，请重新生成计提草稿");
+      actions.replaceWorkspace(current.id, next, { requiredPermission: "data.write" });
+      setPayrollAccrualReason("");
+      setPayrollVouchersVisited(true);
+      setPayrollVouchersOpen(true);
+      onToast?.("工资计提草稿已生成，请核对依据并填写复核意见后入账");
+    } catch (caught) {
+      if (store.getActiveWorkspace()?.id === current.id && store.getActiveWorkspace()?.currentPeriod === current.currentPeriod) setError(caught.message || "工资计提草稿生成失败");
+    } finally {
+      if (store.getActiveWorkspace()?.id === current.id && store.getActiveWorkspace()?.currentPeriod === current.currentPeriod) setPayrollAccrualBusy(false);
     }
   }
 
@@ -1482,14 +1543,32 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         </div>
       </div>
       {payrollEnabled && <div className="bank-import-workspace" hidden={selectedSection !== "payroll"}>
+        <section className="payroll-accounting-summary" aria-label="工资计提与账面核对">
+          <div className="foundation-section-heading"><div><h3>工资计提</h3>{!payrollAccounting.issues.length && <p>{payrollAccounting.message}</p>}</div><span>{payrollAccounting.postedAndMatched ? payrollAccounting.noAccrualNeeded ? "零金额 · 无需计提" : "已入账 · 核对一致" : payrollAccounting.draftVoucherId && payrollAccounting.readyToDraft ? "草稿待更新" : payrollAccounting.draftVoucherId ? "待复核入账" : "待处理"}</span></div>
+          {!!payrollAccounting.issues.length && <ul className="payroll-accounting-issues">{payrollAccounting.issues.map((item, index) => <li key={`${item.code}-${index}`}>{displayText(item.message)}</li>)}</ul>}
+          {payrollFilePreview && <p>当前有未提交的导入预览，请先保存或取消，再处理计提凭证。</p>}
+          <div className="payroll-accounting-actions">
+            {!payrollAccounting.postedAndMatched && (!payrollAccounting.draftVoucherId || payrollAccounting.readyToDraft) && <>
+              {payrollAccounting.postedVoucherId && <label className="foundation-field"><span>计提更正原因</span><input value={payrollAccrualReason} disabled={payrollAccrualBusy} onChange={(event) => setPayrollAccrualReason(event.target.value)} placeholder="说明工资或社保数据变化的原因" /></label>}
+              <button className="primary-button" type="button" disabled={payrollAccrualBusy || payrollImportBusy || Boolean(payrollFilePreview) || !payrollAccounting.readyToDraft || Boolean(payrollAccounting.postedVoucherId && !payrollAccrualReason.trim())} onClick={generatePayrollAccrual}>{payrollAccrualBusy ? "正在核验原件…" : payrollAccounting.draftVoucherId ? "按当前资料更新草稿" : payrollAccounting.postedVoucherId ? "生成计提更正草稿" : "生成计提草稿"}</button>
+            </>}
+            {payrollAccounting.draftVoucherId && <button className="primary-button" type="button" onClick={() => { setPayrollVouchersVisited(true); setPayrollVouchersOpen(true); }}>复核计提凭证</button>}
+            {payrollAccounting.postedAndMatched && onNavigate && <button className="primary-button" type="button" disabled={payrollImportBusy || Boolean(payrollFilePreview)} onClick={() => onNavigate("reports")}>去报表冻结版本</button>}
+          </div>
+          <details className="payroll-review-details"><summary>工资资料与账面金额</summary><div className="payroll-book-comparison"><table><thead><tr><th>核对项目</th><th>资料应计</th><th>账面计提</th><th>差额</th></tr></thead><tbody>{payrollAccounting.rows.map((row) => <tr key={row.key}><td>{displayText(row.label)}</td><td>{amountLabel(row.expected)}</td><td>{amountLabel(row.posted)}</td><td>{amountLabel(row.difference)}</td></tr>)}</tbody></table></div></details>
+          {payrollVoucherIds.length > 0 && <details className="payroll-review-details" open={payrollVouchersOpen} onToggle={(event) => { if (event.target !== event.currentTarget) return; setPayrollVouchersOpen(event.currentTarget.open); if (event.currentTarget.open) setPayrollVouchersVisited(true); }}>
+            <summary>关联计提凭证与冲突来源 · {payrollVoucherIds.length} 张</summary>
+            {payrollVouchersVisited && <Suspense fallback={<p role="status" style={{ fontSize: "var(--font-body, 14px)" }}>正在加载计提凭证…</p>}><PayrollVoucherWorkbench voucherIds={payrollVoucherIds} showLedger={false} title="工资计提凭证" onToast={onToast} actionBlockedReason={payrollImportBusy || payrollFilePreview ? "请先保存或取消当前导入，再复核计提凭证。" : ""} /></Suspense>}
+          </details>}
+        </section>
         <div className="foundation-section-heading">
           <div><h3>工资与社保导入核对</h3><p>{activeWorkspace.currentPeriod} · 支持 CSV、XLS 和 XLSX</p></div>
           <span>工资 {payrollSocialSummary.counts.payroll} 人 · 社保 {payrollSocialSummary.counts.socialSecurity} 人 · 差异 {payrollSocialSummary.counts.issues} 人</span>
         </div>
         <p className="foundation-hint">确认字段后导入；同一{terminology.personnel}、同一期间的同类记录将被覆盖。</p>
         <div className="document-intake-controls document-import-controls">
-        <label className="foundation-field"><span>导入类型</span><select value={payrollImportKind} onChange={(event) => setPayrollImportKind(event.target.value)}>{Object.entries(PAYROLL_SOCIAL_IMPORT_KINDS).map(([id, label]) => <option value={id} key={id}>{displayText(label)}</option>)}</select></label>
-          <label className="foundation-field"><span>默认所属期</span><input type="month" value={payrollImportPeriod} onChange={(event) => setPayrollImportPeriod(event.target.value)} /></label>
+        <label className="foundation-field"><span>导入类型</span><select disabled={payrollImportBusy} value={payrollImportKind} onChange={(event) => setPayrollImportKind(event.target.value)}>{Object.entries(PAYROLL_SOCIAL_IMPORT_KINDS).map(([id, label]) => <option value={id} key={id}>{displayText(label)}</option>)}</select></label>
+          <label className="foundation-field"><span>默认所属期</span><input disabled={payrollImportBusy} type="month" value={payrollImportPeriod} onChange={(event) => setPayrollImportPeriod(event.target.value)} /></label>
           <button className="secondary-button" type="button" disabled={payrollImportBusy} onClick={() => payrollFileInputRef.current?.click()}><FileArrowUp size={17} />{payrollImportBusy ? "读取中…" : `选择${displayText(PAYROLL_SOCIAL_IMPORT_KINDS[payrollImportKind])}`}</button>
           <input ref={payrollFileInputRef} type="file" accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={choosePayrollSocialFile} />
         </div>
@@ -1500,7 +1579,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
               {Object.entries(PAYROLL_SOCIAL_FIELD_DEFINITIONS).map(([field, definition]) => (
                 <label className="foundation-field" key={field}>
                   <span>{displayText(definition.label)}{definition.required ? "（必填）" : ""}</span>
-                  <select value={payrollFieldMapping[field] ?? ""} onChange={(event) => updatePayrollFieldMapping(field, event.target.value)}>
+                  <select disabled={payrollImportBusy} value={payrollFieldMapping[field] ?? ""} onChange={(event) => updatePayrollFieldMapping(field, event.target.value)}>
                     <option value="">不映射</option>
                     {payrollFilePreview.inspection.headers.map((header, index) => <option value={index} key={`${field}-${index}`}>{header || `第 ${index + 1} 列`}</option>)}
                   </select>
@@ -1513,13 +1592,11 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
             <div className="foundation-record-list">
               {payrollImportPlan.rows.slice(0, 5).map((row) => <article className="foundation-record" key={row.dedupeKey}><div><strong>{row.employeeName} · {row.period}</strong><small>{row.personnelId ? `已匹配${terminology.personnel} ${row.personnelId}` : `${terminology.personnel}档案未匹配`}</small><p>应发 {amountLabel(row.grossSalary)} · 个人社保 {amountLabel(row.personalSocial)} · 企业社保 {amountLabel(row.employerSocial)} · 个税 {amountLabel(row.individualIncomeTax)} · 实发 {amountLabel(row.netSalary)}</p></div><span><strong>第 {row.sourceRowNumber} 行</strong><small>{displayText(PAYROLL_SOCIAL_IMPORT_KINDS[row.sourceKind])}</small></span></article>)}
             </div>
-            <div className="foundation-inline-actions"><button className="primary-button" type="button" disabled={!payrollImportPlan.canApply} onClick={commitPayrollSocialImport}>确认映射并写入当前工作台</button><button className="secondary-button" type="button" onClick={() => { setPayrollFilePreview(null); setPayrollFieldMapping({}); }}>取消</button></div>
+            <div className="foundation-inline-actions"><button className="primary-button" type="button" disabled={payrollImportBusy || !payrollImportPlan.canApply} onClick={commitPayrollSocialImport}>{payrollImportBusy ? "正在保存原件与数据…" : "保存原件并导入"}</button><button className="secondary-button" disabled={payrollImportBusy} type="button" onClick={() => { setPayrollFilePreview(null); setPayrollFieldMapping({}); }}>取消</button></div>
           </div>
         )}
-        <div className="foundation-section-heading" style={{ marginTop: 18 }}>
-          <div><h3>逐人差异</h3><p>工资表与社保表对照</p></div>
-          <span>{payrollSocialSummary.hasDifferences ? `${payrollSocialSummary.counts.issues} 人待核对` : `${terminology.personnel}与金额一致`}</span>
-        </div>
+        <details className="payroll-review-details">
+          <summary>逐人核对 · {payrollSocialSummary.hasDifferences ? `${payrollSocialSummary.counts.issues} 人待处理` : `${payrollSocialSummary.rows.length} 人一致`}</summary>
         <div className="foundation-record-list">
           {payrollSocialSummary.rows.map((row) => {
             const hasRecords = Boolean(row.payrollRecord || row.socialSecurityRecord);
@@ -1540,6 +1617,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           })}
           {!payrollSocialSummary.rows.length && <p className="foundation-empty">当前期间没有工资或社保记录，也没有在职{terminology.personnel}可核对。</p>}
         </div>
+        </details>
         {!payrollOnly && <><div className="foundation-section-heading" style={{ marginTop: 18 }}>
           <div><h3>{terminology.customer}确认</h3></div>
           <span>{payrollSocialConfirmation.version ? payrollSocialConfirmation.version.label : "需先重新冻结报表"}</span>

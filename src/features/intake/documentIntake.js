@@ -14,6 +14,8 @@ const LINKABLE_COLLECTIONS = [
   "invoices",
   "approvals",
   "personnelRecords",
+  "payrollRecords",
+  "payrollImports",
 ];
 
 const LINKABLE_COLLECTION_LABELS = {
@@ -26,6 +28,8 @@ const LINKABLE_COLLECTION_LABELS = {
   invoices: "发票",
   approvals: "审批单",
   personnelRecords: "人员资料",
+  payrollRecords: "工资社保记录",
+  payrollImports: "工资社保导入",
 };
 
 const MIME_TYPES_BY_EXTENSION = {
@@ -2093,6 +2097,9 @@ export function preparePayrollSocialImport(workspace, input = {}) {
   return {
     id: input.id || createId("payroll-import"),
     fileName: input.fileName || `${PAYROLL_SOCIAL_IMPORT_KINDS[sourceKind]}.csv`,
+    sourceDocumentId: input.sourceDocumentId || null,
+    sourceDocumentHash: input.sourceDocumentHash || null,
+    sourceDocumentVersion: input.sourceDocumentVersion ?? null,
     sourceKind,
     importedAt: input.importedAt || new Date().toISOString(),
     headerRowIndex,
@@ -2121,12 +2128,16 @@ function payrollDatasetFingerprint(records, personnelRecords) {
         employeeName: record.employeeName,
         personnelId: record.personnelId,
         personnelStatus: person?.status || null,
+        department: person?.department || null,
         grossSalary: record.grossSalary,
         personalSocial: record.personalSocial,
         employerSocial: record.employerSocial,
         individualIncomeTax: record.individualIncomeTax,
         netSalary: record.netSalary,
         sourceImportId: record.sourceImportId,
+        sourceDocumentId: record.sourceDocumentId || null,
+        sourceDocumentHash: record.sourceDocumentHash || null,
+        sourceDocumentVersion: record.sourceDocumentVersion ?? null,
       };
     })
     .sort((left, right) => payrollSocialDedupeKey(left).localeCompare(payrollSocialDedupeKey(right))));
@@ -2210,6 +2221,101 @@ export function buildPayrollSocialSummary(workspace, options = {}) {
   };
 }
 
+// Reuses the comparison summary; originals are verified separately against the file vault.
+export function buildPayrollSocialEvidence(workspace, options = {}) {
+  const summary = buildPayrollSocialSummary(workspace, options);
+  const records = [...summary.payrollRecords, ...summary.socialSecurityRecords];
+  const sourceRecordIds = records.map((record) => record.id).sort();
+  const sourceImportIds = [...new Set(records.map((record) => record.sourceImportId).filter(Boolean))].sort();
+  const issues = [];
+  const add = (code, message, sourceId = null) => issues.push({ code, message, label: message, sourceId });
+  if (!summary.payrollRecords.length) add("missing_payroll", "本期工资表缺失");
+  if (!summary.socialSecurityRecords.length) add("missing_social_security", "本期社保表缺失");
+  summary.rows.forEach((row) => row.issues.forEach((issue) => add(issue.code, `${row.employeeName}：${issue.label}`, row.key)));
+  summary.rows.forEach((row) => {
+    Object.entries(row.differences).forEach(([field, value]) => {
+      if (value != null && value !== 0 && !row.issues.some((issue) => issue.code === `${field}_difference`)) {
+        add(`${field}_difference`, `${row.employeeName}：${PAYROLL_SOCIAL_FIELD_DEFINITIONS[field].label}差额 ${value.toFixed(2)}`, row.key);
+      }
+    });
+  });
+  if (summary.rows.reduce((count, row) => count + Number(Boolean(row.payrollRecord)) + Number(Boolean(row.socialSecurityRecord)), 0) !== records.length) {
+    add("payroll_duplicate_personnel", "同一人员同一期间存在重复工资或社保记录，请整理后重新导入");
+  }
+  const imports = sourceImportIds.map((id) => (workspace.payrollImports || []).find((item) => item.id === id)).filter(Boolean);
+  const documentIds = new Set();
+  records.forEach((record) => {
+    const imported = imports.find((item) => item.id === record.sourceImportId);
+    const personMatches = (workspace.personnelRecords || []).filter((person) => record.personnelId
+      ? person.id === record.personnelId
+      : normalizedText(person.name).replace(/\s+/g, "") === normalizedText(record.employeeName).replace(/\s+/g, ""));
+    if (personMatches.length !== 1) add("payroll_personnel_unresolved", `${record.employeeName}：人员身份无法唯一确认`, record.id);
+    const required = record.sourceKind === "payroll"
+      ? ["grossSalary", "personalSocial", "individualIncomeTax", "netSalary"]
+      : ["personalSocial", "employerSocial"];
+    required.forEach((field) => {
+      if (record[field] == null || record[field] === "" || !Number.isFinite(Number(record[field])) || Number(record[field]) < 0) {
+        add("payroll_amount_missing", `${record.employeeName}：${PAYROLL_SOCIAL_FIELD_DEFINITIONS[field].label}缺失或无效，请补全原表（零值需明确填写）`, record.id);
+      }
+    });
+    if (!imported || imported.sourceKind !== record.sourceKind || !imported.recordIds?.includes(record.id) || !imported.periods?.includes(summary.period)) {
+      add("payroll_import_missing", `${record.employeeName}：导入来源记录缺失或不匹配`, record.id);
+    }
+    if (!record.sourceDocumentId || !record.sourceDocumentHash || record.sourceDocumentVersion == null) {
+      add("payroll_original_missing", `${record.employeeName}：${record.sourceFileName || "导入表"}尚未保存原件，请用原文件重新导入`, record.id);
+      return;
+    }
+    documentIds.add(record.sourceDocumentId);
+    if (imported && ["sourceDocumentId", "sourceDocumentHash", "sourceDocumentVersion"].some((field) => imported[field] !== record[field])) {
+      add("payroll_original_changed", `${record.employeeName}：记录与导入原件依据不一致，请重新导入`, record.id);
+    }
+    const document = (workspace.documents || []).find((item) => item.id === record.sourceDocumentId);
+    if (!document || document.archiveStatus === "deleted" || document.storage?.availableLocally !== true) {
+      add("payroll_original_missing", `${record.employeeName}：导入原件在当前工作台不可用`, record.id);
+    } else if (document.hash !== record.sourceDocumentHash || document.version !== record.sourceDocumentVersion) {
+      add("payroll_original_changed", `${record.employeeName}：导入原件哈希或版本已变化，请重新导入`, record.id);
+    }
+  });
+  const sourceDocumentIds = [...documentIds].sort();
+  const documents = sourceDocumentIds.map((id) => {
+    const document = (workspace.documents || []).find((item) => item.id === id);
+    return { id, hash: document?.hash || null, version: document?.version ?? null };
+  });
+  const fingerprint = JSON.stringify({
+    period: summary.period,
+    fingerprints: summary.fingerprints,
+    personnel: summary.rows.map((row) => ({ key: row.key, id: row.person?.id || null, name: row.person?.name || null, department: row.person?.department || null, status: row.person?.status || null })),
+    imports: imports.map((item) => ({ id: item.id, sourceKind: item.sourceKind, sourceDocumentId: item.sourceDocumentId, sourceDocumentHash: item.sourceDocumentHash, sourceDocumentVersion: item.sourceDocumentVersion, mapping: item.mapping, recordIds: item.recordIds })),
+    documents,
+  });
+  return {
+    period: summary.period, summary, sourceRecordIds, sourceImportIds,
+    sourceIds: [...sourceRecordIds, ...sourceImportIds],
+    documentIds: sourceDocumentIds, sourceDocumentIds, documents, fingerprint,
+    issues, canGenerate: issues.length === 0 && records.length > 0, verified: false,
+  };
+}
+
+export async function verifyPayrollSocialEvidence(workspace, options = {}) {
+  const evidence = buildPayrollSocialEvidence(workspace, options);
+  const issues = [...evidence.issues];
+  for (const source of evidence.documents) {
+    try {
+      const document = (workspace.documents || []).find((item) => item.id === source.id);
+      const record = await getStoredDocumentRecord({ fileVault: options.fileVault, workspaceId: workspace.id, document });
+      if (!record.blob?.arrayBuffer || !source.hash) throw new Error("原件内容缺失");
+      const actualHash = source.hash.startsWith("fnv1a-")
+        ? fallbackHash(await record.blob.arrayBuffer()) : await hashLocalFile(record.blob);
+      if (actualHash !== source.hash) throw new Error("原件内容哈希与导入依据不一致");
+    } catch (error) {
+      const message = `工资社保原件 ${source.id}：${error.message}`;
+      issues.push({ code: "payroll_original_unverified", message, label: message, sourceId: source.id });
+    }
+  }
+  const verified = evidence.canGenerate && issues.length === 0;
+  return { ...evidence, issues, canGenerate: verified, verified };
+}
+
 export function applyPayrollSocialImport(workspace, plan, context = {}) {
   if (!plan?.canApply) {
     const reasons = [...(plan?.mappingErrors || []), ...(plan?.errors || []).map((error) => `第 ${error.rowNumber} 行：${error.message}`)];
@@ -2226,6 +2332,9 @@ export function applyPayrollSocialImport(workspace, plan, context = {}) {
       id: previous?.id || createId("payroll-record"),
       sourceImportId: plan.id,
       sourceFileName: plan.fileName,
+      sourceDocumentId: plan.sourceDocumentId || null,
+      sourceDocumentHash: plan.sourceDocumentHash || null,
+      sourceDocumentVersion: plan.sourceDocumentVersion ?? null,
       importedAt,
       importedBy: actor,
       localOnly: true,
@@ -2237,6 +2346,9 @@ export function applyPayrollSocialImport(workspace, plan, context = {}) {
     id: plan.id,
     sourceKind: plan.sourceKind,
     fileName: plan.fileName,
+    sourceDocumentId: plan.sourceDocumentId || null,
+    sourceDocumentHash: plan.sourceDocumentHash || null,
+    sourceDocumentVersion: plan.sourceDocumentVersion ?? null,
     importedAt,
     importedBy: actor,
     periods: plan.periods,
@@ -2335,6 +2447,9 @@ export function getLocalDocumentUsage(workspace, documentId) {
   (workspace.bankImports || []).forEach((bankImport) => {
     if (bankImport.sourceDocumentId === documentId) add("bank-import", bankImport.id, `银行导入 ${bankImport.fileName || bankImport.id}`);
   });
+  (workspace.payrollImports || []).forEach((payrollImport) => {
+    if (payrollImport.sourceDocumentId === documentId) add("payroll-import", payrollImport.id, `工资社保导入 ${payrollImport.fileName || payrollImport.id}`);
+  });
   (workspace.authorizations || []).forEach((authorization) => {
     if (authorization.proofDocumentId === documentId) add("authorization", authorization.id, `授权记录 ${authorization.label || authorization.id}`);
   });
@@ -2381,6 +2496,7 @@ export async function saveLocalDocument(input) {
   if (!store?.actions || !fileVault) throw new Error("资料录入需要工作台 store 和本地文件保险箱");
   const current = store.getState().workspaces.find((workspace) => workspace.id === workspaceId);
   if (!current) throw new Error("找不到资料所属工作台");
+  if (input.isCurrent && !input.isCurrent()) throw new Error("资料导入任务已变化，请重新选择文件");
   const actor = input.metadata?.actor
     || current.users?.find((user) => user.id === store.getState().activeUserId && user.status === "active")?.name
     || "本地用户";
@@ -2400,6 +2516,10 @@ export async function saveLocalDocument(input) {
     createdAt: metadata.createdAt,
   });
   try {
+    if ((input.isCurrent && !input.isCurrent())
+      || store.getState().workspaces.find((workspace) => workspace.id === workspaceId) !== current) {
+      throw new Error("资料保存期间工作台数据或导入任务已变化，请重新选择文件");
+    }
     let next = {
       ...current,
       documents: [...(current.documents || []), metadata],
@@ -2855,6 +2975,8 @@ const VOUCHER_SOURCE_COLLECTIONS = [
   "invoices",
   "approvals",
   "personnelRecords",
+  "payrollRecords",
+  "payrollImports",
 ];
 
 const VOUCHER_SOURCE_COLLECTION_LABELS = {
@@ -2865,6 +2987,8 @@ const VOUCHER_SOURCE_COLLECTION_LABELS = {
   invoices: "发票",
   approvals: "审批单",
   personnelRecords: "人员资料",
+  payrollRecords: "工资社保记录",
+  payrollImports: "工资社保导入",
 };
 
 function addSourceIds(target, values) {
@@ -2906,6 +3030,7 @@ function voucherSourceGraph(workspace, voucher) {
           item.originalRechargeId,
           item.commissionEventId,
           item.commissionSourceIds,
+          item.sourceImportId,
         ]);
       });
     });
@@ -2936,7 +3061,7 @@ function voucherAttachmentRelations(workspace, voucher) {
   const graph = voucherSourceGraph(workspace, voucher);
   const relationObjectIds = new Set([voucher.id, ...graph.sourceIds, ...graph.sourceObjects.map(({ item }) => item.id)]);
   const documentIds = new Set([...(voucher.evidenceIds || []), ...(voucher.documentIds || [])]);
-  graph.sourceObjects.forEach(({ item }) => addSourceIds(documentIds, [item.evidenceIds, item.documentIds]));
+  graph.sourceObjects.forEach(({ item }) => addSourceIds(documentIds, [item.evidenceIds, item.documentIds, item.sourceDocumentId]));
 
   const sourceImportIds = new Set(graph.sourceObjects
     .filter(({ collection }) => collection === "transactions")

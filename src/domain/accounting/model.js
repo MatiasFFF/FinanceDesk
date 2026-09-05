@@ -65,6 +65,7 @@ export const ACCOUNT_CATALOG = Object.freeze({
   expenseFee: { label: "财务费用 · 手续费", category: "expense", normalSide: "debit" },
   expenseCommission: { label: "销售费用 · 业务提成", category: "expense", normalSide: "debit" },
   expensePayroll: { label: "管理费用 · 工资", category: "expense", normalSide: "debit" },
+  expenseSocialSecurity: { label: "管理费用 · 企业社保", category: "expense", normalSide: "debit" },
   expenseOther: { label: "管理费用 · 其他", category: "expense", normalSide: "debit" },
 });
 

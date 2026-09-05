@@ -24,8 +24,11 @@ import {
   applyPayrollSocialImport,
   buildPayrollSocialSummary,
   buildStructuredInvoiceVatSummary,
+  createDocumentMetadata,
   preparePayrollSocialImport,
 } from "../src/features/intake/documentIntake.js";
+import { createMemoryFileVault } from "../src/features/intake/browserFileVault.js";
+import { postVoucherWithEvidence } from "../src/domain/accounting/vouchers.js";
 import { buildBankMonthlyReconciliation, prepareBankImport, reconcileBankAccountPeriod } from "../src/features/intake/bankStatementImport.js";
 import { billSettlement, buildAdvanceBalances, buildAgeingSchedule } from "../src/features/reconciliation/reconciliationEngine.js";
 import { buildMemberLedger, buildMemberServiceReconciliation } from "../src/features/members/memberLedger.js";
@@ -40,6 +43,8 @@ import {
   buildFinalConfirmationSnapshot,
   buildVatReconciliationSummary,
   buildReportSnapshot,
+  buildPayrollAccountingSummary,
+  createPayrollAccrualDraft,
   confirmPayrollSocialData,
   enterNextPeriod,
   ensureWorkspace,
@@ -144,6 +149,46 @@ function withPayrollSocialData(workspace) {
     importedAt: "2026-09-04T08:00:20.000Z",
   });
   return applyPayrollSocialImport(next, socialPlan, { actor: "测试会计", at: "2026-09-04T08:00:20.000Z" });
+}
+
+async function importPayrollOriginal(workspace, fileVault, { id, sourceKind, table }) {
+  const fileName = `${id}.csv`;
+  const file = Object.assign(new Blob([table.map((row) => row.join(",")).join("\n")], { type: "text/csv" }), { name: fileName });
+  const document = await createDocumentMetadata(file, { id: `document-${id}`, period: workspace.currentPeriod });
+  await fileVault.put({ id: document.id, workspaceId: workspace.id, hash: document.hash, blob: file });
+  const next = { ...workspace, documents: [...workspace.documents, document] };
+  const plan = preparePayrollSocialImport(next, {
+    id, sourceKind, fileName, table,
+    mapping: { employee: 0, period: 1, grossSalary: 2, personalSocial: 3, employerSocial: 4, individualIncomeTax: 5, netSalary: 6 },
+    defaultPeriod: workspace.currentPeriod,
+    sourceDocumentId: document.id, sourceDocumentHash: document.hash, sourceDocumentVersion: document.version,
+  });
+  assert.equal(plan.canApply, true);
+  return applyPayrollSocialImport(next, plan, { actor: "测试会计", at: "2026-09-04T08:00:25.000Z" });
+}
+
+// Confirmation/closing fixtures must use the same source and posting path as the UI.
+// The synchronous comparison fixture above intentionally remains independent of posting.
+async function withPostedPayrollSocialData(workspace, fileVault = createMemoryFileVault()) {
+  let next = withPayrollSocialData(workspace);
+  for (const sourceKind of ["payroll", "socialSecurity"]) {
+    const rows = next.payrollRecords.filter((record) => record.sourceKind === sourceKind && record.period === next.currentPeriod);
+    next = await importPayrollOriginal(next, fileVault, {
+      id: `original-${sourceKind}`, sourceKind,
+      table: [["员工", "所属期", "应发工资", "个人社保", "企业社保", "个税", "实发工资"],
+        ...rows.map((record) => [record.employeeName, record.period, record.grossSalary, record.personalSocial, record.employerSocial, record.individualIncomeTax ?? "", record.netSalary ?? ""])],
+    });
+  }
+  const before = buildFinancialStatements(next);
+  next = await createPayrollAccrualDraft(next, {}, { actor: "测试会计", at: "2026-09-04T08:00:26.000Z", fileVault });
+  const voucherId = buildPayrollAccountingSummary(next).draftVoucherId;
+  assert.equal(next.vouchers.find((voucher) => voucher.id === voucherId).status, "draft");
+  next = await postVoucherWithEvidence(next, { voucherId, reviewNote: "逐人核对工资社保两表、原件与应付计提分录" }, { actor: "测试会计", at: "2026-09-04T08:00:27.000Z", fileVault });
+  const summary = buildPayrollAccountingSummary(next);
+  assert.equal(summary.postedAndMatched, true, summary.message);
+  assert.deepEqual(summary.rows.map((row) => row.posted), [10000, 1600, 8950, 2400, 250]);
+  assert.equal(buildFinancialStatements(next).incomeStatement.expenses.value - before.incomeStatement.expenses.value, 11600);
+  return next;
 }
 
 function explainVatDifferences(workspace) {
@@ -565,7 +610,7 @@ test("initial and final confirmations retain signatures, reject stale views and 
 });
 
 test("structured invoice VAT, first confirmation, final confirmation and actual filing ZIP share one frozen snapshot", async (t) => {
-  let workspace = withPayrollSocialData(closeableWorkspace());
+  let workspace = await withPostedPayrollSocialData(closeableWorkspace());
   const period = workspace.currentPeriod;
   const invoice = (id, taxDirection, amount, taxAmount) => ({
     id, name: `${id}.pdf`, category: "发票", period, hash: `${id}-original-hash`, relatedObjectIds: ["txn-split"],
@@ -952,8 +997,9 @@ test("an unexplained VAT difference blocks the final local filing package", asyn
   await assert.rejects(() => exportLocalFilingPackage(workspace), /解释增值税差异/);
 });
 
-test("payroll and social records enter the tax workpaper, compare by employee, and require separate current confirmations", () => {
-  let workspace = withPayrollSocialData(closeableWorkspace());
+test("payroll and social records enter the tax workpaper, compare by employee, and require separate current confirmations", async () => {
+  const fileVault = createMemoryFileVault();
+  let workspace = await withPostedPayrollSocialData(closeableWorkspace(), fileVault);
   const summary = buildPayrollSocialSummary(workspace);
   assert.equal(summary.counts.payroll, 1);
   assert.equal(summary.counts.socialSecurity, 1);
@@ -985,15 +1031,11 @@ test("payroll and social records enter the tax workpaper, compare by employee, a
   assert.equal(workflowChecks(workspace).checks.find((check) => check.id === "payroll").ok, true);
   assert.equal(workflowChecks(workspace).checks.find((check) => check.id === "socialSecurity").ok, true);
 
-  const changedPayrollPlan = preparePayrollSocialImport(workspace, {
+  workspace = await importPayrollOriginal(workspace, fileVault, {
     id: "payroll-import-changed",
-    fileName: "工资表-更正.csv",
     sourceKind: "payroll",
     table: [["员工", "所属期", "应发工资", "个人社保", "企业社保", "个税", "实发工资"], ["陈教练", workspace.currentPeriod, 10100, 800, 1600, 250, 9050]],
-    mapping: { employee: 0, period: 1, grossSalary: 2, personalSocial: 3, employerSocial: 4, individualIncomeTax: 5, netSalary: 6 },
-    defaultPeriod: workspace.currentPeriod,
   });
-  workspace = applyPayrollSocialImport(workspace, changedPayrollPlan, { actor: "测试会计", at: "2026-09-04T08:32:00.000Z" });
   assert.equal(workspace.payrollRecords.filter((record) => record.sourceKind === "payroll").length, 1);
   assert.equal(workspace.tax.payrollConfirmedAt, null);
   assert.equal(workspace.tax.socialSecurityConfirmedAt, null);
@@ -1173,8 +1215,8 @@ test("a failed bank reconciliation blocks report freezing and confirmation", () 
   assert.equal(flow.checks.find((item) => item.id === "bank").label, "核对银行流水");
 });
 
-test("freezing V2 clears effective confirmations and delivery artifacts while preserving V1 history", () => {
-  let v1 = freezeReportVersion(explainVatDifferences(withPayrollSocialData(closeableWorkspace())), "测试会计");
+test("freezing V2 clears effective confirmations and delivery artifacts while preserving V1 history", async () => {
+  let v1 = freezeReportVersion(explainVatDifferences(await withPostedPayrollSocialData(closeableWorkspace())), "测试会计");
   v1 = approveInitialConfirmation(v1);
   v1 = prepareFilingDraft(v1, "测试会计");
   v1 = recordFinalConfirmation(v1, finalConfirmationInput(v1), { actor: "测试会计" });
@@ -1199,8 +1241,8 @@ test("freezing V2 clears effective confirmations and delivery artifacts while pr
   assert.throws(() => prepareFilingDraft(v2, "测试会计"), /完成首次确认/);
 });
 
-test("the full frozen-version confirmation, package, receipt, archive and next-period chain remains bound", () => {
-  let workspace = explainVatDifferences(withPayrollSocialData(closeableWorkspace()));
+test("the full frozen-version confirmation, package, receipt, archive and next-period chain remains bound", async () => {
+  let workspace = explainVatDifferences(await withPostedPayrollSocialData(closeableWorkspace()));
   workspace = freezeAccountingReportVersion(
     workspace,
     { period: workspace.currentPeriod, label: "月度财务报表" },
