@@ -3229,6 +3229,41 @@ summary.forecast-week-row {
   grid-column: 1 / -1;
 }
 
+.tax-rate-settings {
+  grid-column: 1 / -1;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--paper-strong);
+}
+
+.tax-rate-settings-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+  color: var(--espresso);
+}
+
+.tax-rate-settings-heading strong {
+  font-size: 11px;
+}
+
+.tax-rate-settings-heading small {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.45;
+  text-align: right;
+}
+
+.tax-rate-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
 .tax-input-grid input,
 .tax-input-grid textarea,
 .form-grid input,
@@ -4553,6 +4588,23 @@ summary.forecast-week-row {
 
   .tax-input-grid label.full {
     grid-column: auto;
+  }
+
+  .tax-rate-settings {
+    grid-column: auto;
+  }
+
+  .tax-rate-settings-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .tax-rate-settings-heading small {
+    text-align: left;
+  }
+
+  .tax-rate-grid {
+    grid-template-columns: 1fr;
   }
 
   .confirmation-note,

@@ -73,7 +73,7 @@ export const MANAGEMENT_REPORT_DISPLAY_ITEMS = Object.freeze([
   { id: "ownerPrepayment", label: "供应商预付" },
   { id: "ownerRefund", label: "本月退款" },
   { id: "ownerCommission", label: "销售费用 · 业务提成", accountId: "expenseCommission" },
-  { id: "ownerTax", label: "预计税款（演示估算）" },
+  { id: "ownerTax", label: "预计税款（本地估算）" },
   { id: "ownerGap", label: "未来现金缺口" },
 ].map((item) => Object.freeze(item)));
 
@@ -415,7 +415,13 @@ export function normalizeWorkspace(input, options = {}) {
     confirmations: uniqueById((workspace.confirmations || []).map((item) => timestamped(item, timestamp))),
     reportVersions: uniqueById((workspace.reportVersions || []).map((item) => timestamped(item, timestamp))),
     auditLog: uniqueById((workspace.auditLog || []).map((item) => timestamped(item, timestamp))),
-    tax: { period: currentPeriod, ...(workspace.tax || {}) },
+    tax: {
+      period: currentPeriod,
+      vatRate: 0.03,
+      surtaxRate: 0.12,
+      incomeTaxRate: 0.05,
+      ...(workspace.tax || {}),
+    },
     delivery: {
       ...deliverySource,
       reportVersions: uniqueById((deliverySource.reportVersions || []).map((item) => timestamped(item, timestamp))),

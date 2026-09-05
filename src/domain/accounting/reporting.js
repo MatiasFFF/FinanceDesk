@@ -1194,17 +1194,28 @@ export function recordFrozenReportExcelExport(workspace, metadata, context = {})
 
 export function buildTaxWorkpaper(workspace, { period = workspace.currentPeriod } = {}) {
   const statements = buildFinancialStatements(workspace, { period });
-  const rate = Number(workspace.tax?.vatRate ?? 0.03);
+  const vatRate = Number(workspace.tax?.vatRate ?? 0.03);
+  const surtaxRate = Number(workspace.tax?.surtaxRate ?? 0.12);
+  const incomeTaxRate = Number(workspace.tax?.incomeTaxRate ?? 0.05);
   const taxableRevenue = statements.incomeStatement.netRevenue;
   const adjustments = valueWithSources(Number(workspace.tax?.adjustments || 0), workspace.tax?.adjustmentSourceIds || []);
   const taxableBase = valueWithSources(
     Math.max(0, roundMoney(taxableRevenue.value + adjustments.value)),
     collectSourceIds(taxableRevenue.sourceIds, adjustments.sourceIds),
   );
-  const outputVat = valueWithSources(roundMoney(taxableBase.value * rate), taxableBase.sourceIds);
+  const outputVat = valueWithSources(roundMoney(taxableBase.value * vatRate), taxableBase.sourceIds);
   const taxInputAccounts = statements.ledger.accounts.filter((item) => String(item.accountId).startsWith("taxInput"));
   const inputVat = valueWithSources(sumMoney(taxInputAccounts.map((item) => item.debit - item.credit)), taxInputAccounts.map((item) => item.sourceIds));
   const vatPayable = valueWithSources(Math.max(0, roundMoney(outputVat.value - inputVat.value)), collectSourceIds(outputVat.sourceIds, inputVat.sourceIds));
+  const estimatedSurtax = valueWithSources(roundMoney(vatPayable.value * surtaxRate), vatPayable.sourceIds);
+  const estimatedIncomeTax = valueWithSources(
+    roundMoney(Math.max(0, statements.incomeStatement.profit.value) * incomeTaxRate),
+    statements.incomeStatement.profit.sourceIds,
+  );
+  const estimatedTax = valueWithSources(
+    roundMoney(vatPayable.value + estimatedSurtax.value + estimatedIncomeTax.value),
+    collectSourceIds(vatPayable.sourceIds, estimatedSurtax.sourceIds, estimatedIncomeTax.sourceIds),
+  );
   const payroll = valueWithSources(workspace.tax?.payroll || 0, workspace.tax?.payrollSourceIds || workspace.tax?.sourceIds || []);
   const socialSecurity = valueWithSources(workspace.tax?.socialSecurity || 0, workspace.tax?.socialSecuritySourceIds || workspace.tax?.sourceIds || []);
   const unresolved = (workspace.exceptionTasks || []).filter((task) => task.status !== "resolved");
@@ -1218,10 +1229,15 @@ export function buildTaxWorkpaper(workspace, { period = workspace.currentPeriod 
     taxableRevenue,
     adjustments,
     taxableBase,
-    vatRate: rate,
+    vatRate,
+    surtaxRate,
+    incomeTaxRate,
     outputVat,
     inputVat,
     vatPayable,
+    estimatedSurtax,
+    estimatedIncomeTax,
+    estimatedTax,
     payroll,
     socialSecurity,
     financialStatementSourceIds: collectSourceIds(

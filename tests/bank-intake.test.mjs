@@ -133,6 +133,23 @@ test("CSV 解析支持引号、逗号与自动字段映射", () => {
   assert.deepEqual(inspection.missingFields, []);
 });
 
+test("下载的银行流水 CSV 模板表头可直接自动映射", () => {
+  const csv = "\ufeff日期,对方,摘要,收入,支出,流水号,余额\n2026-08-01,示例客户,服务款,100,,TEMPLATE-001,1100";
+  const { table } = parseDelimitedText(csv);
+  const inspection = inspectBankTable(table);
+
+  assert.deepEqual(inspection.mapping, {
+    date: 0,
+    credit: 3,
+    debit: 4,
+    counterparty: 1,
+    summary: 2,
+    serial: 5,
+    balance: 6,
+  });
+  assert.deepEqual(inspection.missingFields, []);
+});
+
 test("字段映射同时支持常见英文银行表头", () => {
   const mapping = detectBankFieldMapping(["Transaction Date", "Counterparty", "Description", "Amount", "Reference", "Balance"]);
   assert.deepEqual(mapping, { date: 0, amount: 3, counterparty: 1, summary: 2, serial: 4, balance: 5 });

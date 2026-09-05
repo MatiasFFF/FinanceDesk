@@ -262,6 +262,9 @@ export function ensureWorkspace(workspace) {
     auditLog: safeArray(workspace.auditLog),
     tax: {
       period,
+      vatRate: 0.03,
+      surtaxRate: 0.12,
+      incomeTaxRate: 0.05,
       adjustments: 0,
       payroll: 0,
       socialSecurity: 0,
@@ -724,8 +727,14 @@ export function buildReportSnapshot(workspace) {
   const deductibleInputVat = usesStructuredInvoiceVat ? invoiceVatSummary.deductibleInputVat : engineTax.inputVat.value;
   const nonDeductibleInputVat = usesStructuredInvoiceVat ? invoiceVatSummary.nonDeductibleInputVat : 0;
   const estimatedVat = usesStructuredInvoiceVat ? invoiceVatSummary.vatPayable : engineTax.vatPayable.value;
-  const estimatedSurtax = roundMoney(estimatedVat * 0.12);
-  const estimatedIncomeTax = roundMoney(Math.max(0, statements.profit) * 0.05);
+  const vatRate = Number(workspace.tax?.vatRate ?? 0.03);
+  const surtaxRate = Number(workspace.tax?.surtaxRate ?? 0.12);
+  const incomeTaxRate = Number(workspace.tax?.incomeTaxRate ?? 0.05);
+  const vatRatePercent = `${(vatRate * 100).toFixed(2)}%`;
+  const surtaxRatePercent = `${(surtaxRate * 100).toFixed(2)}%`;
+  const incomeTaxRatePercent = `${(incomeTaxRate * 100).toFixed(2)}%`;
+  const estimatedSurtax = roundMoney(estimatedVat * surtaxRate);
+  const estimatedIncomeTax = roundMoney(Math.max(0, statements.profit) * incomeTaxRate);
   const estimatedTax = roundMoney(estimatedVat + estimatedSurtax + estimatedIncomeTax);
   const cashBalance = statements.cashFlow.closingCash.value;
   const assetDetails = ledgerDetails(workspace, engine, (item) => item.account.category === "asset", (amount) => amount);
@@ -799,15 +808,15 @@ export function buildReportSnapshot(workspace) {
   const taxEstimateDetails = [
     ...(usesStructuredInvoiceVat
       ? structuredVatPayableDetails
-      : [formulaDetail("estimated-vat", "增值税估算", estimatedVat, `销项估算减进项税额，税率 ${(Number(workspace.tax.vatRate ?? 0.03) * 100).toFixed(2)}%`)]),
-    formulaDetail("estimated-surtax", "附加税费估算", estimatedSurtax, "按增值税估算额的 12% 演示计算"),
-    formulaDetail("estimated-income-tax", "所得税估算", estimatedIncomeTax, "按正数会计利润的 5% 演示计算"),
+      : [formulaDetail("estimated-vat", "增值税估算", estimatedVat, `销项估算减进项税额，税率 ${vatRatePercent}`)]),
+    formulaDetail("estimated-surtax", "附加税费估算", estimatedSurtax, `按增值税估算额的 ${surtaxRatePercent} 本地估算`),
+    formulaDetail("estimated-income-tax", "所得税估算", estimatedIncomeTax, `按正数会计利润的 ${incomeTaxRatePercent} 本地估算`),
   ];
   const cashGapValue = Math.abs(Math.min(0, managementById.cashGap?.value ?? (cashBalance - payable - estimatedTax)));
   const cashGapDetails = [
     formulaDetail("gap-cash", "可用现金余额", cashBalance, "来自已入账凭证与期初结转"),
     formulaDetail("gap-payable", "减：供应商应付", -payable, "来自未结清应付账单"),
-    formulaDetail("gap-tax", "减：预计税费", -estimatedTax, "本地演示估算，不代表正式申报额"),
+    formulaDetail("gap-tax", "减：预计税费", -estimatedTax, "本地估算，不代表正式申报额"),
   ];
 
   const report = {
@@ -895,7 +904,7 @@ export function buildReportSnapshot(workspace) {
           makeTraceableRow("ownerPrepayment", "供应商预付", prepayment, prepaymentDetails, "预付款项科目期末借方余额"),
           makeTraceableRow("ownerRefund", "本月退款", engine.incomeStatement.salesReturns.value, refundDetails, `${salesReturnsLabel}本期借方净发生额`),
           makeTraceableRow("ownerCommission", commissionLabel, detailTotal(commissionDetails), commissionDetails, `${commissionLabel}本期借方净发生额`),
-          makeTraceableRow("ownerTax", "预计税款（演示估算）", estimatedTax, taxEstimateDetails, "增值税估算 + 附加税费估算 + 所得税估算"),
+          makeTraceableRow("ownerTax", "预计税款（本地估算）", estimatedTax, taxEstimateDetails, "增值税估算 + 附加税费估算 + 所得税估算"),
           makeTraceableRow("ownerGap", "未来现金缺口", cashGapValue, cashGapDetails, "max(0，应付与预计税费 − 可用现金)"),
         ], workspace.managementReport),
       },
@@ -907,7 +916,7 @@ export function buildReportSnapshot(workspace) {
       payrollSocialSummary,
       disclaimer: usesStructuredInvoiceVat
         ? "增值税数据来自本地人工录入并关联的结构化发票；查验状态不代表已联网查验，附加税费与所得税仍为本地估算。"
-        : "本期没有已人工分类且关联业务的结构化发票，增值税仍采用本地演示估算；未连接税务平台。",
+        : "本期没有已人工分类且关联业务的结构化发票，增值税仍采用本地估算；未连接税务平台。",
       rows: [
         makeTraceableRow("taxRevenue", "账面营业收入", statements.revenue, revenueDetails, "收入类发生额 − 销售退回与折让"),
         makeTraceableRow("taxAdjustments", "增值税计税基础调整", engineTax.adjustments.value, [], "客户或财务人员在本地底稿中录入"),
@@ -926,8 +935,8 @@ export function buildReportSnapshot(workspace) {
           "vat",
           usesStructuredInvoiceVat ? "销项税额" : "销项税额估算",
           estimatedOutputVat,
-          usesStructuredInvoiceVat ? outputInvoiceVatDetails : [formulaDetail("output-vat", "销项税额估算", estimatedOutputVat, "计税基础 × 本地配置税率")],
-          usesStructuredInvoiceVat ? "有效销项发票税额汇总；已开红字按负数，作废不计入" : "计税基础 × 本地配置税率",
+          usesStructuredInvoiceVat ? outputInvoiceVatDetails : [formulaDetail("output-vat", "销项税额估算", estimatedOutputVat, `计税基础 × 本地配置税率 ${vatRatePercent}`)],
+          usesStructuredInvoiceVat ? "有效销项发票税额汇总；已开红字按负数，作废不计入" : `计税基础 × 本地配置税率 ${vatRatePercent}`,
         ),
         makeTraceableRow(
           "inputVat",
@@ -961,8 +970,8 @@ export function buildReportSnapshot(workspace) {
           usesStructuredInvoiceVat ? structuredVatPayableDetails : taxEstimateDetails.slice(0, 1),
           usesStructuredInvoiceVat ? "max(0，销项税额 − 可抵扣进项税额)" : "max(0，销项税额估算 − 进项税额)",
         ),
-        makeTraceableRow("surtax", "附加税费估算", estimatedSurtax, taxEstimateDetails.slice(1, 2), "增值税估算额 × 12%"),
-        makeTraceableRow("incomeTax", "所得税估算", estimatedIncomeTax, taxEstimateDetails.slice(2, 3), "max(0，本月利润) × 5%"),
+        makeTraceableRow("surtax", "附加税费估算", estimatedSurtax, taxEstimateDetails.slice(1, 2), `增值税估算额 × ${surtaxRatePercent}`),
+        makeTraceableRow("incomeTax", "所得税估算", estimatedIncomeTax, taxEstimateDetails.slice(2, 3), `max(0，本月利润) × ${incomeTaxRatePercent}`),
         makeTraceableRow("payroll", "应发工资", payrollAmount, grossSalaryDetails, payrollSocialSummary.payrollRecords.length ? "当前期间工资表逐人应发工资合计，需客户单独确认" : "财务人员在本地底稿中单独录入并由客户确认"),
         makeTraceableRow("personalSocialSecurity", "个人社保", payrollSocialSummary.totals.socialSecurity.personalSocial, personalSocialDetails, "当前期间社保表逐人个人承担社保合计"),
         makeTraceableRow("employerSocialSecurity", "企业社保", payrollSocialSummary.totals.socialSecurity.employerSocial, employerSocialDetails, "当前期间社保表逐人企业承担社保合计"),
@@ -1134,6 +1143,8 @@ export function workflowSourceFingerprint(workspace) {
       payroll: Number(tax.payroll || 0),
       socialSecurity: Number(tax.socialSecurity || 0),
       vatRate: Number(tax.vatRate ?? 0.03),
+      surtaxRate: Number(tax.surtaxRate ?? 0.12),
+      incomeTaxRate: Number(tax.incomeTaxRate ?? 0.05),
       note: tax.note || "",
       sourceIds: tax.sourceIds || [],
       payrollSourceIds: tax.payrollSourceIds || [],
@@ -1622,6 +1633,8 @@ export function resetTaxForPeriod(tax = {}, period) {
   return {
     period,
     vatRate: Number(tax.vatRate ?? 0.03),
+    surtaxRate: Number(tax.surtaxRate ?? 0.12),
+    incomeTaxRate: Number(tax.incomeTaxRate ?? 0.05),
     adjustments: 0,
     adjustmentSourceIds: [],
     payroll: 0,

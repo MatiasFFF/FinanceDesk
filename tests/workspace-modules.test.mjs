@@ -30,6 +30,10 @@ test("blank workspaces start neutral while the fitness example keeps all optiona
   assert.equal(blank.modules.members, false);
   assert.equal(blank.modules.reconcile, true);
   assert.equal(blank.modules.tax, true);
+  assert.deepEqual(
+    { vatRate: blank.tax.vatRate, surtaxRate: blank.tax.surtaxRate, incomeTaxRate: blank.tax.incomeTaxRate },
+    { vatRate: 0.03, surtaxRate: 0.12, incomeTaxRate: 0.05 },
+  );
   assert.ok(["overview", "reports", "archive", "setup"].every((id) => blank.modules[id]));
   assert.equal(blank.chartOfAccounts.find((account) => account.id === "revenuePrivate").label, "主营业务收入 · 服务收入");
   assert.equal(blank.chartOfAccounts.find((account) => account.id === "expenseCommission").label, "销售费用 · 业务提成");

@@ -43,6 +43,7 @@ import {
   markPackageExported,
   prepareFilingDraft,
   recordVatReconciliation,
+  resetTaxForPeriod,
   workflowChecks,
   workflowSourceFingerprint,
 } from "../src/productWorkflow.js";
@@ -205,6 +206,39 @@ test("the visible report snapshot uses the accounting engine for statements and 
   );
   assert.equal(Object.values(snapshot.summary.engineChecks).every((check) => typeof check.passed === "boolean"), true);
   assert.equal(snapshot.sections.cashflow.rows.find((row) => row.id === "netCash").value, statements.cashFlow.netChange.value);
+});
+
+test("workspace tax rates drive both accounting workpaper and visible local estimates", () => {
+  const workspace = ensureWorkspace(createAccountingFixture());
+  workspace.tax = {
+    ...workspace.tax,
+    vatRate: 0.06,
+    surtaxRate: 0.08,
+    incomeTaxRate: 0.1,
+  };
+  const tax = buildTaxWorkpaper(workspace, { period: workspace.currentPeriod });
+  const snapshot = buildReportSnapshot(workspace);
+  const row = (id) => snapshot.taxWorkpaper.rows.find((item) => item.id === id);
+
+  assert.equal(tax.vatRate, 0.06);
+  assert.equal(tax.surtaxRate, 0.08);
+  assert.equal(tax.incomeTaxRate, 0.1);
+  assert.equal(tax.estimatedSurtax.value, Number((tax.vatPayable.value * 0.08).toFixed(2)));
+  assert.equal(tax.estimatedIncomeTax.value, Number((Math.max(0, snapshot.summary.profit) * 0.1).toFixed(2)));
+  assert.equal(row("surtax").value, Number((row("vatPayable").value * 0.08).toFixed(2)));
+  assert.equal(row("incomeTax").value, Number((Math.max(0, snapshot.summary.profit) * 0.1).toFixed(2)));
+  assert.match(row("surtax").formula, /8\.00%/);
+  assert.match(row("incomeTax").formula, /10\.00%/);
+
+  const nextTax = resetTaxForPeriod(workspace.tax, "2026-09");
+  assert.deepEqual(
+    { vatRate: nextTax.vatRate, surtaxRate: nextTax.surtaxRate, incomeTaxRate: nextTax.incomeTaxRate },
+    { vatRate: 0.06, surtaxRate: 0.08, incomeTaxRate: 0.1 },
+  );
+  assert.notEqual(
+    workflowSourceFingerprint(workspace),
+    workflowSourceFingerprint({ ...workspace, tax: { ...workspace.tax, incomeTaxRate: 0.12 } }),
+  );
 });
 
 test("structured invoices drive traceable output VAT, deductible input VAT, and non-deductible input VAT", () => {
