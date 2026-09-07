@@ -9,7 +9,6 @@ import {
   recordLocalAuthorization,
   removeWorkspaceEntity,
   renameWorkspace,
-  setWorkspacePeriod,
   setWorkspaceStageStatus,
   setWorkspaceEntityStatus,
   switchWorkspace,
@@ -21,6 +20,8 @@ import {
 } from "../domain/foundation.js";
 import { createLocalFoundationRepository, exportBackupJson, importBackupJson } from "../storage/localFoundationRepository.js";
 import { applyBankImport } from "../features/intake/bankStatementImport.js";
+import { enterAccountingPeriod } from "../productWorkflow.js";
+import { activateWorkspacePeriod } from "../domain/periods.js";
 
 export function createFinanceDeskStore(options = {}) {
   const repository = options.repository || createLocalFoundationRepository(options.repositoryOptions);
@@ -137,9 +138,15 @@ export function createFinanceDeskStore(options = {}) {
       return commit(setWorkspaceStageStatus(state, workspaceId, stage, status, withActor(workspaceId, actionOptions)));
     },
     setPeriod(workspaceId, period, actionOptions) {
-      assertWorkspaceAccess(workspaceId, "data.write");
-      assertActivePeriodWritable(workspaceId, actionOptions);
-      return commit(setWorkspacePeriod(state, workspaceId, period, withActor(workspaceId, actionOptions)));
+      assertWorkspaceAccess(workspaceId, "data.read");
+      let writable = true;
+      try { assertWorkspaceAccess(workspaceId, "data.write"); } catch { writable = false; }
+      const current = getWorkspace(state, workspaceId);
+      if (!writable && !(current.periods || []).includes(period) && !current.delivery?.archives?.some((item) => item.period === period)) throw new Error("当前身份只能查看已有账期");
+      const resolved = withActor(workspaceId, actionOptions);
+      return commit(updateWorkspace(state, workspaceId, (workspace) => writable ? enterAccountingPeriod(workspace, period, resolved.actor) : activateWorkspacePeriod(workspace, period), {
+        actor: resolved.actor, action: "切换账期", detail: `当前账期设为 ${period}`,
+      }, resolved));
     },
     upsertEntity(workspaceId, collection, values, actionOptions) {
       assertWorkspaceAccess(workspaceId, permissionForCollection(collection));
@@ -175,7 +182,9 @@ export function createFinanceDeskStore(options = {}) {
     applyBankImport(workspaceId, plan, actionOptions) {
       assertWorkspaceAccess(workspaceId, "data.write");
       assertActivePeriodWritable(workspaceId, actionOptions);
-      return commit(applyBankImport(state, workspaceId, plan, withActor(workspaceId, actionOptions)));
+      const resolved = withActor(workspaceId, actionOptions);
+      const imported = applyBankImport(state, workspaceId, plan, resolved);
+      return commit(updateWorkspace(imported, workspaceId, (workspace) => enterAccountingPeriod(workspace, plan.period, resolved.actor), null, resolved));
     },
     exportBackup(exportOptions) {
       assertWorkspaceAccess(state.activeWorkspaceId, "data.read");

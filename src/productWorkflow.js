@@ -18,6 +18,7 @@ import { buildPayrollSourceState, payrollSourceMetric } from "./domain/accountin
 export { buildPayrollAccountingSummary } from "./domain/accounting/payrollAccounting.js";
 import { buildBankAccountReconciliationSummary, buildBankMonthlyReconciliation } from "./features/intake/bankStatementImport.js";
 import { buildInventorySummary } from "./features/inventory/inventoryLedger.js";
+import { activateWorkspacePeriod, adjacentPeriod, isPeriodArchived, openingBalancesReady, periodSourceRecords, saveActivePeriodState } from "./domain/periods.js";
 import {
   FITNESS_WORKSPACE_MODULE_DEFAULTS,
   WORKSPACE_MODULE_DEFAULTS,
@@ -769,6 +770,8 @@ export function recordVatReconciliation(workspace, input, context = {}) {
 }
 
 export function buildReportSnapshot(workspace) {
+  const archivedSnapshot = workspace.delivery?.archives?.find((item) => item.period === workspace.currentPeriod)?.reportSnapshot;
+  if (archivedSnapshot) return archivedSnapshot;
   const memberBusinessEnabled = workspaceModuleEnabled(workspace, "members");
   const inventoryEnabled = workspaceModuleEnabled(workspace, "inventory");
   const statements = calculatePeriodLedger(workspace);
@@ -1104,6 +1107,8 @@ export function buildReportSnapshot(workspace) {
 
 export function freezeReportVersion(workspace, actor = "本地用户") {
   const current = ensureWorkspace(workspace);
+  assertAccountingPeriodWritable(current);
+  if (!openingBalancesReady(current)) throw new AccountingRuleError("OPENING_BALANCES_PENDING", "请先在报表中心确认本期期初余额或完成上期结转");
   const payrollAccounting = buildPayrollAccountingSummary(current);
   if (payrollAccounting.applicable && !payrollAccounting.postedAndMatched) throw new AccountingRuleError("PAYROLL_CLOSE_BLOCKED", payrollAccounting.message, payrollAccounting);
   const payrollSocialBefore = buildPayrollSocialSummary(current, { period: current.currentPeriod });
@@ -1201,6 +1206,8 @@ export function reportVersionDiff(currentVersion, previousVersion) {
 }
 
 export function getLatestReportVersion(workspace) {
+  const archived = workspace.delivery.archives?.find((item) => item.period === workspace.currentPeriod);
+  if (archived) return workspace.delivery.reportVersions.find((item) => item.id === archived.reportVersionId) || null;
   return workspace.delivery.reportVersions.find((item) => item.period === workspace.currentPeriod) || null;
 }
 
@@ -1242,20 +1249,29 @@ function workflowSourceMatches(fingerprint, workspace) {
     if (Array.isArray(stored.sources?.vouchers)) {
       stored.sources.vouchers = stored.sources.vouchers.map(financialVoucherSource);
     }
+    if (!stored.scopeVersion) {
+      return workflowSourceFingerprint({ ...workspace, ...stored.sources, currentPeriod: stored.currentPeriod, tax: stored.tax,
+        managementReport: { displayItems: stored.managementReport || [] } }) === workflowSourceFingerprint(workspace);
+    }
     return JSON.stringify(stored) === workflowSourceFingerprint(workspace);
   } catch {
     return false;
   }
 }
 
-function workflowSourceValue(workspace, key) {
+function workflowSourceValue(workspace, key, records) {
+  if (["accounts", "bankAccounts"].includes(key)) return (workspace[key] || []).map((account) => {
+    const { reconciliationBalances, balanceCarryForwards, lastImportedAt, lastImportedPeriod, updatedAt, balancePeriod, ...source } = account;
+    return source;
+  });
+  const items = records[key] || workspace[key];
   if (key === "modules") {
     const { inventory, ...modules } = workspace.modules || {};
     return inventory ? { ...modules, inventory: true } : modules;
   }
   if (["inventoryItems", "inventoryMovements"].includes(key) && !workspaceModuleEnabled(workspace, "inventory")) return [];
   if (key === "documents") {
-    return (workspace.documents || [])
+    return (items || [])
       .filter((document) => document.category !== "申报回执" && document.deliveryArtifact !== true)
       .map((document) => ({
         id: document.id,
@@ -1271,18 +1287,20 @@ function workflowSourceValue(workspace, key) {
   if (key === "payrollRecords") {
     return (workspace.payrollRecords || []).filter((record) => record.period === workspace.currentPeriod);
   }
-  if (key === "vouchers") return (workspace.vouchers || []).map(financialVoucherSource);
-  return workspace[key] || (["company", "modules", "openingLedger", "rules"].includes(key) ? {} : []);
+  if (key === "vouchers") return (items || []).map(financialVoucherSource);
+  return items || (["company", "modules", "openingLedger", "rules"].includes(key) ? {} : []);
 }
 
 export function workflowSourceFingerprint(workspace) {
   const tax = workspace.tax || {};
+  const records = periodSourceRecords(workspace);
   const managementReport = (workspace.managementReport?.displayItems || [])
     .filter((item) => item?.visible === false || String(item?.label || "").trim())
     .map((item) => ({ id: item.id, visible: item.visible !== false, label: String(item.label || "").trim() }));
   return JSON.stringify({
+    scopeVersion: 2,
     currentPeriod: workspace.currentPeriod,
-    sources: Object.fromEntries(WORKFLOW_SOURCE_KEYS.map((key) => [key, workflowSourceValue(workspace, key)])),
+    sources: Object.fromEntries(WORKFLOW_SOURCE_KEYS.map((key) => [key, workflowSourceValue(workspace, key, records)])),
     ...(managementReport.length ? { managementReport } : {}),
     tax: {
       adjustments: Number(tax.adjustments || 0),
@@ -1432,7 +1450,7 @@ export function workflowChecks(workspace) {
   const statementsBalanced = Object.values(snapshot.summary.engineChecks || {}).every((check) => check.passed);
   const currentTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
   const unresolved = currentTransactions.filter((item) => !["posted", "ignored"].includes(item.status));
-  const openExceptionTasks = (workspace.exceptionTasks || []).filter((task) => task.status !== "resolved");
+  const openExceptionTasks = (periodSourceRecords(workspace).exceptionTasks || []).filter((task) => task.status !== "resolved");
   const payrollAccounting = buildPayrollAccountingSummary(workspace);
   const payrollAccountingIssues = payrollAccounting.applicable && !payrollAccounting.postedAndMatched ? payrollAccounting.issues : [];
   const openNotices = (workspace.delivery.notices || []).filter((notice) => (
@@ -1484,7 +1502,7 @@ export function workflowChecks(workspace) {
     (voucher.period || String(voucher.date || "").slice(0, 7)) === workspace.currentPeriod && !["posted", "superseded", "invalidated", "replaced"].includes(voucher.status)
   ));
   const latestVersion = getLatestReportVersion(workspace);
-  const sourceIsCurrent = payrollVersionHasCurrentSources(workspace, latestVersion) && (latestVersion?.sourceFingerprint
+  const sourceIsCurrent = isPeriodArchived(workspace) ? Boolean(latestVersion) : payrollVersionHasCurrentSources(workspace, latestVersion) && (latestVersion?.sourceFingerprint
     ? workflowSourceMatches(latestVersion.sourceFingerprint, workspace)
     : Boolean(latestVersion)
       && workspace.tax?.frozenAt === latestVersion.createdAt
@@ -1509,6 +1527,7 @@ export function workflowChecks(workspace) {
     { id: "socialSecurity", label: `${terminology.customer}已单独确认社保表`, ok: Boolean(version && payrollSocialConfirmation.socialSecurity.confirmed), page: "tax", detail: payrollSocialConfirmation.socialSecurity.available ? (payrollSocialConfirmation.socialSecurity.confirmed ? "社保表已绑定当前冻结版本" : `社保表待${terminology.customer}勾选确认`) : payrollSocialConfirmation.socialSecurity.sourceMessage },
   ] : [];
   const pendingLabels = {
+    opening: "确认本期期初余额",
     balanced: "核对报表勾稽",
     bank: "核对银行流水",
     exceptions: "处理待复核事项",
@@ -1523,6 +1542,7 @@ export function workflowChecks(workspace) {
     receipt: "导入外部办理回执",
   };
   const checks = [
+    { id: "opening", label: "本期期初余额已确认", ok: openingBalancesReady(workspace), page: "reports", detail: workspace.openingStatus?.message || "可确认实际期初余额，或从上一个已归档月份结转" },
     { id: "balanced", label: "试算、资产负债与现金变动勾稽通过", ok: statementsBalanced, page: "reports", detail: statementsBalanced ? "三项校验通过" : "至少一项校验存在差异" },
     { id: "bank", label: bankReconciliationApplicable ? "本期银行流水余额勾稽通过" : "银行勾稽不适用", applicable: bankReconciliationApplicable, ok: bankReconciliationPassed, page: "setup", detail: bankReconciliationDetail },
     { id: "exceptions", label: "流水、异常、工资与跨期事项已完成复核", ok: unresolved.length === 0 && openExceptionTasks.length === 0 && openNotices.length === 0 && payrollAccountingIssues.length === 0, page: payrollAccountingIssues.length ? "tax" : openNotices.length ? "overview" : "reconcile", detail: payrollAccountingIssues.length ? payrollAccounting.message : unresolved.length || openExceptionTasks.length || openNotices.length ? `${unresolved.length} 笔流水、${openExceptionTasks.length} 项异常、${openNotices.length} 项跨期待办未完成` : "已完成" },
@@ -1541,7 +1561,7 @@ export function workflowChecks(workspace) {
   const archiveChecks = taxEnabled
     ? checks
     : checks.filter((check) => !["finance", "payroll", "socialSecurity", "owner", "vatReconciliation", "exported", "receipt"].includes(check.id));
-  const prepareCheckIds = new Set(["balanced", "bank", "exceptions", "vouchers", "frozen", "finance", "payroll", "socialSecurity"]);
+  const prepareCheckIds = new Set(["opening", "balanced", "bank", "exceptions", "vouchers", "frozen", "finance", "payroll", "socialSecurity"]);
   const exportCheckIds = new Set([...prepareCheckIds, "owner", "vatReconciliation"]);
   return {
     checks,
@@ -2048,6 +2068,7 @@ export function archivePeriod(workspace, actor = "本地用户") {
       .filter((item) => String(item.date || "").startsWith(workspace.currentPeriod) && item.status === "ignored")
       .map((item) => ({ id: item.id, counterparty: item.counterparty, summary: item.summary, amount: item.amount, fromPeriod: workspace.currentPeriod })),
     closingLedger: flow.version.snapshot.ledger,
+    bankReconciliations: (workspace.bankAccounts || []).map((account) => buildBankMonthlyReconciliation(workspace, { accountId: account.id, period: workspace.currentPeriod })),
     openingCarryForward: workspace.openingCarryForward || null,
     summary: flow.version.snapshot.summary,
     reportSnapshot: flow.version.snapshot,
@@ -2093,9 +2114,7 @@ export function buildArchivedPeriodExport(workspace, archiveId, exportedAt = new
 }
 
 export function nextPeriod(period) {
-  const [year, month] = String(period).split("-").map(Number);
-  const date = new Date(Date.UTC(year, month, 1));
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+  return adjacentPeriod(period);
 }
 
 export function resetTaxForPeriod(tax = {}, period) {
@@ -2133,18 +2152,29 @@ export function enterNextPeriod(workspace, actor = "本地用户", { equityAccou
   const filing = workspace.delivery.filing;
   const archive = workspace.delivery.archives.find((item) => item.period === workspace.currentPeriod);
   if (!filing.archivedAt || !archive) return workspace;
-  if (archive.sourceFingerprint && !workflowSourceMatches(archive.sourceFingerprint, workspace)) {
-    throw new Error("本期归档后数据又发生变化，不能沿用旧期末余额；请通过更正流程重新归档");
+  let archivedSource = null;
+  if (archive.sourceFingerprint) {
+    try { archivedSource = JSON.parse(archive.sourceFingerprint).sources; }
+    catch { throw new Error("归档来源无法读取，请先核对历史归档"); }
   }
   const target = nextPeriod(workspace.currentPeriod);
+  const targetWorkspace = activateWorkspacePeriod(workspace, target);
+  if (isPeriodArchived(targetWorkspace)) return targetWorkspace;
   const carryForward = buildPeriodCarryForward(workspace, { closingLedger: archive.closingLedger || {}, equityAccountId });
-  const bankAccounts = (workspace.bankAccounts || []).map((account) => {
-    const monthly = buildBankMonthlyReconciliation(workspace, { accountId: account.id, period: archive.period });
+  const conflicts = [];
+  if (openingBalancesReady(targetWorkspace)) {
+    const accounts = new Set([...Object.keys(targetWorkspace.openingLedger || {}), ...Object.keys(carryForward.openingLedger)]);
+    if ([...accounts].some((id) => Math.abs(Number(targetWorkspace.openingLedger?.[id] || 0) - Number(carryForward.openingLedger[id] || 0)) > 0.005)) conflicts.push("科目期初余额");
+  }
+  const bankAccounts = (targetWorkspace.bankAccounts || []).map((account) => {
+    const monthly = archive.bankReconciliations?.find((item) => item.accountId === account.id)
+      || buildBankMonthlyReconciliation({ ...workspace, ...archivedSource, currentPeriod: archive.period }, { accountId: account.id, period: archive.period });
     const openingBalance = monthly.passed ? monthly.statementClosing : null;
+    if (account.openingBalance != null && openingBalance != null && Math.abs(Number(account.openingBalance) - openingBalance) > 0.005) conflicts.push(`${account.name || account.id}的期初余额`);
     return {
       ...account,
-      openingBalance,
-      statementClosing: null,
+      openingBalance: openingBalance ?? account.openingBalance,
+      statementClosing: account.statementClosing ?? null,
       balancePeriod: target,
       balanceCarryForwards: {
         ...(account.balanceCarryForwards || {}),
@@ -2171,13 +2201,20 @@ export function enterNextPeriod(workspace, actor = "本地用户", { equityAccou
       },
     };
   });
+  if (conflicts.length) return saveActivePeriodState({
+    ...targetWorkspace,
+    openingStatus: { status: "conflict", sourceArchiveId: archive.id, fromPeriod: archive.period,
+      suggestedLedger: carryForward.openingLedger,
+      message: `${conflicts.join("、")}与${archive.period}结转结果不同，请核对后确认；现有金额已保留。` },
+  });
   const next = {
-    ...workspace,
+    ...targetWorkspace,
     currentPeriod: target,
     periods: [...new Set([target, ...workspace.periods])],
     bankAccounts,
     accounts: bankAccounts,
     openingLedger: carryForward.openingLedger,
+    openingStatus: { status: "confirmed", source: "carryForward", archiveId: archive.id, confirmedAt: new Date().toISOString(), confirmedBy: actor },
     openingCarryForward: {
       archiveId: archive.id,
       fromPeriod: archive.period,
@@ -2186,9 +2223,8 @@ export function enterNextPeriod(workspace, actor = "本地用户", { equityAccou
       equityAccountId: carryForward.equityAccountId,
       profitAndLossBalances: carryForward.profitAndLossBalances,
     },
-    tax: resetTaxForPeriod(workspace.tax, target),
     delivery: {
-      ...workspace.delivery,
+      ...targetWorkspace.delivery,
       notices: [
         ...(archive.carryForwardItems || []).map((item) => ({
           id: `carry-${target}-${item.id}`,
@@ -2198,12 +2234,26 @@ export function enterNextPeriod(workspace, actor = "本地用户", { equityAccou
           message: `${item.fromPeriod} 延期事项：${item.counterparty || "未命名对象"} · ${item.summary || "待处理"}`,
           amount: item.amount,
         })),
-        ...(workspace.delivery.notices || []),
+        ...(targetWorkspace.delivery.notices || []).filter((item) => !(archive.carryForwardItems || []).some((source) => item.id === `carry-${target}-${source.id}`)),
       ],
-      filing: emptyFiling(target),
     },
   };
-  return audit(next, "进入下一期", `${workspace.currentPeriod} → ${target}，继承归档 ${archive.id} 的期末余额；损益 ${carryForward.profit.toFixed(2)}${carryForward.equityAccountId ? ` 转入 ${accountDefinition(carryForward.equityAccountId, workspace).label}` : "，无需权益调整"}`, actor);
+  return saveActivePeriodState(audit(next, "进入下一期", `${workspace.currentPeriod} → ${target}，继承归档 ${archive.id} 的期末余额；损益 ${carryForward.profit.toFixed(2)}${carryForward.equityAccountId ? ` 转入 ${accountDefinition(carryForward.equityAccountId, workspace).label}` : "，无需权益调整"}`, actor));
+}
+
+export function enterAccountingPeriod(workspace, period, actor = "本地用户") {
+  const target = activateWorkspacePeriod(workspace, period);
+  if (isPeriodArchived(target) || target.openingCarryForward?.archiveId || target.openingStatus?.acknowledgedArchiveId) return target;
+  const previous = adjacentPeriod(period, -1);
+  if (!workspace.delivery?.archives?.some((item) => item.period === previous)) return target;
+  const source = activateWorkspacePeriod(target, previous);
+  try {
+    return enterNextPeriod(source, actor);
+  } catch (error) {
+    // Entering a month is still useful while its opening needs financial review.
+    if (!String(error.code || "").startsWith("CARRY_FORWARD_") && !error.message?.includes("归档来源无法读取")) throw error;
+    return saveActivePeriodState({ ...target, openingStatus: { status: "pending", fromPeriod: previous, message: error.message } });
+  }
 }
 
 export function formatCurrency(value, { sign = false } = {}) {

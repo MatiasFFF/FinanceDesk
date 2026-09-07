@@ -292,8 +292,17 @@ button:disabled {
 }
 
 .period-select > span { display: grid; gap: 1px; }
-.period-select small { color: var(--quiet); font-size: 8px; font-weight: 600; }
+.period-select small { color: var(--quiet); font-size: 12px; font-weight: 500; }
 .period-select strong { color: var(--espresso); font-size: 11px; white-space: nowrap; }
+.period-select input { width: 145px; min-width: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--espresso); font: inherit; font-size: 14px; font-weight: 600; }
+.period-select:focus-within { outline: 2px solid var(--clay); outline-offset: 2px; }
+.topbar-actions .period-select { display: flex; }
+.period-opening-panel { padding: 20px; }
+.period-opening-panel h2 { margin-bottom: 8px; font-size: 16px; font-weight: 600; }
+.period-opening-panel p { font-size: 14px; }
+.period-opening-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-top: 16px; }
+.period-opening-grid label { display: grid; gap: 8px; font-size: 13px; }
+.period-opening-grid input { width: 100%; min-width: 0; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--espresso); font: inherit; font-size: 14px; }
 
 .primary-button,
 .secondary-button,
@@ -4564,10 +4573,11 @@ summary.forecast-week-row {
 
   .topbar-actions {
     width: 100%;
+    flex-wrap: wrap;
   }
 
   .mobile-workspace-wrap {
-    flex: 1;
+    flex: 1 1 160px;
   }
 
   .mobile-workspace {
@@ -4720,7 +4730,9 @@ summary.forecast-week-row {
   }
 
   .topbar-actions .period-select {
-    display: none;
+    display: flex;
+    flex: 0 0 auto;
+    padding-inline: 8px;
   }
 
   .stage-rail {

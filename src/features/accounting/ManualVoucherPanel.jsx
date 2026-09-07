@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { usePeriodLeaveGuard } from "../workspaces/periodNavigation.js";
 import {
   CheckCircle,
   FileText,
@@ -190,6 +191,7 @@ export function ManualVoucherPanel({ onToast }) {
   const [busy, setBusy] = useState(false);
   const editorRef = useRef(null);
   const editorBaseline = useRef(JSON.stringify(editor));
+  usePeriodLeaveGuard({ dirty: editorOpen && JSON.stringify(editor) !== editorBaseline.current, busy });
   const departmentListId = useId();
   const projectListId = useId();
 

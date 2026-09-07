@@ -33,6 +33,9 @@ import {
 } from "@phosphor-icons/react";
 import { transactionStatus, uid } from "./financeData.js";
 import { BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS } from "./domain/foundation.js";
+import { confirmOpeningBalances, isPeriodArchived, localAccountingPeriod, openingBalancesReady, validAccountingPeriod } from "./domain/periods.js";
+import { allowPeriodNavigation, usePeriodLeaveGuard } from "./features/workspaces/periodNavigation.js";
+import { OpeningBalancesPanel } from "./features/accounting/OpeningBalancesPanel.jsx";
 import {
   EVENT_TYPES,
   accountDefinition,
@@ -477,7 +480,7 @@ function BottomNav({ workspace, page, onPage }) {
   );
 }
 
-function Topbar({ state, workspace, page, workspaceOverlayOpen, onImport, onSwitchWorkspace, onOpenWorkspaceDialog }) {
+function Topbar({ state, workspace, page, workspaceOverlayOpen, onImport, onSwitchWorkspace, onSwitchPeriod, onOpenWorkspaceDialog }) {
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const workspaceMenuRef = useRef(null);
@@ -540,7 +543,7 @@ function Topbar({ state, workspace, page, workspaceOverlayOpen, onImport, onSwit
           <button ref={workspaceTriggerRef} className="secondary-button mobile-workspace" aria-expanded={workspaceOpen} aria-haspopup="menu" onClick={() => { setMoreOpen(false); setWorkspaceOpen((value) => !value); }} type="button"><span>{workspace?.name || "选择工作台"}</span><CaretDown size={14} /></button>
           {workspaceOpen && <WorkspaceMenu state={state} activeWorkspace={workspace} onSwitch={onSwitchWorkspace} onOpenDialog={openWorkspaceDialog} onClose={() => setWorkspaceOpen(false)} />}
         </div>
-        {workspace && <div className="period-select" aria-label={`当前活动账期 ${formatPeriod(workspace.currentPeriod)}`} title="历史账期请在资料归档中查看；新账期由归档流程创建"><CalendarBlank size={18} /><span><small>活动账期</small><strong>{formatPeriod(workspace.currentPeriod)}</strong></span></div>}
+        {workspace && <label className="period-select"><CalendarBlank size={18} /><span><small>{isPeriodArchived(workspace) ? "已归档 · 只读" : "活动账期"}</small><input aria-label="选择活动账期" type="month" min="1900-01" max="9999-12" value={workspace.currentPeriod} disabled={workspaceOverlayOpen} onChange={(event) => { if (validAccountingPeriod(event.target.value)) onSwitchPeriod(event.target.value); }} /></span></label>}
         {workspace && workspaceModuleEnabled(workspace, "reconcile") && (page === "overview" || page === "reconcile") && <button className="primary-button" onClick={onImport} type="button"><UploadSimple size={18} weight="bold" />本地导入</button>}
         {workspace && (
           <div className="menu-wrap" ref={moreMenuRef}>
@@ -713,6 +716,7 @@ function TransactionDetail({ workspace, transaction, onClose, onStatus, onSaveRe
   const [existingEvidenceId, setExistingEvidenceId] = useState("");
   const [evidenceAction, setEvidenceAction] = useState("");
   const [reviewNote, setReviewNote] = useState("");
+  usePeriodLeaveGuard({ dirty: Boolean(transaction) && reviewNote.trim() !== String(transaction?.manualReview?.note || "").trim(), busy: Boolean(evidenceAction) });
   useEffect(() => {
     setEvidenceCategory("发票");
     setExistingEvidenceId("");
@@ -1023,15 +1027,16 @@ const REPORT_RECONCILIATION_COPY = {
   memberService: { label: "业务履约勾稽", formula: "业务台账未履约余额 = 合同负债余额", page: "members" },
 };
 
-function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
+function ReportsPage({ workspace, onPage, onFreeze, onExportExcel, onOpeningSave }) {
   const terminology = workspaceTerminology(workspace);
   const [sectionId, setSectionId] = useState("balance");
-  const [versionId, setVersionId] = useState("live");
+  const archive = workspace.delivery.archives.find((item) => item.period === workspace.currentPeriod);
+  const [versionId, setVersionId] = useState(archive?.reportVersionId || "live");
   const [drill, setDrill] = useState(null);
   const latestVersionId = workspace.delivery.reportVersions.find((item) => item.period === workspace.currentPeriod)?.id || null;
   const knownLatestVersion = useRef(latestVersionId);
   useEffect(() => {
-    setVersionId("live");
+    setVersionId(archive?.reportVersionId || "live");
     setDrill(null);
     knownLatestVersion.current = latestVersionId;
   }, [workspace.id, workspace.currentPeriod]);
@@ -1069,8 +1074,8 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
     .map(([, check]) => check);
   const snapshotBalanced = snapshotChecks.every((check) => check.passed);
   const flow = workflowChecks(workspace);
-  const freezeBlockers = flow.checks.filter((item) => ["balanced", "bank", "exceptions", "vouchers"].includes(item.id) && !item.ok);
-  const readyToFreeze = balanced && freezeBlockers.length === 0;
+  const freezeBlockers = flow.checks.filter((item) => ["opening", "balanced", "bank", "exceptions", "vouchers"].includes(item.id) && !item.ok);
+  const readyToFreeze = !archive && balanced && freezeBlockers.length === 0;
   const currentFrozenVersion = flow.version;
   const excelExportReady = Boolean(currentFrozenVersion?.sourceFingerprint);
   const selectedCurrentFrozenVersion = Boolean(
@@ -1098,6 +1103,7 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel }) {
   return (
     <div className="page-content reports-page">
       <StageRail workspace={workspace} onPage={onPage} />
+      <OpeningBalancesPanel workspace={workspace} onSave={onOpeningSave} />
       <section className="report-toolbar panel"><div><h2>{selectedVersion ? `${selectedVersion.label} 冻结版本` : "实时草稿"}</h2><p>{selectedVersion ? `冻结于 ${formatDateTime(selectedVersion.createdAt)}，不会被后续修改覆盖。` : "随凭证与税务调整更新，冻结后保留独立版本。"}</p></div><div className="report-toolbar-actions"><label className="compact-select"><span>查看版本</span><select value={versionId} onChange={(event) => setVersionId(event.target.value)}><option value="live">实时草稿</option>{versions.map((item) => <option key={item.id} value={item.id}>{item.label} · {formatDateTime(item.createdAt)}</option>)}</select><CaretDown size={13} /></label><button className="secondary-button" disabled={!selectedCurrentFrozenVersion} onClick={onExportExcel} title={excelExportTitle} type="button"><DownloadSimple size={17} />导出 Excel</button><button className="primary-button" disabled={!readyToFreeze} onClick={onFreeze} type="button"><SealCheck size={17} />冻结新版本</button></div></section>
       <p className="toolbar-explanation">{excelExportTitle}</p>
       <div className="report-key-metrics"><span>资产 <strong>{formatCurrency(snapshot.summary.assets)}</strong></span><span>收入 <strong>{formatCurrency(snapshot.summary.revenue)}</strong></span><span>利润 <strong>{formatCurrency(snapshot.summary.profit)}</strong></span><span>{selectedVersion ? selectedVersion.label : "实时草稿"} · {snapshotBalanced ? "报表平衡" : "存在差额"}</span></div>
@@ -1189,6 +1195,8 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
   });
   const [deductionAuthorization, setDeductionAuthorization] = useState(finalConfirmationCurrent ? storedFinalConfirmation.selections?.deductionAuthorization || "" : "");
   const [confirmer, setConfirmer] = useState(finalConfirmationCurrent ? storedFinalConfirmation.signature?.name || workspace.tax.confirmedBy || "" : "");
+  usePeriodLeaveGuard({ dirty: Object.keys(sectionDrafts).length > 0 || initialConfirmer !== defaultInitialConfirmer
+    || (!finalConfirmationCurrent && Boolean(confirmer || deductionAuthorization || Object.values(finalChecks).some(Boolean))) });
   const receiptInput = useRef(null);
   useEffect(() => {
     setSectionDrafts({});
@@ -1455,6 +1463,7 @@ function ArchivePage({ workspace, onPage, onDocuments, onDownloadDocument, onRec
 
 function blankWorkspaceForm() {
   return {
+    currentPeriod: localAccountingPeriod(),
     name: "",
     legalName: "",
     industry: "其他服务业",
@@ -1514,6 +1523,7 @@ function WorkspaceDialog({ mode, workspace, onClose, onSubmit }) {
             <label><span>行业</span><input value={form.industry} onChange={(event) => setForm({ ...form, industry: event.target.value })} /></label>
             <label><span>纳税人类型</span><select value={form.taxpayerType} onChange={(event) => setForm({ ...form, taxpayerType: event.target.value })}><option>小规模纳税人</option><option>一般纳税人</option></select></label>
             {form.mode === "blank" && <>
+              <label><span>起始账期 *</span><input required type="month" min="1900-01" max="9999-12" value={form.currentPeriod} onChange={(event) => setForm({ ...form, currentPeriod: event.target.value })} /></label>
               <label><span>首位本地操作人员（可选）</span><input value={form.initialUserName} onChange={(event) => setForm({ ...form, initialUserName: event.target.value })} placeholder="填写实际姓名" /></label>
               <label><span>首位人员角色</span><select value={form.initialUserRoleId} onChange={(event) => setForm({ ...form, initialUserRoleId: event.target.value })} disabled={!form.initialUserName.trim()}>{BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS.map((role) => <option value={role.id} key={role.id}>{role.name}</option>)}</select></label>
               <label className="full"><span>财务负责人（可选）</span><input value={form.financeContact} onChange={(event) => setForm({ ...form, financeContact: event.target.value })} placeholder="填写实际姓名或岗位" /></label>
@@ -1619,6 +1629,13 @@ function App() {
   const [reconcilePanelRequest, setReconcilePanelRequest] = useState(null);
   const [pageFocusRequest, setPageFocusRequest] = useState(null);
   const [toast, setToast] = useState(null);
+  const periodOperations = useRef(0);
+  usePeriodLeaveGuard({ busy: () => periodOperations.current > 0 });
+  async function runPeriodOperation(action) {
+    periodOperations.current += 1;
+    try { return await action(); }
+    finally { periodOperations.current -= 1; }
+  }
   const workspace = activeWorkspace ? ensureWorkspace(activeWorkspace) : null;
   const terminology = workspaceTerminology(workspace);
   const navigation = workspace ? primaryNavigationForWorkspace(workspace) : [];
@@ -1663,6 +1680,19 @@ function App() {
     if (!current) return;
     actions.replaceWorkspace(current.id, ensureWorkspace(updater(ensureWorkspace(current))), actionOptions);
   }
+  function switchPeriod(period) {
+    if (period === workspace.currentPeriod) return;
+    try {
+      if (!allowPeriodNavigation()) return;
+      actions.setPeriod(workspace.id, period);
+      setImportOpen(false);
+      setToast({ tone: "success", message: `已进入${formatPeriod(period)}${isPeriodArchived(store.getActiveWorkspace()) ? "，本期已归档，只能查看" : ""}` });
+    } catch (error) { setToast({ tone: "danger", message: error.message || "账期切换失败" }); }
+  }
+  function saveOpeningBalances(balances) {
+    mutateActive((current) => confirmOpeningBalances(current, balances, actorName));
+    setToast({ tone: "success", message: "本期期初余额已确认" });
+  }
   function openWorkspaceDialog(mode) {
     if (mode === "manage") {
       setManagerHasOpened(true);
@@ -1703,6 +1733,7 @@ function App() {
             industry: form.industry,
             taxpayerType: form.taxpayerType,
             modules: form.modules,
+            currentPeriod: form.currentPeriod,
             initialUserName: form.initialUserName.trim(),
             initialUserRoleId: form.initialUserRoleId,
             financeContact: form.financeContact.trim(),
@@ -2020,6 +2051,10 @@ function App() {
         reportVersion: flow.version,
         currentSourceFingerprint: flow.version.sourceFingerprint,
       });
+      if (isPeriodArchived(current)) {
+        setToast({ tone: "success", message: `${metadata.reportVersionLabel} 历史报表 Excel 已下载` });
+        return;
+      }
       mutateActive((latest) => {
         const latestFlow = workflowChecks(latest);
         if (!latestFlow.version || latestFlow.version.id !== metadata.reportVersionId || latestFlow.version.sourceFingerprint !== metadata.sourceFingerprint) {
@@ -2201,7 +2236,7 @@ function App() {
       setToast({ tone: "danger", message: error.message || "期间归档失败" });
     }
   }
-  function goNextPeriod(equityAccountId) { try { const next = enterNextPeriod(workspace, actorName, { equityAccountId }); if (next.currentPeriod === workspace.currentPeriod) { setToast({ tone: "warning", message: "请先完成本期归档。" }); return; } mutateActive(() => next, { allowArchivedTransition: true }); setPage("overview"); setToast({ tone: "success", message: `已进入${formatPeriod(next.currentPeriod)}，期末余额与损益已结转` }); } catch (error) { setToast({ tone: "danger", message: error.message || "无法进入下一期" }); } }
+  function goNextPeriod(equityAccountId) { try { if (!allowPeriodNavigation()) return; const next = enterNextPeriod(workspace, actorName, { equityAccountId }); if (next.currentPeriod === workspace.currentPeriod) { setToast({ tone: "warning", message: "请先完成本期归档。" }); return; } mutateActive(() => next, { allowArchivedTransition: true }); setPage("overview"); setToast({ tone: "success", message: openingBalancesReady(next) ? `已进入${formatPeriod(next.currentPeriod)}，期末余额与损益已结转` : `已进入${formatPeriod(next.currentPeriod)}，请在报表中心核对期初余额` }); } catch (error) { setToast({ tone: "danger", message: error.message || "无法进入下一期" }); } }
   function exportArchiveIndex() {
     try {
       const index = { product: PRODUCT_NAME, workspace: workspace.name, exportedAt: new Date().toISOString(), archives: workspace.delivery.archives, activeFiling: workspace.delivery.filing, auditLog: workspace.auditLog };
@@ -2244,15 +2279,15 @@ function App() {
     <div className="app-shell">
       <Sidebar state={state} workspace={workspace} page={activePage} onPage={navigateToPage} onSwitchWorkspace={switchWorkspace} onSwitchUser={switchUser} onOpenWorkspaceDialog={openWorkspaceDialog} />
       <div className="app-main">
-        <Topbar state={state} workspace={workspace} page={activePage} workspaceOverlayOpen={Boolean(workspaceDialog || managerOpen)} onImport={() => setImportOpen(true)} onSwitchWorkspace={switchWorkspace} onOpenWorkspaceDialog={openWorkspaceDialog} />
+        <Topbar state={state} workspace={workspace} page={activePage} workspaceOverlayOpen={Boolean(workspaceDialog || managerOpen || importOpen)} onImport={() => setImportOpen(true)} onSwitchWorkspace={switchWorkspace} onSwitchPeriod={switchPeriod} onOpenWorkspaceDialog={openWorkspaceDialog} />
         {loadReport.recovered && <div className="danger-banner recovery-banner"><WarningCircle size={18} /><span><strong>{loadReport.source === "backup" ? "本地数据已从上一次有效副本恢复。" : "本地主副本与备用副本均无法读取，当前已加载初始模板。"}</strong>{loadReport.errors?.length ? ` 原因：${loadReport.errors.join("；")}` : " 请先核对数据并导出备份。"}</span></div>}
         {activePage === "overview" && <OverviewPage workspace={workspace} onPage={navigateToPage} onResolveNotice={resolveNotice} />}
         {workspaceModuleEnabled(workspace, "members") && <DeferredView key={`${workspace.id}-members`} active={activePage === "members"} label="会员台账" fullPage><MemberLedgerPage workspace={workspace} onAddMember={addLedgerMember} onMemberStatus={changeLedgerMemberStatus} onAddEvent={addLedgerEvent} onEventStatus={changeLedgerEventStatus} onPage={navigateToPage} /></DeferredView>}
         {workspaceModuleEnabled(workspace, "inventory") && <DeferredView key={`${workspace.id}-inventory`} active={activePage === "inventory"} label="库存" fullPage><InventoryPage workspace={workspace} onPage={navigateToPage} onToast={(message) => setToast({ tone: "success", message })} /></DeferredView>}
-        <DeferredView key={`${workspace.id}-reconcile`} active={activePage === "reconcile"} label="核销工作区" fullPage><ReconcilePage workspace={workspace} onPage={navigateToPage} panelRequest={reconcilePanelRequest} onStatus={setTransactionStatus} onReview={reviewTransactions} onSaveReview={saveTransactionReview} onEvidence={addEvidence} onLinkEvidence={linkExistingEvidence} onDownloadEvidence={downloadLinkedEvidence} onUnlinkEvidence={unlinkEvidenceFromTransaction} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} /></DeferredView>
-        {activePage === "reports" && <ReportsPage workspace={workspace} onPage={navigateToPage} onFreeze={freezeReport} onExportExcel={exportReportExcel} />}
-        <DeferredView key={`${workspace.id}-tax`} active={activePage === "tax"} label="确认与申报" fullPage><TaxPage workspace={workspace} onPage={navigateToPage} onTaxChange={changeTax} onTaxCommit={commitTax} onSectionDecision={recordInitialConfirmationSection} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={exportPackage} onReceipt={receiveReceipt} onToast={(message) => setToast({ tone: "success", message })} focusRequest={pageFocusRequest} /></DeferredView>
-        {activePage === "archive" && <ArchivePage workspace={workspace} onPage={navigateToPage} onDocuments={addDocuments} onDownloadDocument={downloadArchiveDocument} onReceipt={receiveReceipt} onArchive={completeArchive} onNextPeriod={goNextPeriod} onExportIndex={exportArchiveIndex} onExportArchive={exportArchivedPeriod} />}
+        <DeferredView key={`${workspace.id}-reconcile`} active={activePage === "reconcile"} label="核销工作区" fullPage><ReconcilePage workspace={workspace} onPage={navigateToPage} panelRequest={reconcilePanelRequest} onStatus={setTransactionStatus} onReview={reviewTransactions} onSaveReview={saveTransactionReview} onEvidence={(...args) => runPeriodOperation(() => addEvidence(...args))} onLinkEvidence={linkExistingEvidence} onDownloadEvidence={downloadLinkedEvidence} onUnlinkEvidence={unlinkEvidenceFromTransaction} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} /></DeferredView>
+        {activePage === "reports" && <ReportsPage workspace={workspace} onPage={navigateToPage} onFreeze={freezeReport} onExportExcel={() => runPeriodOperation(exportReportExcel)} onOpeningSave={saveOpeningBalances} />}
+        <DeferredView key={`${workspace.id}-tax`} active={activePage === "tax"} label="确认与申报" fullPage><TaxPage workspace={workspace} onPage={navigateToPage} onTaxChange={changeTax} onTaxCommit={commitTax} onSectionDecision={recordInitialConfirmationSection} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={() => runPeriodOperation(exportPackage)} onReceipt={(file) => runPeriodOperation(() => receiveReceipt(file))} onToast={(message) => setToast({ tone: "success", message })} focusRequest={pageFocusRequest} /></DeferredView>
+        {activePage === "archive" && <ArchivePage workspace={workspace} onPage={navigateToPage} onDocuments={(files) => runPeriodOperation(() => addDocuments(files))} onDownloadDocument={downloadArchiveDocument} onReceipt={(file) => runPeriodOperation(() => receiveReceipt(file))} onArchive={completeArchive} onNextPeriod={goNextPeriod} onExportIndex={exportArchiveIndex} onExportArchive={exportArchivedPeriod} />}
         {activePage === "setup" && <Suspense fallback={<div className="page-content"><p className="quiet-copy" role="status" style={{ margin: 0, fontSize: "var(--font-body, 14px)" }}>正在加载基础资料…</p></div>}><FoundationRecordsPanel initialStage={setupInitialStage} key={`${workspace.id}-${setupInitialStage}`} onNavigate={navigateToPage} onToast={(message) => setToast({ tone: "success", message })} /></Suspense>}
       </div>
       <BottomNav workspace={workspace} page={activePage} onPage={navigateToPage} />

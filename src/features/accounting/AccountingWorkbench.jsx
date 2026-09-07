@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { usePeriodLeaveGuard } from "../workspaces/periodNavigation.js";
 import {
   ArrowCounterClockwise,
   ArrowsLeftRight,
@@ -713,6 +714,8 @@ export function MemberBusinessAccountingQueue({ onToast }) {
   const displayText = (value) => applyWorkspaceTerminology(value, activeWorkspace);
   const [reviewNotes, setReviewNotes] = useState({});
   const [voucherLineDrafts, setVoucherLineDrafts] = useState({});
+  usePeriodLeaveGuard({ dirty: Object.keys(voucherLineDrafts).length > 0 || Object.values(reviewNotes).some(Boolean) });
+  useEffect(() => { setReviewNotes({}); setVoucherLineDrafts({}); }, [activeWorkspace.id, activeWorkspace.currentPeriod]);
   const [error, setError] = useState("");
   const actor = currentActorName(state, activeWorkspace);
   const accountOptions = useMemo(() => workspaceAccountOptions(activeWorkspace), [activeWorkspace]);
@@ -911,6 +914,7 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true })
   const displayText = (value) => applyWorkspaceTerminology(value, activeWorkspace);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(() => emptyBillForm(activeWorkspace?.currentPeriod || new Date().toISOString().slice(0, 7)));
+  usePeriodLeaveGuard({ dirty: showForm && JSON.stringify(form) !== JSON.stringify(emptyBillForm(activeWorkspace.currentPeriod)) });
   const [advanceUsage, setAdvanceUsage] = useState({});
   const [advanceVoucherNotes, setAdvanceVoucherNotes] = useState({});
   const [error, setError] = useState("");
@@ -1144,6 +1148,7 @@ function WorkspaceVoucherPanel({ onToast, voucherIds, showLedger = true, title =
   const [lineDrafts, setLineDrafts] = useState({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  usePeriodLeaveGuard({ dirty: Object.keys(lineDrafts).length > 0 || Object.values(notes).some(Boolean), busy });
   const accounts = useMemo(() => workspaceAccountOptions(activeWorkspace), [activeWorkspace]);
   const actor = currentActorName(state, activeWorkspace);
   const vouchers = (activeWorkspace.vouchers || []).filter((voucher) => voucher.period === activeWorkspace.currentPeriod && (!voucherIds || voucherIds.includes(voucher.id)));
@@ -1268,6 +1273,7 @@ function TransactionAccountingWorkbench({ transactionId, onToast }) {
   const [error, setError] = useState("");
   const businessDepartmentListId = useId();
   const businessProjectListId = useId();
+  usePeriodLeaveGuard({ dirty: Boolean(reviewReason || reversalReason || voucherNote || judgement.reason || Object.keys(voucherLineDrafts).length || Object.keys(allocationAmounts).length), busy: posting });
 
   const classification = useMemo(
     () => transaction ? effectiveBankTransactionClassification(activeWorkspace, transaction) : null,

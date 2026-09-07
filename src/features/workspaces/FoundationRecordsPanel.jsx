@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { usePeriodLeaveGuard } from "./periodNavigation.js";
 import {
   Buildings,
   CaretDown,
@@ -545,6 +546,7 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
   const [error, setError] = useState("");
   const [deleteError, setDeleteError] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
+  usePeriodLeaveGuard({ dirty: editorOpen });
   const draftContextRef = useRef({ workspaceId: activeWorkspace.id, collection });
   const pendingDeleteId = pendingDeletion?.workspaceId === activeWorkspace.id && pendingDeletion?.collection === collection
     ? pendingDeletion.itemId
@@ -558,7 +560,7 @@ function EntityEditor({ collection, onToast, pendingDeletion, onRequestDelete, o
     setError("");
     setDeleteError("");
     setEditorOpen(false);
-  }, [activeWorkspace.id, collection, config]);
+  }, [activeWorkspace.id, activeWorkspace.currentPeriod, collection, config]);
 
   useEffect(() => setDeleteError(""), [pendingDeleteId]);
 
@@ -739,12 +741,13 @@ function AccountCatalogEditor({ onToast }) {
   const [draft, setDraft] = useState(emptyAccountDraft);
   const [error, setError] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
+  usePeriodLeaveGuard({ dirty: editorOpen });
 
   useEffect(() => {
     setDraft(emptyAccountDraft());
     setError("");
     setEditorOpen(false);
-  }, [activeWorkspace.id]);
+  }, [activeWorkspace.id, activeWorkspace.currentPeriod]);
 
   function create() {
     setDraft(emptyAccountDraft());
@@ -887,6 +890,7 @@ function AccountingRuleEditor({ onToast }) {
   const [draft, setDraft] = useState(() => ruleDraft(activeWorkspace));
   const [error, setError] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
+  usePeriodLeaveGuard({ dirty: editorOpen });
   const categoryRulePreview = useMemo(() => {
     const invalidRuleIndexes = [];
     const eligibleRules = draft.categoryKeywords.flatMap((rule, index) => {
@@ -938,7 +942,7 @@ function AccountingRuleEditor({ onToast }) {
     setDraft(ruleDraft(activeWorkspace));
     setError("");
     setEditorOpen(false);
-  }, [activeWorkspace.id, active?.updatedAt]);
+  }, [activeWorkspace.id, activeWorkspace.currentPeriod, active?.updatedAt]);
 
   function edit() {
     setDraft(ruleDraft(activeWorkspace));
@@ -1142,13 +1146,14 @@ function TerminologyEditor({ onToast }) {
   const membersEnabled = memberModuleEnabled(activeWorkspace);
   const savedTerminology = JSON.stringify(normalizeWorkspaceTerminology(activeWorkspace.terminology));
   const [draft, setDraft] = useState(() => normalizeWorkspaceTerminology(activeWorkspace.terminology));
+  usePeriodLeaveGuard({ dirty: JSON.stringify(draft) !== savedTerminology });
   const [error, setError] = useState("");
   const visibleFields = TERMINOLOGY_FIELDS.filter((field) => membersEnabled || !field.memberOnly);
 
   useEffect(() => {
     setDraft(JSON.parse(savedTerminology));
     setError("");
-  }, [activeWorkspace.id, savedTerminology]);
+  }, [activeWorkspace.id, activeWorkspace.currentPeriod, savedTerminology]);
 
   function save(event) {
     event.preventDefault();
@@ -1192,12 +1197,13 @@ function ManagementReportDisplayEditor({ onToast }) {
   const memberBusiness = memberModuleEnabled(activeWorkspace);
   const terminology = normalizeWorkspaceTerminology(activeWorkspace.terminology);
   const [draft, setDraft] = useState(() => normalizeManagementReportConfig(activeWorkspace.managementReport));
+  usePeriodLeaveGuard({ dirty: JSON.stringify(draft) !== savedDisplayConfig });
   const [error, setError] = useState("");
 
   useEffect(() => {
     setDraft(JSON.parse(savedDisplayConfig));
     setError("");
-  }, [activeWorkspace.id, savedDisplayConfig]);
+  }, [activeWorkspace.id, activeWorkspace.currentPeriod, savedDisplayConfig]);
 
   function updateItem(itemId, patch) {
     setDraft((current) => ({
@@ -1290,11 +1296,12 @@ function CompanyProfile({ onToast, onBeginEditing }) {
   const [draft, setDraft] = useState(activeWorkspace.company);
   const [error, setError] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
+  usePeriodLeaveGuard({ dirty: editorOpen });
   useEffect(() => {
     setDraft(activeWorkspace.company);
     setError("");
     setEditorOpen(false);
-  }, [activeWorkspace.id]);
+  }, [activeWorkspace.id, activeWorkspace.currentPeriod]);
 
   function edit() {
     onBeginEditing();
@@ -1352,12 +1359,13 @@ function AuthorizationEditor({ onToast, onBeginEditing }) {
   const [draft, setDraft] = useState(emptyAuthorizationDraft);
   const [error, setError] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
+  usePeriodLeaveGuard({ dirty: editorOpen });
 
   useEffect(() => {
     setDraft(emptyAuthorizationDraft());
     setError("");
     setEditorOpen(false);
-  }, [activeWorkspace.id]);
+  }, [activeWorkspace.id, activeWorkspace.currentPeriod]);
 
   function create() {
     onBeginEditing();

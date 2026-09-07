@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { usePeriodLeaveGuard } from "../workspaces/periodNavigation.js";
 import {
   ArrowRight,
   CheckCircle,
@@ -135,6 +136,7 @@ export function InventoryPage({ onPage, onToast }) {
   const { activeWorkspace, actions, state, store } = useFinanceDesk();
   const [itemForm, setItemForm] = useState(() => emptyItemForm(activeWorkspace));
   const [movementForm, setMovementForm] = useState(() => emptyMovementForm(activeWorkspace));
+  usePeriodLeaveGuard({ dirty: JSON.stringify(itemForm) !== JSON.stringify(emptyItemForm(activeWorkspace)) || Boolean(movementForm.quantity || movementForm.unitCost || movementForm.reason || movementForm.referenceNo || movementForm.evidenceIds?.length) });
   const [itemFeedback, setItemFeedback] = useState(null);
   const [movementFeedback, setMovementFeedback] = useState(null);
   const [accountingFeedback, setAccountingFeedback] = useState(null);

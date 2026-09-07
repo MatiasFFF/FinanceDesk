@@ -13,6 +13,7 @@ import {
   workspaceUsesMemberBusinessTerms,
 } from "./model.js";
 import * as XLSX from "xlsx";
+import { activateWorkspacePeriod, isPeriodArchived, openingBalancesReady, periodSourceRecords } from "../periods.js";
 import { buildPayrollSourceState, payrollSourceMetric } from "./payrollSource.js";
 import { buildAdvanceBalances, buildAgeingSchedule } from "../../features/reconciliation/reconciliationEngine.js";
 import {
@@ -42,6 +43,7 @@ function activePostedVouchers(workspace, period) {
 }
 
 export function buildLedger(workspace, { period = workspace.currentPeriod } = {}) {
+  if (period !== workspace.currentPeriod) workspace = activateWorkspacePeriod(workspace, period);
   const vouchers = activePostedVouchers(workspace, period);
   const accountIds = collectSourceIds(
     Object.keys(workspace.openingLedger || {}),
@@ -224,6 +226,7 @@ export function buildCashFlowStatement(workspace, { period = workspace.currentPe
 }
 
 export function buildFinancialStatements(workspace, { period = workspace.currentPeriod } = {}) {
+  if (period !== workspace.currentPeriod) workspace = activateWorkspacePeriod(workspace, period);
   const ledger = buildLedger(workspace, { period });
   const incomeStatement = buildIncomeStatement(workspace, { period, ledger });
   const balanceSheet = buildBalanceSheet(workspace, { period, ledger, incomeStatement });
@@ -1378,7 +1381,7 @@ export function buildTaxWorkpaper(workspace, { period = workspace.currentPeriod 
   const payrollSourceState = buildPayrollSourceState(workspace, { period });
   const payroll = payrollSourceMetric(payrollSourceState.payroll);
   const socialSecurity = payrollSourceMetric(payrollSourceState.socialSecurity);
-  const unresolved = (workspace.exceptionTasks || []).filter((task) => task.status !== "resolved");
+  const unresolved = (periodSourceRecords(activateWorkspacePeriod(workspace, period)).exceptionTasks || []).filter((task) => task.status !== "resolved");
   const confirmation = [...(workspace.confirmations || [])]
     .filter((item) => item.period === period && item.kind === "tax")
     .sort((left, right) => String(left.updatedAt || left.createdAt || "").localeCompare(String(right.updatedAt || right.createdAt || "")))
@@ -1413,6 +1416,8 @@ export function buildTaxWorkpaper(workspace, { period = workspace.currentPeriod 
 }
 
 export function freezeReportVersion(workspace, { period = workspace.currentPeriod, label = "月度财务报表" } = {}, context = {}) {
+  if (isPeriodArchived(workspace, period)) throw new AccountingRuleError("PERIOD_ARCHIVED", "已归档账期只能查看");
+  if (!openingBalancesReady(activateWorkspacePeriod(workspace, period))) throw new AccountingRuleError("OPENING_BALANCES_PENDING", "请先确认本期期初余额");
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext(context);
   const statements = buildFinancialStatements(next, { period });

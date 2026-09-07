@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { activateWorkspacePeriod, validAccountingPeriod } from "../../domain/periods.js";
+import { enterAccountingPeriod } from "../../productWorkflow.js";
+import { usePeriodLeaveGuard } from "../workspaces/periodNavigation.js";
 import { CheckCircle, DownloadSimple, FileArrowUp, Table, WarningCircle, X } from "@phosphor-icons/react";
 
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
@@ -87,13 +90,26 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
   const [settlementError, setSettlementError] = useState("");
   const [settlementNotice, setSettlementNotice] = useState("");
   const firstAccountId = activeWorkspace.bankAccounts[0]?.id || "";
+  usePeriodLeaveGuard({ dirty: Boolean(parsed || settlementParsed), busy: busy || settlementBusy || reconciling });
   const bankAccountStateSignature = JSON.stringify(activeWorkspace.bankAccounts.map((item) => [
     item.id,
     item.openingBalance ?? "",
     item.statementClosing ?? "",
   ]));
 
-  const account = activeWorkspace.bankAccounts.find((item) => item.id === accountId);
+  const accountWorkspace = validAccountingPeriod(period) ? activateWorkspacePeriod(activeWorkspace, period) : activeWorkspace;
+  const account = accountWorkspace.bankAccounts.find((item) => item.id === accountId);
+  function changeImportPeriod(nextPeriod) {
+    setPeriod(nextPeriod);
+    setPlan(null);
+    setSettlementPlan(null);
+    setNotice("");
+    setSettlementNotice("");
+    if (!validAccountingPeriod(nextPeriod)) return;
+    const targetAccount = activateWorkspacePeriod(activeWorkspace, nextPeriod).bankAccounts.find((item) => item.id === accountId);
+    setOpeningBalance(targetAccount?.openingBalance ?? "");
+    setStatementClosing(targetAccount?.statementClosing ?? "");
+  }
   useEffect(() => {
     const next = activeWorkspace.bankAccounts.find((item) => item.id === accountId) || activeWorkspace.bankAccounts[0];
     setAccountId(next?.id || "");
@@ -418,7 +434,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
       const actor = latestWorkspace.users?.find((user) => (
         user.id === latestState.activeUserId && user.status === "active"
       ))?.name?.trim() || latestWorkspace.users?.find((user) => user.status === "active")?.name?.trim() || "本地用户";
-      const result = reconcileBankAccountPeriod(latestWorkspace, {
+      const result = reconcileBankAccountPeriod(activateWorkspacePeriod(latestWorkspace, period), {
         accountId,
         period,
         actor,
@@ -572,7 +588,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
       };
       const appliedState = applyPlatformSettlementImport(store.getState(), workspaceId, finalPlan, { actor });
       const nextWorkspace = appliedState.workspaces.find((workspace) => workspace.id === workspaceId);
-      const nextState = actions.replaceWorkspace(workspaceId, nextWorkspace);
+      const nextState = actions.replaceWorkspace(workspaceId, enterAccountingPeriod(nextWorkspace, period, actor));
       committed = true;
       const savedWorkspace = nextState.workspaces.find((workspace) => workspace.id === workspaceId);
       const record = savedWorkspace?.platformSettlementImports?.find((item) => item.id === finalPlan.id);
@@ -652,7 +668,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
         <>
           <div className="bank-import-start bank-import-source-controls">
             <label className="foundation-field"><span>导入到银行账户</span><select value={accountId} onChange={(event) => setAccountId(event.target.value)}>{activeWorkspace.bankAccounts.map((item) => <option value={item.id} key={item.id}>{displayAccountIdentity(item)}</option>)}</select></label>
-            <label className="foundation-field"><span>所属账期</span><input type="month" value={period} onChange={(event) => { setPeriod(event.target.value); setPlan(null); setSettlementPlan(null); setNotice(""); setSettlementNotice(""); }} /></label>
+            <label className="foundation-field"><span>所属账期</span><input type="month" value={period} onChange={(event) => changeImportPeriod(event.target.value)} /></label>
             <button className="secondary-button" disabled={busy} type="button" onClick={() => inputRef.current?.click()}><FileArrowUp size={17} />{busy ? "正在读取…" : parsed ? "更换文件" : "选择 CSV / Excel"}</button>
             <input ref={inputRef} type="file" hidden accept=".csv,.txt,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={chooseFile} />
           </div>

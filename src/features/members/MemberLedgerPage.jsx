@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { usePeriodLeaveGuard } from "../workspaces/periodNavigation.js";
 import {
   ArrowRight,
   CheckCircle,
@@ -230,6 +231,7 @@ function CommissionRulesPanel({ workspace, onPage }) {
     ...(workspace.businessEvents || []).map((event) => event.coach),
   ].map((coach) => String(coach || "").trim()).filter(Boolean))].sort(), [workspace]);
   const [form, setForm] = useState(() => emptyCommissionRule(coaches[0] || ""));
+  usePeriodLeaveGuard({ dirty: JSON.stringify(form) !== JSON.stringify(emptyCommissionRule(coaches[0] || "")) });
   const [feedback, setFeedback] = useState(null);
   const rules = workspace.commissionRules || [];
   const calculations = useMemo(() => rules.map((rule) => buildCommissionRuleCalculation(workspace, rule, {
@@ -391,7 +393,9 @@ function MemberPackageBalancesPanel({ packageBalances, terminology }) {
 
 function EventForm({ workspace, members, onSubmit }) {
   const terminology = workspaceTerminology(workspace);
-  const [form, setForm] = useState({ kind: MEMBER_EVENT_KINDS.RECHARGE, memberId: members[0]?.id || "", packageId: "", packageRechargeId: "", originalRechargeId: "", date: today(), amount: "", quantity: "", ...defaultDimensions(workspace, members[0]), note: "" });
+  const periodDate = today().startsWith(workspace.currentPeriod) ? today() : `${workspace.currentPeriod}-01`;
+  const [form, setForm] = useState({ kind: MEMBER_EVENT_KINDS.RECHARGE, memberId: members[0]?.id || "", packageId: "", packageRechargeId: "", originalRechargeId: "", date: periodDate, amount: "", quantity: "", ...defaultDimensions(workspace, members[0]), note: "" });
+  usePeriodLeaveGuard({ dirty: Boolean(form.amount || form.quantity || form.note || form.packageId || form.packageRechargeId || form.originalRechargeId) });
   const definition = MEMBER_EVENT_DEFINITIONS[form.kind];
   const needsMember = form.kind !== MEMBER_EVENT_KINDS.COMMISSION;
   const enabledPackages = (workspace.membershipPackages || []).filter((packageRule) => packageRule.enabled !== false);
@@ -408,7 +412,7 @@ function EventForm({ workspace, members, onSubmit }) {
   const selectedRecharge = refundOptions.find((option) => option.rechargeId === form.originalRechargeId);
 
   useEffect(() => {
-    setForm({ kind: MEMBER_EVENT_KINDS.RECHARGE, memberId: members[0]?.id || "", packageId: "", packageRechargeId: "", originalRechargeId: "", date: today(), amount: "", quantity: "", ...defaultDimensions(workspace, members[0]), note: "" });
+    setForm({ kind: MEMBER_EVENT_KINDS.RECHARGE, memberId: members[0]?.id || "", packageId: "", packageRechargeId: "", originalRechargeId: "", date: periodDate, amount: "", quantity: "", ...defaultDimensions(workspace, members[0]), note: "" });
   }, [workspace.id, workspace.currentPeriod]);
 
   function changeMember(memberId) {

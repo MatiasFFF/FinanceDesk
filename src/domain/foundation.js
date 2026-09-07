@@ -1,4 +1,5 @@
 import { createDemoWorkspace } from "../financeData.js";
+import { activateWorkspacePeriod, localAccountingPeriod, saveActivePeriodState, validAccountingPeriod } from "./periods.js";
 
 export const CURRENT_SCHEMA_VERSION = 4;
 export const FINANCE_DESK_STORAGE_KEY = "financedesk.local-state.v4";
@@ -489,7 +490,7 @@ export function normalizeWorkspace(input, options = {}) {
     const personnel = inactivePersonnelForUser(normalized, user);
     return personnel ? revokePersonnelUserAccess(normalized, user, personnel, timestamp, options.actor) : user;
   });
-  return normalized;
+  return saveActivePeriodState(normalized);
 }
 
 function createFitnessTemplateWorkspace(options = {}) {
@@ -540,6 +541,7 @@ export function createInitialState(options = {}) {
 
 export function createBlankWorkspace(input = {}, options = {}) {
   const timestamp = options.timestamp || nowIso(options.now);
+  if (input.currentPeriod && !validAccountingPeriod(input.currentPeriod)) throw new Error("请选择有效的起始账期");
   const id = input.id || createId("workspace");
   const name = String(input.name || "新工作台").trim();
   const initialUserName = String(input.initialUserName || "").trim();
@@ -569,10 +571,11 @@ export function createBlankWorkspace(input = {}, options = {}) {
       financeContact: input.financeContact || "",
       verificationStatus: "unverified",
     },
-    currentPeriod: input.currentPeriod || timestamp.slice(0, 7),
+    currentPeriod: input.currentPeriod || localAccountingPeriod(new Date(timestamp)),
+    openingStatus: { status: "pending" },
     modules: normalizeWorkspaceModules(input.modules),
     terminology: normalizeWorkspaceTerminology(input.terminology),
-    periods: [input.currentPeriod || timestamp.slice(0, 7)],
+    periods: [input.currentPeriod || localAccountingPeriod(new Date(timestamp))],
     books: [{ id: `book-${id}`, name: "默认账套", accountingStandard: "小企业会计准则", currency: "CNY", status: "active" }],
     stores: [{ id: `store-${id}`, name, status: "active", address: "" }],
     users,
@@ -895,6 +898,10 @@ export function clearWorkspace(state, workspaceId, options = {}) {
       WORKSPACE_OPERATIONAL_COLLECTIONS.forEach((key) => { cleared[key] = []; });
       cleared.tax = {};
       cleared.openingLedger = {};
+      cleared.periodStates = {};
+      cleared.openingCarryForward = null;
+      cleared.openingStatus = { status: "pending" };
+      cleared.periods = [workspace.currentPeriod];
       cleared.delivery = {
         reportVersions: [],
         filing: {
@@ -1006,12 +1013,8 @@ export function setWorkspaceStageStatus(state, workspaceId, stage, status, optio
 
 export function setWorkspacePeriod(state, workspaceId, period, options = {}) {
   const nextPeriod = String(period || "").trim();
-  if (!/^\d{4}-\d{2}$/.test(nextPeriod)) throw new Error("账期必须是 YYYY-MM 格式");
-  return updateWorkspace(state, workspaceId, (workspace) => ({
-    ...workspace,
-    currentPeriod: nextPeriod,
-    periods: [nextPeriod, ...(workspace.periods || []).filter((item) => item !== nextPeriod)],
-  }), {
+  if (!validAccountingPeriod(nextPeriod)) throw new Error("请选择有效的年份和月份");
+  return updateWorkspace(state, workspaceId, (workspace) => activateWorkspacePeriod(workspace, nextPeriod), {
     actor: options.actor,
     action: "切换账期",
     detail: `当前账期设为 ${nextPeriod}`,

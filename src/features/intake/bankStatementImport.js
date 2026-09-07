@@ -4,6 +4,7 @@ import {
   getWorkspace,
   updateWorkspace,
 } from "../../domain/foundation.js";
+import { activateWorkspacePeriod, isPeriodArchived } from "../../domain/periods.js";
 
 export const BANK_FIELD_DEFINITIONS = Object.freeze({
   date: { label: "交易日期", required: true, aliases: ["交易日期", "交易时间", "记账日期", "入账日期", "日期", "date", "transaction date"] },
@@ -1365,7 +1366,7 @@ export function applyPlatformSettlementImport(state, workspaceId, plan, options 
   if (!workspace) throw new Error(`找不到工作台：${workspaceId}`);
   if ((workspace.platformSettlementImports || []).some((record) => record.id === plan.id)) throw new Error("这份平台结算导入计划已经执行过");
   if (plan.errorCount > 0) throw new Error(`文件仍有 ${plan.errorCount} 行错误，请修正后重新预检查`);
-  if (plan.period !== workspace.currentPeriod) throw new Error(`当前活动账期是 ${workspace.currentPeriod}，不能导入 ${plan.period} 的平台结算单`);
+  if (isPeriodArchived(workspace, plan.period)) throw new Error(`${plan.period} 已归档，不能继续导入`);
   const existingKeys = new Set((workspace.platformSettlements || []).map((settlement) => String(settlement.settlementNo || "").trim().toLowerCase()));
   const importable = (plan.settlements || []).filter((settlement) => !existingKeys.has(settlement.dedupeKey || settlement.settlementNo.toLowerCase()));
   if (!importable.length) throw new Error("没有可导入的新结算单，全部为重复记录");
@@ -1432,7 +1433,9 @@ export function applyPlatformSettlementImport(state, workspaceId, plan, options 
     history: [{ at: effectivePlan.importedAt, actor, action: "created", note: anomaly.message }],
   }));
   const record = deepClone({ ...effectivePlan, settlements: undefined });
-  return updateWorkspace(state, workspaceId, (current) => ({
+  return updateWorkspace(state, workspaceId, (source) => {
+    const current = activateWorkspacePeriod(source, plan.period);
+    return ({
     ...current,
     platformSettlementImports: [...(current.platformSettlementImports || []), record],
     platformSettlements: [...effectivePlan.settlements, ...(current.platformSettlements || [])],
@@ -1446,7 +1449,8 @@ export function applyPlatformSettlementImport(state, workspaceId, plan, options 
         updatedAt: effectivePlan.importedAt,
       },
     },
-  }), {
+    });
+  }, {
     actor,
     action: "导入平台结算单",
     detail: `${effectivePlan.channelLabel} ${effectivePlan.fileName}：新增 ${effectivePlan.importableRowCount} 份，重复 ${effectivePlan.duplicateCount} 份，匹配到账 ${effectivePlan.matchedCount} 份，异常 ${effectivePlan.anomalousRowCount} 份`,
@@ -1487,7 +1491,6 @@ export function prepareBankImport(workspace, input) {
     newTransactions.push(transaction);
   });
 
-  const reconciliation = reconcileRows(statementRows, account, input);
   const statementDates = statementRows.map((row) => row.date).filter(Boolean).sort();
   const rowPeriods = [...new Set(statementRows.map((row) => row.date?.slice(0, 7)).filter(Boolean))];
   if (rowPeriods.length > 1) throw new Error(`一次只能导入一个账期；当前文件包含 ${rowPeriods.join("、")}`);
@@ -1497,6 +1500,10 @@ export function prepareBankImport(workspace, input) {
   }
   const period = selectedPeriod || detectedPeriod || workspace.currentPeriod;
   if (!validPeriod(period)) throw new Error("无法确定有效账期，请先选择导入账期");
+  if (isPeriodArchived(workspace, period)) throw new Error(`${period} 已归档，不能继续导入`);
+  const periodWorkspace = activateWorkspacePeriod(workspace, period);
+  const periodAccount = periodWorkspace.bankAccounts.find((candidate) => candidate.id === account.id);
+  const reconciliation = reconcileRows(statementRows, periodAccount, input);
   const aliasAnalysis = applyCounterpartyAliasRules(workspace, newTransactions, input.counterpartyMappings, {
     importedAt: input.importedAt,
   });
@@ -1574,14 +1581,7 @@ export function applyBankImport(state, workspaceId, plan, options = {}) {
   if ((plan.transactions || []).some((transaction) => transaction.date?.slice(0, 7) !== plan.period)) {
     throw new Error(`导入流水日期与所选账期 ${plan.period} 不一致`);
   }
-  const hasWorkflowData = existingWorkspace.transactions.length > 0
-    || existingWorkspace.vouchers.length > 0
-    || existingWorkspace.bankImports.length > 0
-    || existingWorkspace.delivery?.reportVersions?.length > 0
-    || Boolean(existingWorkspace.delivery?.filing?.draftCreatedAt);
-  if (plan.period !== existingWorkspace.currentPeriod && hasWorkflowData) {
-    throw new Error(`当前活动账期是 ${existingWorkspace.currentPeriod}；已有业务数据时不能导入 ${plan.period}，请先完成归档进入下一期或新建工作台`);
-  }
+  if (isPeriodArchived(existingWorkspace, plan.period)) throw new Error(`${plan.period} 已归档，不能继续导入`);
   const existingKeys = new Set((existingWorkspace.transactions || [])
     .map((transaction) => transaction.dedupeKey || transactionDedupeKey(transaction)));
   const incomingKeys = new Set();
@@ -1699,6 +1699,7 @@ export function applyBankImport(state, workspaceId, plan, options = {}) {
   });
   const aliasMappedExistingIds = new Set(aliasUpdates.keys());
   return updateWorkspace(state, workspaceId, (workspace) => {
+    workspace = activateWorkspacePeriod(workspace, plan.period);
     const eventsById = new Map((workspace.businessEvents || []).map((event) => [event.id, event]));
     recognitionAnalysis.businessEvents.forEach((event) => eventsById.set(event.id, event));
     const updatedExceptionTasks = (workspace.exceptionTasks || []).map((task) => {

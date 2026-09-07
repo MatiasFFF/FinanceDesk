@@ -13,6 +13,7 @@ import {
 
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
 import { BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS } from "../../domain/foundation.js";
+import { localAccountingPeriod } from "../../domain/periods.js";
 import { WORKSPACE_MODULE_OPTIONS, defaultWorkspaceModules } from "../../productWorkflow.js";
 import { copyWorkspaceLocalFiles, pruneUnreferencedLocalFiles, refreshLocalFileAvailability } from "../intake/documentIntake.js";
 import { generateWorkspaceBackup, restoreWorkspaceBackup } from "./workspaceBackup.js";
@@ -74,6 +75,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
   const [sourceWorkspaceId, setSourceWorkspaceId] = useState(activeWorkspace.id);
   const [newModules, setNewModules] = useState(() => defaultWorkspaceModules("blank"));
   const [newName, setNewName] = useState("");
+  const [newPeriod, setNewPeriod] = useState(localAccountingPeriod);
   const [newOperatorName, setNewOperatorName] = useState("");
   const [newOperatorRoleId, setNewOperatorRoleId] = useState(BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS[0]?.id || "role-owner");
   const [newFinanceContact, setNewFinanceContact] = useState("");
@@ -214,6 +216,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
         ? { name, sourceWorkspaceId, modules: newModules }
         : {
           name,
+          currentPeriod: newPeriod,
           industry: "其他服务业",
           taxpayerType: "小规模纳税人",
           modules: newModules,
@@ -495,6 +498,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
               <label className="foundation-field"><span>创建方式</span><select value={createMode} onChange={(event) => setCreationMode(event.target.value)}><option value="blank">空白工作台</option><option value="copy">复制现有工作台</option></select></label>
               {createMode === "copy" && <label className="foundation-field"><span>复制来源</span><select value={sourceWorkspaceId} onChange={(event) => selectCopySource(event.target.value)}>{state.workspaces.map((workspace) => <option value={workspace.id} key={workspace.id}>{workspace.name}</option>)}</select></label>}
               {createMode === "blank" && <>
+                <label className="foundation-field"><span>起始账期</span><input required type="month" min="1900-01" max="9999-12" value={newPeriod} onChange={(event) => setNewPeriod(event.target.value)} /></label>
                 <label className="foundation-field"><span>首位本地操作人员（可选）</span><input value={newOperatorName} onChange={(event) => setNewOperatorName(event.target.value)} placeholder="填写实际姓名" /></label>
                 <label className="foundation-field"><span>首位人员角色</span><select value={newOperatorRoleId} onChange={(event) => setNewOperatorRoleId(event.target.value)} disabled={!newOperatorName.trim()}>{BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS.map((role) => <option value={role.id} key={role.id}>{role.name}</option>)}</select></label>
                 <label className="foundation-field"><span>财务负责人（可选）</span><input value={newFinanceContact} onChange={(event) => setNewFinanceContact(event.target.value)} placeholder="填写实际姓名或岗位" /></label>

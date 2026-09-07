@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { usePeriodLeaveGuard } from "../workspaces/periodNavigation.js";
 import {
   Archive,
   CheckCircle,
@@ -402,6 +403,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const [error, setError] = useState("");
   const [uploadFeedback, setUploadFeedback] = useState(null);
   const [matchFeedback, setMatchFeedback] = useState(null);
+  usePeriodLeaveGuard({ dirty: Boolean(editing || payrollFilePreview || payrollAccrualReason), busy: busy || recognitionPending || payrollImportBusy || payrollAccrualBusy || generatingPackage || generatingMonthlyArchive });
   const relatedGroups = useMemo(() => {
     const currentTerminology = workspaceTerminology(activeWorkspace);
     return RELATED_GROUPS.map(([label, collection]) => ({
