@@ -19,8 +19,9 @@ import {
   upsertWorkspaceEntity,
 } from "../domain/foundation.js";
 import { createLocalFoundationRepository, exportBackupJson, importBackupJson } from "../storage/localFoundationRepository.js";
+import { confirmationWritePermissions } from "../domain/confirmationPermissions.js";
 import { applyBankImport } from "../features/intake/bankStatementImport.js";
-import { enterAccountingPeriod } from "../productWorkflow.js";
+import { enterAccountingPeriod, recordInitialConfirmationSection, recordFinalConfirmation } from "../productWorkflow.js";
 import { activateWorkspacePeriod } from "../domain/periods.js";
 
 export function createFinanceDeskStore(options = {}) {
@@ -34,6 +35,12 @@ export function createFinanceDeskStore(options = {}) {
   }
 
   function commit(nextState) {
+    repository.assertCanWrite?.();
+    for (const next of nextState.workspaces) {
+      const previous = state.workspaces.find((workspace) => workspace.id === next.id);
+      if (!previous) continue;
+      for (const permission of confirmationWritePermissions(previous, next)) assertWorkspaceAccess(previous.id, permission);
+    }
     state = repository.save(nextState);
     emit();
     return state;
@@ -132,6 +139,22 @@ export function createFinanceDeskStore(options = {}) {
         resolvedOptions,
       ));
     },
+    recordInitialConfirmationSection(workspaceId, input, actionOptions = {}) {
+      assertWorkspaceAccess(workspaceId, "confirm.finance");
+      assertActivePeriodWritable(workspaceId);
+      repository.assertCanWrite?.();
+      return actions.replaceWorkspace(workspaceId, recordInitialConfirmationSection(getWorkspace(state, workspaceId), input, withActor(workspaceId, actionOptions)), {
+        ...actionOptions, requiredPermission: "confirm.finance", allowArchivedTransition: false,
+      });
+    },
+    recordFinalConfirmation(workspaceId, input, actionOptions = {}) {
+      assertWorkspaceAccess(workspaceId, "confirm.owner");
+      assertActivePeriodWritable(workspaceId);
+      repository.assertCanWrite?.();
+      return actions.replaceWorkspace(workspaceId, recordFinalConfirmation(getWorkspace(state, workspaceId), input, withActor(workspaceId, actionOptions)), {
+        ...actionOptions, requiredPermission: "confirm.owner", allowArchivedTransition: false,
+      });
+    },
     setStageStatus(workspaceId, stage, status, actionOptions) {
       assertWorkspaceAccess(workspaceId, "data.write");
       assertActivePeriodWritable(workspaceId, actionOptions);
@@ -200,7 +223,12 @@ export function createFinanceDeskStore(options = {}) {
     getState: () => state,
     getActiveWorkspace: () => getWorkspace(state),
     getLoadReport: () => ({ ...loaded, state: undefined }),
+    getPersistenceStatus: repository.getPersistenceStatus || (() => READY_PERSISTENCE_STATUS),
+    subscribePersistence: repository.subscribePersistence || (() => () => {}),
+    startPersistenceSession: repository.startSession || (() => () => {}),
     subscribe,
     actions,
   };
 }
+
+const READY_PERSISTENCE_STATUS = Object.freeze({ canWrite: true, status: "ready", message: "" });

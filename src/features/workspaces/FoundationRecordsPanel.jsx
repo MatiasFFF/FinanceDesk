@@ -732,7 +732,7 @@ function operationActor(state, workspace) {
 }
 
 function emptyAccountDraft() {
-  return { id: "", name: "", category: "expense", normalSide: "debit", cash: false };
+  return { id: "", name: "", category: "expense", normalSide: "debit", cash: false, cashFlowCategory: "", settlementRole: "" };
 }
 
 function AccountCatalogEditor({ onToast }) {
@@ -762,6 +762,8 @@ function AccountCatalogEditor({ onToast }) {
       category: account.category,
       normalSide: account.normalSide,
       cash: Boolean(account.cash),
+      cashFlowCategory: account.cashFlowCategory || "",
+      settlementRole: account.settlementRole || "",
     });
     setError("");
     setEditorOpen(true);
@@ -834,9 +836,11 @@ function AccountCatalogEditor({ onToast }) {
         <form className="entity-form" onSubmit={save}>
           {draft.id && <label className="foundation-field"><span>科目编码</span><input value={draft.id} readOnly /></label>}
           <label className="foundation-field"><span>科目名称</span><input required value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} placeholder="例如：主营业务收入" /></label>
-          <label className="foundation-field"><span>科目类别</span><select value={draft.category} onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value }))}>{ACCOUNT_CATEGORIES.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+          <label className="foundation-field"><span>科目类别</span><select value={draft.category} onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value, settlementRole: "" }))}>{ACCOUNT_CATEGORIES.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
           <label className="foundation-field"><span>余额方向</span><select value={draft.normalSide} onChange={(event) => setDraft((current) => ({ ...current, normalSide: event.target.value }))}><option value="debit">借方</option><option value="credit">贷方</option></select></label>
           <label className="foundation-field"><span>现金类科目</span><select value={String(draft.cash)} onChange={(event) => setDraft((current) => ({ ...current, cash: event.target.value === "true" }))}><option value="false">否</option><option value="true">是</option></select></label>
+          {!draft.cash && <label className="foundation-field"><span>现金流用途</span><select value={draft.cashFlowCategory} onChange={(event) => setDraft((current) => ({ ...current, cashFlowCategory: event.target.value }))}><option value="">按科目与业务来源判断</option><option value="operating">经营活动</option><option value="investing">投资活动</option><option value="financing">筹资活动</option><option value="pending">逐笔确认用途</option></select></label>}
+          {!draft.cash && ["asset", "liability"].includes(draft.category) && <label className="foundation-field"><span>往来明细用途</span><select value={draft.settlementRole} onChange={(event) => setDraft((current) => ({ ...current, settlementRole: event.target.value }))}><option value="">按科目默认用途</option>{draft.category === "asset" ? <option value="receivable">应收账单</option> : <option value="payable">应付账单</option>}</select></label>}
           <div className="foundation-inline-actions"><button className="primary-button" type="submit"><Plus size={16} />{draft.id ? "保存科目修改" : "新增科目"}</button><button className="secondary-button" type="button" onClick={cancel}>取消</button></div>
           {error && <p className="entity-error">{error}</p>}
         </form>

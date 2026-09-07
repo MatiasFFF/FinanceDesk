@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildCommissionRuleCalculation, confirmCommissionAccrual } from "../src/features/members/memberLedger.js";
-import { createMemberEventVoucherDraft, postVoucher } from "../src/domain/accounting/vouchers.js";
+import { createMemberEventVoucherDraft, postVoucherWithEvidence } from "../src/domain/accounting/vouchers.js";
+
+import { withVoucherEvidence } from "./helpers/voucherEvidenceFixture.mjs";
 
 const context = { actor: "提成确认人", at: "2026-09-05T08:00:00.000Z" };
 function fixture(first = 600, second = 400) {
@@ -30,12 +32,13 @@ function accrue(workspace, ruleId, eventId) {
   return confirmCommissionAccrual(workspace, { ruleId, period: "2026-09" }, { ...context, eventId });
 }
 
-function postAccrual(workspace, eventId) {
+async function postAccrual(workspace, eventId) {
   const drafted = createMemberEventVoucherDraft(workspace, { eventId }, context);
-  return postVoucher(drafted, { voucherId: drafted.vouchers.at(-1).id, reviewNote: "已核对明确收款份额与提成依据" }, context);
+  const fixture = await withVoucherEvidence(drafted);
+  return postVoucherWithEvidence(fixture.workspace, { voucherId: drafted.vouchers.at(-1).id, reviewNote: "已核对明确收款份额与提成依据" }, { ...context, fileVault: fixture.fileVault });
 }
 
-test("真实到账提成：明确已核销会员收款不要求流水过账，份额计提可正常生成并入账凭证", () => {
+test("真实到账提成：明确已核销会员收款不要求流水过账，份额计提可正常生成并入账凭证", async () => {
   const workspace = fixture(1000, 0);
   const calculation = buildCommissionRuleCalculation(workspace, "rule-chen");
   assert.deepEqual([calculation.sourceCount, calculation.baseAmount, calculation.commissionAmount], [1, 1000, 100]);
@@ -47,7 +50,7 @@ test("真实到账提成：明确已核销会员收款不要求流水过账，�
   assert.equal(event.commissionSourceKeys[0], calculation.lines[0].sourceId);
   assert.ok(event.sourceIds.includes("allocation-li") && event.sourceIds.includes("bill-li"));
   assert.ok(event.sourceIds.every((id) => !id.startsWith("collection:")));
-  const posted = postAccrual(accrued, event.id);
+  const posted = await postAccrual(accrued, event.id);
   const voucher = posted.vouchers[0];
   assert.equal(voucher.status, "posted");
   assert.ok(voucher.sourceIds.includes(event.id));
@@ -105,9 +108,9 @@ test("真实到账提成：尚未计提的金额改变或核销撤回按当前�
   assert.deepEqual(workspace.businessEvents, []);
 });
 
-test("真实到账提成：已计提后的变更和撤回保留历史凭证，提示待处理且不挡其他已明确份额", () => {
+test("真实到账提成：已计提后的变更和撤回保留历史凭证，提示待处理且不挡其他已明确份额", async () => {
   let workspace = accrue(fixture(), "rule-chen", "accrual-chen");
-  workspace = postAccrual(workspace, "accrual-chen");
+  workspace = await postAccrual(workspace, "accrual-chen");
   const history = structuredClone(workspace.businessEvents);
   const vouchers = structuredClone(workspace.vouchers);
   workspace.transactions[0].allocations[0].amount = 500;

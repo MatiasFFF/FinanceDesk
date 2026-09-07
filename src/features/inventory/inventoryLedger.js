@@ -8,8 +8,8 @@ import {
   roundMoney,
   sumMoney,
 } from "../../domain/accounting/model.js";
-import { createManualVoucherDraft } from "../../domain/accounting/vouchers.js";
-import { syncManualVoucherEvidenceTasks } from "../evidence/evidenceEngine.js";
+import { assertAccountingPeriodWritable, createManualVoucherDraft, createPostedVoucherRevision, reviseDraftVoucher } from "../../domain/accounting/vouchers.js";
+import { inventoryVoucherAmountMatches, syncInventoryVoucherIntegrityTasks, syncManualVoucherEvidenceTasks } from "../evidence/evidenceEngine.js";
 
 export const INVENTORY_MOVEMENT_TYPES = Object.freeze({
   RECEIPT: "receipt",
@@ -211,6 +211,7 @@ function replaceValuedMovements(workspace, item, valuedMovements) {
 }
 
 export function createInventoryItem(workspace, input = {}, context = {}) {
+  assertAccountingPeriodWritable(workspace);
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext(context);
   const values = normalizeItemValues(next, input);
@@ -236,6 +237,7 @@ export function createInventoryItem(workspace, input = {}, context = {}) {
 }
 
 export function updateInventoryItem(workspace, itemId, input = {}, context = {}) {
+  assertAccountingPeriodWritable(workspace);
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext(context);
   const index = (next.inventoryItems || []).findIndex((item) => item.id === itemId);
@@ -253,6 +255,7 @@ export function updateInventoryItem(workspace, itemId, input = {}, context = {})
     movement.itemId === item.id && String(movement.date || "").slice(0, 7) === next.currentPeriod
   ));
   replaceValuedMovements(next, item, revalueItemMovements(next, item, currentPeriodMovements));
+  synchronizeInventoryCostChanges(next, resolvedContext);
   appendAuditEntry(next, {
     action: "inventory.item_update",
     entityType: "inventoryItem",
@@ -266,6 +269,7 @@ export function updateInventoryItem(workspace, itemId, input = {}, context = {})
 }
 
 export function recordInventoryMovement(workspace, input = {}, context = {}) {
+  assertAccountingPeriodWritable(workspace);
   const next = cloneAccountingState(workspace);
   const resolvedContext = operationContext(context);
   const item = findInventoryItem(next, input.itemId);
@@ -319,6 +323,7 @@ export function recordInventoryMovement(workspace, input = {}, context = {}) {
   ));
   const valuedMovements = revalueItemMovements(next, item, currentPeriodMovements);
   replaceValuedMovements(next, item, valuedMovements);
+  synchronizeInventoryCostChanges(next, resolvedContext);
   const saved = next.inventoryMovements.find((candidate) => candidate.id === movement.id);
   appendAuditEntry(next, {
     action: `inventory.movement_${type}`,
@@ -425,6 +430,7 @@ export function createInventoryLossVoucherDraft(workspace, {
   debitAccount = "costOfSales",
 } = {}, context = {}) {
   const resolvedContext = operationContext({ ...context, mode: "manual" });
+  assertAccountingPeriodWritable(workspace);
   const movement = (workspace.inventoryMovements || []).find((candidate) => candidate.id === movementId);
   if (!movement) throw inventoryError("INVENTORY_MOVEMENT_NOT_FOUND", `找不到库存流水：${movementId || "未选择"}`);
   if (![INVENTORY_MOVEMENT_TYPES.LOSS, INVENTORY_MOVEMENT_TYPES.STOCK_LOSS].includes(movement.type)) {
@@ -490,5 +496,54 @@ export function createInventoryLossVoucherDraft(workspace, {
     after: { voucherId: voucher.id, amount: valuedMovement.amount, debitAccount: debitAccount || "costOfSales", creditAccount: "inventory" },
     sourceIds: collectSourceIds(movement.id, item.id, voucher.id, sourceIds, movement.evidenceIds),
   }, resolvedContext);
+  return next;
+}
+
+function synchronizeInventoryCostChanges(workspace, context) {
+  (workspace.vouchers || []).filter((voucher) => voucher.inventoryMovementId && ["draft", "changes_requested"].includes(voucher.status)
+    && voucher.period === workspace.currentPeriod).forEach((voucher) => syncManualVoucherEvidenceTasks(workspace, voucher, context));
+  syncInventoryVoucherIntegrityTasks(workspace, context);
+}
+
+export function updateInventoryLossVoucherDraft(workspace, { movementId }, context = {}) {
+  assertAccountingPeriodWritable(workspace);
+  const movement = (workspace.inventoryMovements || []).find((item) => item.id === movementId);
+  if (!movement || !["loss", "stockLoss"].includes(movement.type) || String(movement.date).slice(0, 7) !== workspace.currentPeriod) {
+    throw inventoryError("INVENTORY_MOVEMENT_NOT_FOUND", "请选择当前未归档账期的损耗或盘亏流水");
+  }
+  const originals = (workspace.vouchers || []).filter((voucher) => voucher.inventoryMovementId === movementId && ["draft", "changes_requested", "posted"].includes(voucher.status));
+  let voucher = originals.find((item) => ["draft", "changes_requested"].includes(item.status)) || originals.find((item) => item.status === "posted");
+  if (!voucher) return createInventoryLossVoucherDraft(workspace, { movementId }, context);
+  if (voucher.status === "posted" && inventoryVoucherAmountMatches(voucher, movement)) throw inventoryError("INVENTORY_LOSS_VOUCHER_EXISTS", "损耗成本与已入账凭证一致，无需更正");
+  if (roundMoney(movement.amount) < 0 || !Number.isFinite(Number(movement.amount))) throw inventoryError("INVENTORY_LOSS_AMOUNT_INVALID", "当前损耗成本无效，请核对库存流水");
+  if (roundMoney(movement.amount) === 0 && voucher.status !== "posted" && !voucher.revisionOf) {
+    const next = cloneAccountingState(workspace);
+    const saved = next.vouchers.find((item) => item.id === voucher.id);
+    saved.status = "invalidated";
+    saved.invalidationReason = "当前损耗成本为零，无需入账";
+    next.inventoryMovements.find((item) => item.id === movement.id).voucherId = null;
+    (next.exceptionTasks || []).filter((task) => task.sourceId === voucher.id && task.status !== "resolved").forEach((task) => { task.status = "resolved"; task.resolution = "zero_inventory_cost"; });
+    appendAuditEntry(next, { action: "inventory.zero_cost_draft_cancel", entityType: "voucher", entityId: voucher.id, detail: saved.invalidationReason, sourceIds: collectSourceIds(voucher.id, movement.id) }, operationContext(context));
+    return next;
+  }
+  let next = workspace;
+  const reason = `库存移动平均成本更新，损耗金额按当前流水调整为 ${roundMoney(movement.amount).toFixed(2)} 元`;
+  if (voucher.status === "posted") {
+    next = createPostedVoucherRevision(next, { voucherId: voucher.id, reason }, context);
+    voucher = next.vouchers.at(-1);
+  }
+  const sourceIds = collectSourceIds(movement.id, movement.itemId, movement.sourceIds);
+  const debitLine = (voucher.lines || []).find((line) => Number(line.debit) > 0 && line.account !== "inventory");
+  const amount = roundMoney(movement.amount);
+  next = reviseDraftVoucher(next, {
+    voucherId: voucher.id, reason, evidenceIds: collectSourceIds(voucher.evidenceIds, movement.evidenceIds),
+    lines: [
+      { ...debitLine, account: debitLine?.account || "costOfSales", debit: amount, credit: 0, sourceIds },
+      { account: "inventory", storeId: movement.locationId, storeName: movement.locationName, debit: 0, credit: amount, sourceIds },
+    ],
+  }, context);
+  const savedMovement = next.inventoryMovements.find((item) => item.id === movement.id);
+  savedMovement.voucherId = voucher.id;
+  synchronizeInventoryCostChanges(next, operationContext(context));
   return next;
 }

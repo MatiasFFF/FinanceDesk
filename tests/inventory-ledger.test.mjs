@@ -6,6 +6,8 @@ import { AccountingRuleError } from "../src/domain/accounting/model.js";
 import { postVoucherWithEvidence } from "../src/domain/accounting/vouchers.js";
 import { createDocumentMetadata } from "../src/features/intake/documentIntake.js";
 import { createMemoryFileVault } from "../src/features/intake/browserFileVault.js";
+import { assessInventoryVoucherIntegrity, assessManualVoucherEvidence } from "../src/features/evidence/evidenceEngine.js";
+import { withVoucherEvidence } from "./helpers/voucherEvidenceFixture.mjs";
 import {
   INVENTORY_MOVEMENT_TYPES,
   buildInventorySummary,
@@ -13,9 +15,70 @@ import {
   createInventoryLossVoucherDraft,
   recordInventoryMovement,
   updateInventoryItem,
+  updateInventoryLossVoucherDraft,
 } from "../src/features/inventory/inventoryLedger.js";
 
 const context = { actor: "测试会计", at: "2026-09-01T08:00:00.000Z" };
+
+async function costChangeFixture() {
+  let workspace = inventoryWorkspace();
+  workspace = createInventoryItem(workspace, { name: "成本变动测试物料", unit: "件", locationId: "location-main", openingQuantity: 10, openingUnitCost: 10 }, context);
+  workspace = recordInventoryMovement(workspace, { itemId: workspace.inventoryItems[0].id, type: "loss", date: "2026-09-10", quantity: 2, locationId: "location-main", reason: "报废" }, context);
+  workspace = createInventoryLossVoucherDraft(workspace, { movementId: workspace.inventoryMovements[0].id }, context);
+  return withVoucherEvidence(workspace);
+}
+
+test("opening cost edit blocks old loss draft and updating current cost keeps one draft", async () => {
+  let { workspace, fileVault } = await costChangeFixture();
+  const voucherId = workspace.vouchers[0].id;
+  workspace = updateInventoryItem(workspace, workspace.inventoryItems[0].id, { openingUnitCost: 20 }, context);
+  assert.equal(workspace.inventoryMovements[0].amount, 40);
+  assert.equal(workspace.vouchers[0].lines[0].debit, 20);
+  assert.ok(assessManualVoucherEvidence(workspace, workspace.vouchers[0]).issues.some((issue) => issue.code === "voucher_inventory_amount_changed"));
+  await assert.rejects(postVoucherWithEvidence(workspace, { voucherId, reviewNote: "不能用旧金额入账" }, { ...context, fileVault }), (error) => error.code === "VOUCHER_EVIDENCE_REQUIRED");
+  workspace = updateInventoryLossVoucherDraft(workspace, { movementId: workspace.inventoryMovements[0].id }, context);
+  assert.equal(workspace.vouchers.length, 1);
+  assert.equal(workspace.vouchers[0].id, voucherId);
+  workspace = await postVoucherWithEvidence(workspace, { voucherId, reviewNote: "已按当前成本40元复核" }, { ...context, fileVault });
+  assert.equal(workspace.vouchers[0].lines[0].debit, 40);
+  assert.equal(workspace.vouchers[0].status, "posted");
+});
+
+test("backdated receipt changes posted loss cost, preserves original and can complete correction", async () => {
+  let { workspace, fileVault } = await costChangeFixture();
+  workspace = await postVoucherWithEvidence(workspace, { voucherId: workspace.vouchers[0].id, reviewNote: "原成本20元入账" }, { ...context, fileVault });
+  const original = structuredClone(workspace.vouchers[0]);
+  const movementId = workspace.inventoryMovements[0].id;
+  workspace = recordInventoryMovement(workspace, { itemId: workspace.inventoryItems[0].id, type: "receipt", date: "2026-09-02", quantity: 10, unitCost: 30, locationId: "location-main" }, context);
+  assert.deepEqual(workspace.vouchers[0], original);
+  assert.equal(workspace.inventoryMovements.find((movement) => movement.id === movementId).amount, 40);
+  assert.equal(assessInventoryVoucherIntegrity(workspace).passed, false);
+  assert.ok(workspace.exceptionTasks.some((task) => task.code === "inventory_posted_cost_changed" && task.status === "open"));
+  workspace.exceptionTasks.forEach((task) => { if (task.code === "inventory_posted_cost_changed") task.status = "resolved"; });
+  assert.equal(assessInventoryVoucherIntegrity(workspace).passed, false, "closing a task does not repair the posting");
+  workspace = updateInventoryLossVoucherDraft(workspace, { movementId }, context);
+  const revision = workspace.vouchers.at(-1);
+  assert.equal(revision.revisionOf, original.id);
+  assert.deepEqual(workspace.vouchers[0], original);
+  workspace = await postVoucherWithEvidence(workspace, { voucherId: revision.id, reviewNote: "已复核补录入库后的当前成本40元" }, { ...context, fileVault });
+  assert.equal(workspace.vouchers[0].status, "superseded");
+  assert.equal(workspace.vouchers[0].lines[0].debit, 20);
+  assert.equal(workspace.vouchers.at(-1).lines[0].debit, 40);
+  assert.equal(assessInventoryVoucherIntegrity(workspace).passed, true);
+  assert.ok(workspace.exceptionTasks.filter((task) => task.code === "inventory_posted_cost_changed").every((task) => task.status === "resolved"));
+});
+
+test("zero current loss cost has a usable replacement and archived inventory stays read-only", async () => {
+  let { workspace, fileVault } = await costChangeFixture();
+  workspace = await postVoucherWithEvidence(workspace, { voucherId: workspace.vouchers[0].id, reviewNote: "原损耗已核对" }, { ...context, fileVault });
+  workspace = updateInventoryItem(workspace, workspace.inventoryItems[0].id, { openingUnitCost: 0 }, context);
+  workspace = updateInventoryLossVoucherDraft(workspace, { movementId: workspace.inventoryMovements[0].id }, context);
+  workspace = await postVoucherWithEvidence(workspace, { voucherId: workspace.vouchers.at(-1).id, reviewNote: "当前损耗成本确认为零，保留原凭证作为历史" }, { ...context, fileVault });
+  assert.equal(assessInventoryVoucherIntegrity(workspace).passed, true);
+  assert.equal(workspace.vouchers.at(-1).lines[0].debit, 0);
+  workspace.delivery = { archives: [{ period: workspace.currentPeriod }] };
+  assert.throws(() => updateInventoryItem(workspace, workspace.inventoryItems[0].id, { openingUnitCost: 1 }, context), (error) => error.code === "PERIOD_ARCHIVED");
+});
 
 function inventoryWorkspace() {
   const workspace = createBlankWorkspace({

@@ -1,5 +1,6 @@
 import { createId } from "../../domain/foundation.js";
 import { buildCommissionCollectionSources } from "./commissionCollectionSources.js";
+import { linkMemberRechargeSource } from "./memberRechargeSources.js";
 
 export const MEMBER_EVENT_KINDS = Object.freeze({
   RECHARGE: "recharge",
@@ -1140,7 +1141,10 @@ export function addMemberBusinessEvent(workspace, values, context = {}) {
     event.originalRechargeId = originalRechargeId;
     event.sourceIds = [member.id, ...(dimensions.storeId ? [dimensions.storeId] : []), originalRechargeId];
   }
-  return { ...workspace, businessEvents: [...(workspace.businessEvents || []), event] };
+  const next = { ...workspace, businessEvents: [...(workspace.businessEvents || []), event] };
+  return kind === MEMBER_EVENT_KINDS.RECHARGE && values.transactionId
+    ? linkMemberRechargeSource(next, { eventId: event.id, transactionId: values.transactionId, allocationId: values.allocationId, billId: values.billId }, context)
+    : next;
 }
 
 export function updateMemberBusinessEventStatus(workspace, eventId, nextStatus, context = {}) {

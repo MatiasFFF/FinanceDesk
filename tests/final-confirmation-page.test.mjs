@@ -29,7 +29,7 @@ test("S12 renders the full local-only review snapshot and all required choices",
 
 test("the final review sends the displayed version, draft and signer to the shared confirmation action", () => {
   assert.match(appSource, /onFinalConfirm\(\{ reportVersionId: version\.id, filingDraftCreatedAt: filing\.draftCreatedAt, name: confirmer\.trim\(\), selections:/);
-  assert.match(appSource, /mutateActive\(\(current\) => recordFinalConfirmation\(current, input,/);
+  assert.match(appSource, /actions\.recordFinalConfirmation\(store\.getActiveWorkspace\(\)\.id, input,/);
   assert.match(appSource, /storedFinalConfirmation\.reportSourceFingerprint === \(version\?\.sourceFingerprint \|\| null\)/);
   assert.match(appSource, /storedFinalConfirmation\.filingDraftCreatedAt === filing\.draftCreatedAt/);
   assert.match(appSource, /const exportReady = finalConfirmationCurrent && exportChecks\.every/);
@@ -40,7 +40,16 @@ test("the first confirmation exposes an editable signer and forwards the entered
   assert.match(appSource, /const \[initialConfirmer, setInitialConfirmer\]/);
   assert.match(appSource, /confirmationName: initialConfirmer\.trim\(\)/);
   assert.match(appSource, /responsibleName: responsibleName\.trim\(\)/);
-  assert.match(appSource, /mutateActive\(\(current\) => saveInitialConfirmationSection\(current, input,/);
+  assert.match(appSource, /actions\.recordInitialConfirmationSection\(store\.getActiveWorkspace\(\)\.id, input,/);
+});
+
+test("confirmation controls use the active local user's distinct finance and owner permissions", () => {
+  assert.match(appSource, /const canFinanceConfirm = hasWorkspacePermission\(state, workspace\.id, "confirm\.finance"\)/);
+  assert.match(appSource, /const canOwnerConfirm = hasWorkspacePermission\(state, workspace\.id, "confirm\.owner"\)/);
+  assert.match(appSource, /const canConfirmSections = canFinanceConfirm && periodWritable/);
+  assert.match(appSource, /const canStartFinalConfirmation = canOwnerConfirm && periodWritable && finalPrerequisitesReady/);
+  assert.match(appSource, /当前身份没有财务确认权限/);
+  assert.match(appSource, /当前身份没有负责人最终确认权限/);
 });
 
 test("final confirmation copy never represents a local record as submitted or paid", () => {

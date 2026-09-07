@@ -98,11 +98,14 @@ function normalizeDocumentType(document) {
 }
 
 function evidenceInventory(workspace, transaction, classification) {
-  const linkedIds = collectSourceIds(transaction.evidenceIds || [], transaction.documentIds || []);
+  const linkedIds = collectSourceIds(transaction.evidenceIds, transaction.documentIds, transaction.sourceDocumentId,
+    (transaction.allocations || []).filter((allocation) => ["confirmed", "posted"].includes(allocation.status)).map((allocation) => {
+      const bill = (workspace.bills || []).find((item) => item.id === allocation.billId);
+      return collectSourceIds(allocation.evidenceIds, bill?.evidenceIds, bill?.documentIds);
+    }));
   const documents = (workspace.documents || []).filter((document) => linkedIds.includes(document.id));
   const types = new Set(documents.flatMap(normalizeDocumentType));
-  if (transaction.id) types.add("bankStatement");
-  if (classification.counterpartAccountId || transaction.counterpartTransactionId) types.add("internalCounterpart");
+  if (transaction.counterpartTransactionId && (workspace.transactions || []).some((other) => other.id === transaction.counterpartTransactionId)) types.add("internalCounterpart");
   return { linkedIds, documents, types };
 }
 
@@ -129,6 +132,12 @@ export function assessTransactionEvidence(workspace, transaction, classification
     issues.push({ code: "low_confidence", message: `匹配置信度 ${classification.confidence}% 低于 ${rules.confidenceThreshold}%` });
   }
   if (missing.length) issues.push({ code: "missing_evidence", message: `缺少：${missing.map((item) => item.label).join("、")}` });
+  inventory.linkedIds.forEach((id) => {
+    const document = inventory.documents.find((item) => item.id === id);
+    if (!document || ["deleted", "voided", "cancelled"].includes(document.status) || !document.hash || !document.storage?.availableLocally || Number(document.size) <= 0) {
+      issues.push({ code: "original_unavailable", message: `资料 ${document?.name || id} 缺少可核验本地原件，请补回原文件` });
+    }
+  });
   if (classification.riskFlags.includes("responsible_person_confirmation")) {
     issues.push({ code: "responsible_person_confirmation", message: "该事项需要负责人确认" });
   }
@@ -349,6 +358,9 @@ export function assessManualVoucherEvidence(workspace, voucher) {
       || (voucher.lines || []).some((line) => !line.sourceIds?.includes(movement.id) || !line.sourceIds?.includes(item.id))) {
       add("voucher_inventory_source_invalid", "库存损耗凭证的流水、物料与分录关联不一致；请依据正确的库存流水重新生成草稿");
     }
+    if (movement && !inventoryVoucherAmountMatches(voucher, movement)) {
+      add("voucher_inventory_amount_changed", `库存成本已变化：当前损耗 ${roundMoney(movement.amount).toFixed(2)} 元，凭证金额已过期；请在库存页按当前成本更新草稿或创建更正`);
+    }
   }
   const referenceIds = collectSourceIds(basis.voucherIds, voucher.revisionOf);
   const references = referenceIds.map((id) => (workspace.vouchers || []).find((item) => (
@@ -429,7 +441,129 @@ export function recordManualVoucherEvidenceFailure(workspace, voucherId, message
   const voucher = (next.vouchers || []).find((item) => item.id === voucherId);
   if (!voucher || !["draft", "changes_requested"].includes(voucher.status)) return next;
   const resolvedContext = operationContext(context);
-  syncManualVoucherEvidenceTasks(next, voucher, resolvedContext, [{ code: "voucher_original_verification", message }]);
+  if (voucher.sourceType === "manual" || voucher.judgement?.eventType === "manualVoucher") {
+    syncManualVoucherEvidenceTasks(next, voucher, resolvedContext, [{ code: "voucher_original_verification", message }]);
+  } else {
+    syncVoucherEvidenceTasks(next, voucher, resolvedContext, [{ code: "voucher_original_verification", message }]);
+  }
   appendAuditEntry(next, { action: "voucher.evidence_missing", entityType: "voucher", entityId: voucher.id, detail: message, sourceIds: collectSourceIds(voucher.id, voucher.evidenceIds) }, resolvedContext);
   return next;
+}
+
+export function inventoryVoucherAmountMatches(voucher, movement) {
+  const amount = roundMoney(movement?.amount);
+  const debit = roundMoney((voucher.lines || []).reduce((total, line) => total + Number(line.debit || 0), 0));
+  const credit = roundMoney((voucher.lines || []).reduce((total, line) => total + Number(line.credit || 0), 0));
+  const inventoryCredit = roundMoney((voucher.lines || []).filter((line) => line.account === "inventory")
+    .reduce((total, line) => total + Number(line.credit || 0) - Number(line.debit || 0), 0));
+  return (amount > 0 || (amount === 0 && voucher.revisionOf)) && debit === amount && credit === amount && inventoryCredit === amount;
+}
+
+export function assessInventoryVoucherIntegrity(workspace, { period = workspace.currentPeriod } = {}) {
+  const issues = (workspace.vouchers || []).filter((voucher) => voucher.status === "posted" && voucher.inventoryMovementId
+    && (!period || voucher.period === period)).flatMap((voucher) => {
+    const movement = (workspace.inventoryMovements || []).find((item) => item.id === voucher.inventoryMovementId);
+    return movement && inventoryVoucherAmountMatches(voucher, movement) ? [] : [{
+      code: "inventory_posted_cost_changed", voucherId: voucher.id, movementId: voucher.inventoryMovementId,
+      message: `库存损耗 ${movement?.id || voucher.inventoryMovementId} 的当前成本与已入账凭证 ${voucher.no || voucher.id} 不一致；原凭证金额保留，请按当前成本更正后再确认报表`,
+      sourceIds: collectSourceIds(voucher.id, movement?.id, movement?.itemId),
+    }];
+  });
+  return { passed: issues.length === 0, issues, sourceIds: collectSourceIds(issues.map((issue) => issue.sourceIds)) };
+}
+
+export function syncInventoryVoucherIntegrityTasks(workspace, context) {
+  const assessment = assessInventoryVoucherIntegrity(workspace);
+  const tasks = workspace.exceptionTasks || (workspace.exceptionTasks = []);
+  const active = new Set(assessment.issues.map((issue) => issue.voucherId));
+  assessment.issues.forEach((issue) => {
+    const identity = `inventory-cost:${issue.voucherId}`;
+    let task = tasks.find((item) => item.identity === identity);
+    if (!task) { task = { id: nextRecordId(tasks, "exception"), identity, createdAt: context.at, history: [] }; tasks.push(task); }
+    Object.assign(task, { code: issue.code, sourceType: "voucher", sourceId: issue.voucherId, sourceIds: issue.sourceIds,
+      period: workspace.currentPeriod, status: "open", message: issue.message, action: "correct_inventory_cost", updatedAt: context.at });
+  });
+  tasks.filter((task) => task.code === "inventory_posted_cost_changed" && task.period === workspace.currentPeriod && !active.has(task.sourceId) && task.status !== "resolved")
+    .forEach((task) => { task.status = "resolved"; task.resolvedAt = context.at; task.resolvedBy = context.actor; task.resolution = "inventory_cost_corrected"; });
+  return assessment;
+}
+
+// Follow explicit source IDs only. A bank allocation never expands into unrelated sibling allocations.
+export function voucherEvidenceSources(workspace, voucher) {
+  const collections = ["transactions", "businessEvents", "bills", "contracts", "invoices", "approvals", "inventoryMovements", "inventoryItems", "payrollRecords", "payrollImports", "bankImports", "advanceApplications", "members", "membershipPackages", "stores", "personnelRecords"];
+  const records = new Map(collections.flatMap((collection) => (workspace[collection] || []).map((record) => [record.id, { collection, record }])));
+  (workspace.transactions || []).forEach((transaction) => (transaction.allocations || []).forEach((record) => records.set(record.id, { collection: "allocations", record, transaction })));
+  (workspace.transactions || []).forEach((transaction) => (transaction.refundLinks || []).forEach((record) => records.set(record.id, { collection: "refundLinks", record, transaction })));
+  const roots = collectSourceIds(voucher.sourceIds, (voucher.lines || []).map((line) => line.sourceIds), voucher.memberEventId, voucher.bankBusinessEventId, voucher.inventoryMovementId, voucher.advanceApplicationId);
+  const bankEvent = (workspace.businessEvents || []).find((event) => event.id === voucher.bankBusinessEventId
+    && event.sourceType === "bankTransaction" && event.status === "confirmed"
+    && (workspace.transactions || []).some((transaction) => transaction.id === event.transactionId && transaction.id === voucher.transactionId));
+  const localEntityIds = collectSourceIds(voucher.transactionId, voucher.memberEventId, voucher.bankBusinessEventId, voucher.inventoryMovementId,
+    voucher.advanceApplicationId, bankEvent?.relatedBillId, bankEvent?.relatedTransactionId);
+  // referenceNo is an external business number, not a local order entity. Only
+  // its explicit, unchanged order_contract reference on a real confirmed event
+  // has that meaning; this must not exempt missing bills, transactions or files.
+  const externalReferenceIds = new Set((voucher.businessReferences || []).filter((reference) => reference.kind === "order_contract"
+    && typeof reference.id === "string" && reference.id.trim() && reference.id === bankEvent?.referenceNo
+    && !localEntityIds.includes(reference.id)).map((reference) => reference.id));
+  const ids = new Set(roots);
+  const documentIds = new Set(collectSourceIds(voucher.evidenceIds, voucher.basis?.calculationDocumentId));
+  const sources = [];
+  for (const id of ids) {
+    const source = records.get(id);
+    const document = (workspace.documents || []).find((item) => item.id === id);
+    if (document) documentIds.add(id);
+    if (!source) continue;
+    sources.push(source);
+    const { record } = source;
+    collectSourceIds(record.evidenceIds, record.documentIds, record.documentId, record.sourceDocumentId, record.invoiceDocumentIds).forEach((documentId) => documentIds.add(documentId));
+    collectSourceIds(record.sourceIds, record.billId, record.relatedBillId, record.transactionId, record.allocationId, record.contractId, record.invoiceId, record.approvalId, record.originalSourceId,
+      record.sourceImportId, record.advanceBillId, record.targetBillId, record.itemId, source.transaction?.id).forEach((sourceId) => ids.add(sourceId));
+  }
+  return { sourceIds: [...ids], roots, sources, documentIds: [...documentIds], invalidSourceIds: roots.filter((id) => !records.has(id)
+    && !externalReferenceIds.has(id) && !(workspace.documents || []).some((document) => document.id === id)) };
+}
+
+export function assessVoucherEvidence(workspace, voucher) {
+  const trace = voucherEvidenceSources(workspace, voucher);
+  const issues = trace.invalidSourceIds.map((id) => ({ code: "voucher_source_invalid", message: `凭证来源 ${id} 已不存在，请重新关联真实业务来源` }));
+  trace.sources.forEach(({ record, collection }) => {
+    if (["deleted", "void", "voided", "cancelled", "reversed", "rejected", "withdrawn", "revoked"].includes(record.status)
+      || record.voidStatus === "voided" || (collection === "allocations" && !["confirmed", "posted"].includes(record.status))) {
+      issues.push({ code: "voucher_source_invalid", message: `凭证来源 ${record.id} 已失效或未确认，请按当前业务重新生成` });
+    }
+  });
+  const documents = trace.documentIds.map((id) => (workspace.documents || []).find((document) => document.id === id));
+  if (!documents.length) issues.push({ code: "voucher_original_missing", message: "尚无原始依据，请在资料页关联本笔业务的原文件后入账" });
+  trace.documentIds.forEach((id, index) => {
+    const document = documents[index];
+    if (!document || ["deleted", "voided", "cancelled"].includes(document.status) || document.voidStatus === "voided"
+      || !document.hash || !document.storage?.availableLocally || Number(document.size) <= 0) {
+      issues.push({ code: "voucher_original_unavailable", message: `${document?.name || id} 缺少有效本地原文件，请在资料页补回原件` });
+    }
+  });
+  const types = new Set(documents.filter(Boolean).flatMap(normalizeDocumentType));
+  const transactions = trace.sources.filter((source) => source.collection === "transactions").map((source) => source.record);
+  const requirements = [...requirementsFor(workspace, voucher.judgement?.eventType).filter((requirement) => transactions.length || requirement.id !== "bank"), ...transactions.flatMap((transaction) => requirementsFor(workspace, (transaction.classification || classifyBankTransaction(workspace, transaction)).eventType))];
+  if (transactions.some((transaction) => transaction.counterpartTransactionId && trace.sourceIds.includes(transaction.counterpartTransactionId))) types.add("internalCounterpart");
+  [...new Map(requirements.map((requirement) => [requirement.id, requirement])).values()].forEach((requirement) => {
+    if (!requirement.anyOf.some((type) => types.has(type))) issues.push({ code: "voucher_required_original_missing", message: `缺少本笔业务所需的${requirement.label}原件；人工业务确认不能替代原文件` });
+  });
+  return { ...trace, documents: documents.filter(Boolean), complete: issues.length === 0, issues, referenceIds: [] };
+}
+
+export function syncVoucherEvidenceTasks(workspace, voucher, context, extraIssues = []) {
+  const assessment = assessVoucherEvidence(workspace, voucher);
+  const issues = [...assessment.issues, ...extraIssues];
+  voucher.blockers = issues;
+  const tasks = workspace.exceptionTasks || (workspace.exceptionTasks = []);
+  const identity = `voucher:${voucher.id}:evidence`;
+  let task = tasks.find((item) => item.identity === identity);
+  if (issues.length) {
+    if (!task) { task = { id: nextRecordId(tasks, "exception"), identity, code: "voucher_evidence", sourceType: "voucher", sourceId: voucher.id, period: voucher.period, createdAt: context.at, history: [] }; tasks.push(task); }
+    Object.assign(task, { status: "open", action: "complete_voucher_evidence", message: issues.map((issue) => issue.message).join("；"), sourceIds: collectSourceIds(voucher.id, assessment.sourceIds, assessment.documentIds), updatedAt: context.at });
+  } else if (task && task.status !== "resolved") {
+    Object.assign(task, { status: "resolved", resolvedAt: context.at, resolvedBy: context.actor, resolution: "originals_verified" });
+  }
+  return assessment;
 }

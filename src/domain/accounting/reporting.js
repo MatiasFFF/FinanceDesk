@@ -16,6 +16,9 @@ import * as XLSX from "xlsx";
 import { activateWorkspacePeriod, isPeriodArchived, openingBalancesReady, periodSourceRecords } from "../periods.js";
 import { buildPayrollSourceState, payrollSourceMetric } from "./payrollSource.js";
 import { buildAdvanceBalances, buildAgeingSchedule } from "../../features/reconciliation/reconciliationEngine.js";
+import { buildSettlementLedgerCheck } from "../../features/reconciliation/settlementRecognition.js";
+import { voucherCashFlowMovements } from "./cashFlowClassification.js";
+import { assessInventoryVoucherIntegrity } from "../../features/evidence/evidenceEngine.js";
 import {
   MEMBER_EVENT_DEFINITIONS,
   MEMBER_EVENT_KINDS,
@@ -189,28 +192,10 @@ export function buildBalanceSheet(workspace, {
   };
 }
 
-function cashFlowCategory(workspace, voucher) {
-  const counterpart = (voucher.lines || []).filter((line) => !accountDefinition(line.account, workspace).cash);
-  const categories = new Set(counterpart.map((line) => accountDefinition(line.account, workspace).category));
-  if (categories.has("asset") && counterpart.some((line) => !["receivable", "prepayment"].includes(String(line.account).split(":")[0]))) return "investing";
-  if (categories.has("equity") || counterpart.some((line) => ["loan", "relatedParty"].includes(String(line.account).split(":")[0]))) return "financing";
-  return "operating";
-}
-
 export function buildCashFlowStatement(workspace, { period = workspace.currentPeriod } = {}) {
+  if (period !== workspace.currentPeriod) workspace = activateWorkspacePeriod(workspace, period);
   const vouchers = activePostedVouchers(workspace, period);
-  const movements = vouchers.map((voucher) => {
-    const cashLines = (voucher.lines || []).filter((line) => accountDefinition(line.account, workspace).cash);
-    const amount = sumMoney(cashLines.map((line) => Number(line.debit || 0) - Number(line.credit || 0)));
-    return {
-      voucherId: voucher.id,
-      date: voucher.date,
-      summary: voucher.summary,
-      category: cashFlowCategory(workspace, voucher),
-      amount,
-      sourceIds: collectSourceIds(voucher.id, voucher.sourceIds, cashLines.map((line) => line.sourceIds)),
-    };
-  }).filter((movement) => Math.abs(movement.amount) > 0.01);
+  const movements = vouchers.flatMap((voucher) => voucherCashFlowMovements(workspace, voucher));
   const section = (category) => {
     const rows = movements.filter((movement) => movement.category === category);
     return valueWithSources(sumMoney(rows.map((row) => row.amount)), rows.map((row) => row.sourceIds), { rows });
@@ -218,11 +203,12 @@ export function buildCashFlowStatement(workspace, { period = workspace.currentPe
   const operating = section("operating");
   const investing = section("investing");
   const financing = section("financing");
-  const netChange = valueWithSources(roundMoney(operating.value + investing.value + financing.value), movements.map((row) => row.sourceIds));
+  const pending = section("pending");
+  const netChange = valueWithSources(sumMoney(movements.map((row) => row.amount)), movements.map((row) => row.sourceIds));
   const openingRows = Object.entries(workspace.openingLedger || {}).filter(([accountId]) => accountDefinition(accountId, workspace).cash);
   const openingCash = valueWithSources(sumMoney(openingRows.map(([, value]) => value)), openingRows.map(([accountId]) => accountId));
   const closingCash = valueWithSources(roundMoney(openingCash.value + netChange.value), collectSourceIds(openingCash.sourceIds, netChange.sourceIds));
-  return { period, operating, investing, financing, netChange, openingCash, closingCash, movements };
+  return { period, operating, investing, financing, pending, classificationComplete: pending.rows.length === 0, netChange, openingCash, closingCash, movements };
 }
 
 export function buildFinancialStatements(workspace, { period = workspace.currentPeriod } = {}) {
@@ -231,6 +217,9 @@ export function buildFinancialStatements(workspace, { period = workspace.current
   const incomeStatement = buildIncomeStatement(workspace, { period, ledger });
   const balanceSheet = buildBalanceSheet(workspace, { period, ledger, incomeStatement });
   const cashFlow = buildCashFlowStatement(workspace, { period });
+  const settlementLedger = buildSettlementLedgerCheck(workspace, { period });
+  const inventoryIntegrity = workspace.modules?.inventory === true
+    ? assessInventoryVoucherIntegrity(workspace, { period }) : { passed: true, issues: [], sourceIds: [] };
   const memberServiceReconciliation = reportMemberBusinessEnabled(workspace)
     ? buildMemberServiceReconciliation(workspace, { period })
     : {
@@ -249,11 +238,15 @@ export function buildFinancialStatements(workspace, { period = workspace.current
     balanceSheet,
     incomeStatement,
     cashFlow,
+    settlementLedger,
     memberServiceReconciliation,
     checks: {
       trialBalance: { passed: Math.abs(ledger.totals.difference) <= 0.01, difference: ledger.totals.difference, sourceIds: ledger.vouchers },
       balanceSheet: { passed: balanceSheet.balanced, difference: balanceSheet.difference.value, sourceIds: balanceSheet.difference.sourceIds },
       cashMovement: { passed: Math.abs(roundMoney(ledgerCash - cashFlow.closingCash.value)) <= 0.01, difference: roundMoney(ledgerCash - cashFlow.closingCash.value), sourceIds: cashFlow.closingCash.sourceIds },
+      cashFlowClassification: { passed: cashFlow.classificationComplete, difference: cashFlow.pending.value, sourceIds: cashFlow.pending.sourceIds, detail: "现金流用途未确认，请在往来业务的现金流分类中确认，再冻结报表" },
+      settlementLedger,
+      inventoryIntegrity: { ...inventoryIntegrity, applicable: workspace.modules?.inventory === true, detail: inventoryIntegrity.issues.map((issue) => issue.message).join("；") },
       memberService: {
         passed: memberServiceReconciliation.passed,
         applicable: memberServiceReconciliation.applicable,
@@ -711,7 +704,7 @@ export function buildReceivablePayableAgeing(workspace, {
   const payableRows = rows.filter((row) => row.kind === "payable");
   const missingReceivables = missingRows.filter((row) => row.kind === "receivable");
   const missingPayables = missingRows.filter((row) => row.kind === "payable");
-  const advances = buildAdvanceBalances(workspace);
+  const advances = buildAdvanceBalances(workspace, { asOf: resolvedAsOf });
   const depositRows = advances.rows.filter((row) => row.kind === "depositReceived" && row.availableBalance > 0.01);
   const prepaymentRows = advances.rows.filter((row) => row.kind === "prepaymentPaid" && row.availableBalance > 0.01);
   return {

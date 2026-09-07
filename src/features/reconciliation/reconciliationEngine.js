@@ -18,6 +18,7 @@ import {
   sumMoney,
   transactionUnallocatedAmount,
 } from "../../domain/accounting/model.js";
+import { settlementBillIsEffective, settlementRecordIsEffective, settlementTransactionIsEffective, settlementPeriodEnd } from "./settlementRecognition.js";
 import {
   applyManualClassification,
   classifyBankTransaction,
@@ -384,6 +385,7 @@ export function createSettlementBill(workspace, input, context = {}) {
     date,
     dueDate,
     businessPeriod: input?.businessPeriod || periodOf(date),
+    recognitionBasis: input?.recognitionBasis === "opening" ? "opening" : "business",
     evidenceIds: collectSourceIds(input?.evidenceIds || []),
     source: input?.source || "手工新增",
     status: "active",
@@ -900,9 +902,10 @@ function reassessBankTransactionBusinessEvent(workspace, transactionId, context)
 
 export function confirmedAllocationsForBill(workspace, billId, { asOf } = {}) {
   return (workspace.transactions || []).flatMap((transaction) => (
-    activeAllocations(transaction)
+    (transaction.allocations || [])
       .filter((allocation) => (
-        allocation.billId === billId && allocation.status !== "suspected" && (!asOf || transaction.date <= asOf)
+        allocation.billId === billId && settlementTransactionIsEffective(transaction, asOf)
+        && settlementRecordIsEffective(allocation, asOf, allocation.date || transaction.date)
       ))
       .map((allocation) => ({ ...allocation, transactionId: allocation.transactionId || transaction.id }))
   ));
@@ -911,11 +914,9 @@ export function confirmedAllocationsForBill(workspace, billId, { asOf } = {}) {
 export function confirmedAdvanceApplications(workspace, { advanceBillId, targetBillId, asOf } = {}) {
   return (workspace.advanceApplications || []).filter((application) => {
     const effectiveDate = application.date || String(application.createdAt || "").slice(0, 10);
-    return application.status !== "reversed"
-      && application.status !== "suspected"
+    return settlementRecordIsEffective(application, asOf, effectiveDate)
       && (!advanceBillId || application.advanceBillId === advanceBillId)
-      && (!targetBillId || application.targetBillId === targetBillId)
-      && (!asOf || !effectiveDate || effectiveDate <= asOf);
+      && (!targetBillId || application.targetBillId === targetBillId);
   });
 }
 
@@ -2294,10 +2295,10 @@ function ageingBucket(days) {
 }
 
 export function buildAgeingSchedule(workspace, { asOf, kind } = {}) {
-  const resolvedDate = asOf || `${workspace.currentPeriod}-28`;
+  const resolvedDate = asOf || settlementPeriodEnd(workspace.currentPeriod);
   const allowedKinds = kind ? [kind] : [BILL_KINDS.RECEIVABLE, BILL_KINDS.PAYABLE];
   const rows = (workspace.bills || [])
-    .filter((bill) => allowedKinds.includes(bill.kind))
+    .filter((bill) => allowedKinds.includes(bill.kind) && settlementBillIsEffective(bill, resolvedDate))
     .map((bill) => {
       const settlement = billSettlement(workspace, bill, { asOf: resolvedDate });
       const days = overdueDays(resolvedDate, bill.dueDate || bill.date);
@@ -2312,7 +2313,7 @@ export function buildAgeingSchedule(workspace, { asOf, kind } = {}) {
         balance: settlement.remaining,
         daysOverdue: days,
         bucket: ageingBucket(days),
-        sourceIds: collectSourceIds(bill.id, settlement.transactionIds),
+        sourceIds: collectSourceIds(bill.id, settlement.transactionIds, settlement.allocationIds, settlement.advanceApplicationIds, settlement.advanceBillIds),
       };
     })
     .filter((row) => row.balance > 0.01);
@@ -2334,12 +2335,12 @@ export function buildAgeingSchedule(workspace, { asOf, kind } = {}) {
   };
 }
 
-export function buildAdvanceBalances(workspace) {
+export function buildAdvanceBalances(workspace, { asOf } = {}) {
   const rows = (workspace.bills || [])
-    .filter((bill) => [BILL_KINDS.DEPOSIT_RECEIVED, BILL_KINDS.PREPAYMENT_PAID].includes(bill.kind))
+    .filter((bill) => [BILL_KINDS.DEPOSIT_RECEIVED, BILL_KINDS.PREPAYMENT_PAID].includes(bill.kind) && settlementBillIsEffective(bill, asOf))
     .map((bill) => {
-      const balance = advanceBalance(workspace, bill);
-      const applications = confirmedAdvanceApplications(workspace, { advanceBillId: bill.id }).map((application) => {
+      const balance = advanceBalance(workspace, bill, { asOf });
+      const applications = confirmedAdvanceApplications(workspace, { advanceBillId: bill.id, asOf }).map((application) => {
         const targetBill = (workspace.bills || []).find((candidate) => candidate.id === application.targetBillId);
         return {
           ...application,

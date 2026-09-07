@@ -438,6 +438,7 @@
 
 .engine-form select,
 .engine-form textarea,
+.settlement-panel .engine-form input:not([type="checkbox"]):not([type="radio"]),
 .engine-account-grid select,
 .engine-exceptions textarea,
 .engine-allocation input,
@@ -1159,6 +1160,7 @@
 }
 
 .engine-form select,
+.settlement-panel .engine-form input:not([type="checkbox"]):not([type="radio"]),
 .engine-voucher-card > input,
 .engine-account-grid select,
 .engine-allocation input,

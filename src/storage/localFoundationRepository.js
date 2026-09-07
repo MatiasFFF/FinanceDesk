@@ -103,9 +103,50 @@ export function createLocalFoundationRepository(options = {}) {
   const backupKey = options.backupKey || FINANCE_DESK_BACKUP_KEY;
   const clock = options.now || (() => new Date());
   const migrationOptions = () => ({ now: clock });
+  const browserStorage = typeof window !== "undefined" && storage === globalThis.localStorage;
+  const requiresSession = browserStorage || Object.hasOwn(options, "lockManager");
+  const lockManager = Object.hasOwn(options, "lockManager") ? options.lockManager : globalThis.navigator?.locks;
+  const eventTarget = options.eventTarget || (browserStorage ? window : null);
+  let baseline = storage.getItem(key);
+  let pendingInitialState = null;
+  let session = null;
+  const persistenceListeners = new Set();
+  const messages = {
+    waiting: "本页正在等待保存。若已在另一个 FinanceDesk 窗口编辑，请回到那个窗口继续；本页尚未保存的输入会保留。关闭其他窗口后，本页会重新确认是否可以保存。",
+    stale: "其他 FinanceDesk 窗口已保存新内容，本页已暂停保存。尚未保存的输入仍保留在本页；请先复制这些输入，再到最新打开的工作台窗口继续。",
+    unsupported: "当前环境暂时无法安全保存。本页输入会保留；请先复制未保存内容，再用支持本地保存的现代浏览器打开工作台。",
+    closed: "本页保存已暂停，尚未保存的输入仍保留。请先保留输入，再重新打开工作台继续。",
+  };
+  let persistenceStatus = Object.freeze({ canWrite: !requiresSession, status: requiresSession ? "waiting" : "ready", message: requiresSession ? messages.waiting : "" });
 
-  function save(state) {
-    const valid = assertValidState(migrateState(state, migrationOptions()));
+  function setPersistenceStatus(status) {
+    if (persistenceStatus.status === status) return;
+    persistenceStatus = Object.freeze({ canWrite: status === "ready", status, message: messages[status] || "" });
+    persistenceListeners.forEach((listener) => listener());
+  }
+
+  function staleError() {
+    setPersistenceStatus("stale");
+    session?.release?.();
+    const error = new Error(messages.stale);
+    error.code = "LOCAL_STATE_STALE";
+    return error;
+  }
+
+  function assertUnchanged() {
+    if (storage.getItem(key) !== baseline) throw staleError();
+  }
+
+  function assertCanWrite() {
+    assertUnchanged();
+    if (!persistenceStatus.canWrite) {
+      const error = new Error(persistenceStatus.message);
+      error.code = "LOCAL_SAVE_PAUSED";
+      throw error;
+    }
+  }
+
+  function writeState(valid) {
     const previous = storage.getItem(key);
     if (previous) {
       try {
@@ -115,12 +156,68 @@ export function createLocalFoundationRepository(options = {}) {
         // A corrupt primary copy is never promoted to the last-good backup.
       }
     }
-    storage.setItem(key, serializeState(valid, clock().toISOString()));
+    const serialized = serializeState(valid, clock().toISOString());
+    storage.setItem(key, serialized);
+    baseline = serialized;
+    pendingInitialState = null;
+  }
+
+  // Keep a single browser writer for this repository. Waiting/stale pages retain
+  // their React state; acquiring the lock never reloads an older page's snapshot.
+  function startSession() {
+    if (!requiresSession) return () => {};
+    if (session) return () => {};
+    if (!lockManager?.request) {
+      setPersistenceStatus("unsupported");
+      return () => {};
+    }
+    const current = { stopped: false, controller: new AbortController(), release: null };
+    session = current;
+    const onStorage = (event) => {
+      if (event.storageArea && event.storageArea !== storage) return;
+      if ((event.key === key || event.key === null) && storage.getItem(key) !== baseline) staleError();
+    };
+    eventTarget?.addEventListener("storage", onStorage);
+    setPersistenceStatus("waiting");
+    const request = Promise.resolve().then(() => lockManager.request(`financedesk:writer:${key}`, { mode: "exclusive", signal: current.controller.signal }, async () => {
+      if (current.stopped) return;
+      assertUnchanged();
+      if (pendingInitialState) writeState(pendingInitialState);
+      const held = new Promise((resolve) => { current.release = resolve; });
+      setPersistenceStatus("ready");
+      await held;
+    }));
+    request.catch((error) => {
+      if (current.stopped || error?.name === "AbortError") return;
+      if (error?.code !== "LOCAL_STATE_STALE") setPersistenceStatus("unsupported");
+    });
+    return () => {
+      current.stopped = true;
+      current.controller.abort();
+      current.release?.();
+      eventTarget?.removeEventListener("storage", onStorage);
+      if (session === current) {
+        session = null;
+        setPersistenceStatus("closed");
+      }
+    };
+  }
+
+  function save(state) {
+    assertCanWrite();
+    const valid = assertValidState(migrateState(state, migrationOptions()));
+    writeState(valid);
     return deepClone(valid);
   }
 
   function load() {
     const primary = storage.getItem(key);
+    baseline = primary;
+    pendingInitialState = null;
+    function initialCopy(state) {
+      if (requiresSession && !persistenceStatus.canWrite) pendingInitialState = state;
+      else writeState(state);
+    }
     if (primary) {
       try {
         const state = parseStoredState(primary, migrationOptions());
@@ -130,16 +227,16 @@ export function createLocalFoundationRepository(options = {}) {
         if (backup) {
           try {
             const state = parseStoredState(backup, migrationOptions());
-            storage.setItem(key, serializeState(state, clock().toISOString()));
+            initialCopy(state);
             return { state, source: "backup", recovered: true, errors: [error.message] };
           } catch (backupError) {
             const state = createInitialState(migrationOptions());
-            storage.setItem(key, serializeState(state, clock().toISOString()));
+            initialCopy(state);
             return { state, source: "seed", recovered: true, errors: [error.message, backupError.message] };
           }
         }
         const state = createInitialState(migrationOptions());
-        storage.setItem(key, serializeState(state, clock().toISOString()));
+        initialCopy(state);
         return { state, source: "seed", recovered: true, errors: [error.message] };
       }
     }
@@ -150,7 +247,7 @@ export function createLocalFoundationRepository(options = {}) {
       try {
         const parsed = JSON.parse(legacy);
         const state = assertValidState(migrateState(parsed, migrationOptions()));
-        storage.setItem(key, serializeState(state, clock().toISOString()));
+        initialCopy(state);
         return { state, source: `legacy:${legacyKey}`, recovered: false, errors: [] };
       } catch {
         // Continue to the next known legacy key before falling back to seed data.
@@ -158,21 +255,34 @@ export function createLocalFoundationRepository(options = {}) {
     }
 
     const state = createInitialState(migrationOptions());
-    storage.setItem(key, serializeState(state, clock().toISOString()));
+    initialCopy(state);
     return { state, source: "seed", recovered: false, errors: [] };
   }
 
   function clearPrimary() {
+    assertCanWrite();
     storage.removeItem(key);
+    baseline = null;
+    pendingInitialState = null;
   }
 
   function clearAllLocalCopies() {
+    assertCanWrite();
     storage.removeItem(key);
+    baseline = null;
+    pendingInitialState = null;
     storage.removeItem(backupKey);
     LEGACY_STORAGE_KEYS.forEach((legacyKey) => storage.removeItem(legacyKey));
   }
 
-  return { key, backupKey, load, save, clearPrimary, clearAllLocalCopies };
+  return {
+    key, backupKey, load, save, clearPrimary, clearAllLocalCopies, startSession, assertCanWrite,
+    getPersistenceStatus: () => persistenceStatus,
+    subscribePersistence(listener) {
+      persistenceListeners.add(listener);
+      return () => persistenceListeners.delete(listener);
+    },
+  };
 }
 
 export function exportBackupJson(state, options = {}) {

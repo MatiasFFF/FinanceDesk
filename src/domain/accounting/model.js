@@ -350,7 +350,12 @@ function validateAccountValues(values) {
   if (!['debit', 'credit'].includes(normalSide)) {
     throw new AccountingRuleError("ACCOUNT_NORMAL_SIDE_INVALID", "科目方向只能是借方或贷方");
   }
-  return { name, category, normalSide, cash: Boolean(values.cash) };
+  const cashFlowCategory = String(values.cashFlowCategory || "");
+  if (cashFlowCategory && !["operating", "investing", "financing", "pending"].includes(cashFlowCategory)) throw new AccountingRuleError("CASH_FLOW_CATEGORY_INVALID", "请选择有效的现金流用途");
+  const settlementRole = String(values.settlementRole || "");
+  if (settlementRole && !["receivable", "payable"].includes(settlementRole)) throw new AccountingRuleError("SETTLEMENT_ROLE_INVALID", "请选择应收或应付往来用途");
+  if ((settlementRole === "receivable" && category !== "asset") || (settlementRole === "payable" && category !== "liability")) throw new AccountingRuleError("SETTLEMENT_ROLE_CATEGORY", "应收科目属于资产，应付科目属于负债");
+  return { name, category, normalSide, cash: Boolean(values.cash), cashFlowCategory, settlementRole };
 }
 
 export function upsertWorkspaceAccount(workspace, values, context = {}) {
@@ -375,6 +380,8 @@ export function upsertWorkspaceAccount(workspace, values, context = {}) {
     category: normalized.category,
     normalSide: normalized.normalSide,
     cash: normalized.cash,
+    cashFlowCategory: values.cashFlowCategory === undefined ? before?.cashFlowCategory || "" : normalized.cashFlowCategory,
+    settlementRole: values.settlementRole === undefined ? before?.settlementRole || "" : normalized.settlementRole,
     status: values.status || before?.status || "active",
     builtInOverride: Object.hasOwn(ACCOUNT_CATALOG, accountId),
     createdAt: before?.createdAt || resolvedContext.at,

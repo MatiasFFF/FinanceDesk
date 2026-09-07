@@ -2986,6 +2986,19 @@ export async function getStoredDocumentRecord({ fileVault, workspaceId, document
   return record;
 }
 
+export async function verifyStoredDocumentOriginal({ fileVault, workspaceId, document }) {
+  const record = await getStoredDocumentRecord({ fileVault, workspaceId, document });
+  if (!record.blob?.arrayBuffer || !record.blob.size) throw new Error("原文件为空或不存在");
+  if (!document.hash) throw new Error("资料索引缺少原件哈希");
+  if (Number(document.size) !== record.blob.size || (record.size != null && Number(record.size) !== record.blob.size)) {
+    throw new Error("原文件大小与资料记录不一致");
+  }
+  const hash = document.hash.startsWith("fnv1a-")
+    ? fallbackHash(await record.blob.arrayBuffer()) : await hashLocalFile(record.blob);
+  if (hash !== document.hash) throw new Error("原文件哈希与资料记录不一致");
+  return { documentId: document.id, hash, size: record.blob.size };
+}
+
 export const VOUCHER_ATTACHMENT_SECTIONS = Object.freeze([
   { key: "bankReceipt", order: 1, label: "银行回单", recordFile: null },
   { key: "invoice", order: 2, label: "发票", recordFile: null },
@@ -4369,18 +4382,22 @@ export async function copyWorkspaceLocalFiles({ store, fileVault, sourceWorkspac
 }
 
 export async function refreshLocalFileAvailability({ store, fileVault }) {
-  if (!fileVault) return { available: 0, missing: 0, repaired: 0 };
+  const canWrite = () => store.getPersistenceStatus?.().canWrite !== false;
+  if (!fileVault || !canWrite()) return { available: 0, missing: 0, repaired: 0 };
   let available = 0;
   let missing = 0;
   let repaired = 0;
   const initialState = store.getState();
   const workspaceIds = initialState.workspaces.map((workspace) => workspace.id);
   for (const workspaceId of workspaceIds) {
+    if (!canWrite()) break;
     const workspace = store.getState().workspaces.find((item) => item.id === workspaceId);
-    const documents = [];
+    if (!workspace) continue;
+    const patches = new Map();
     for (const document of workspace.documents || []) {
       const blobId = document.storage?.blobId || document.storage?.backupBlobId;
       let record = blobId ? await fileVault.get(blobId) : null;
+      if (!canWrite()) return { available, missing, repaired };
       let resolvedBlobId = blobId;
       let isAvailable = Boolean(record?.blob && record.workspaceId === workspaceId && (!document.hash || !record.hash || record.hash === document.hash));
       if (!isAvailable && record?.blob && record.workspaceId !== workspaceId && (!document.hash || !record.hash || record.hash === document.hash)) {
@@ -4391,21 +4408,32 @@ export async function refreshLocalFileAvailability({ store, fileVault }) {
         if (legitimateSource) {
           resolvedBlobId = createId("blob");
           await fileVault.put({ ...record, id: resolvedBlobId, workspaceId, createdAt: new Date().toISOString() });
+          if (!canWrite()) return { available, missing, repaired };
           record = await fileVault.get(resolvedBlobId);
-          isAvailable = true;
+          if (!canWrite()) return { available, missing, repaired };
+          isAvailable = Boolean(record?.blob && record.workspaceId === workspaceId);
           repaired += 1;
         }
       }
       if (isAvailable) available += 1;
       else if (document.storage?.mode === "indexeddb") missing += 1;
-      documents.push({
-        ...document,
-        storage: document.storage?.mode === "indexeddb"
+      const storage = document.storage?.mode === "indexeddb"
           ? { ...document.storage, blobId: isAvailable ? resolvedBlobId : null, availableLocally: isAvailable }
-          : document.storage,
-      });
+          : document.storage;
+      if (JSON.stringify(storage) !== JSON.stringify(document.storage)) patches.set(document.id, { original: JSON.stringify(document), storage });
     }
-    store.actions.replaceWorkspace(workspaceId, { ...workspace, documents }, {
+    if (!canWrite() || !patches.size) continue;
+    const latest = store.getState().workspaces.find((item) => item.id === workspaceId);
+    if (!latest) continue;
+    let changed = false;
+    const documents = (latest.documents || []).map((document) => {
+      const patch = patches.get(document.id);
+      if (!patch || JSON.stringify(document) !== patch.original) return document;
+      changed = true;
+      return { ...document, storage: patch.storage };
+    });
+    if (!changed) continue;
+    store.actions.replaceWorkspace(workspaceId, { ...latest, documents }, {
       allowArchivedTransition: true,
       requiredPermission: "data.read",
     });

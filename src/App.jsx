@@ -32,7 +32,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { transactionStatus, uid } from "./financeData.js";
-import { BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS } from "./domain/foundation.js";
+import { BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS, hasWorkspacePermission } from "./domain/foundation.js";
 import { confirmOpeningBalances, isPeriodArchived, localAccountingPeriod, openingBalancesReady, validAccountingPeriod } from "./domain/periods.js";
 import { allowPeriodNavigation, usePeriodLeaveGuard } from "./features/workspaces/periodNavigation.js";
 import { OpeningBalancesPanel } from "./features/accounting/OpeningBalancesPanel.jsx";
@@ -93,8 +93,6 @@ import {
   importLocalReceipt,
   markPackageExported,
   prepareFilingDraft,
-  recordFinalConfirmation,
-  recordInitialConfirmationSection as saveInitialConfirmationSection,
   primaryNavigationForWorkspace,
   reportVersionDiff,
   workspaceModuleEnabled,
@@ -793,11 +791,18 @@ function ReconcilePage({ workspace, onPage, panelRequest, onStatus, onReview, on
   const [query, setQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [focusedId, setFocusedId] = useState(null);
+  const [manualVoucherRequest, setManualVoucherRequest] = useState(null);
+  const manualVoucherRequestNonce = useRef(0);
+  function openManualVoucher(billId) {
+    setManualVoucherRequest({ billId, nonce: ++manualVoucherRequestNonce.current });
+    setActivePanel("manual");
+  }
   useEffect(() => {
     setFilter("unresolved");
     setQuery("");
     setSelectedIds(new Set());
     setFocusedId(null);
+    setManualVoucherRequest(null);
   }, [workspace.id, workspace.currentPeriod]);
   useEffect(() => { setActivePanel(panelRequest?.panel || "transactions"); }, [workspace.id, workspace.currentPeriod, panelRequest]);
   const periodTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
@@ -819,10 +824,10 @@ function ReconcilePage({ workspace, onPage, panelRequest, onStatus, onReview, on
       <div className="reconcile-main">
         {customerDisputes.length > 0 && <section className="panel dispute-review-panel"><div><h2>{terminology.customer}确认异议</h2></div>{customerDisputes.map((task) => <article key={task.id}><span><strong>{task.message}</strong><small>{formatDateTime(task.createdAt)}</small></span><button className="secondary-button" type="button" onClick={() => onResolveException(task.id)}>已处理，关闭异议</button></article>)}</section>}
         <div className="reconcile-panel" id="reconcile-panel-business" role="tabpanel" aria-labelledby="reconcile-tab-business" hidden={activePanel !== "business"}>
-        <DeferredView active={activePanel === "business"} label="往来业务"><ReceivablesPayablesPanel showMemberBusiness={workspaceModuleEnabled(workspace, "members")} onToast={onToast} /></DeferredView>
+        <DeferredView active={activePanel === "business"} label="往来业务"><ReceivablesPayablesPanel showMemberBusiness={workspaceModuleEnabled(workspace, "members")} onToast={onToast} onOpenManualVoucher={openManualVoucher} /></DeferredView>
         </div>
         <div className="reconcile-panel" id="reconcile-panel-manual" role="tabpanel" aria-labelledby="reconcile-tab-manual" hidden={activePanel !== "manual"}>
-        <DeferredView active={activePanel === "manual"} label="手工凭证"><ManualVoucherPanel onToast={onToast} /></DeferredView>
+        <DeferredView active={activePanel === "manual"} label="手工凭证"><ManualVoucherPanel onToast={onToast} request={manualVoucherRequest} /></DeferredView>
         </div>
         <div className="reconcile-panel" id="reconcile-panel-vouchers" role="tabpanel" aria-labelledby="reconcile-tab-vouchers" hidden={activePanel !== "vouchers"}>
           <DeferredView active={activePanel === "vouchers"} label="凭证与账簿"><AccountingWorkbench onToast={onToast} /></DeferredView>
@@ -1151,6 +1156,10 @@ function CheckRows({ items, onNavigate }) {
 }
 
 function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecision, onPrepareDraft, onFinalConfirm, onExport, onReceipt, onToast, focusRequest }) {
+  const { state, persistenceStatus } = useFinanceDesk();
+  const canFinanceConfirm = hasWorkspacePermission(state, workspace.id, "confirm.finance");
+  const canOwnerConfirm = hasWorkspacePermission(state, workspace.id, "confirm.owner");
+  const periodWritable = !isPeriodArchived(workspace) && persistenceStatus.canWrite;
   const terminology = workspaceTerminology(workspace);
   const flow = workflowChecks(workspace);
   const payrollEnabled = workspaceModuleEnabled(workspace, "payroll");
@@ -1159,7 +1168,7 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
   const version = flow.version;
   const snapshot = version?.snapshot || flow.snapshot;
   const prerequisiteChecks = flow.checks.slice(0, 5);
-  const canConfirmSections = Boolean(version) && prerequisiteChecks.every((item) => item.ok);
+  const canConfirmSections = canFinanceConfirm && periodWritable && Boolean(version) && prerequisiteChecks.every((item) => item.ok);
   const exportChecks = enabledWorkflowChecks(workspace, flow.export);
   const filing = workspace.delivery.filing;
   const activeConfirmation = [...(workspace.confirmations || [])].reverse().find((confirmation) => (
@@ -1249,7 +1258,8 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
   const packageApproved = Boolean(activeConfirmation) && confirmationItems.every((item) => !item.sourceIncomplete && activeConfirmation.sections?.[item.id]?.status === "approved");
   const workflowConfirmationDone = ["finance", ...(payrollEnabled ? ["payroll", "socialSecurity"] : [])].every((id) => flow.checks.find((item) => item.id === id)?.ok);
   const initialDone = Boolean(packageApproved && workflowConfirmationDone && filing.initialConfirmationId === activeConfirmation?.id);
-  const canStartFinalConfirmation = Boolean(initialDone && version && filing.draftCreatedAt && filing.draftVersionId === version.id);
+  const finalPrerequisitesReady = Boolean(initialDone && version && filing.draftCreatedAt && filing.draftVersionId === version.id);
+  const canStartFinalConfirmation = canOwnerConfirm && periodWritable && finalPrerequisitesReady;
   const finalReady = canStartFinalConfirmation
     && Object.values(finalChecks).every(Boolean)
     && ["authorize_external", "do_not_authorize"].includes(deductionAuthorization)
@@ -1279,6 +1289,7 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
         <div className="tax-main-column">
           <section className="panel confirmation-panel" id="tax-initial-confirmation">
             <div className="panel-heading"><div><h2>首次{terminology.customer}确认</h2></div><TonePill tone={initialDone ? "success" : activeConfirmation?.status === "disputed" ? "danger" : "warning"}>{initialDone ? `${confirmationItems.length} / ${confirmationItems.length} 已确认` : `${approvedCount} / ${confirmationItems.length}`}</TonePill></div>
+            {!canFinanceConfirm && <p className="confirmation-gate"><WarningCircle size={16} />当前身份没有财务确认权限，请切换到有权限的本地用户后确认。</p>}
 
             <label className="final-signer"><span>本次确认人姓名 <b>必填</b></span><input disabled={!canConfirmSections} onChange={(event) => setInitialConfirmer(event.target.value)} placeholder={`输入实际${terminology.customer}确认人姓名`} value={initialConfirmer} /></label>
             <div className="confirmation-list">{confirmationItems.map((item) => {
@@ -1333,7 +1344,8 @@ function TaxPage({ workspace, onPage, onTaxChange, onTaxCommit, onSectionDecisio
         <div className="panel-heading"><div><h2>提交前最终责任确认</h2><p>第二次{terminology.customer}确认</p></div><TonePill tone={finalConfirmationCurrent ? "success" : storedFinalConfirmation ? "warning" : "neutral"}>{finalConfirmationCurrent ? "已记录 · 未提交" : storedFinalConfirmation ? "上次确认已失效" : "等待确认"}</TonePill></div>
         <p className="final-boundary-copy">这里保存{terminology.customer}对当前冻结数字、风险和外部扣款选择的最终确认，只生成本地申报包；不会提交税务局，也不会自动扣款或缴税。</p>
         {storedFinalConfirmation && !finalConfirmationCurrent && <p className="final-invalid-banner"><WarningCircle size={17} />上一次最终确认对应的报表版本、底稿或数据已变化，必须按当前数字重新完成全部确认。</p>}
-        {!canStartFinalConfirmation && !finalConfirmationCurrent && <p className="confirmation-gate"><WarningCircle size={16} />先完成 {confirmationItems.length} 项第一次确认并生成当前冻结版本的本地申报底稿。</p>}
+        {!canOwnerConfirm && <p className="confirmation-gate"><WarningCircle size={16} />当前身份没有负责人最终确认权限，请切换到有权限的本地用户后确认。</p>}
+        {!finalPrerequisitesReady && !finalConfirmationCurrent && <p className="confirmation-gate"><WarningCircle size={16} />先完成 {confirmationItems.length} 项第一次确认并生成当前冻结版本的本地申报底稿。</p>}
         <div className="final-context-strip"><div><span>申报所属期</span><strong>{formatPeriod(displayedFinalSnapshot.period)}</strong></div><div><span>冻结报表</span><strong>{displayedFinalSnapshot.reportVersionLabel || "尚未冻结"}</strong></div><div><span>本地底稿</span><strong>{displayedFinalSnapshot.filingDraftCreatedAt ? formatDateTime(displayedFinalSnapshot.filingDraftCreatedAt) : "尚未生成"}</strong></div><div><span>税务局状态</span><strong>尚未提交</strong></div></div>
         <div className="final-review-grid">
           <div className="final-review-main">
@@ -1619,7 +1631,7 @@ function NoWorkspace({ onCreate }) {
 }
 
 function App() {
-  const { state, activeWorkspace, actions, store, fileVault, loadReport } = useFinanceDesk();
+  const { state, activeWorkspace, actions, store, fileVault, loadReport, persistenceStatus } = useFinanceDesk();
   const [page, setPage] = useState("overview");
   const [workspaceDialog, setWorkspaceDialog] = useState(null);
   const [managerOpen, setManagerOpen] = useState(false);
@@ -2085,7 +2097,7 @@ function App() {
   }
   function recordInitialConfirmationSection(input) {
     try {
-      mutateActive((current) => saveInitialConfirmationSection(current, input, { actor: actorName }));
+      actions.recordInitialConfirmationSection(store.getActiveWorkspace().id, input, { actor: actorName });
       if (input.decision === "reject") {
         navigateToPage("reconcile");
         setToast({ tone: "warning", message: "异议已形成待办，已返回异常处理" });
@@ -2156,7 +2168,7 @@ function App() {
   }
   function finalConfirm(input) {
     try {
-      mutateActive((current) => recordFinalConfirmation(current, input, { actor: actorName }));
+      actions.recordFinalConfirmation(store.getActiveWorkspace().id, input, { actor: actorName });
       setToast({ tone: "success", message: "最终确认快照已保存；尚未提交税务局，也未执行扣款" });
     } catch (error) {
       setToast({ tone: "danger", message: error.message || "最终确认失败" });
@@ -2280,6 +2292,7 @@ function App() {
       <Sidebar state={state} workspace={workspace} page={activePage} onPage={navigateToPage} onSwitchWorkspace={switchWorkspace} onSwitchUser={switchUser} onOpenWorkspaceDialog={openWorkspaceDialog} />
       <div className="app-main">
         <Topbar state={state} workspace={workspace} page={activePage} workspaceOverlayOpen={Boolean(workspaceDialog || managerOpen || importOpen)} onImport={() => setImportOpen(true)} onSwitchWorkspace={switchWorkspace} onSwitchPeriod={switchPeriod} onOpenWorkspaceDialog={openWorkspaceDialog} />
+        {!persistenceStatus.canWrite && <div className="danger-banner recovery-banner" role="status"><WarningCircle size={18} /><span>{persistenceStatus.message}</span></div>}
         {loadReport.recovered && <div className="danger-banner recovery-banner"><WarningCircle size={18} /><span><strong>{loadReport.source === "backup" ? "本地数据已从上一次有效副本恢复。" : "本地主副本与备用副本均无法读取，当前已加载初始模板。"}</strong>{loadReport.errors?.length ? ` 原因：${loadReport.errors.join("；")}` : " 请先核对数据并导出备份。"}</span></div>}
         {activePage === "overview" && <OverviewPage workspace={workspace} onPage={navigateToPage} onResolveNotice={resolveNotice} />}
         {workspaceModuleEnabled(workspace, "members") && <DeferredView key={`${workspace.id}-members`} active={activePage === "members"} label="会员台账" fullPage><MemberLedgerPage workspace={workspace} onAddMember={addLedgerMember} onMemberStatus={changeLedgerMemberStatus} onAddEvent={addLedgerEvent} onEventStatus={changeLedgerEventStatus} onPage={navigateToPage} /></DeferredView>}

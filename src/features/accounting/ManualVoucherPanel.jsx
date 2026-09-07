@@ -27,6 +27,7 @@ import {
 } from "../../domain/accounting/index.js";
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
 import { saveLocalDocument } from "../intake/documentIntake.js";
+import { buildSettlementRecognitionDraft } from "../reconciliation/settlementRecognition.js";
 import "./manual-voucher-panel.css";
 
 let lineSequence = 0;
@@ -182,13 +183,15 @@ function documentLabel(document) {
   return document.name || document.title || document.id;
 }
 
-export function ManualVoucherPanel({ onToast }) {
+export function ManualVoucherPanel({ onToast, request }) {
   const { activeWorkspace, actions, state, store, fileVault } = useFinanceDesk();
   const [editor, setEditor] = useState(() => emptyEditor(activeWorkspace));
   const [editorOpen, setEditorOpen] = useState(false);
   const [reviewNotes, setReviewNotes] = useState({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pendingRequest, setPendingRequest] = useState(null);
+  const handledRequest = useRef(null);
   const editorRef = useRef(null);
   const editorBaseline = useRef(JSON.stringify(editor));
   usePeriodLeaveGuard({ dirty: editorOpen && JSON.stringify(editor) !== editorBaseline.current, busy });
@@ -227,6 +230,32 @@ export function ManualVoucherPanel({ onToast }) {
     setReviewNotes({});
     setError("");
   }, [activeWorkspace?.id, activeWorkspace?.currentPeriod]);
+
+  useEffect(() => {
+    if (!request?.billId || !activeWorkspace) return;
+    const key = `${activeWorkspace.id}:${request.nonce}:${request.billId}`;
+    if (handledRequest.current === key) return;
+    handledRequest.current = key;
+    setPendingRequest({ ...request, workspaceId: activeWorkspace.id, period: activeWorkspace.currentPeriod });
+    setEditorOpen(true);
+  }, [request?.billId, request?.nonce, activeWorkspace?.id]);
+
+  useEffect(() => {
+    if (!pendingRequest || !activeWorkspace || busy) return;
+    if (pendingRequest.workspaceId !== activeWorkspace.id || pendingRequest.period !== activeWorkspace.currentPeriod) { setPendingRequest(null); return; }
+    if (JSON.stringify(editor) !== editorBaseline.current) return;
+    try {
+      const suggested = buildSettlementRecognitionDraft(activeWorkspace, pendingRequest.billId);
+      const loaded = { ...emptyEditor(activeWorkspace), date: suggested.date, summary: suggested.summary,
+        lines: suggested.lines.map(createEditableLine), evidenceIds: suggested.evidenceIds || [] };
+      // Prefilled business input is unsaved until the user supplies the counter-account and saves it.
+      setEditor(loaded);
+      setEditorOpen(true);
+      setError("");
+      setPendingRequest(null);
+      requestAnimationFrame(() => editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    } catch (caught) { setError(caught.message); setPendingRequest(null); }
+  }, [pendingRequest, activeWorkspace, editor, busy]);
 
   if (!activeWorkspace) return null;
 
@@ -419,6 +448,7 @@ export function ManualVoucherPanel({ onToast }) {
       </header>
 
       {error && <div className="manual-voucher-error" role="alert"><WarningCircle size={18} /><span>{error}</span></div>}
+      {pendingRequest && hasUnsavedInput && <div className="manual-voucher-error" role="status"><WarningCircle size={18} /><span>已收到该账单的确认请求。当前输入已保留；请先保存或通过下方按钮明确放弃当前输入，再载入账单。</span></div>}
 
       <form className="manual-voucher-editor" onSubmit={saveDraft} ref={editorRef} hidden={!editorOpen}>
         <div className="manual-voucher-section-heading">

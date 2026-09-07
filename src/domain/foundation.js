@@ -684,7 +684,7 @@ export function workspaceUserPermissions(state, workspaceId = state.activeWorksp
   const workspace = getWorkspace(state, workspaceId);
   const user = activeWorkspaceUser(state, workspaceId);
   if (!workspace || !user || user.status !== "active") return [];
-  const role = workspace.roles.find((candidate) => candidate.id === user.roleId || candidate.name === user.role);
+  const role = workspace.roles.find((candidate) => user.roleId ? candidate.id === user.roleId : candidate.name === user.role);
   if (!role || role.status !== "active") return [];
   return [...new Set(role.permissions || [])];
 }
@@ -699,12 +699,19 @@ export function assertWorkspacePermission(state, workspaceId, permission) {
   return user;
 }
 
+export function hasWorkspacePermission(state, workspaceId, permission) {
+  const workspace = getWorkspace(state, workspaceId);
+  if (workspace && !workspace.localUsersConfigured && !workspace.users?.length) return true;
+  const permissions = workspaceUserPermissions(state, workspaceId);
+  return permissions.includes("*") || permissions.includes(permission);
+}
+
 export function switchActiveUser(state, workspaceId, userId, options = {}) {
   const timestamp = options.timestamp || nowIso(options.now);
   const workspace = getWorkspace(state, workspaceId);
   const user = workspace?.users?.find((candidate) => candidate.id === userId);
   if (!user || user.status !== "active" || inactivePersonnelForUser(workspace, user)) throw new Error("只能切换到当前工作台中的启用用户");
-  const role = workspace.roles.find((candidate) => candidate.id === user.roleId || candidate.name === user.role);
+  const role = workspace.roles.find((candidate) => user.roleId ? candidate.id === user.roleId : candidate.name === user.role);
   if (!role || role.status !== "active") throw new Error(`人员「${user.name}」没有可用的启用角色，请先调整其角色`);
   const next = { ...state, activeWorkspaceId: workspaceId, activeUserId: userId, updatedAt: timestamp };
   return assertValidState(appendRootAudit(next, {
@@ -920,7 +927,7 @@ export function clearWorkspace(state, workspaceId, options = {}) {
     }
     const currentUser = workspace.users.find((user) => user.id === state.activeUserId && user.status === "active");
     const currentRole = currentUser
-      ? workspace.roles.find((role) => role.id === currentUser.roleId || role.name === currentUser.role)
+      ? workspace.roles.find((role) => currentUser.roleId ? role.id === currentUser.roleId : role.name === currentUser.role)
       : null;
     const blank = createBlankWorkspace({
       id: workspace.id,

@@ -16,6 +16,7 @@ import {
   saveCommissionRule,
   saveMembershipPackage,
   updateMemberBusinessEventStatus,
+  synchronizeMemberServiceException,
 } from "../src/features/members/memberLedger.js";
 import {
   buildFinancialStatements,
@@ -23,10 +24,17 @@ import {
   createMemberEventVoucherDraft,
   createPostedVoucherRevision,
   freezeReportVersion,
-  postVoucher,
+  postVoucherWithEvidence,
   reviseDraftVoucher,
   validateVoucherBalance,
 } from "../src/domain/accounting/index.js";
+
+import { withVoucherEvidence } from "./helpers/voucherEvidenceFixture.mjs";
+
+async function postVoucherFixture(workspace, input, context) {
+  const fixture = await withVoucherEvidence(workspace);
+  return postVoucherWithEvidence(fixture.workspace, input, { ...context, fileVault: fixture.fileVault });
+}
 
 const context = { actor: "测试会计", at: "2026-09-04T08:00:00.000Z" };
 
@@ -52,7 +60,13 @@ function addEvent(workspace, id, kind, values = {}) {
       event.memberId === values.memberId && event.kind === "recharge" && event.status === "confirmed"
     ))?.id
     : null);
+  const transactionId = kind === "recharge" && current.id ? `fixture-receipt-${id}` : null;
+  if (transactionId) current = { ...current, transactions: [...(current.transactions || []), {
+    id: transactionId, date: values.date || "2026-09-04", amount: Number(values.amount), accountId: current.bankAccounts?.[0]?.id || "bank",
+    status: "pending", allocations: [], classification: { eventType: "memberRecharge", account: "contractLiability", confidence: 100, riskFlags: [], reasons: [] },
+  }] };
   return addMemberBusinessEvent(current, {
+    transactionId,
     id,
     kind,
     memberId: values.memberId,
@@ -397,7 +411,7 @@ test("同一教练跨门店的规则提成会按业务维度拆分保存", () =>
   ]);
 });
 
-test("会员未履约余额与合同负债自动勾稽，差额只能随入账凭证修复", () => {
+test("会员未履约余额与合同负债自动勾稽，差额只能随入账凭证修复", async () => {
   let workspace = {
     ...baseWorkspace(),
     id: "workspace-member-reconciliation",
@@ -451,11 +465,12 @@ test("会员未履约余额与合同负债自动勾稽，差额只能随入账�
       { account: "contractLiability", debit: 0, credit: 900, sourceIds: ["event-recharge"] },
     ],
   }, context);
-  workspace = postVoucher(workspace, {
-    voucherId: voucher.id,
-    mode: "manual",
-    reviewNote: "测试错误金额入账后的自动勾稽",
-  }, context);
+  await assert.rejects(() => postVoucherFixture(workspace, {
+    voucherId: voucher.id, mode: "manual", reviewNote: "错误金额不得新入账",
+  }, context), (error) => error.code === "MEMBER_RECHARGE_VOUCHER_MISMATCH");
+  // A historical invalid posting is a fixture, not a permitted posting path.
+  workspace.vouchers[0] = { ...workspace.vouchers[0], status: "posted", no: "记-001" };
+  workspace = synchronizeMemberServiceException(workspace, { period: workspace.currentPeriod }, context);
   reconciliation = buildMemberServiceReconciliation(workspace, { period: "2026-09" });
   assert.equal(reconciliation.difference, 100);
   assert.equal(reconciliation.accountingSources[0].balanceEffect, 900);
@@ -487,7 +502,7 @@ test("会员未履约余额与合同负债自动勾稽，差额只能随入账�
       { account: "contractLiability", debit: 0, credit: 1000, sourceIds: ["event-recharge"] },
     ],
   }, context);
-  workspace = postVoucher(workspace, {
+  workspace = await postVoucherFixture(workspace, {
     voucherId: voucher.id,
     mode: "manual",
     reviewNote: "已核对会员充值和合同负债余额",
@@ -502,7 +517,7 @@ test("会员未履约余额与合同负债自动勾稽，差额只能随入账�
   assert.equal(workspace.reportVersions.at(-1).statements.memberServiceReconciliation.passed, true);
 });
 
-test("会员业务及提成付款可以生成平衡凭证、复核入账并进入财务报表", () => {
+test("会员业务及提成付款可以生成平衡凭证、复核入账并进入财务报表", async () => {
   let workspace = {
     ...baseWorkspace(),
     id: "workspace-member-flow",
@@ -538,7 +553,7 @@ test("会员业务及提成付款可以生成平衡凭证、复核入账并进�
     const voucher = workspace.vouchers.at(-1);
     assert.equal(validateVoucherBalance(voucher).balanced, true);
     assert.ok(voucher.sourceIds.includes(eventId));
-    workspace = postVoucher(workspace, {
+    workspace = await postVoucherFixture(workspace, {
       voucherId: voucher.id,
       mode: "manual",
       reviewNote: "已核对会员台账、金额和会计科目",
@@ -560,7 +575,7 @@ test("会员业务及提成付款可以生成平衡凭证、复核入账并进�
     ["payrollPayable", 300, 0],
     ["bank:operating", 0, 300],
   ]);
-  workspace = postVoucher(workspace, {
+  workspace = await postVoucherFixture(workspace, {
     voucherId: paymentVoucher.id,
     mode: "manual",
     reviewNote: "已核对教练提成付款和银行账户",
@@ -587,7 +602,7 @@ test("会员业务及提成付款可以生成平衡凭证、复核入账并进�
   assert.equal(Object.values(statements.checks).every((check) => check.passed), true);
 });
 
-test("会员默认维度会带入业务，业务可单独调整且提成付款保留原维度", () => {
+test("会员默认维度会带入业务，业务可单独调整且提成付款保留原维度", async () => {
   let workspace = {
     ...baseWorkspace(),
     currentPeriod: "2026-09",
@@ -682,7 +697,7 @@ test("会员默认维度会带入业务，业务可单独调整且提成付款�
   });
   workspace = updateMemberBusinessEventStatus(workspace, "dimension-commission", "accrued", context);
   workspace = createMemberEventVoucherDraft(workspace, { eventId: "dimension-commission" }, context);
-  workspace = postVoucher(workspace, {
+  workspace = await postVoucherFixture(workspace, {
     voucherId: workspace.vouchers.at(-1).id,
     mode: "manual",
     reviewNote: "已核对提成归属维度",
@@ -705,7 +720,7 @@ test("会员默认维度会带入业务，业务可单独调整且提成付款�
   assert.deepEqual(payment.dimensionSourceIds, ["store-west"]);
 });
 
-test("门店老板报表只汇总已入账业务并可追溯会员、事件和凭证", () => {
+test("门店老板报表只汇总已入账业务并可追溯会员、事件和凭证", async () => {
   let workspace = {
     ...baseWorkspace(),
     id: "workspace-store-report",
@@ -740,7 +755,7 @@ test("门店老板报表只汇总已入账业务并可追溯会员、事件和�
 
   for (const eventId of ["east-recharge", "east-consumption", "east-commission", "west-recharge", "west-refund"]) {
     workspace = createMemberEventVoucherDraft(workspace, { eventId }, context);
-    workspace = postVoucher(workspace, {
+    workspace = await postVoucherFixture(workspace, {
       voucherId: workspace.vouchers.at(-1).id,
       mode: "manual",
       reviewNote: "已核对门店、会员和业务来源",

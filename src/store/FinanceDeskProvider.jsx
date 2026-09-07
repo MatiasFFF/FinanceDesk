@@ -11,19 +11,23 @@ export function FinanceDeskProvider({ children, store: suppliedStore, fileVault:
   if (!storeRef.current) storeRef.current = suppliedStore || createFinanceDeskStore();
   const store = storeRef.current;
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
+  const persistenceStatus = useSyncExternalStore(store.subscribePersistence, store.getPersistenceStatus, store.getPersistenceStatus);
+  useEffect(() => store.startPersistenceSession(), [store]);
   const fileVault = useMemo(() => {
     if (suppliedFileVault) return suppliedFileVault;
     if (!globalThis.indexedDB) return null;
     return createBrowserFileVault();
   }, [suppliedFileVault]);
+  const availabilityStarted = useRef(false);
   useEffect(() => {
-    if (!fileVault) return undefined;
+    if (!fileVault || !persistenceStatus.canWrite || availabilityStarted.current) return undefined;
+    availabilityStarted.current = true;
     let active = true;
     refreshLocalFileAvailability({ store, fileVault }).catch((error) => {
-      if (active) console.warn("本地文件归属核对失败", error);
+      if (active && store.getPersistenceStatus().canWrite) console.warn("本地文件归属核对失败", error);
     });
     return () => { active = false; };
-  }, [store, fileVault]);
+  }, [store, fileVault, persistenceStatus.canWrite]);
   const value = useMemo(() => ({
     store,
     state,
@@ -31,7 +35,8 @@ export function FinanceDeskProvider({ children, store: suppliedStore, fileVault:
     actions: store.actions,
     fileVault,
     loadReport: store.getLoadReport(),
-  }), [store, state, fileVault]);
+    persistenceStatus,
+  }), [store, state, fileVault, persistenceStatus]);
   return <FinanceDeskContext.Provider value={value}>{children}</FinanceDeskContext.Provider>;
 }
 

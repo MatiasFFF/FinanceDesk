@@ -20,7 +20,9 @@ import {
   createInventoryLossVoucherDraft,
   recordInventoryMovement,
   updateInventoryItem,
+  updateInventoryLossVoucherDraft,
 } from "./inventoryLedger.js";
+import { assessInventoryVoucherIntegrity, inventoryVoucherAmountMatches } from "../evidence/evidenceEngine.js";
 import "./inventory-page.css";
 
 const MOVEMENT_TYPES = Object.values(INVENTORY_MOVEMENT_TYPES);
@@ -183,7 +185,8 @@ export function InventoryPage({ onPage, onToast }) {
       const saved = editing
         ? next.inventoryItems.find((item) => item.id === itemForm.id)
         : next.inventoryItems.at(-1);
-      const message = editing ? "物料资料已更新" : "物料已新增到当前工作台";
+      const differences = assessInventoryVoucherIntegrity(next).issues;
+      const message = (editing ? "物料资料已更新" : "物料已新增到当前工作台") + (differences.length ? "；已有损耗凭证成本需更正，原入账金额保留，请在下方按当前成本创建更正" : "");
       setItemFeedback({ tone: "success", message });
       setItemForm(emptyItemForm(next));
       if (saved?.status !== "inactive") {
@@ -258,7 +261,7 @@ export function InventoryPage({ onPage, onToast }) {
         evidenceIds: movementForm.evidenceIds,
       }, { actor });
       actions.replaceWorkspace(current.id, next, { requiredPermission: "data.write" });
-      const message = INVENTORY_MOVEMENT_TYPE_LABELS[movementForm.type] + "流水已保存";
+      const message = INVENTORY_MOVEMENT_TYPE_LABELS[movementForm.type] + "流水已保存" + (assessInventoryVoucherIntegrity(next).issues.length ? "；已有损耗凭证成本变化，请按当前成本更正后再确认报表" : "");
       setMovementFeedback({ tone: "success", message });
       setMovementForm((form) => ({
         ...emptyMovementForm(next),
@@ -277,10 +280,11 @@ export function InventoryPage({ onPage, onToast }) {
     setAccountingFeedback(null);
     try {
       const current = store.getActiveWorkspace();
-      const next = createInventoryLossVoucherDraft(current, { movementId: movement.id }, { actor });
+      const existing = (current.vouchers || []).some((voucher) => voucher.inventoryMovementId === movement.id && ["draft", "changes_requested", "posted"].includes(voucher.status));
+      const next = existing ? updateInventoryLossVoucherDraft(current, { movementId: movement.id }, { actor }) : createInventoryLossVoucherDraft(current, { movementId: movement.id }, { actor });
       actions.replaceWorkspace(current.id, next, { requiredPermission: "data.write" });
-      const voucher = (next.vouchers || []).find((candidate) => candidate.inventoryMovementId === movement.id);
-      const message = "手工凭证草稿已生成" + (voucher ? "：" + (voucher.no || voucher.id) : "");
+      const voucher = (next.vouchers || []).find((candidate) => candidate.id === next.inventoryMovements.find((item) => item.id === movement.id)?.voucherId);
+      const message = (!voucher && existing ? "当前损耗成本为零，未入账草稿已取消" : voucher?.revisionOf ? "成本更正草稿已生成，原凭证继续有效至更正入账" : existing ? "草稿已更新为当前成本" : "手工凭证草稿已生成") + (voucher ? "：" + (voucher.no || voucher.id) : "");
       setAccountingFeedback({ tone: "success", message });
       onToast?.(message);
     } catch (error) {
@@ -384,13 +388,13 @@ export function InventoryPage({ onPage, onToast }) {
               <span className="inventory-table-cell numeric" data-label="单位成本"><strong>{formatCurrency(movement.unitCost)}</strong><small>金额 {formatCurrency(movement.amount)}</small></span>
               <span className="inventory-table-cell" data-label="场所"><strong>{movement.locationName || "未归属场所"}</strong><small>{movement.locationId}</small></span>
               <span className="inventory-table-cell" data-label="原因与来源"><strong>{movement.reason || "未填写原因"}</strong><small>{[movement.referenceNo, movement.sourceIds?.length ? "关联 " + movement.sourceIds.join("、") : "", `${movement.evidenceIds?.length || 0} 份资料`].filter(Boolean).join(" · ")}</small></span>
-              <span className="inventory-table-actions" data-label="会计处理">{isLoss ? (movement.voucherId ? <span className={"inventory-voucher-state " + (voucher?.status === "posted" ? "" : "pending")}>{voucherStatusLabel(voucher?.status)}</span> : <button className="secondary-button" type="button" onClick={() => createLossVoucher(movement)}><Receipt size={14} />生成凭证草稿</button>) : <span className="inventory-voucher-state">无需损耗凭证</span>}</span>
+              <span className="inventory-table-actions" data-label="会计处理">{isLoss ? (voucher && ["draft", "changes_requested", "posted"].includes(voucher.status) ? <><span className={"inventory-voucher-state " + (voucher.status === "posted" ? "" : "pending")}>{voucherStatusLabel(voucher.status)}</span>{!inventoryVoucherAmountMatches(voucher, movement) && <button className="secondary-button" type="button" onClick={() => createLossVoucher(movement)}>{voucher.status === "posted" ? "按当前成本更正" : "更新为当前成本"}</button>}</> : <button className="secondary-button" type="button" onClick={() => createLossVoucher(movement)}><Receipt size={14} />生成凭证草稿</button>) : <span className="inventory-voucher-state">无需损耗凭证</span>}</span>
             </div>;
           })}
         </div> : <div className="inventory-table-empty"><Receipt size={24} /><strong>本期还没有库存流水</strong><p>新增入库、领用、损耗或盘点记录后，会按日期显示在这里。</p></div>}
         <div className="inventory-accounting-note">
-          <span><strong>凭证草稿仍需人工复核</strong><small>损耗或盘亏草稿需在批量核销页核对资料、分录与金额后入账。</small></span>
-          <button className="secondary-button" type="button" onClick={() => onPage?.("reconcile")}>去批量核销复核<ArrowRight size={16} /></button>
+          <span><strong>凭证草稿仍需人工复核</strong><small>损耗或盘亏草稿需核对原件、分录与当前成本后入账。</small></span>
+          <button className="secondary-button" type="button" onClick={() => onPage?.("manual")}>去手工凭证复核<ArrowRight size={16} /></button>
         </div>
       </section>
     </div>

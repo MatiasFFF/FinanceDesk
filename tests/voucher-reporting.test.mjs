@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createAccountingFixture } from "../src/domain/accounting/fixtures.js";
+import { createAccountingFixture as rawAccountingFixture } from "../src/domain/accounting/fixtures.js";
+import { withVoucherEvidence } from "./helpers/voucherEvidenceFixture.mjs";
 import { assertWorkspacePermission, createBlankWorkspace, createInitialState, normalizeWorkspace, setWorkspacePeriod } from "../src/domain/foundation.js";
 import { AccountingRuleError } from "../src/domain/accounting/model.js";
 import { buildGeneralLedger, effectivePostedVouchers } from "../src/domain/accounting/ledger.js";
 import { setBankTransactionBusinessEventDimensions } from "../src/domain/accounting/classification.js";
-import { createDocumentMetadata } from "../src/features/intake/documentIntake.js";
+import { createDocumentMetadata, preparePayrollSocialImport, applyPayrollSocialImport } from "../src/features/intake/documentIntake.js";
 import { createMemoryFileVault } from "../src/features/intake/browserFileVault.js";
-import { freezeReportVersion as freezeVisibleReportVersion } from "../src/productWorkflow.js";
+import { createPayrollAccrualDraft, freezeReportVersion as freezeVisibleReportVersion } from "../src/productWorkflow.js";
 import {
   buildFinancialStatements,
   buildManagementMetrics,
@@ -47,6 +48,48 @@ import {
 } from "../src/features/reconciliation/reconciliationEngine.js";
 
 const context = { actor: "测试会计", at: "2026-09-06T13:00:00.000Z" };
+
+// These settlement tests start from explicitly confirmed opening receivables and
+// payables when they omit original posted vouchers; receipt posting is not revenue
+// recognition. The complete fixture already contains its original confirmations.
+function createAccountingFixture(options = {}) {
+  const workspace = rawAccountingFixture(options);
+  for (const bill of workspace.bills) if (["depositReceived", "prepaymentPaid"].includes(bill.kind)) bill.cashFlowCategory = "operating";
+  if (options.withPostedVouchers === false) {
+    workspace.openingStatus = { status: "confirmed", source: "manual", confirmedBy: context.actor };
+    workspace.openingLedger = { ...workspace.openingLedger, receivable: 3200, payable: -900, equity: -27300 };
+    for (const bill of workspace.bills) if (["receivable", "payable"].includes(bill.kind)) bill.recognitionBasis = "opening";
+  }
+  return workspace;
+}
+
+async function postWithFixtureEvidence(workspace, input, postingContext = context) {
+  const fixture = await withVoucherEvidence(workspace);
+  return postVoucherWithEvidence(fixture.workspace, input, { ...postingContext, fileVault: fixture.fileVault });
+}
+
+async function withPayrollOriginalSources(workspace, { gross = 6800, personal = 300, employer = 1240, post = false } = {}) {
+  const fileVault = createMemoryFileVault();
+  let next = { ...workspace, personnelRecords: [{ id: "payroll-test-person", name: "工资测试员工", status: "active" }, ...(workspace.personnelRecords || [])] };
+  const header = ["员工", "所属期", "应发工资", "个人社保", "企业社保", "个税", "实发工资"];
+  const mapping = { employee: 0, period: 1, grossSalary: 2, personalSocial: 3, employerSocial: 4, individualIncomeTax: 5, netSalary: 6 };
+  for (const sourceKind of ["payroll", "socialSecurity"]) {
+    const documentId = sourceKind === "payroll" ? "doc-payroll" : "doc-social";
+    const table = [header, ["工资测试员工", next.currentPeriod, gross, personal, employer, sourceKind === "payroll" ? 0 : "", sourceKind === "payroll" ? gross - personal : ""]];
+    const file = Object.assign(new Blob([table.map((row) => row.join(",")).join("\n")], { type: "text/csv" }), { name: `${sourceKind}.csv` });
+    const document = await createDocumentMetadata(file, { id: documentId, period: next.currentPeriod });
+    await fileVault.put({ id: document.id, workspaceId: next.id, hash: document.hash, blob: file });
+    next.documents = [...(next.documents || []).filter((item) => item.id !== documentId), document];
+    const plan = preparePayrollSocialImport(next, { id: `import-${sourceKind}`, sourceKind, fileName: file.name, table, mapping, defaultPeriod: next.currentPeriod, sourceDocumentId: document.id, sourceDocumentHash: document.hash, sourceDocumentVersion: document.version });
+    next = applyPayrollSocialImport(next, plan, context);
+  }
+  if (post) {
+    next = await createPayrollAccrualDraft(next, {}, { ...context, fileVault });
+    const draft = next.vouchers.find((voucher) => voucher.payrollAccrual && voucher.status === "draft");
+    next = await postVoucherWithEvidence(next, { voucherId: draft.id, reviewNote: "核对逐人工资社保原件与计提分录" }, { ...context, fileVault });
+  }
+  return next;
+}
 
 function setFixturePeriod(workspace, period) {
   const state = createInitialState({ timestamp: context.at });
@@ -399,8 +442,8 @@ test("voucher tax amount stays optional but rejects invalid or negative values",
   assert.match(negative.errors.join("；"), /税额不能为负数/);
 });
 
-test("reconciled split receipt produces a balanced traceable draft and attachment package", () => {
-  let workspace = createAccountingFixture({ withReconciliations: true, withPostedVouchers: false });
+test("reconciled split receipt produces a balanced traceable draft and attachment package", async () => {
+  let workspace = (await withVoucherEvidence(createAccountingFixture({ withReconciliations: true, withPostedVouchers: false }))).workspace;
   workspace = createVoucherDraft(workspace, { transactionId: "txn-split" }, context);
   const voucher = workspace.vouchers[0];
   const validation = validateVoucherBalance(voucher);
@@ -418,12 +461,12 @@ test("reconciled split receipt produces a balanced traceable draft and attachmen
   assert.deepEqual(trace.bills.map((item) => item.id), ["bill-ar-1", "bill-ar-2"]);
   assert.ok(trace.documents.some((item) => item.id === "doc-settlement"));
   assert.equal(vouchersForSource(workspace, "bill-ar-1")[0].id, voucher.id);
-  workspace = postVoucher(workspace, { voucherId: voucher.id, mode: "automatic" }, { ...context, at: "2026-09-06T13:00:30.000Z" });
+  workspace = await postWithFixtureEvidence(workspace, { voucherId: voucher.id, mode: "automatic" }, { ...context, at: "2026-09-06T13:00:30.000Z" });
   assert.equal(workspace.transactions.find((item) => item.id === "txn-split").status, "posted");
 });
 
-test("confirmed bank businessEvent creates one manual-only traceable voucher and posted lines flow into existing reports", () => {
-  let workspace = createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
+test("confirmed bank businessEvent creates one manual-only traceable voucher and posted lines flow into existing reports", async () => {
+  let workspace = (await withVoucherEvidence(createAccountingFixture({ withReconciliations: false, withPostedVouchers: false }))).workspace;
   workspace.stores = [{ id: "store-service", name: "服务中心", status: "active" }];
   workspace = confirmBankTransactionBusinessEvent(workspace, {
     transactionId: "txn-fee",
@@ -473,7 +516,7 @@ test("confirmed bank businessEvent creates one manual-only traceable voucher and
   assert.throws(() => createBankBusinessEventVoucherDraft(workspace, { eventId: event.id }, context), (error) => (
     error instanceof AccountingRuleError && error.code === "SOURCE_ALREADY_VOUCHERED"
   ));
-  assert.throws(() => postVoucher(workspace, {
+  await assert.rejects(() => postWithFixtureEvidence(workspace, {
     voucherId: voucher.id,
     mode: "automatic",
   }, context), (error) => error instanceof AccountingRuleError && error.code === "BANK_BUSINESS_EVENT_MANUAL_POST_REQUIRED");
@@ -490,7 +533,7 @@ test("confirmed bank businessEvent creates one manual-only traceable voucher and
   assert.deepEqual(trace.transactions.map((item) => item.id), ["txn-fee"]);
   assert.deepEqual(trace.businessEvents.map((item) => item.id), [event.id]);
 
-  workspace = postVoucher(workspace, {
+  workspace = await postWithFixtureEvidence(workspace, {
     voucherId: voucher.id,
     mode: "manual",
     reviewNote: "已人工复核银行流水、业务事件、费用科目、税务属性和证据来源",
@@ -566,7 +609,7 @@ test("non-member workspaces calculate traceable profit by location from posted v
   );
 });
 
-test("incomplete evidence and unfinished cross-period S7 review block bank businessEvent drafts", () => {
+test("incomplete evidence and unfinished cross-period S7 review block bank businessEvent drafts", async () => {
   let incomplete = createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
   incomplete = confirmBankTransactionBusinessEvent(incomplete, {
     transactionId: "txn-low",
@@ -586,7 +629,7 @@ test("incomplete evidence and unfinished cross-period S7 review block bank busin
     eventId: incompleteEvent.id,
   }, context), (error) => error instanceof AccountingRuleError && error.code === "BUSINESS_EVENT_EVIDENCE_INCOMPLETE");
 
-  let crossPeriod = createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
+  let crossPeriod = (await withVoucherEvidence(createAccountingFixture({ withReconciliations: false, withPostedVouchers: false }))).workspace;
   crossPeriod = confirmBankTransactionBusinessEvent(crossPeriod, {
     transactionId: "txn-followup",
     businessType: "customerReceipt",
@@ -662,7 +705,7 @@ test("reviewed internal-transfer businessEvent produces one two-bank voucher wit
   assert.equal(validateVoucherBalance(voucher).balanced, true);
 });
 
-test("confirmed customer deposit application creates one manual-only traceable voucher and writes posting state back", () => {
+test("confirmed customer deposit application creates one manual-only traceable voucher and writes posting state back", async () => {
   let workspace = createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
   workspace = applyReconciliation(workspace, {
     transactionId: "txn-deposit",
@@ -698,6 +741,10 @@ test("confirmed customer deposit application creates one manual-only traceable v
   const voucher = workspace.vouchers[0];
   assert.equal(voucher.period, "2026-09");
   assert.equal(validateVoucherBalance(voucher).balanced, true);
+  workspace.vouchers.push({ id: "fixture-advance-receivable-confirmation", date: "2026-09-01", period: "2026-09", status: "posted", evidenceIds: ["doc-member-contract"], sourceIds: ["bill-ar-advance-voucher"], lines: [
+    { account: "receivable", debit: 800, credit: 0, sourceIds: ["bill-ar-advance-voucher"] },
+    { account: "revenuePrivate", debit: 0, credit: 800, sourceIds: ["bill-ar-advance-voucher"] },
+  ] });
   assert.deepEqual(voucher.lines.map((line) => [line.account, line.debit, line.credit]), [
     ["contractLiability", 800, 0],
     ["receivable", 0, 800],
@@ -709,12 +756,12 @@ test("confirmed customer deposit application creates one manual-only traceable v
   assert.throws(() => createAdvanceApplicationVoucherDraft(workspace, {
     applicationId: application.id,
   }, context), (error) => error instanceof AccountingRuleError && error.code === "SOURCE_ALREADY_VOUCHERED");
-  assert.throws(() => postVoucher(workspace, {
+  await assert.rejects(() => postWithFixtureEvidence(workspace, {
     voucherId: voucher.id,
     mode: "automatic",
   }, context), (error) => error instanceof AccountingRuleError && error.code === "ADVANCE_APPLICATION_MANUAL_REVIEW_REQUIRED");
 
-  workspace = postVoucher(workspace, {
+  workspace = await postWithFixtureEvidence(workspace, {
     voucherId: voucher.id,
     mode: "manual",
     reviewNote: "已人工核对原收款、预收余额和应收账单",
@@ -731,7 +778,7 @@ test("confirmed customer deposit application creates one manual-only traceable v
   assert.ok(buildAttachmentPackage(workspace, voucher.id).manifest.some((item) => item.id === application.id && item.kind === "预收/预付冲销"));
 });
 
-test("confirmed supplier prepayment application drafts and posts debit-payable credit-prepayment entries", () => {
+test("confirmed supplier prepayment application drafts and posts debit-payable credit-prepayment entries", async () => {
   let workspace = createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
   workspace = applyReconciliation(workspace, {
     transactionId: "txn-prepay",
@@ -765,6 +812,10 @@ test("confirmed supplier prepayment application drafts and posts debit-payable c
     ["payable", 900, 0],
     ["prepayment", 0, 900],
   ]);
+  workspace.vouchers.push({ id: "fixture-advance-payable-confirmation", date: "2026-09-01", period: "2026-09", status: "posted", evidenceIds: ["doc-approval"], sourceIds: ["bill-ap-advance-voucher"], lines: [
+    { account: "expenseRent", debit: 900, credit: 0, sourceIds: ["bill-ap-advance-voucher"] },
+    { account: "payable", debit: 0, credit: 900, sourceIds: ["bill-ap-advance-voucher"] },
+  ] });
 
   workspace = reviewTransactionEvidence(workspace, "txn-prepay", context);
   workspace = recordManualConfirmation(workspace, {
@@ -772,7 +823,7 @@ test("confirmed supplier prepayment application drafts and posts debit-payable c
     decision: "approve",
     reason: "已核对预付合同、审批与后续应付账单",
   }, { ...context, at: "2026-09-06T13:03:00.000Z" });
-  workspace = postVoucher(workspace, {
+  workspace = await postWithFixtureEvidence(workspace, {
     voucherId: voucher.id,
     mode: "manual",
     reviewNote: "人工复核借应付贷预付及全部来源无误",
@@ -782,7 +833,7 @@ test("confirmed supplier prepayment application drafts and posts debit-payable c
   assert.equal(workspace.advanceApplications[0].voucherId, voucher.id);
 });
 
-test("a partially allocated receipt stays open and later allocations create a second traceable voucher", () => {
+test("a partially allocated receipt stays open and later allocations create a second traceable voucher", async () => {
   let workspace = createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
   workspace = applyReconciliation(workspace, {
     transactionId: "txn-split",
@@ -790,7 +841,7 @@ test("a partially allocated receipt stays open and later allocations create a se
   }, context);
   workspace = createVoucherDraft(workspace, { transactionId: "txn-split" }, context);
   const firstVoucherId = workspace.vouchers.at(-1).id;
-  workspace = postVoucher(workspace, { voucherId: firstVoucherId, mode: "automatic" }, context);
+  workspace = await postWithFixtureEvidence(workspace, { voucherId: firstVoucherId, mode: "automatic" }, context);
   assert.equal(workspace.transactions.find((item) => item.id === "txn-split").status, "pending");
 
   workspace = applyReconciliation(workspace, {
@@ -802,29 +853,29 @@ test("a partially allocated receipt stays open and later allocations create a se
   assert.notEqual(secondVoucher.id, firstVoucherId);
   assert.ok(secondVoucher.sourceIds.includes("bill-ar-1"));
   assert.ok(secondVoucher.sourceIds.includes("bill-ar-2"));
-  workspace = postVoucher(workspace, { voucherId: secondVoucher.id, mode: "automatic" }, { ...context, at: "2026-09-06T13:03:00.000Z" });
+  workspace = await postWithFixtureEvidence(workspace, { voucherId: secondVoucher.id, mode: "automatic" }, { ...context, at: "2026-09-06T13:03:00.000Z" });
   assert.equal(workspace.transactions.find((item) => item.id === "txn-split").status, "posted");
   assert.deepEqual(workspace.transactions.find((item) => item.id === "txn-split").postedVoucherIds, [firstVoucherId, secondVoucher.id]);
 });
 
-test("manual posting still requires explicit confirmation when evidence is incomplete", () => {
+test("manual posting rejects missing originals even when a review note is supplied", () => {
   let workspace = createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
   workspace = createVoucherDraft(workspace, { transactionId: "txn-prepay" }, context);
   assert.throws(() => postVoucher(workspace, {
     voucherId: workspace.vouchers[0].id,
     mode: "manual",
     reviewNote: "只填写复核意见，未补齐证据",
-  }, context), (error) => error instanceof AccountingRuleError && error.code === "EVIDENCE_CONFIRMATION_REQUIRED");
+  }, context), (error) => error instanceof AccountingRuleError && error.code === "VOUCHER_EVIDENCE_REQUIRED" && /原文件|原件/.test(error.message));
 });
 
-test("low-confidence source cannot post automatically and needs an audited manual confirmation", () => {
-  let workspace = createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
+test("low-confidence source cannot post automatically and needs an audited manual confirmation", async () => {
+  let workspace = (await withVoucherEvidence(createAccountingFixture({ withReconciliations: false, withPostedVouchers: false }))).workspace;
   workspace.transactions.find((item) => item.id === "txn-fee").confidence = 70;
   workspace = reviewTransactionEvidence(workspace, "txn-fee", context);
   workspace = createVoucherDraft(workspace, { transactionId: "txn-fee" }, { ...context, at: "2026-09-06T13:01:00.000Z" });
   const voucherId = workspace.vouchers[0].id;
 
-  assert.throws(() => postVoucher(workspace, { voucherId, mode: "automatic" }, context), (error) => (
+  await assert.rejects(() => postWithFixtureEvidence(workspace, { voucherId, mode: "automatic" }, context), (error) => (
     error instanceof AccountingRuleError && error.code === "UNRESOLVED_EXCEPTION"
   ));
 
@@ -833,7 +884,7 @@ test("low-confidence source cannot post automatically and needs an audited manua
     decision: "approve",
     reason: "已核对银行回单，确认为账户管理手续费",
   }, { ...context, at: "2026-09-06T13:02:00.000Z" });
-  workspace = postVoucher(workspace, {
+  workspace = await postWithFixtureEvidence(workspace, {
     voucherId,
     mode: "manual",
     reviewNote: "人工复核科目和金额无误",
@@ -845,7 +896,7 @@ test("low-confidence source cannot post automatically and needs an audited manua
   assert.equal(workspace.auditLog.at(-1).action, "voucher.post");
 });
 
-test("draft revision keeps versions, while posted voucher requires a separate revision", () => {
+test("draft revision keeps versions, while posted voucher requires a separate revision", async () => {
   let workspace = createAccountingFixture({ withReconciliations: true, withPostedVouchers: false });
   workspace = createVoucherDraft(workspace, { transactionId: "txn-split" }, context);
   const voucherId = workspace.vouchers[0].id;
@@ -887,7 +938,7 @@ test("draft revision keeps versions, while posted voucher requires a separate re
     project: line.project,
     taxAmount: line.taxAmount,
   })));
-  workspace = postVoucher(workspace, { voucherId, mode: "automatic" }, { ...context, at: "2026-09-06T13:06:00.000Z" });
+  workspace = await postWithFixtureEvidence(workspace, { voucherId, mode: "automatic" }, { ...context, at: "2026-09-06T13:06:00.000Z" });
 
   assert.throws(() => reviseDraftVoucher(workspace, {
     voucherId,
@@ -901,13 +952,13 @@ test("draft revision keeps versions, while posted voucher requires a separate re
   }, { ...context, at: "2026-09-06T13:07:00.000Z" });
   const revision = workspace.vouchers.find((item) => item.revisionOf === voucherId);
   assert.equal(revision.status, "draft");
-  workspace = postVoucher(workspace, { voucherId: revision.id, mode: "automatic" }, { ...context, at: "2026-09-06T13:08:00.000Z" });
+  workspace = await postWithFixtureEvidence(workspace, { voucherId: revision.id, mode: "automatic" }, { ...context, at: "2026-09-06T13:08:00.000Z" });
   assert.equal(workspace.vouchers.find((item) => item.id === voucherId).status, "superseded");
   assert.equal(workspace.vouchers.find((item) => item.id === revision.id).status, "posted");
 
   workspace = createVoucherDraft(workspace, { transactionId: "txn-payable" }, { ...context, at: "2026-09-06T13:09:00.000Z" });
   const nextVoucher = workspace.vouchers.find((item) => item.status === "draft" && item.id !== revision.id);
-  workspace = postVoucher(workspace, { voucherId: nextVoucher.id, mode: "automatic" }, { ...context, at: "2026-09-06T13:10:00.000Z" });
+  workspace = await postWithFixtureEvidence(workspace, { voucherId: nextVoucher.id, mode: "automatic" }, { ...context, at: "2026-09-06T13:10:00.000Z" });
   const numbers = workspace.vouchers.map((item) => item.no).filter(Boolean);
   assert.equal(new Set(numbers).size, numbers.length);
   assert.equal(workspace.vouchers.find((item) => item.id === nextVoucher.id).no, "记-003");
@@ -928,8 +979,8 @@ test("three statements reconcile and every summary keeps drilldown sources", () 
   assert.ok(statements.cashFlow.netChange.sourceIds.length > 0);
 });
 
-test("management metrics, tax workpaper and report versions stay source-backed", () => {
-  let workspace = createAccountingFixture();
+test("management metrics, tax workpaper and report versions stay source-backed", async () => {
+  let workspace = await withPayrollOriginalSources(createAccountingFixture());
   const management = buildManagementMetrics(workspace, { period: "2026-08", asOf: "2026-08-31" });
   const metric = Object.fromEntries(management.metrics.map((item) => [item.id, item]));
   assert.equal(metric.cash.value, 25880);
@@ -992,8 +1043,8 @@ test("ordinary receivable and payable ageing uses explicit due dates and keeps a
   assert.ok(buckets.days1To30.receivable.sourceIds.includes("doc-ar-2"));
 });
 
-test("thirty-day cash forecast uses dated bills and confirmed obligations with source drilldown", () => {
-  const workspace = {
+test("thirty-day cash forecast uses dated bills and confirmed obligations with source drilldown", async () => {
+  let workspace = {
     id: "workspace-cash-forecast",
     currentPeriod: "2026-09",
     accounts: [{ id: "bank:operating", name: "经营账户" }],
@@ -1028,6 +1079,8 @@ test("thirty-day cash forecast uses dated bills and confirmed obligations with s
       confirmedTaxSourceIds: ["tax-source"],
     },
   };
+  workspace = await withPayrollOriginalSources(workspace, { gross: 200, personal: 0, employer: 100 });
+  workspace.tax = { ...workspace.tax, payrollConfirmedAt: "2026-09-29T10:00:00.000Z", socialSecurityConfirmedAt: "2026-09-29T10:01:00.000Z", taxConfirmedAt: "2026-09-29T10:02:00.000Z" };
   const forecast = buildThirtyDayCashForecast(workspace, {
     period: "2026-09",
     asOf: "2026-09-30",
@@ -1060,9 +1113,10 @@ test("thirty-day cash forecast uses dated bills and confirmed obligations with s
   assert.equal(withoutTaxConfirmation.minimumBalance.value, 200);
 });
 
-test("customer confirms each section explicitly and every decision is audited", () => {
+test("customer confirms each section explicitly and every decision is audited", async () => {
   let workspace = createAccountingFixture();
   workspace.modules.payroll = true;
+  workspace = await withPayrollOriginalSources(workspace, { post: true });
   assert.throws(() => createCustomerConfirmationPackage(workspace, {
     period: "2026-08",
   }, context), (error) => error instanceof AccountingRuleError && error.code === "FROZEN_REPORT_REQUIRED");

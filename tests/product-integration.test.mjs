@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { withVoucherEvidence } from "./helpers/voucherEvidenceFixture.mjs";
 import test from "node:test";
 import JSZip from "jszip";
 
@@ -83,6 +84,7 @@ function integratedStore(workspace) {
 
 function closeableWorkspace() {
   let workspace = normalizeWorkspace(ensureWorkspace(createAccountingFixture()), { now: fixedNow });
+  workspace.bills = workspace.bills.map((bill) => bill.id === "bill-prepay-1" ? { ...bill, cashFlowCategory: "operating" } : bill);
   workspace.transactions = workspace.transactions.map((transaction) => ({ ...transaction, status: "ignored" }));
   workspace.vouchers = workspace.vouchers.map((voucher) => ({ ...voucher, status: "posted" }));
   workspace.exceptionTasks = [];
@@ -275,7 +277,7 @@ function archiveWithoutTax(workspace = closeableWorkspace()) {
 function nonBankCarryForwardFixture() {
   const workspace = closeableWorkspace();
   workspace.members = [{ id: "carry-member", name: "跨期会员", status: "active", openingSessions: 24, openingBalance: 2400 }];
-  workspace.bills.push({ id: "carry-payable", kind: "payable", counterparty: "跨期供应商", amount: 450, date: "2026-08-01", dueDate: "2026-09-10" });
+  workspace.bills.push({ id: "carry-payable", kind: "payable", recognitionBasis: "opening", counterparty: "跨期供应商", amount: 450, date: "2026-08-01", dueDate: "2026-09-10" });
   workspace.openingLedger.payable = Number(workspace.openingLedger.payable || 0) - 450;
   workspace.openingLedger.loan = -6000;
   workspace.openingLedger.equity += 6450;
@@ -504,12 +506,13 @@ for (const scenario of [
       }];
       workspace.openingLedger = { ...workspace.openingLedger, equity: -24000, [scenario.equityAccountId]: scenario.openingEquity };
     }
+    workspace.bills.push({ id: "bill-carry-forward-cost", kind: "payable", counterparty: "成本供应商", amount: scenario.cost, date: `${workspace.currentPeriod}-31`, dueDate: "2026-09-15", status: "active" });
     workspace.vouchers.push({
       id: "carry-forward-cost", no: "记-012", period: workspace.currentPeriod, date: `${workspace.currentPeriod}-31`,
-      summary: "确认本期主营业务成本", status: "posted", version: 1, sourceIds: ["bill-ap-1"], evidenceIds: ["doc-purchase"],
+      summary: "确认本期主营业务成本", status: "posted", version: 1, sourceIds: ["bill-carry-forward-cost"], evidenceIds: ["doc-purchase"],
       lines: [
-        { account: "costOfSales", debit: scenario.cost, credit: 0, sourceIds: ["bill-ap-1"] },
-        { account: "payable", debit: 0, credit: scenario.cost, sourceIds: ["bill-ap-1"] },
+        { account: "costOfSales", debit: scenario.cost, credit: 0, sourceIds: ["bill-carry-forward-cost"] },
+        { account: "payable", debit: 0, credit: scenario.cost, sourceIds: ["bill-carry-forward-cost"] },
       ],
     });
     const archived = archiveWithoutTax(workspace);
@@ -544,7 +547,7 @@ for (const scenario of [
   });
 }
 
-test("attachment export metadata preserves the archived version while financial and evidence edits invalidate it", () => {
+test("attachment exports keep fingerprints stable and archived carry-forward ignores later financial or evidence edits", () => {
   const workspace = closeableWorkspace();
   workspace.documents.find((document) => document.id === "doc-settlement").hash = "settlement-original-hash";
   const archived = archiveWithoutTax(workspace);
@@ -575,8 +578,13 @@ test("attachment export metadata preserves the archived version while financial 
     const changed = structuredClone(exported);
     change(changed);
     assert.notEqual(workflowSourceFingerprint(changed), workflowSourceFingerprint(archived), label);
-    assert.equal(workflowChecks(changed).version, null, label);
-    assert.throws(() => enterNextPeriod(changed, "测试会计"), /归档后数据又发生变化/, label);
+    assert.equal(workflowChecks(changed).version.id, archive.reportVersionId, `${label}: archived views retain their frozen version`);
+    assert.deepEqual(workflowChecks(changed).version.snapshot, archive.reportSnapshot, label);
+    const changedNext = enterNextPeriod(changed, "测试会计");
+    assert.deepEqual(changedNext.openingLedger, next.openingLedger, `${label}: opening ledger comes from the archived closing ledger`);
+    assert.deepEqual(changedNext.openingCarryForward, next.openingCarryForward, `${label}: profit carry-forward retains its archived source`);
+    assert.deepEqual(changedNext.bankAccounts.map((account) => [account.id, account.openingBalance, account.balanceCarryForwards?.[changedNext.currentPeriod]]), next.bankAccounts.map((account) => [account.id, account.openingBalance, account.balanceCarryForwards?.[next.currentPeriod]]), `${label}: bank openings retain frozen reconciliation values`);
+    assert.deepEqual(changedNext.delivery.archives[0], archive, label);
     assert.deepEqual(changed.delivery.archives[0], archive);
   }
 });
@@ -1156,6 +1164,7 @@ test("an inherited open notice is visible to the workflow and blocks a new close
 
 test("a frozen report becomes stale after its financial source data changes", () => {
   const base = ensureWorkspace(createAccountingFixture());
+  base.bills = base.bills.map((bill) => bill.id === "bill-prepay-1" ? { ...bill, cashFlowCategory: "operating" } : bill);
   base.transactions = base.transactions.map((transaction) => ({ ...transaction, status: "ignored" }));
   base.vouchers = base.vouchers.map((voucher) => ({ ...voucher, status: "posted" }));
   const frozen = freezeReportVersion(base, "测试会计");
@@ -1204,7 +1213,7 @@ test("a pending correction voucher blocks confirmation even when its source tran
   assert.equal(flow.checks.find((item) => item.id === "vouchers").ok, false);
 });
 
-test("posting a date-only correction keeps the superseded voucher in history and allows the close to continue", () => {
+test("posting a date-only correction keeps the superseded voucher in history and allows the close to continue", async () => {
   let workspace = closeableWorkspace();
   delete workspace.vouchers.find((voucher) => voucher.id === "voucher-0001").period;
   const before = buildReportSnapshot(workspace).summary;
@@ -1213,9 +1222,10 @@ test("posting a date-only correction keeps the superseded voucher in history and
   }, { actor: "测试会计", at: "2026-09-04T08:01:00.000Z" });
   const revision = workspace.vouchers.find((voucher) => voucher.revisionOf === "voucher-0001");
   assert.deepEqual(workflowChecks(workspace).pendingVouchers.map((voucher) => voucher.id), [revision.id]);
-  workspace = postVoucher(workspace, {
+  const originalFiles = await withVoucherEvidence(workspace);
+  workspace = await postVoucherWithEvidence(originalFiles.workspace, {
     voucherId: revision.id, reviewNote: "已复核更正凭证及来源，原凭证由本次入账替代", mode: "manual",
-  }, { actor: "测试会计", at: "2026-09-04T08:02:00.000Z" });
+  }, { actor: "测试会计", at: "2026-09-04T08:02:00.000Z", fileVault: originalFiles.fileVault });
   assert.equal(workspace.vouchers.find((voucher) => voucher.id === "voucher-0001").status, "superseded");
   assert.equal(workspace.vouchers.find((voucher) => voucher.id === revision.id).status, "posted");
   assert.deepEqual(workflowChecks(workspace).pendingVouchers, []);
@@ -1312,9 +1322,11 @@ test("the full frozen-version confirmation, package, receipt, archive and next-p
 
   const next = enterNextPeriod(archived, "测试会计");
   assert.notEqual(next.currentPeriod, archived.currentPeriod);
-  assert.equal(next.tax.payroll, 0);
-  assert.equal(next.tax.socialSecurity, 0);
-  assert.deepEqual(next.tax.sourceIds, []);
-  assert.deepEqual(next.tax.payrollSourceIds, []);
-  assert.deepEqual(next.tax.socialSecuritySourceIds, []);
+  assert.equal(next.tax.payroll, undefined);
+  assert.equal(next.tax.socialSecurity, undefined);
+  assert.deepEqual(next.tax.sourceIds || [], []);
+  assert.deepEqual(next.tax.payrollSourceIds || [], []);
+  assert.deepEqual(next.tax.socialSecuritySourceIds || [], []);
+  assert.equal(buildPayrollSocialSummary(next).payrollRecords.length, 0);
+  assert.equal(buildPayrollSocialSummary(next).socialSecurityRecords.length, 0);
 });

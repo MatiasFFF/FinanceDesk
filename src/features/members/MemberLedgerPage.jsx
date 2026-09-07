@@ -40,6 +40,7 @@ import {
   synchronizeMemberServiceException,
 } from "./memberLedger.js";
 import "./member-ledger.css";
+import { buildMemberRechargeSourceOptions, linkMemberRechargeSource } from "./memberRechargeSources.js";
 
 const EVENT_STATUS_TONES = {
   pending: "warning",
@@ -395,11 +396,12 @@ function EventForm({ workspace, members, onSubmit }) {
   const terminology = workspaceTerminology(workspace);
   const periodDate = today().startsWith(workspace.currentPeriod) ? today() : `${workspace.currentPeriod}-01`;
   const [form, setForm] = useState({ kind: MEMBER_EVENT_KINDS.RECHARGE, memberId: members[0]?.id || "", packageId: "", packageRechargeId: "", originalRechargeId: "", date: periodDate, amount: "", quantity: "", ...defaultDimensions(workspace, members[0]), note: "" });
-  usePeriodLeaveGuard({ dirty: Boolean(form.amount || form.quantity || form.note || form.packageId || form.packageRechargeId || form.originalRechargeId) });
+  usePeriodLeaveGuard({ dirty: Boolean(form.amount || form.quantity || form.note || form.packageId || form.packageRechargeId || form.originalRechargeId || form.rechargeSourceId) });
   const definition = MEMBER_EVENT_DEFINITIONS[form.kind];
   const needsMember = form.kind !== MEMBER_EVENT_KINDS.COMMISSION;
   const enabledPackages = (workspace.membershipPackages || []).filter((packageRule) => packageRule.enabled !== false);
   const selectedPackage = enabledPackages.find((packageRule) => packageRule.id === form.packageId);
+  const rechargeSources = buildMemberRechargeSourceOptions(workspace, { memberId: form.memberId });
   const availableMemberPackages = useMemo(() => buildMemberPackageBalances(workspace, form.memberId, {
     asOfDate: form.date,
   }).filter((packageBalance) => !packageBalance.expired && packageBalance.remainingSessions > 0 && packageBalance.unfulfilledBalance > 0), [workspace, form.memberId, form.date]);
@@ -417,19 +419,20 @@ function EventForm({ workspace, members, onSubmit }) {
 
   function changeMember(memberId) {
     const member = members.find((item) => item.id === memberId);
-    setForm((current) => ({ ...current, memberId, packageRechargeId: "", originalRechargeId: "", ...defaultDimensions(workspace, member) }));
+    setForm((current) => ({ ...current, memberId, rechargeSourceId: "", packageRechargeId: "", originalRechargeId: "", ...defaultDimensions(workspace, member) }));
   }
 
   function changeKind(kind) {
     const member = members.find((item) => item.id === form.memberId) || members[0];
-    setForm((current) => ({ ...current, kind, memberId: member?.id || "", packageId: "", packageRechargeId: "", originalRechargeId: "", amount: "", quantity: "", ...(kind === MEMBER_EVENT_KINDS.COMMISSION ? {} : defaultDimensions(workspace, member)) }));
+    setForm((current) => ({ ...current, kind, rechargeSourceId: "", memberId: member?.id || "", packageId: "", packageRechargeId: "", originalRechargeId: "", amount: "", quantity: "", ...(kind === MEMBER_EVENT_KINDS.COMMISSION ? {} : defaultDimensions(workspace, member)) }));
   }
 
   function submit(event) {
     event.preventDefault();
-    const saved = onSubmit(form);
+    const source = rechargeSources.find((item) => item.id === form.rechargeSourceId);
+    const saved = onSubmit({ ...form, ...(form.kind === MEMBER_EVENT_KINDS.RECHARGE && source ? { transactionId: source.transactionId, allocationId: source.allocationId, billId: source.billId } : {}) });
     if (saved === false) return;
-    setForm((current) => ({ ...current, packageId: "", packageRechargeId: "", originalRechargeId: "", amount: "", quantity: "", note: "" }));
+    setForm((current) => ({ ...current, rechargeSourceId: "", packageId: "", packageRechargeId: "", originalRechargeId: "", amount: "", quantity: "", note: "" }));
   }
 
   return (
@@ -459,6 +462,7 @@ function EventForm({ workspace, members, onSubmit }) {
             {!availableMemberPackages.length && <small>该{terminology.member}在所选日期没有可用且未过期的套餐。</small>}
           </label>
         )}
+        {form.kind === MEMBER_EVENT_KINDS.RECHARGE && <label className="full"><span>对应收款</span><select value={form.rechargeSourceId || ""} onChange={(event) => setForm((current) => ({ ...current, rechargeSourceId: event.target.value }))}><option value="">先登记，入账前关联银行流水</option>{rechargeSources.map((source) => <option value={source.id} key={source.id}>{source.label}</option>)}</select><small>按真实银行流水或已确认分配选择，同一份收款只关联一次充值。</small></label>}
         {form.kind === MEMBER_EVENT_KINDS.REFUND && <label className="full"><span>原充值</span><select value={form.originalRechargeId} onChange={(event) => setForm((current) => ({ ...current, originalRechargeId: event.target.value }))} required><option value="">请选择本次退款对应的原充值</option>{refundOptions.map((option) => <option value={option.rechargeId} key={option.rechargeId}>{option.date} · 原充值 {formatCurrency(option.amount)} / {option.sessions} 次 · 可退 {formatCurrency(option.refundableAmount)} / {option.refundableSessions} 次</option>)}</select>{selectedRecharge && <small>按充值日期先进先出分摊已核销{terminology.service}；本笔最多可退 {formatCurrency(selectedRecharge.refundableAmount)}、{selectedRecharge.refundableSessions} 次。</small>}{!refundOptions.length && <small>该{terminology.member}暂无同时具备可退金额和{terminology.service}次数的已确认充值。</small>}</label>}
         <label><span>业务日期</span><input type="date" value={form.date} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value }))} required /></label>
         <label><span>{form.kind === MEMBER_EVENT_KINDS.COMMISSION ? `涉及${terminology.service}次数（选填）` : form.kind === MEMBER_EVENT_KINDS.RECHARGE ? `套餐${terminology.service}次数` : `${terminology.service}次数`}</span><input type="number" min={form.kind === MEMBER_EVENT_KINDS.COMMISSION ? "0" : "0.01"} max={form.kind === MEMBER_EVENT_KINDS.REFUND ? selectedRecharge?.refundableSessions : form.kind === MEMBER_EVENT_KINDS.CONSUMPTION ? selectedMemberPackage?.remainingSessions : undefined} step="0.01" value={form.kind === MEMBER_EVENT_KINDS.RECHARGE ? selectedPackage?.totalSessions || "" : form.quantity} onChange={(event) => setForm((current) => ({ ...current, quantity: event.target.value }))} readOnly={form.kind === MEMBER_EVENT_KINDS.RECHARGE} required={form.kind !== MEMBER_EVENT_KINDS.COMMISSION} /></label>
@@ -503,6 +507,26 @@ function MemberForm({ workspace, onSubmit }) {
       </form>
     </section>
   );
+}
+
+function RechargeSourceControl({ workspace, event }) {
+  const { actions, store, state } = useFinanceDesk();
+  const [sourceId, setSourceId] = useState("");
+  const [feedback, setFeedback] = useState("");
+  const options = buildMemberRechargeSourceOptions(workspace, event);
+  function link() {
+    const selected = options.find((option) => option.id === sourceId);
+    if (!selected) return;
+    try {
+      const current = store.getActiveWorkspace();
+      const actor = current.users?.find((user) => user.id === state.activeUserId)?.name || "本地用户";
+      const linked = linkMemberRechargeSource(current, { eventId: event.id, transactionId: selected.transactionId, allocationId: selected.allocationId, billId: selected.billId }, { actor });
+      const next = synchronizeMemberServiceException(linked, { period: linked.currentPeriod }, { actor });
+      actions.replaceWorkspace(current.id, next);
+      setFeedback("收款已关联，可从本记录或银行流水继续办理");
+    } catch (error) { setFeedback(error.message); }
+  }
+  return <div><small>{event.transactionId ? `已关联 ${event.transactionId}${event.allocationId ? ` / ${event.allocationId}` : ""}` : "入账前需关联收款"}</small>{event.accountingStatus !== "posted" && <><select aria-label="选择充值对应收款" value={sourceId} onChange={(change) => setSourceId(change.target.value)}><option value="">选择银行流水或已确认分配</option>{options.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select><button className="soft-button" type="button" disabled={!sourceId} onClick={link}>关联收款</button></>}{feedback && <small role="status">{feedback}</small>}</div>;
 }
 
 export function MemberLedgerPage({ workspace, onAddMember, onMemberStatus, onAddEvent, onEventStatus, onPage }) {
@@ -566,7 +590,7 @@ export function MemberLedgerPage({ workspace, onAddMember, onMemberStatus, onAdd
             <div className="member-event-main"><span className={`member-event-mark ${kind}`} /><span><strong>{memberRoleCopy(definition.label, terminology)} · {event.memberName || event.coach}</strong><small>{event.date} · {event.storeName || workspace.stores?.find((store) => store.id === event.storeId)?.name || `未归属${terminology.location}`} · {event.coach || `未记录${terminology.coach}`}</small><small>{[event.department, event.project, event.note].filter(Boolean).join(" · ") || "未记录部门 / 项目"}</small></span></div>
             <span className="member-event-quantity"><small>{terminology.service}次数</small><strong>{Number(event.quantity || 0)} 次</strong></span>
             <span className="member-event-amount"><small>金额</small><strong>{formatCurrency(event.amount)}</strong></span>
-            <span className="member-event-accounting"><small>会计事件</small><strong>{memberRoleCopy(event.accountingLabel || definition.accountingLabel, terminology)}</strong><em>{event.accountingStatus === "ready" ? "待会计处理" : event.accountingStatus === "void" ? "已作废" : "随业务状态生成"}</em></span>
+            <span className="member-event-accounting"><small>会计事件</small><strong>{memberRoleCopy(event.accountingLabel || definition.accountingLabel, terminology)}</strong><em>{event.accountingStatus === "ready" ? "待会计处理" : event.accountingStatus === "posted" ? "已入账" : event.accountingStatus === "void" ? "已作废" : "随业务状态生成"}</em>{kind === MEMBER_EVENT_KINDS.RECHARGE && status !== "void" && <RechargeSourceControl workspace={workspace} event={event} />}</span>
             <div className="member-event-status"><span className={`tone-pill ${EVENT_STATUS_TONES[status] || "neutral"}`}>{memberEventStatusLabel(event)}</span><div>{memberEventActions(event).map((action) => <button className={action.status === "void" ? "soft-button" : "secondary-button"} type="button" key={action.status} onClick={() => onEventStatus(event.id, action.status)}>{action.label}</button>)}</div></div>
           </article>;
         })}</div> : <div className="member-empty"><Clock size={26} /><strong>还没有业务记录</strong><span>新增的业务先进入待确认状态。</span></div>}

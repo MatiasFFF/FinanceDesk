@@ -22,8 +22,14 @@ import {
   assessTransactionEvidence,
   assessManualVoucherEvidence,
   syncManualVoucherEvidenceTasks,
+  assessVoucherEvidence,
+  syncVoucherEvidenceTasks,
+  voucherEvidenceSources,
+  syncInventoryVoucherIntegrityTasks,
   unresolvedExceptionTasks,
 } from "../../features/evidence/evidenceEngine.js";
+import { assertSettlementRecognition } from "../../features/reconciliation/settlementRecognition.js";
+import { assertMemberRechargeVoucher, linkMemberRechargeSource, memberRechargeSource, memberRechargeVouchers } from "../../features/members/memberRechargeSources.js";
 import { commitReconciliationCorrection } from "../../features/reconciliation/reconciliationEngine.js";
 import { assertPayrollVoucherPosting } from "./payrollAccounting.js";
 import {
@@ -352,7 +358,7 @@ function memberEventVoucherLines(workspace, event) {
   }
   const kind = memberEventKind(event);
   const amount = absoluteAmount(event.amount);
-  const sourceIds = [event.id];
+  const sourceIds = collectSourceIds(event.id, event.kind === MEMBER_EVENT_KINDS.RECHARGE ? [event.transactionId, event.allocationId, event.billId] : []);
   const bankAccount = event.bankAccountId
     || workspace.bankAccounts?.[0]?.id
     || workspace.accounts?.[0]?.id
@@ -388,6 +394,7 @@ export function vouchersForMemberEvent(workspace, eventOrId) {
     ? (workspace.businessEvents || []).find((item) => item.id === eventOrId)
     : eventOrId;
   if (!event) return [];
+  if (memberEventKind(event) === MEMBER_EVENT_KINDS.RECHARGE && event.transactionId) return memberRechargeVouchers(workspace, event);
   const sourceIds = new Set(collectSourceIds(event.id, event.billId));
   return (workspace.vouchers || []).filter((voucher) => (
     (voucher.sourceIds || []).some((sourceId) => sourceIds.has(sourceId))
@@ -730,6 +737,10 @@ export function createBankBusinessEventVoucherDraft(workspace, {
 
 export function validateVoucherBalance(voucher, tolerance = 0.01, workspace = null) {
   const lines = voucher.lines || [];
+  const zeroCostReplacement = Boolean(workspace && voucher.inventoryMovementId && voucher.revisionOf
+    && (workspace.inventoryMovements || []).some((movement) => movement.id === voucher.inventoryMovementId && Number(movement.amount) === 0)
+    && (workspace.vouchers || []).some((original) => original.id === voucher.revisionOf && original.inventoryMovementId === voucher.inventoryMovementId && original.status === "posted")
+    && lines.every((line) => Number(line.debit || 0) === 0 && Number(line.credit || 0) === 0));
   const normalizedAmounts = lines.map((line) => {
     const debit = Number(line.debit ?? 0);
     const credit = Number(line.credit ?? 0);
@@ -761,7 +772,7 @@ export function validateVoucherBalance(voucher, tolerance = 0.01, workspace = nu
       errors.push(`第 ${index + 1} 行借贷金额不能为负数`);
     } else if (amounts.debit > 0 && amounts.credit > 0) {
       errors.push(`第 ${index + 1} 行不能同时填写借方和贷方`);
-    } else if (amounts.debit <= 0 && amounts.credit <= 0) {
+    } else if (amounts.debit <= 0 && amounts.credit <= 0 && !zeroCostReplacement) {
       errors.push(`第 ${index + 1} 行必须填写借方或贷方金额`);
     }
     if (!amounts.validTaxAmount) {
@@ -927,11 +938,19 @@ export function createManualVoucherDraft(workspace, {
 export function createVoucherDraft(workspace, { transactionId, summary, note = "" }, context = {}) {
   const sourceTransaction = findTransaction(workspace, transactionId);
   assertAccountingPeriodWritable(workspace, String(sourceTransaction.date || "").slice(0, 7));
+  const recharges = (workspace.businessEvents || []).filter((event) => event.sourceType !== "bankTransaction"
+    && memberEventKind(event) === MEMBER_EVENT_KINDS.RECHARGE && event.transactionId === transactionId && isRecognizedMemberEvent(event));
+  recharges.forEach((event) => memberRechargeSource(workspace, event));
+  if (recharges.length === 1 && !recharges[0].allocationId) return createMemberEventVoucherDraft(workspace, { eventId: recharges[0].id, summary, note }, context);
+  if (recharges.length) {
+    const existing = memberRechargeVouchers(workspace, recharges[0])[0];
+    if (existing) return recharges.reduce((state, event) => linkMemberRechargeSource(state, { eventId: event.id, transactionId, allocationId: event.allocationId, billId: event.billId }, context), workspace);
+  }
   const bankBusinessEvent = (workspace.businessEvents || []).find((event) => (
     event.id === sourceTransaction.bankBusinessEventId
     || (event.sourceType === "bankTransaction" && event.transactionId === sourceTransaction.id)
   ));
-  if (bankBusinessEvent) {
+  if (bankBusinessEvent && !recharges.length) {
     return createBankBusinessEventVoucherDraft(workspace, {
       eventId: bankBusinessEvent.id,
       summary,
@@ -996,6 +1015,14 @@ export function createVoucherDraft(workspace, { transactionId, summary, note = "
     versions: [],
   };
   synchronizeVoucherJudgementAccounts(next, voucher, resolvedContext, "创建凭证草稿");
+  recharges.forEach((sourceEvent) => {
+    const event = findBusinessEvent(next, sourceEvent.id);
+    assertMemberRechargeVoucher(next, event, voucher);
+    voucher.sourceIds = collectSourceIds(voucher.sourceIds, event.id);
+    voucher.lines.forEach((line) => { if (line.sourceIds?.includes(event.allocationId)) line.sourceIds = collectSourceIds(line.sourceIds, event.id); });
+    event.accountingStatus = "voucher_draft";
+    event.draftVoucherId = voucher.id;
+  });
   voucher.versions.push(voucherSnapshot(voucher, resolvedContext, "创建凭证草稿"));
   next.vouchers = [...(next.vouchers || []), voucher];
   appendAuditEntry(next, {
@@ -1010,16 +1037,24 @@ export function createVoucherDraft(workspace, { transactionId, summary, note = "
 }
 
 export function createMemberEventVoucherDraft(workspace, { eventId, summary, note = "" }, context = {}) {
-  const next = cloneAccountingState(workspace);
+  let next = cloneAccountingState(workspace);
   const resolvedContext = operationContext(context);
   if (!memberBusinessEnabled(next)) {
     throw new AccountingRuleError("MEMBER_MODULE_DISABLED", "当前工作台未启用会员模块，不能生成会员业务凭证");
   }
-  const event = findBusinessEvent(next, eventId);
+  let event = findBusinessEvent(next, eventId);
   const kind = memberEventKind(event);
   const definition = MEMBER_EVENT_DEFINITIONS[kind];
   if (!definition || !isRecognizedMemberEvent(event)) {
     throw new AccountingRuleError("MEMBER_EVENT_NOT_CONFIRMED", "会员业务必须先确认，才能生成凭证");
+  }
+  assertAccountingPeriodWritable(next, String(event.date || "").slice(0, 7));
+  if (kind === MEMBER_EVENT_KINDS.RECHARGE) {
+    memberRechargeSource(next, event);
+    next = linkMemberRechargeSource(next, { eventId, transactionId: event.transactionId, allocationId: event.allocationId, billId: event.billId }, resolvedContext);
+    event = findBusinessEvent(next, eventId);
+    if (memberRechargeVouchers(next, event).length) return next;
+    if (event.allocationId) return createVoucherDraft(next, { transactionId: event.transactionId, summary, note }, resolvedContext);
   }
   const existing = vouchersForMemberEvent(next, event).find((voucher) => voucher.status !== "superseded");
   if (existing) {
@@ -1041,7 +1076,7 @@ export function createMemberEventVoucherDraft(workspace, { eventId, summary, not
     sourceType: "memberEvent",
     memberEventId: event.id,
     lines,
-    sourceIds: collectSourceIds(event.id, event.billId),
+    sourceIds: collectSourceIds(event.id, event.billId, kind === MEMBER_EVENT_KINDS.RECHARGE ? [event.transactionId, event.allocationId] : []),
     relatedSourceIds: collectSourceIds(
       event.originalRechargeId,
       event.commissionEventId,
@@ -1157,16 +1192,23 @@ export function createAdvanceApplicationVoucherDraft(workspace, { applicationId,
 }
 
 function sourceTransactionsForVoucher(workspace, voucher) {
-  const direct = (workspace.transactions || []).filter((transaction) => voucher.sourceIds?.includes(transaction.id));
-  const allocationTransactionIds = (workspace.transactions || []).flatMap((transaction) => (
-    (transaction.allocations || []).some((allocation) => voucher.sourceIds?.includes(allocation.id)) ? [transaction.id] : []
-  ));
-  return (workspace.transactions || []).filter((transaction) => (
-    direct.some((item) => item.id === transaction.id) || allocationTransactionIds.includes(transaction.id)
-  ));
+  const ids = new Set(voucherSourceIds(voucher));
+  (workspace.businessEvents || []).filter((event) => ids.has(event.id) || event.id === voucher.memberEventId || event.id === voucher.bankBusinessEventId)
+    .filter((event) => event.sourceType === "bankTransaction" || memberEventKind(event) === MEMBER_EVENT_KINDS.RECHARGE)
+    .forEach((event) => { if (event.transactionId) ids.add(event.transactionId); });
+  return (workspace.transactions || []).filter((transaction) => ids.has(transaction.id) || (transaction.allocations || []).some((allocation) => ids.has(allocation.id)));
 }
 
 function ensurePostingAllowed(workspace, voucher, mode) {
+  const trace = voucherEvidenceSources(workspace, voucher);
+  const ownedSourceIds = collectSourceIds(voucherSourceIds(voucher), voucher.memberEventId, voucher.bankBusinessEventId);
+  const rechargeEvents = (workspace.businessEvents || []).filter((event) => event.sourceType !== "bankTransaction"
+    && memberEventKind(event) === MEMBER_EVENT_KINDS.RECHARGE && (ownedSourceIds.includes(event.id)
+      || (event.transactionId && ownedSourceIds.includes(event.transactionId) && (!event.allocationId || ownedSourceIds.includes(event.allocationId)))));
+  rechargeEvents.forEach((event) => {
+    if (!isRecognizedMemberEvent(event)) throw new AccountingRuleError("MEMBER_EVENT_NOT_CONFIRMED", "关联充值尚未确认，请先确认业务再入账");
+    assertMemberRechargeVoucher(workspace, event, voucher);
+  });
   const allocations = voucherAllocations(workspace, voucher);
   if (allocations.some((allocation) => !["confirmed", "posted"].includes(allocation.status))) {
     throw new AccountingRuleError("VOUCHER_SOURCE_CHANGED", "凭证包含已撤销或未确认的核销来源；请按当前核销重新生成草稿");
@@ -1202,7 +1244,11 @@ function ensurePostingAllowed(workspace, voucher, mode) {
       if (duplicate) throw new AccountingRuleError("SOURCE_ALREADY_POSTED", `同一流水或核销来源已由 ${duplicate.no || duplicate.id} 入账；请使用该凭证的更正草稿，避免重复记账`);
     });
   }
-  const unresolved = transactions.flatMap((transaction) => unresolvedExceptionTasks(workspace, transaction.id));
+  const taskSourceIds = new Set(collectSourceIds(voucher.id, trace.sourceIds, trace.documentIds));
+  const unresolved = (workspace.exceptionTasks || []).filter((task) => task.status !== "resolved"
+    && taskSourceIds.has(task.sourceId)
+    && !(task.code === "inventory_posted_cost_changed" && voucher.inventoryMovementId && voucher.revisionOf === task.sourceId)
+    && !(task.code === "voucher_evidence" && task.sourceId !== voucher.id && (workspace.vouchers || []).some((other) => other.id === task.sourceId && other.status === "invalidated")));
   if (unresolved.length) {
     throw new AccountingRuleError("UNRESOLVED_EXCEPTION", "凭证来源仍有未解决异常", {
       exceptionIds: unresolved.map((task) => task.id),
@@ -1247,7 +1293,7 @@ function nextVoucherNumber(workspace, voucher) {
   return `记-${String(maximum + 1).padStart(3, "0")}`;
 }
 
-// Only the async file-reading entry can authorize a manual voucher posting.
+// Only the async file-reading entry can authorize a voucher posting.
 // The proof is local to this call; saved metadata is never reused as proof.
 const verifiedManualPostings = new WeakMap();
 
@@ -1255,11 +1301,28 @@ function isManualVoucher(voucher) {
   return voucher.sourceType === "manual" || voucher.judgement?.eventType === "manualVoucher";
 }
 
+function prepareReconciliationPosting(workspace, voucher, context) {
+  const plan = voucher.reconciliationCorrection;
+  if (!plan) return;
+  const replacement = plan.replacement;
+  const sourceIds = voucherSourceIds(voucher);
+  if (!voucher.revisionOf || !plan.originalAllocation?.id || !plan.transactionId || !replacement
+    || replacement.id !== `allocation-correction-${voucher.id}` || replacement.transactionId !== plan.transactionId
+    || replacement.status !== "confirmed" || !String(plan.reason || "").trim()
+    || ![replacement.id, replacement.billId, plan.transactionId].every((id) => id && sourceIds.includes(id))) {
+    throw new AccountingRuleError("CORRECTION_SOURCE_CHANGED", "核销更正计划与凭证来源不一致，请取消此草稿并从当前核销重新更正");
+  }
+  // This mutates only a private posting clone. It validates the live original
+  // allocation, original voucher, target balance and period before adding the
+  // planned replacement as a real source within that clone.
+  commitReconciliationCorrection(workspace, voucher, context);
+}
+
 export async function postVoucherWithEvidence(workspace, input, context = {}) {
   const snapshot = cloneAccountingState(workspace);
   const voucher = findVoucher(snapshot, input.voucherId);
-  if (!isManualVoucher(voucher)) return postVoucher(snapshot, input, context);
   assertAccountingPeriodWritable(snapshot, voucher.period);
+  if (!["draft", "changes_requested"].includes(voucher.status)) throw new AccountingRuleError("VOUCHER_NOT_POSTABLE", `当前状态不能入账：${voucher.status}`);
   if (voucher.payrollAccrual) {
     assertPayrollVoucherPosting(snapshot, voucher);
     const { verifyPayrollSocialEvidence } = await import("../../features/intake/documentIntake.js");
@@ -1267,17 +1330,17 @@ export async function postVoucherWithEvidence(workspace, input, context = {}) {
     if (!evidence.verified || !evidence.canGenerate) throw new AccountingRuleError("PAYROLL_ORIGINAL_REQUIRED", evidence.issues.map((issue) => issue.message).join("；"), evidence);
     assertPayrollVoucherPosting(workspace, voucher);
   }
-  const assessment = assessManualVoucherEvidence(snapshot, voucher);
+  const evidenceWorkspace = voucher.reconciliationCorrection ? cloneAccountingState(snapshot) : snapshot;
+  const evidenceVoucher = findVoucher(evidenceWorkspace, voucher.id);
+  prepareReconciliationPosting(evidenceWorkspace, evidenceVoucher, operationContext({ ...context, mode: input.mode || "manual" }));
+  const assessment = isManualVoucher(evidenceVoucher) ? assessManualVoucherEvidence(evidenceWorkspace, evidenceVoucher) : assessVoucherEvidence(evidenceWorkspace, evidenceVoucher);
   if (!assessment.complete) throw new AccountingRuleError("VOUCHER_EVIDENCE_REQUIRED", assessment.issues.map((issue) => issue.message).join("；"), assessment);
-  const { getStoredDocumentRecord, hashLocalFile } = await import("../../features/intake/documentIntake.js");
+  const { verifyStoredDocumentOriginal } = await import("../../features/intake/documentIntake.js");
   const verifiedFiles = [];
   for (const document of assessment.documents) {
     try {
-      const record = await getStoredDocumentRecord({ fileVault: context.fileVault, workspaceId: snapshot.id, document });
-      if (!record.blob?.size) throw new Error("原文件为空或不存在");
-      const hash = await hashLocalFile(record.blob);
-      if (hash !== document.hash) throw new Error("原文件哈希与资料记录不一致");
-      verifiedFiles.push({ documentId: document.id, hash, size: record.blob.size });
+      const verified = await verifyStoredDocumentOriginal({ fileVault: context.fileVault, workspaceId: snapshot.id, document });
+      verifiedFiles.push(verified);
     } catch (error) {
       throw new AccountingRuleError("VOUCHER_ORIGINAL_REQUIRED", `${document.name || document.id}：${error.message}；请载入草稿，重新上传原件并替换资料关联`, { documentId: document.id });
     }
@@ -1296,6 +1359,19 @@ export function postVoucher(workspace, { voucherId, reviewNote, mode = "manual" 
   const resolvedContext = operationContext({ ...context, mode });
   const voucher = findVoucher(next, voucherId);
   assertAccountingPeriodWritable(next, voucher.period || String(voucher.date).slice(0, 7));
+  if (!["draft", "changes_requested"].includes(voucher.status)) {
+    throw new AccountingRuleError("VOUCHER_NOT_POSTABLE", `当前状态不能入账：${voucher.status}`);
+  }
+  prepareReconciliationPosting(next, voucher, resolvedContext);
+  if (!isManualVoucher(voucher)) {
+    const assessment = assessVoucherEvidence(next, voucher);
+    if (!assessment.complete) throw new AccountingRuleError("VOUCHER_EVIDENCE_REQUIRED", assessment.issues.map((issue) => issue.message).join("；"), assessment);
+    const proof = verifiedManualPostings.get(workspace);
+    if (proof?.voucherId !== voucher.id) throw new AccountingRuleError("VOUCHER_ORIGINAL_REQUIRED", "凭证必须读取并核验本地原件后入账，请重新复核入账");
+    voucher.evidenceIds = collectSourceIds(voucher.evidenceIds, proof.documentIds);
+    voucher.evidenceVerification = { at: resolvedContext.at, actor: resolvedContext.actor, files: proof.files };
+    syncVoucherEvidenceTasks(next, voucher, resolvedContext);
+  }
   if (isManualVoucher(voucher)) {
     const proof = verifiedManualPostings.get(workspace);
     const assessment = assessManualVoucherEvidence(next, voucher);
@@ -1314,13 +1390,10 @@ export function postVoucher(workspace, { voucherId, reviewNote, mode = "manual" 
   if (voucher.advanceApplicationId && mode !== "manual") {
     throw new AccountingRuleError("ADVANCE_APPLICATION_MANUAL_REVIEW_REQUIRED", "预收/预付冲销凭证必须由财务人员人工复核后入账");
   }
-  if (!["draft", "changes_requested"].includes(voucher.status)) {
-    throw new AccountingRuleError("VOUCHER_NOT_POSTABLE", `当前状态不能入账：${voucher.status}`);
-  }
   const validation = validateVoucherBalance(voucher, accountingRules(next).amountTolerance, next);
   if (!validation.balanced) throw new AccountingRuleError("VOUCHER_UNBALANCED", validation.errors.join("；"), validation);
-  if (voucher.reconciliationCorrection) commitReconciliationCorrection(next, voucher, resolvedContext);
   ensurePostingAllowed(next, voucher, mode);
+  assertSettlementRecognition(next, voucher);
   assertPayrollVoucherPosting(next, voucher);
   const before = { status: voucher.status, version: voucher.version };
   const review = {
@@ -1359,14 +1432,14 @@ export function postVoucher(workspace, { voucherId, reviewNote, mode = "manual" 
     transaction.postedVoucherIds = collectSourceIds(transaction.postedVoucherIds || [], voucher.id);
     transaction.postedAt = resolvedContext.at;
   });
-  const memberEvents = voucher.memberEventId
-    ? (next.businessEvents || []).filter((event) => event.id === voucher.memberEventId)
-    : (() => {
+  const memberEvents = (() => {
       const voucherSourceIds = new Set(collectSourceIds(
         voucher.sourceIds || [],
         (voucher.lines || []).flatMap((line) => line.sourceIds || []),
       ));
-      return (next.businessEvents || []).filter((event) => voucherSourceIds.has(event.id));
+      return (next.businessEvents || []).filter((event) => voucherSourceIds.has(event.id) || event.id === voucher.memberEventId
+        || (event.sourceType !== "bankTransaction" && memberEventKind(event) === MEMBER_EVENT_KINDS.RECHARGE && event.transactionId
+          && voucherSourceIds.has(event.transactionId) && (!event.allocationId || voucherSourceIds.has(event.allocationId))));
     })();
   memberEvents.forEach((event) => {
     event.accountingStatus = "posted";
@@ -1401,6 +1474,7 @@ export function postVoucher(workspace, { voucherId, reviewNote, mode = "manual" 
     after: { status: voucher.status, version: voucher.version, review },
     sourceIds: collectSourceIds(voucher.id, voucher.sourceIds, voucher.evidenceIds),
   }, resolvedContext);
+  syncInventoryVoucherIntegrityTasks(next, resolvedContext);
   return synchronizeMemberServiceException(next, { period: next.currentPeriod }, resolvedContext);
 }
 
@@ -1452,7 +1526,7 @@ export function reviseDraftVoucher(workspace, { voucherId, summary, lines, evide
     voucher.summary = revisedSummary;
   }
   if (lines != null) {
-    const inputValidation = validateVoucherBalance({ lines }, accountingRules(next).amountTolerance, next);
+    const inputValidation = validateVoucherBalance({ ...voucher, lines }, accountingRules(next).amountTolerance, next);
     if (!inputValidation.balanced) {
       throw new AccountingRuleError("VOUCHER_LINES_INVALID", inputValidation.errors.join("；"), inputValidation);
     }
