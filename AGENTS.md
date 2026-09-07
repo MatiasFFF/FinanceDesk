@@ -18,7 +18,8 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 
 ## Durable FinanceDesk decisions
 
-- 2026-09-07 用户确认：活动账期可选择年月，未归档月份允许往返操作，新建工作台可选起始账期，各月分别保存期初余额、银行余额、税务与申报进度；已归档月份只读，余额冲突保留原值并核对。当前任务获授权直接修改，仅做静态检查后提交并 push `main`，本轮不做浏览器或运行时功能测试。
+- 2026-09-07 用户确认：活动账期可选择年月，未归档月份允许往返操作，新建工作台可选起始账期，各月分别保存期初余额、银行余额、税务与申报进度；已归档月份只读，余额冲突保留原值并核对。
+- 2026-09-07 用户要求优化活动账期的整体界面：入口统一放在标题区域，清理重复日期与日历图标；使用符合现有米白、深棕、陶土色风格的年份与月份面板，保持宽窄屏对齐，避免使用风格不一致的原生月份弹窗。
 
 - The only valid project path is `/Users/matias/Project/FinanceDesk`; do not recreate or use `FinanceSystem`.
 - 2026-09-05 用户明确要求：继续本地开发与必要验证，保持 localhost 原型和单文件 HTML 可用；用户主要通过 https://financedesk.cn 正式网页版验收。每轮已完成并通过必要验证的优化，由总控及时 commit 并 push `main`，核对生产部署成功后才报告已上线，不再等待用户专门确认本地预览而积压改动。三个实现任务继续共享 `main`，仅总控执行 commit、push 和 Computer Use。

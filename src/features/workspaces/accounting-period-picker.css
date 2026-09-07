@@ -1,0 +1,113 @@
+.accounting-period-picker {
+  position: relative;
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+
+.accounting-period-trigger {
+  display: inline-flex;
+  min-height: var(--control-height, 40px);
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-control, 8px);
+  background: var(--paper);
+  color: var(--espresso);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.accounting-period-trigger > svg { flex-shrink: 0; color: var(--muted); }
+.accounting-period-trigger:hover, .accounting-period-trigger.is-open { border-color: var(--clay); background: var(--clay-soft); }
+.accounting-period-trigger.is-open .accounting-period-caret { transform: rotate(180deg); }
+.accounting-period-readonly { color: var(--muted); font-size: 12px; font-weight: 500; }
+
+.accounting-period-panel {
+  position: absolute;
+  z-index: 35;
+  top: calc(100% + 10px);
+  left: 0;
+  width: 292px;
+  max-width: calc(100vw - 28px);
+  max-height: calc(100dvh - 160px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel, 14px);
+  background: var(--paper-strong);
+  color: var(--espresso);
+  box-shadow: var(--shadow);
+}
+
+.accounting-period-panel-heading, .accounting-period-year-nav, .accounting-period-year,
+.accounting-period-panel-footer, .accounting-period-panel-footer > span {
+  display: flex;
+  align-items: center;
+}
+.accounting-period-panel-heading { justify-content: space-between; gap: 8px; margin-bottom: 14px; }
+.accounting-period-panel-heading > span { font-size: 13px; font-weight: 600; }
+.accounting-period-year-nav { gap: 2px; }
+.accounting-period-year-nav > button {
+  display: grid;
+  width: 28px;
+  height: 32px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.accounting-period-year-nav > button:hover:not(:disabled) { background: var(--sand); color: var(--espresso); }
+.accounting-period-year { gap: 2px; font-size: 13px; }
+.accounting-period-year input {
+  width: 46px;
+  min-width: 0;
+  height: 30px;
+  padding: 4px 2px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--espresso);
+  font: inherit;
+  font-weight: 600;
+  text-align: center;
+}
+.accounting-period-year input:hover { border-color: var(--line); }
+.accounting-period-error { margin: -4px 0 12px; color: var(--clay-dark); font-size: 12px; }
+.accounting-period-months { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.accounting-period-month {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 8px 4px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--espresso);
+  font-size: 14px;
+  line-height: 20px;
+  cursor: pointer;
+}
+.accounting-period-month > svg { color: var(--muted); }
+.accounting-period-month:hover:not(:disabled) { background: var(--clay-soft); }
+.accounting-period-month.is-current { background: var(--clay); color: var(--white); font-weight: 600; }
+.accounting-period-month.is-current > svg { color: inherit; }
+.accounting-period-month.is-current:hover:not(:disabled) { background: var(--clay-dark); }
+.accounting-period-panel-footer { justify-content: space-between; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-soft); color: var(--muted); font-size: 12px; }
+.accounting-period-panel-footer > span { gap: 4px; }
+.accounting-period-panel-footer > button { padding: 0; border: 0; background: transparent; color: var(--clay-dark); font-size: 12px; cursor: pointer; }
+
+@media (max-width: 720px) {
+  .accounting-period-picker { position: static; }
+  .accounting-period-panel { right: 0; left: auto; }
+}

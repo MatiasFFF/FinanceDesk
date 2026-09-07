@@ -3,7 +3,6 @@ import {
   Archive,
   ArrowRight,
   Bank,
-  CalendarBlank,
   CaretDown,
   ChartBar,
   Check,
@@ -33,8 +32,9 @@ import {
 } from "@phosphor-icons/react";
 import { transactionStatus, uid } from "./financeData.js";
 import { BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS, hasWorkspacePermission } from "./domain/foundation.js";
-import { confirmOpeningBalances, isPeriodArchived, localAccountingPeriod, openingBalancesReady, validAccountingPeriod } from "./domain/periods.js";
+import { confirmOpeningBalances, isPeriodArchived, localAccountingPeriod, openingBalancesReady } from "./domain/periods.js";
 import { allowPeriodNavigation, usePeriodLeaveGuard } from "./features/workspaces/periodNavigation.js";
+import { AccountingPeriodPicker } from "./features/workspaces/AccountingPeriodPicker.jsx";
 import { OpeningBalancesPanel } from "./features/accounting/OpeningBalancesPanel.jsx";
 import {
   EVENT_TYPES,
@@ -445,7 +445,6 @@ function Sidebar({ state, workspace, page, onPage, onSwitchWorkspace, onSwitchUs
       </nav>
 
       <div className="sidebar-bottom">
-        {workspace && <div className="period-card"><CalendarBlank size={18} /><div><small>当前账期</small><strong>{formatPeriod(workspace.currentPeriod)}</strong></div></div>}
         <div className="account-switcher" ref={accountSwitcherRef}>
           <button ref={accountTriggerRef} className="account-card account-switcher-trigger" aria-expanded={accountOpen} aria-haspopup="menu" aria-label={`切换当前${terminology.personnel}操作人`} onClick={() => { setMenuOpen(false); setAccountOpen((value) => !value); }} type="button"><span className="avatar">{operator?.name?.trim()?.slice(0, 1) || "—"}</span><div aria-live="polite" aria-atomic="true"><strong>{operator?.name || "未选择操作身份"}</strong><small>{operatorRole}</small></div><CaretDown size={14} /></button>
           {accountOpen && (
@@ -532,8 +531,10 @@ function Topbar({ state, workspace, page, workspaceOverlayOpen, onImport, onSwit
   return (
     <header className="topbar">
       <div className="topbar-title">
-        <p className="eyebrow">{workspace ? `${formatPeriod(workspace.currentPeriod)} · ${workspace.isDemo ? "行业模板" : "本地账套"}` : PRODUCT_NAME}</p>
-        <h1>{title}</h1>
+        <div className="topbar-heading-row">
+          <h1>{title}</h1>
+          {workspace && <AccountingPeriodPicker key={`${workspace.id}:${page}`} workspace={workspace} disabled={workspaceOverlayOpen} onSelect={onSwitchPeriod} />}
+        </div>
         <p className="page-subtitle">{subtitle}</p>
       </div>
       <div className="topbar-actions">
@@ -541,7 +542,6 @@ function Topbar({ state, workspace, page, workspaceOverlayOpen, onImport, onSwit
           <button ref={workspaceTriggerRef} className="secondary-button mobile-workspace" aria-expanded={workspaceOpen} aria-haspopup="menu" onClick={() => { setMoreOpen(false); setWorkspaceOpen((value) => !value); }} type="button"><span>{workspace?.name || "选择工作台"}</span><CaretDown size={14} /></button>
           {workspaceOpen && <WorkspaceMenu state={state} activeWorkspace={workspace} onSwitch={onSwitchWorkspace} onOpenDialog={openWorkspaceDialog} onClose={() => setWorkspaceOpen(false)} />}
         </div>
-        {workspace && <label className="period-select"><CalendarBlank size={18} /><span><small>{isPeriodArchived(workspace) ? "已归档 · 只读" : "活动账期"}</small><input aria-label="选择活动账期" type="month" min="1900-01" max="9999-12" value={workspace.currentPeriod} disabled={workspaceOverlayOpen} onChange={(event) => { if (validAccountingPeriod(event.target.value)) onSwitchPeriod(event.target.value); }} /></span></label>}
         {workspace && workspaceModuleEnabled(workspace, "reconcile") && (page === "overview" || page === "reconcile") && <button className="primary-button" onClick={onImport} type="button"><UploadSimple size={18} weight="bold" />本地导入</button>}
         {workspace && (
           <div className="menu-wrap" ref={moreMenuRef}>
@@ -1693,13 +1693,17 @@ function App() {
     actions.replaceWorkspace(current.id, ensureWorkspace(updater(ensureWorkspace(current))), actionOptions);
   }
   function switchPeriod(period) {
-    if (period === workspace.currentPeriod) return;
+    if (period === workspace.currentPeriod) return true;
     try {
-      if (!allowPeriodNavigation()) return;
+      if (!allowPeriodNavigation()) return false;
       actions.setPeriod(workspace.id, period);
       setImportOpen(false);
       setToast({ tone: "success", message: `已进入${formatPeriod(period)}${isPeriodArchived(store.getActiveWorkspace()) ? "，本期已归档，只能查看" : ""}` });
-    } catch (error) { setToast({ tone: "danger", message: error.message || "账期切换失败" }); }
+      return true;
+    } catch (error) {
+      setToast({ tone: "danger", message: error.message || "账期切换失败" });
+      return false;
+    }
   }
   function saveOpeningBalances(balances) {
     mutateActive((current) => confirmOpeningBalances(current, balances, actorName));
