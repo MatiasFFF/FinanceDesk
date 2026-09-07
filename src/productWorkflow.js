@@ -2162,7 +2162,11 @@ export function enterNextPeriod(workspace, actor = "本地用户", { equityAccou
   if (isPeriodArchived(targetWorkspace)) return targetWorkspace;
   const carryForward = buildPeriodCarryForward(workspace, { closingLedger: archive.closingLedger || {}, equityAccountId });
   const conflicts = [];
-  if (openingBalancesReady(targetWorkspace)) {
+  // A pending conflict is still an existing opening, including a confirmed zero.
+  const hasExistingOpening = openingBalancesReady(targetWorkspace)
+    || targetWorkspace.openingStatus?.status === "conflict"
+    || Object.keys(targetWorkspace.openingLedger || {}).length > 0;
+  if (hasExistingOpening) {
     const accounts = new Set([...Object.keys(targetWorkspace.openingLedger || {}), ...Object.keys(carryForward.openingLedger)]);
     if ([...accounts].some((id) => Math.abs(Number(targetWorkspace.openingLedger?.[id] || 0) - Number(carryForward.openingLedger[id] || 0)) > 0.005)) conflicts.push("科目期初余额");
   }
@@ -2252,7 +2256,13 @@ export function enterAccountingPeriod(workspace, period, actor = "本地用户")
   } catch (error) {
     // Entering a month is still useful while its opening needs financial review.
     if (!String(error.code || "").startsWith("CARRY_FORWARD_") && !error.message?.includes("归档来源无法读取")) throw error;
-    return saveActivePeriodState({ ...target, openingStatus: { status: "pending", fromPeriod: previous, message: error.message } });
+    return saveActivePeriodState({ ...target, openingStatus: {
+      ...target.openingStatus,
+      status: openingBalancesReady(target) || target.openingStatus?.status === "conflict" ? "conflict" : "pending",
+      fromPeriod: previous,
+      sourceArchiveId: workspace.delivery.archives.find((item) => item.period === previous)?.id,
+      message: error.message,
+    } });
   }
 }
 

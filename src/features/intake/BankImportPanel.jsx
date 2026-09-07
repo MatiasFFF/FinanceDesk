@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { activateWorkspacePeriod, validAccountingPeriod } from "../../domain/periods.js";
 import { enterAccountingPeriod } from "../../productWorkflow.js";
-import { usePeriodLeaveGuard } from "../workspaces/periodNavigation.js";
+import { allowPeriodNavigation, usePeriodLeaveGuard } from "../workspaces/periodNavigation.js";
 import { CheckCircle, DownloadSimple, FileArrowUp, Table, WarningCircle, X } from "@phosphor-icons/react";
 
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
@@ -90,7 +90,9 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
   const [settlementError, setSettlementError] = useState("");
   const [settlementNotice, setSettlementNotice] = useState("");
   const firstAccountId = activeWorkspace.bankAccounts[0]?.id || "";
-  usePeriodLeaveGuard({ dirty: Boolean(parsed || settlementParsed), busy: busy || settlementBusy || reconciling });
+  const bankDraftGuardId = usePeriodLeaveGuard({ dirty: Boolean(parsed) });
+  const settlementDraftGuardId = usePeriodLeaveGuard({ dirty: Boolean(settlementParsed) });
+  usePeriodLeaveGuard({ busy: busy || settlementBusy || reconciling });
   const bankAccountStateSignature = JSON.stringify(activeWorkspace.bankAccounts.map((item) => [
     item.id,
     item.openingBalance ?? "",
@@ -330,8 +332,6 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
 
   async function applyImport() {
     if (applyingRef.current || !plan || !parsed) return;
-    applyingRef.current = true;
-    setBusy(true);
     setError("");
     let sourceDocument = null;
     let committed = false;
@@ -362,6 +362,10 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
       });
       if (refreshedPlan.errorCount > 0) throw new Error(`文件仍有 ${refreshedPlan.errorCount} 行错误，请修正后重新预检查`);
       if (!refreshedPlan.importableRowCount) throw new Error("没有可导入的新流水，全部为重复记录");
+      if (refreshedPlan.period !== latestWorkspace.currentPeriod
+        && !allowPeriodNavigation({ ignoreDirtyGuardId: bankDraftGuardId })) return;
+      applyingRef.current = true;
+      setBusy(true);
       sourceDocument = await saveLocalDocument({
         store,
         fileVault,
@@ -422,13 +426,14 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
 
   function recheckMonthlyReconciliation() {
     if (reconciling || !accountId || !period) return;
-    setReconciling(true);
     setError("");
     setNotice("");
     try {
       const latestState = store.getState();
       const latestWorkspace = latestState.workspaces.find((workspace) => workspace.id === activeWorkspace.id);
       if (!latestWorkspace) throw new Error("当前工作台已不存在，请重新选择工作台");
+      if (period !== latestWorkspace.currentPeriod && !allowPeriodNavigation()) return;
+      setReconciling(true);
       const latestAccount = latestWorkspace.bankAccounts.find((item) => item.id === accountId);
       if (!latestAccount) throw new Error("当前银行账户已不存在，请重新选择账户");
       const actor = latestWorkspace.users?.find((user) => (
@@ -537,8 +542,6 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
 
   async function applySettlementImport() {
     if (settlementApplyingRef.current || !settlementPlan || !settlementParsed) return;
-    settlementApplyingRef.current = true;
-    setSettlementBusy(true);
     setSettlementError("");
     let sourceDocument = null;
     let committed = false;
@@ -563,6 +566,10 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
       });
       if (refreshedPlan.errorCount > 0) throw new Error(`文件仍有 ${refreshedPlan.errorCount} 行错误，请修正后重新预检查`);
       if (!refreshedPlan.importableRowCount) throw new Error("没有可导入的新结算单，全部为重复记录");
+      if (refreshedPlan.period !== latestWorkspace.currentPeriod
+        && !allowPeriodNavigation({ ignoreDirtyGuardId: settlementDraftGuardId })) return;
+      settlementApplyingRef.current = true;
+      setSettlementBusy(true);
       const actor = latestWorkspace.users?.find((user) => user.id === latestState.activeUserId && user.status === "active")?.name || "本地用户";
       sourceDocument = await saveLocalDocument({
         store,

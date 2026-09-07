@@ -20,6 +20,7 @@ import {
   createMemoryStorage,
 } from "../src/storage/localFoundationRepository.js";
 import { createFinanceDeskStore } from "../src/store/financeDeskStore.js";
+import { activateWorkspacePeriod, confirmOpeningBalances, openingBalancesReady, saveActivePeriodState } from "../src/domain/periods.js";
 import {
   applyPayrollSocialImport,
   buildPayrollSocialSummary,
@@ -46,6 +47,7 @@ import {
   buildPayrollAccountingSummary,
   createPayrollAccrualDraft,
   confirmPayrollSocialData,
+  enterAccountingPeriod,
   enterNextPeriod,
   ensureWorkspace,
   exportLocalFilingPackage,
@@ -325,6 +327,34 @@ test("关闭核销且无银行数据时银行勾稽不适用，已有银行数�
   }
   assert.equal(check({ ...blank, modules: { ...blank.modules, reconcile: true } }).ok, false);
 });
+
+for (const scenario of [
+  { name: "手工余额", ledger: { receivable: 100, equity: -100 }, confirmed: true },
+  { name: "已确认的零余额", ledger: {}, confirmed: true },
+  { name: "待确认的已有余额", ledger: { receivable: 100, equity: -100 }, confirmed: false },
+]) {
+  test(`切换账期反复遇到结转冲突仍保留${scenario.name}`, () => {
+    const archived = archiveWithoutTax();
+    const targetPeriod = enterNextPeriod(archived).currentPeriod;
+    const target = activateWorkspacePeriod(archived, targetPeriod);
+    let workspace = scenario.confirmed
+      ? confirmOpeningBalances(target, scenario.ledger, "测试会计")
+      : saveActivePeriodState({ ...target, openingLedger: scenario.ledger });
+    for (let visit = 0; visit < 3; visit += 1) {
+      workspace = enterAccountingPeriod(activateWorkspacePeriod(workspace, archived.currentPeriod), targetPeriod, "测试会计");
+      assert.equal(workspace.currentPeriod, targetPeriod);
+      assert.equal(workspace.openingStatus.status, "conflict");
+      assert.equal(openingBalancesReady(workspace), false);
+      assert.deepEqual(workspace.openingLedger, scenario.ledger);
+      assert.deepEqual(workspace.periodStates[targetPeriod].openingLedger, scenario.ledger);
+      assert.deepEqual(workspace.delivery.archives, archived.delivery.archives);
+    }
+    const confirmed = confirmOpeningBalances(workspace, scenario.ledger, "测试会计");
+    const revisited = enterAccountingPeriod(activateWorkspacePeriod(confirmed, archived.currentPeriod), targetPeriod, "测试会计");
+    assert.equal(revisited.openingStatus.status, "confirmed");
+    assert.deepEqual(revisited.openingLedger, scenario.ledger);
+  });
+}
 
 test("非银行跨期保留往来余额、预收预付来源、会员未履约、借款、延期事项与行业规则版本", () => {
   const archived = nonBankCarryForwardFixture();
