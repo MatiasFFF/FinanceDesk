@@ -94,7 +94,7 @@ test("workspace navigation and archive requirements follow the persisted module 
     name: "导航测试",
     modules: { members: false, reconcile: false, tax: false, payroll: false },
   }, { now: fixedNow });
-  assert.deepEqual(primaryNavigationForWorkspace(workspace).map((item) => item.id), ["overview", "reports", "archive", "setup"]);
+  assert.deepEqual(primaryNavigationForWorkspace(workspace).map((item) => item.id), ["overview", "documents", "reports", "archive", "setup"]);
   assert.equal(workflowChecks(workspace).archive.some((check) => check.page === "tax"), false);
   assert.equal(workflowChecks(workspace).checks.some((check) => ["payroll", "socialSecurity"].includes(check.id)), false);
 

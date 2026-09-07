@@ -1,18 +1,27 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { workspaceAccountDefinitions } from "../../domain/accounting/model.js";
 import { isPeriodArchived, openingBalancesReady } from "../../domain/periods.js";
 import { usePeriodLeaveGuard } from "../workspaces/periodNavigation.js";
 
-export function OpeningBalancesPanel({ workspace, onSave }) {
+export function OpeningBalancesPanel({ workspace, onSave, focusRequest }) {
   const [open, setOpen] = useState(false);
   const [balances, setBalances] = useState(workspace.openingLedger || {});
   const [error, setError] = useState("");
+  const panelRef = useRef(null);
   const openingSignature = JSON.stringify(workspace.openingLedger || {});
   useEffect(() => {
     setOpen(false);
     setBalances(workspace.openingLedger || {});
     setError("");
   }, [workspace.id, workspace.currentPeriod, openingSignature]);
+  useEffect(() => {
+    if (focusRequest?.section !== "opening-balances") return;
+    setOpen(true);
+    window.requestAnimationFrame(() => {
+      panelRef.current?.focus({ preventScroll: true });
+      panelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [focusRequest]);
   usePeriodLeaveGuard({ dirty: open && JSON.stringify(balances) !== JSON.stringify(workspace.openingLedger || {}) });
   if (isPeriodArchived(workspace)) return null;
   const ready = openingBalancesReady(workspace);
@@ -27,7 +36,7 @@ export function OpeningBalancesPanel({ workspace, onSave }) {
     catch (caught) { setError(caught.message); }
   }
   return (
-    <section className="panel period-opening-panel">
+    <section className="panel period-opening-panel" id="opening-balances" ref={panelRef} tabIndex={-1}>
       <div className="panel-heading"><div><h2>本期期初余额</h2><p>{workspace.openingStatus?.message || (ready ? (workspace.openingCarryForward ? `已从 ${workspace.openingCarryForward.fromPeriod} 结转` : "已确认") : "可先处理本期业务；冻结报表前需要确认期初余额。")}</p></div><button className="secondary-button" type="button" onClick={() => setOpen((value) => !value)}>{open ? "收起" : ready ? "查看与调整" : "核对期初"}</button></div>
       {open && <form onSubmit={save}>
         <p>借方余额填正数，贷方余额填负数；确无期初余额时，保留零并确认。</p>

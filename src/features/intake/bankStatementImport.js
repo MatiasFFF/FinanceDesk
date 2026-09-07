@@ -1811,25 +1811,96 @@ export function applyBankImport(state, workspaceId, plan, options = {}) {
   }, options);
 }
 
+function bankFileReadAbortError() {
+  const error = new Error("已取消读取银行流水文件");
+  error.name = "AbortError";
+  return error;
+}
+
+async function readBankFileBuffer(file, options = {}) {
+  if (options.signal?.aborted) throw bankFileReadAbortError();
+  const total = Number(file?.size || 0);
+  if (!total || typeof file?.slice !== "function") {
+    const buffer = await file.arrayBuffer();
+    if (options.signal?.aborted) throw bankFileReadAbortError();
+    options.onProgress?.({ phase: "reading", loaded: Number(buffer.byteLength || total), total: total || Number(buffer.byteLength || 0), percent: 100 });
+    return buffer;
+  }
+  const bytes = new Uint8Array(total);
+  const chunkSize = Math.max(256 * 1024, Number(options.chunkSize || 2 * 1024 * 1024));
+  let offset = 0;
+  while (offset < total) {
+    if (options.signal?.aborted) throw bankFileReadAbortError();
+    const end = Math.min(total, offset + chunkSize);
+    const chunk = new Uint8Array(await file.slice(offset, end).arrayBuffer());
+    if (options.signal?.aborted) throw bankFileReadAbortError();
+    if (!chunk.byteLength) throw new Error("银行流水文件读取中断，请重新选择文件");
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+    options.onProgress?.({ phase: "reading", loaded: offset, total, percent: Math.round((offset / total) * 100) });
+  }
+  return bytes.buffer;
+}
+
+function fallbackBankFileHash(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let hash = 2166136261;
+  bytes.forEach((byte) => {
+    hash ^= byte;
+    hash = Math.imul(hash, 16777619);
+  });
+  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+async function hashBankFileBuffer(buffer, options = {}) {
+  if (options.signal?.aborted) throw bankFileReadAbortError();
+  options.onProgress?.({ phase: "hashing", loaded: Number(buffer.byteLength || 0), total: Number(buffer.byteLength || 0), percent: null });
+  if (!globalThis.crypto?.subtle) return fallbackBankFileHash(buffer);
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", buffer);
+  if (options.signal?.aborted) throw bankFileReadAbortError();
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export async function readBankFile(file, options = {}) {
   if (!file) throw new Error("请选择银行流水文件");
   const fileName = options.fileName || file.name || "银行流水";
   const extension = fileName.split(".").pop()?.toLowerCase();
   if (extension === "csv" || extension === "txt") {
-    const text = typeof file.text === "function"
-      ? await file.text()
-      : new TextDecoder(options.encoding || "utf-8").decode(await file.arrayBuffer());
+    const useProgressReader = Boolean(options.signal || options.onProgress);
+    let sourceBuffer = null;
+    let text;
+    if (useProgressReader) {
+      sourceBuffer = await readBankFileBuffer(file, options);
+      text = new TextDecoder(options.encoding || "utf-8").decode(sourceBuffer);
+    } else {
+      text = typeof file.text === "function"
+        ? await file.text()
+        : new TextDecoder(options.encoding || "utf-8").decode(await file.arrayBuffer());
+    }
+    if (options.signal?.aborted) throw bankFileReadAbortError();
+    options.onProgress?.({ phase: "parsing", loaded: Number(file.size || 0), total: Number(file.size || 0), percent: null });
     const parsed = parseDelimitedText(text, options);
-    return { fileName, sheetName: null, table: parsed.table, delimiter: parsed.delimiter, inspection: inspectBankTable(parsed.table) };
+    if (options.signal?.aborted) throw bankFileReadAbortError();
+    const fileHash = options.computeHash
+      ? await hashBankFileBuffer(sourceBuffer || await readBankFileBuffer(file, options), options)
+      : null;
+    options.onProgress?.({ phase: "complete", loaded: Number(file.size || 0), total: Number(file.size || 0), percent: 100 });
+    return { fileName, ...(options.computeHash ? { fileHash } : {}), sheetName: null, table: parsed.table, delimiter: parsed.delimiter, inspection: inspectBankTable(parsed.table) };
   }
   if (extension !== "xlsx" && extension !== "xls") throw new Error("仅支持 CSV、XLSX 和 XLS 银行流水文件");
+  options.onProgress?.({ phase: "loading-parser", loaded: 0, total: Number(file.size || 0), percent: null });
   const XLSX = await import("xlsx");
-  const data = await file.arrayBuffer();
+  if (options.signal?.aborted) throw bankFileReadAbortError();
+  const data = options.signal || options.onProgress ? await readBankFileBuffer(file, options) : await file.arrayBuffer();
+  options.onProgress?.({ phase: "parsing", loaded: Number(file.size || 0), total: Number(file.size || 0), percent: null });
   const workbook = XLSX.read(data, { type: "array", cellDates: true });
+  if (options.signal?.aborted) throw bankFileReadAbortError();
   const sheetName = options.sheetName || workbook.SheetNames[0];
   if (!sheetName || !workbook.Sheets[sheetName]) throw new Error("Excel 文件中没有可读取的工作表");
   const table = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "", raw: true });
-  return { fileName, sheetName, sheetNames: workbook.SheetNames, table, inspection: inspectBankTable(table) };
+  const fileHash = options.computeHash ? await hashBankFileBuffer(data, options) : null;
+  options.onProgress?.({ phase: "complete", loaded: Number(file.size || 0), total: Number(file.size || 0), percent: 100 });
+  return { fileName, ...(options.computeHash ? { fileHash } : {}), sheetName, sheetNames: workbook.SheetNames, table, inspection: inspectBankTable(table) };
 }
 
 export async function readPlatformSettlementFile(file, options = {}) {

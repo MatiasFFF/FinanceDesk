@@ -340,7 +340,7 @@ function documentKindLabel(kind) {
   return { contract: "合同", invoice: "发票", approval: "审批单" }[kind] || "资料";
 }
 
-export function DocumentIntakePanel({ defaultCategory = "其他资料", compact = false, payrollOnly = false, onToast, onNavigate, activeSection, onSectionChange }) {
+export function DocumentIntakePanel({ defaultCategory = "其他资料", compact = false, payrollOnly = false, onToast, onNavigate, activeSection, onSectionChange, focusRequest }) {
   const { state, activeWorkspace, actions, store, fileVault } = useFinanceDesk();
   const terminology = workspaceTerminology(activeWorkspace);
   const displayText = (value) => applyWorkspaceTerminology(value, activeWorkspace);
@@ -367,10 +367,12 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const [period, setPeriod] = useState(activeWorkspace.currentPeriod || "");
   const [relatedObjectId, setRelatedObjectId] = useState("");
   const [query, setQuery] = useState("");
+  const [periodFilter, setPeriodFilter] = useState(activeWorkspace.currentPeriod || "all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
-  const hasFilters = Boolean(query.trim() || categoryFilter !== "all" || statusFilter !== "all");
+  const hasFilters = Boolean(query.trim() || periodFilter !== (activeWorkspace.currentPeriod || "all") || categoryFilter !== "all" || statusFilter !== "all");
   const [editing, setEditing] = useState(null);
+  const [editReturnTarget, setEditReturnTarget] = useState(null);
   const [preview, setPreview] = useState(null);
   const [detailDocumentId, setDetailDocumentId] = useState(null);
   const [recognitionView, setRecognitionView] = useState(null);
@@ -403,6 +405,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const [error, setError] = useState("");
   const [uploadFeedback, setUploadFeedback] = useState(null);
   const [matchFeedback, setMatchFeedback] = useState(null);
+  const handledFocusRequest = useRef(null);
   usePeriodLeaveGuard({ dirty: Boolean(editing || payrollFilePreview || payrollAccrualReason), busy: busy || recognitionPending || payrollImportBusy || payrollAccrualBusy || generatingPackage || generatingMonthlyArchive });
   const relatedGroups = useMemo(() => {
     const currentTerminology = workspaceTerminology(activeWorkspace);
@@ -421,11 +424,13 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const selectableCategories = useMemo(() => CATEGORIES.filter((item) => payrollEnabled || !isPayrollDocumentCategory(item)), [payrollEnabled]);
   const categories = useMemo(() => [...new Set([...CATEGORIES, ...activeWorkspace.documents.map((document) => document.category).filter(Boolean)])]
     .filter((item) => payrollEnabled || !isPayrollDocumentCategory(item)), [activeWorkspace.documents, payrollEnabled]);
+  const documentPeriods = useMemo(() => [...new Set([activeWorkspace.currentPeriod, ...activeWorkspace.documents.map((document) => document.period).filter(Boolean)])].sort().reverse(), [activeWorkspace.currentPeriod, activeWorkspace.documents]);
   const filteredDocuments = useMemo(() => filterLocalDocuments(activeWorkspace, {
     query,
+    period: periodFilter,
     category: categoryFilter,
     status: statusFilter,
-  }), [activeWorkspace, query, categoryFilter, statusFilter]);
+  }), [activeWorkspace, query, periodFilter, categoryFilter, statusFilter]);
   const matchSuggestions = useMemo(() => buildDocumentMatchSuggestions(activeWorkspace), [activeWorkspace]);
   const missingRequirements = useMemo(() => getDocumentTaskRequirements(activeWorkspace), [activeWorkspace]);
   const invoiceVatSummary = useMemo(() => buildStructuredInvoiceVatSummary(activeWorkspace, { period: activeWorkspace.currentPeriod }), [activeWorkspace]);
@@ -576,9 +581,11 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     setPeriod(activeWorkspace.currentPeriod || "");
     setRelatedObjectId("");
     setQuery("");
+    setPeriodFilter(activeWorkspace.currentPeriod || "all");
     setCategoryFilter("all");
     setStatusFilter("all");
     setEditing(null);
+    setEditReturnTarget(null);
     setPreview(null);
     setDetailDocumentId(null);
     setPendingDocumentAction(null);
@@ -599,6 +606,28 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     setMatchFeedback(null);
     setUploadOpen(false);
   }, [activeWorkspace.id, activeWorkspace.currentPeriod, defaultCategory]);
+
+  useEffect(() => {
+    if (!focusRequest?.nonce || handledFocusRequest.current === focusRequest.nonce) return;
+    handledFocusRequest.current = focusRequest.nonce;
+    const targetSection = focusRequest.section || "files";
+    selectSection(targetSection);
+    if (!focusRequest.documentId) return;
+    const document = activeWorkspace.documents.find((item) => item.id === focusRequest.documentId);
+    if (!document) {
+      setError("没有找到要处理的资料，可能已被删除或属于其他工作台。");
+      return;
+    }
+    setQuery(document.name || "");
+    setPeriodFilter("all");
+    setCategoryFilter("all");
+    setStatusFilter("all");
+    if (focusRequest.action === "edit") beginEdit(document, focusRequest.returnTo || null);
+    else {
+      selectSection("files");
+      setDetailDocumentId(document.id);
+    }
+  }, [focusRequest, activeWorkspace.id]);
 
   useEffect(() => {
     if (!payrollEnabled && selectedSection === "payroll") selectSection("files");
@@ -652,8 +681,9 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     setError("");
     setUploadFeedback(null);
     try {
+      const savedDocuments = [];
       for (const file of files) {
-        await saveLocalDocument({
+        const document = await saveLocalDocument({
           store,
           fileVault,
           workspaceId: activeWorkspace.id,
@@ -665,9 +695,22 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
             actor,
           },
         });
+        savedDocuments.push(document);
       }
       const message = `已将 ${files.length} 份原文件保存到当前浏览器`;
-      setUploadFeedback({ tone: "success", message });
+      const firstStructuredDocument = ["contract", "invoice"].includes(documentStructuredKind(category))
+        ? savedDocuments[0]
+        : null;
+      setQuery("");
+      setPeriodFilter(period || "all");
+      setCategoryFilter("all");
+      setStatusFilter("all");
+      setUploadFeedback({
+        tone: "success",
+        message,
+        documentId: firstStructuredDocument?.id || null,
+        documentCount: savedDocuments.length,
+      });
       onToast?.(message);
     } catch (caught) {
       setUploadFeedback({ tone: "error", message: caught.message || "资料保存失败" });
@@ -735,6 +778,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
 
   function closeEditing() {
     setEditing(null);
+    setEditReturnTarget(null);
     clearPendingDocumentAction();
   }
 
@@ -783,7 +827,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     }
   }
 
-  function beginEdit(document) {
+  function beginEdit(document, returnTarget = null) {
     selectSection("files");
     if (editing) {
       if (editing.id !== document.id) setError("请先保存或取消当前资料的编辑，再打开另一份资料。");
@@ -791,7 +835,12 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     }
     clearPendingDocumentAction();
     setError("");
+    setQuery(document.name || "");
+    setPeriodFilter("all");
+    setCategoryFilter("all");
+    setStatusFilter("all");
     setDetailDocumentId(document.id);
+    setEditReturnTarget(returnTarget);
     setEditing(documentEditDraft(document, activeWorkspace));
   }
 
@@ -823,6 +872,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   function saveEdit() {
     setError("");
     try {
+      const returnTarget = editReturnTarget;
       updateLocalDocumentMetadata({
         store,
         workspaceId: activeWorkspace.id,
@@ -839,6 +889,17 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
       });
       closeEditing();
       onToast?.("资料详情、分类与业务关联已更新");
+      if (returnTarget) window.requestAnimationFrame(() => {
+        if (returnTarget.page && onNavigate) onNavigate(returnTarget.page, returnTarget);
+        else if (returnTarget.section) {
+          selectSection(returnTarget.section);
+          if (returnTarget.documentId) window.requestAnimationFrame(() => {
+            const target = document.getElementById(`document-business-${returnTarget.documentId}`);
+            target?.focus({ preventScroll: true });
+            target?.scrollIntoView({ behavior: "smooth", block: "center" });
+          });
+        }
+      });
     } catch (caught) {
       setError(caught.message || "资料修改失败");
     }
@@ -1200,14 +1261,19 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           <input ref={inputRef} type="file" multiple hidden onChange={addFiles} />
         </div>
         <p className="foundation-hint">选择类别和期间后上传文件。原文件保存在当前浏览器；换设备前请导出含原件的资料包。</p>
-        {uploadFeedback && <div className={`${uploadFeedback.tone === "error" ? "foundation-error" : "foundation-notice"} import-feedback document-upload-feedback`} role={uploadFeedback.tone === "error" ? "alert" : "status"} aria-live="polite">{uploadFeedback.tone === "error" ? <WarningCircle size={18} /> : <CheckCircle size={18} weight="fill" />}<span>{displayText(uploadFeedback.message)}</span></div>}
+        {uploadFeedback && <div className={`${uploadFeedback.tone === "error" ? "foundation-error" : "foundation-notice"} import-feedback document-upload-feedback`} role={uploadFeedback.tone === "error" ? "alert" : "status"} aria-live="polite">{uploadFeedback.tone === "error" ? <WarningCircle size={18} /> : <CheckCircle size={18} weight="fill" />}<span>{displayText(uploadFeedback.message)}</span>{uploadFeedback.documentId && <button className="secondary-button" type="button" onClick={() => {
+          const document = activeWorkspace.documents.find((item) => item.id === uploadFeedback.documentId);
+          if (!document) { setError("没有找到刚上传的资料，请在文件列表中重新选择。"); return; }
+          beginEdit(document, { section: "business", documentId: document.id });
+        }}>{uploadFeedback.documentCount > 1 ? "先补齐第一份资料字段" : "补齐本次资料字段"}</button>}</div>}
         <p className="foundation-hint">字段可人工录入；PDF 与图片可在资料详情中本地识别。</p>
       </div>
       <div className="document-intake-controls document-filter-controls" hidden={selectedSection !== "files"}>
         <div className="document-filter-search">
           <label className="foundation-field"><span>搜索资料</span><span className="search-field"><MagnifyingGlass size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="文件名、类别或关联业务" /></span></label>
-          {hasFilters && <button className="document-filter-clear" type="button" onClick={() => { setQuery(""); setCategoryFilter("all"); setStatusFilter("all"); }}>清空筛选</button>}
+          {hasFilters && <button className="document-filter-clear" type="button" onClick={() => { setQuery(""); setPeriodFilter(activeWorkspace.currentPeriod || "all"); setCategoryFilter("all"); setStatusFilter("all"); }}>清空筛选</button>}
         </div>
+        <label className="foundation-field"><span>期间</span><select value={periodFilter} onChange={(event) => setPeriodFilter(event.target.value)}><option value="all">全部期间</option>{documentPeriods.map((item) => <option value={item} key={item}>{item}{item === activeWorkspace.currentPeriod ? "（当前）" : ""}</option>)}</select></label>
         <label className="foundation-field"><span>类别</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="all">全部类别</option>{categories.map((item) => <option value={item} key={item}>{categoryDisplayLabel(item, activeWorkspace)}</option>)}</select></label>
         <label className="foundation-field"><span>状态</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">全部状态</option><option value="active">未归档</option><option value="archived">已归档</option><option value="linked">已关联</option><option value="unlinked">未使用，可删除</option><option value="available">原文件可用</option><option value="missing">原文件缺失</option></select></label>
       </div>
@@ -1361,7 +1427,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
             </article>
           );
         })}
-        {!visibleDocuments.length && <p className="foundation-empty">没有符合当前条件的资料。</p>}
+        {!visibleDocuments.length && <div className="foundation-empty document-empty-action"><p>没有符合当前条件的资料。</p>{activeWorkspace.documents.length ? <button className="secondary-button" type="button" onClick={() => { setQuery(""); setPeriodFilter(activeWorkspace.currentPeriod || "all"); setCategoryFilter("all"); setStatusFilter("all"); }}>查看本期全部资料</button> : <button className="primary-button" type="button" disabled={!fileVault || busy} onClick={() => setUploadOpen(true)}><FileArrowUp size={16} />上传第一份资料</button>}</div>}
       </div>
       <div className="bank-import-workspace" hidden={selectedSection !== "business"}>
         <div className="foundation-section-heading">
@@ -1376,7 +1442,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
               && plan.errors.every((message) => message.startsWith("同一合同同一期不得重复生成："));
             const displayErrors = completed ? [] : plan.errors;
             return (
-            <article className="foundation-record" key={plan.documentId}>
+            <article className="foundation-record document-return-target" id={`document-business-${plan.documentId}`} key={plan.documentId} tabIndex={-1}>
               <div style={{ width: "100%" }}>
                 <strong>{plan.document?.name || plan.documentId}</strong>
                 <small>{displayText(CONTRACT_TYPES[plan.contractType] || "未选择合同类型")} · {plan.billKind === "receivable" ? "应收账单" : (plan.billKind === "payable" ? "应付账单" : "尚未确定账单方向")} · 对方 {plan.counterparty || "未填写"}</small>
@@ -1394,13 +1460,13 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                 </details>}
               </div>
               <div className="document-contract-plan-actions">
-                {plan.document && plan.document.archiveStatus !== "archived" && <button className="secondary-button" type="button" onClick={() => { setQuery(plan.document.name || ""); setCategoryFilter("all"); setStatusFilter("all"); beginEdit(plan.document); }}>编辑合同</button>}
+                {plan.document && plan.document.archiveStatus !== "archived" && <button className="secondary-button" type="button" onClick={() => beginEdit(plan.document, { section: "business", documentId: plan.documentId })}>{displayErrors.length ? "补齐合同字段" : "编辑合同"}</button>}
                 {!completed && <button className="primary-button" type="button" disabled={!plan.canConfirm} onClick={() => confirmContractBillingPlan(plan)}>确认并写入账单</button>}
               </div>
             </article>
             );
           })}
-          {!contractBillingPlans.length && <p className="foundation-empty">当前还没有结构化合同资料。上传或编辑合同并补齐账单计划字段后，会先在这里预览。</p>}
+          {!contractBillingPlans.length && <div className="foundation-empty document-empty-action"><p>当前还没有结构化合同资料。</p><button className="primary-button" type="button" onClick={() => { setCategory("合同"); selectSection("files"); setUploadOpen(true); }}>上传合同并补齐账单计划</button></div>}
         </div>
       </div>
       <div className="bank-import-workspace" hidden={selectedSection !== "business"}>
@@ -1456,7 +1522,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
               && ["output", "input"].includes(details.taxDirection)
               && Boolean(details.counterparty && details.invoiceDate && Number(details.amount) > 0);
             return (
-              <article className="foundation-record" key={`invoice-bill-${document.id}`}>
+              <article className="foundation-record document-return-target" id={`document-business-${document.id}`} key={`invoice-bill-${document.id}`} tabIndex={-1}>
                 <div style={{ width: "100%" }}>
                   <strong>{details.invoiceNumber || document.name} · {details.taxDirection === "output" ? "销项 → 应收" : (details.taxDirection === "input" ? "进项 → 应付" : "请先选择销项／进项")}</strong>
                   <small>{details.counterparty || `未填写${terminology.customer}／${terminology.supplier}`} · {details.invoiceDate || "未填写日期"} · 价税合计 {amountLabel(details.amount)}</small>
@@ -1479,14 +1545,14 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                       ))}
                       {!suggestions.length && <p>没有找到同时满足往来单位、金额和日期条件的已有{billKindLabel === "未确定" ? "" : billKindLabel}账单。</p>}
                       <button className="secondary-button" type="button" disabled={!canCreate} onClick={() => confirmInvoiceBillCreation(document.id)}>确认无合适账单并新建{billKindLabel}账单</button>
-                      {!canCreate && <p>请先在资料编辑中补齐销项／进项、{terminology.customer}／{terminology.supplier}、价税合计和发票日期。</p>}
+                      {!canCreate && <><p>请先补齐销项／进项、{terminology.customer}／{terminology.supplier}、价税合计和发票日期。</p>{document.archiveStatus !== "archived" && <button className="secondary-button" type="button" onClick={() => beginEdit(document, { section: "business", documentId: document.id })}>补齐发票字段</button>}</>}
                     </>
                   )}
                 </div>
               </article>
             );
           })}
-          {!invoiceBillConnections.length && <p className="foundation-empty">当前还没有结构化发票资料。</p>}
+          {!invoiceBillConnections.length && <div className="foundation-empty document-empty-action"><p>当前还没有结构化发票资料。</p><button className="primary-button" type="button" onClick={() => { setCategory("发票"); selectSection("files"); setUploadOpen(true); }}>上传第一张发票</button></div>}
         </div>
         <div className="foundation-record-list">
           <article className="foundation-record"><div><strong>销项发票</strong><small>价税合计 {amountLabel(invoiceVatSummary.outputGrossAmount)} · 不含税 {amountLabel(invoiceVatSummary.outputNetAmount)}</small></div><span><strong>{amountLabel(invoiceVatSummary.outputVat)}</strong><small>销项税额</small></span></article>
@@ -1558,7 +1624,13 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
           })}
         </div>
       </div>
-      {payrollEnabled && <div className="bank-import-workspace" hidden={selectedSection !== "payroll"}>
+      {payrollEnabled && <div className="bank-import-workspace payroll-workspace" hidden={selectedSection !== "payroll"}>
+        <div className="payroll-next-step">
+          <span><strong>{payrollFilePreview ? "先确认当前导入预览" : !payrollSocialSummary.counts.payroll || !payrollSocialSummary.counts.socialSecurity ? "先补齐工资表与社保表" : payrollSocialSummary.hasDifferences ? `先处理 ${payrollSocialSummary.counts.issues} 人差异` : payrollAccounting.draftVoucherId && !payrollAccounting.postedAndMatched ? "下一步：复核计提凭证" : payrollAccounting.postedAndMatched ? "工资计提已入账，可进入报表" : "下一步：生成工资计提草稿"}</strong><small>{activeWorkspace.currentPeriod} · 导入 → 逐人核对 → 计提草稿 → 复核入账 → 报表</small></span>
+          {!payrollFilePreview && (!payrollSocialSummary.counts.payroll || !payrollSocialSummary.counts.socialSecurity) && <button className="primary-button" type="button" disabled={payrollImportBusy} onClick={() => payrollFileInputRef.current?.click()}>选择待补资料</button>}
+          {payrollAccounting.draftVoucherId && !payrollAccounting.postedAndMatched && <button className="primary-button" type="button" onClick={() => { setPayrollVouchersVisited(true); setPayrollVouchersOpen(true); }}>复核计提凭证</button>}
+          {payrollAccounting.postedAndMatched && onNavigate && <button className="primary-button" type="button" onClick={() => onNavigate("reports")}>进入报表</button>}
+        </div>
         <section className="payroll-accounting-summary" aria-label="工资计提与账面核对">
           <div className="foundation-section-heading"><div><h3>工资计提</h3>{!payrollAccounting.issues.length && <p>{payrollAccounting.message}</p>}</div><span>{payrollAccounting.postedAndMatched ? payrollAccounting.noAccrualNeeded ? "零金额 · 无需计提" : "已入账 · 核对一致" : payrollAccounting.draftVoucherId && payrollAccounting.readyToDraft ? "草稿待更新" : payrollAccounting.draftVoucherId ? "待复核入账" : "待处理"}</span></div>
           {!!payrollAccounting.issues.length && <ul className="payroll-accounting-issues">{payrollAccounting.issues.map((item, index) => <li key={`${item.code}-${index}`}>{displayText(item.message)}</li>)}</ul>}
@@ -1577,12 +1649,12 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
             {payrollVouchersVisited && <Suspense fallback={<p role="status" style={{ fontSize: "var(--font-body, 14px)" }}>正在加载计提凭证…</p>}><PayrollVoucherWorkbench voucherIds={payrollVoucherIds} showLedger={false} title="工资计提凭证" onToast={onToast} actionBlockedReason={payrollImportBusy || payrollFilePreview ? "请先保存或取消当前导入，再复核计提凭证。" : ""} /></Suspense>}
           </details>}
         </section>
-        <div className="foundation-section-heading">
+        <div className="foundation-section-heading payroll-import-heading">
           <div><h3>工资与社保导入核对</h3><p>{activeWorkspace.currentPeriod} · 支持 CSV、XLS 和 XLSX</p></div>
           <span>工资 {payrollSocialSummary.counts.payroll} 人 · 社保 {payrollSocialSummary.counts.socialSecurity} 人 · 差异 {payrollSocialSummary.counts.issues} 人</span>
         </div>
-        <p className="foundation-hint">确认字段后导入；同一{terminology.personnel}、同一期间的同类记录将被覆盖。</p>
-        <div className="document-intake-controls document-import-controls">
+        <p className="foundation-hint payroll-import-hint">确认字段后导入；同一{terminology.personnel}、同一期间的同类记录将被覆盖。</p>
+        <div className="document-intake-controls document-import-controls payroll-import-controls">
         <label className="foundation-field"><span>导入类型</span><select disabled={payrollImportBusy} value={payrollImportKind} onChange={(event) => setPayrollImportKind(event.target.value)}>{Object.entries(PAYROLL_SOCIAL_IMPORT_KINDS).map(([id, label]) => <option value={id} key={id}>{displayText(label)}</option>)}</select></label>
           <label className="foundation-field"><span>默认所属期</span><input disabled={payrollImportBusy} type="month" value={payrollImportPeriod} onChange={(event) => setPayrollImportPeriod(event.target.value)} /></label>
           <button className="secondary-button" type="button" disabled={payrollImportBusy} onClick={() => payrollFileInputRef.current?.click()}><FileArrowUp size={17} />{payrollImportBusy ? "读取中…" : `选择${displayText(PAYROLL_SOCIAL_IMPORT_KINDS[payrollImportKind])}`}</button>
@@ -1611,7 +1683,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
             <div className="foundation-inline-actions"><button className="primary-button" type="button" disabled={payrollImportBusy || !payrollImportPlan.canApply} onClick={commitPayrollSocialImport}>{payrollImportBusy ? "正在保存原件与数据…" : "保存原件并导入"}</button><button className="secondary-button" disabled={payrollImportBusy} type="button" onClick={() => { setPayrollFilePreview(null); setPayrollFieldMapping({}); }}>取消</button></div>
           </div>
         )}
-        <details className="payroll-review-details">
+        <details className="payroll-review-details payroll-person-review" defaultOpen={payrollSocialSummary.hasDifferences}>
           <summary>逐人核对 · {payrollSocialSummary.hasDifferences ? `${payrollSocialSummary.counts.issues} 人待处理` : `${payrollSocialSummary.rows.length} 人一致`}</summary>
         <div className="foundation-record-list">
           {payrollSocialSummary.rows.map((row) => {
@@ -1662,7 +1734,23 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
         {matchFeedback && <div className={`${matchFeedback.tone === "error" ? "foundation-error" : "foundation-notice"} import-feedback document-match-feedback`} role={matchFeedback.tone === "error" ? "alert" : "status"} aria-live="polite">{matchFeedback.tone === "error" ? <WarningCircle size={18} /> : <CheckCircle size={18} weight="fill" />}<span>{displayText(matchFeedback.message)}</span></div>}
         {!!openDocumentTasks.length && (
           <div className="foundation-record-list">
-            {openDocumentTasks.map((task) => <article className="foundation-record" key={task.id}><div><strong>{displayText(task.message)}</strong><small>{matchTargetLabel(task.sourceType)} · 等待补齐并确认关联</small></div></article>)}
+            {openDocumentTasks.map((task) => {
+              const documentId = task.missingEvidence?.find((item) => item.documentId)?.documentId;
+              const document = activeWorkspace.documents.find((item) => item.id === documentId);
+              const openTask = () => {
+                const returnTarget = task.sourceType === "bankTransaction"
+                  ? { page: "reconcile", panel: "transactions", transactionId: task.sourceId }
+                  : task.sourceType === "voucher"
+                    ? { page: "reconcile", panel: "vouchers", voucherId: task.sourceId }
+                    : { section: "missing" };
+                if (document) { beginEdit(document, returnTarget); return; }
+                if (task.sourceType === "bankTransaction" && onNavigate) { onNavigate("reconcile", { panel: "transactions", transactionId: task.sourceId }); return; }
+                if (task.sourceType === "voucher" && onNavigate) { onNavigate("reconcile", { panel: "vouchers", voucherId: task.sourceId }); return; }
+                selectSection("files");
+                setUploadOpen(true);
+              };
+              return <article className="foundation-record" key={task.id}><div><strong>{displayText(task.message)}</strong><small>{matchTargetLabel(task.sourceType)} · 等待补齐并确认关联</small></div><button className="secondary-button" type="button" onClick={openTask}>{document ? "打开资料补齐" : task.sourceType === "bankTransaction" ? "打开对应流水" : task.sourceType === "voucher" ? "打开对应凭证" : "上传缺失资料"}</button></article>;
+            })}
           </div>
         )}
         <div className="foundation-record-list">

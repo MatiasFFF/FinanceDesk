@@ -846,6 +846,42 @@ test("XLS 文件也能读取并进入同一映射预览", async () => {
   assert.deepEqual(result.inspection.missingFields, []);
 });
 
+test("CSV 文件读取可同时返回文件哈希和分阶段进度", async () => {
+  const progress = [];
+  const file = Object.assign(new Blob([
+    "交易日期,对方名称,摘要,金额\n2026-08-01,客户甲,课程收入,100\n",
+  ], { type: "text/csv" }), { name: "银行流水.csv" });
+  const result = await readBankFile(file, {
+    computeHash: true,
+    onProgress: (event) => progress.push(event),
+  });
+
+  assert.match(result.fileHash, /^(?:[a-f0-9]{64}|fnv1a-[a-f0-9]{8})$/);
+  assert.deepEqual([...new Set(progress.map((event) => event.phase))], ["reading", "parsing", "hashing", "complete"]);
+  assert.equal(progress.at(-1).percent, 100);
+  assert.equal(result.table.length, 2);
+});
+
+test("银行流水分块读取可在处理中取消", async () => {
+  const controller = new AbortController();
+  let readingEvents = 0;
+  const file = Object.assign(new Blob([
+    "交易日期,对方名称,摘要,金额\n",
+    "x".repeat(300 * 1024),
+  ], { type: "text/csv" }), { name: "待取消银行流水.csv" });
+
+  await assert.rejects(() => readBankFile(file, {
+    chunkSize: 256 * 1024,
+    signal: controller.signal,
+    onProgress: (event) => {
+      if (event.phase !== "reading") return;
+      readingEvents += 1;
+      controller.abort();
+    },
+  }), (error) => error?.name === "AbortError" && /取消读取/.test(error.message));
+  assert.equal(readingEvents, 1);
+});
+
 test("资料原文件进入本地文件保险箱，元数据和证据关联进入工作台", async () => {
   const storage = createMemoryStorage();
   const repository = createLocalFoundationRepository({ storage, now: fixedNow });

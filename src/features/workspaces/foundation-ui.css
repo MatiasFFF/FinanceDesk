@@ -1689,8 +1689,10 @@
 
 .modal-card.foundation-manager[aria-labelledby="bank-import-title"] > .bank-import-panel,
 .modal-card.bank-import-dialog > .bank-import-panel {
+  width: 100%;
   min-height: 0;
   flex: 1 1 auto;
+  align-self: stretch;
   margin-top: 14px;
   padding: 0 4px 0 0;
   overflow-y: auto;

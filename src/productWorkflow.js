@@ -10,7 +10,7 @@ import {
   createCustomerConfirmationPackage,
   recordCustomerConfirmation,
 } from "./domain/accounting/index.js";
-import { buildPayrollSocialSummary, buildStructuredInvoiceVatSummary, verifyPayrollSocialEvidence } from "./features/intake/documentIntake.js";
+import { buildPayrollSocialSummary, buildStructuredInvoiceVatSummary, getDocumentTaskRequirements, verifyPayrollSocialEvidence } from "./features/intake/documentIntake.js";
 import { buildPayrollAccountingSummary, payrollAccrualLines } from "./domain/accounting/payrollAccounting.js";
 import { assertAccountingPeriodWritable, createManualVoucherDraft, createPostedVoucherRevision, reviseDraftVoucher } from "./domain/accounting/vouchers.js";
 import { AccountingRuleError, appendAuditEntry, operationContext } from "./domain/accounting/model.js";
@@ -133,7 +133,7 @@ export function applyWorkspaceTerminology(value, workspace) {
 }
 
 export const CLOSE_STAGES = [
-  { id: "documents", label: "资料", page: "overview" },
+  { id: "documents", label: "资料", page: "documents" },
   { id: "match", label: "匹配", page: "reconcile" },
   { id: "reconcile", label: "核销", page: "reconcile" },
   { id: "vouchers", label: "凭证", page: "reconcile" },
@@ -143,9 +143,10 @@ export const CLOSE_STAGES = [
 
 export const PRIMARY_NAV = [
   { id: "overview", moduleId: "overview", label: "月结总览", shortLabel: "总览" },
+  { id: "documents", moduleId: "documents", label: "日常资料", shortLabel: "资料" },
   { id: "members", moduleId: "members", label: "会员台账", shortLabel: "会员" },
   { id: "inventory", moduleId: "inventory", label: "库存与损耗", shortLabel: "库存" },
-  { id: "reconcile", moduleId: "reconcile", label: "批量核销", shortLabel: "核销" },
+  { id: "reconcile", moduleId: "reconcile", label: "业务处理", shortLabel: "处理" },
   { id: "reports", moduleId: "reports", label: "报表中心", shortLabel: "报表" },
   { id: "tax", moduleId: "tax", label: "确认与申报", shortLabel: "确认" },
   { id: "archive", moduleId: "archive", label: "资料归档", shortLabel: "归档" },
@@ -1477,7 +1478,66 @@ export function workflowChecks(workspace) {
   const statementsBalanced = Object.values(snapshot.summary.engineChecks || {}).every((check) => check.passed);
   const currentTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
   const unresolved = currentTransactions.filter((item) => !["posted", "ignored"].includes(item.status));
-  const openExceptionTasks = (periodSourceRecords(workspace).exceptionTasks || []).filter((task) => task.status !== "resolved");
+  const periodRecords = periodSourceRecords(workspace);
+  const recordedOpenExceptionTasks = (periodRecords.exceptionTasks || []).filter((task) => task.status !== "resolved");
+  const completedDocumentSourceStatuses = new Set(["posted", "ignored", "cancelled", "canceled", "rejected", "void", "voided", "superseded", "invalidated"]);
+  const activeDocumentTransactions = (workspace.transactions || []).filter((item) => (
+    (item.businessPeriod || item.period || String(item.date || "").slice(0, 7)) === workspace.currentPeriod
+    && !completedDocumentSourceStatuses.has(item.status)
+  ));
+  const activeDocumentTransactionIds = new Set(activeDocumentTransactions.map((item) => item.id));
+  const activeDocumentBusinessEvents = (workspace.businessEvents || []).filter((item) => {
+    const current = (item.businessPeriod || item.period || String(item.date || "").slice(0, 7)) === workspace.currentPeriod;
+    const unfinished = !completedDocumentSourceStatuses.has(item.status)
+      && !completedDocumentSourceStatuses.has(item.accountingStatus);
+    return current && unfinished && (!item.transactionId || activeDocumentTransactionIds.has(item.transactionId));
+  });
+  const currentRequirementSourceIds = new Set([
+    ...activeDocumentTransactionIds,
+    ...activeDocumentBusinessEvents.map((item) => item.id),
+  ]);
+  const inactiveVoucherStatuses = new Set(["cancelled", "canceled", "rejected", "void", "voided", "superseded", "invalidated", "replaced"]);
+  const currentVoucherIds = new Set((workspace.vouchers || [])
+    .filter((voucher) => (
+      (voucher.period || String(voucher.date || "").slice(0, 7)) === workspace.currentPeriod
+      && !inactiveVoucherStatuses.has(voucher.status)
+    ))
+    .map((voucher) => voucher.id));
+  const recordedDocumentTasks = new Map(recordedOpenExceptionTasks
+    .filter((task) => task.code === "missing_document")
+    .map((task) => [task.identity, task]));
+  const currentDocumentRequirements = getDocumentTaskRequirements(workspace)
+    .filter((requirement) => (
+      (["bankTransaction", "businessEvent"].includes(requirement.sourceType)
+        && currentRequirementSourceIds.has(requirement.sourceId))
+      || (requirement.sourceType === "voucher"
+        && currentVoucherIds.has(requirement.sourceId)
+        && ["voucher_original", "original_file"].includes(requirement.requirementKind))
+    ));
+  const liveDocumentTasks = currentDocumentRequirements
+    .filter((requirement) => !requirement.satisfied)
+    .map((requirement) => recordedDocumentTasks.get(requirement.identity) || {
+      id: requirement.identity,
+      identity: requirement.identity,
+      code: "missing_document",
+      sourceType: requirement.sourceType,
+      sourceId: requirement.sourceId,
+      sourceIds: [...new Set([requirement.sourceId, ...(requirement.sourceIds || [])].filter(Boolean))],
+      message: requirement.message || `缺少${requirement.label}：${requirement.sourceLabel}`,
+      missingEvidence: [{ id: requirement.requirementId, label: requirement.label, anyOf: requirement.anyOf || [], reason: requirement.reason || null, documentId: requirement.documentId || null, sectionKey: requirement.sectionKey || null }],
+      status: "open",
+    });
+  const visibleTaskIds = new Set();
+  const openExceptionTasks = [
+    ...recordedOpenExceptionTasks.filter((task) => task.code !== "missing_document"),
+    ...liveDocumentTasks,
+  ].filter((task) => {
+    const identity = task.identity || task.id;
+    if (visibleTaskIds.has(identity)) return false;
+    visibleTaskIds.add(identity);
+    return true;
+  });
+  const blockingExceptionTasks = openExceptionTasks;
   const payrollAccounting = buildPayrollAccountingSummary(workspace);
   const payrollAccountingIssues = payrollAccounting.applicable && !payrollAccounting.postedAndMatched ? payrollAccounting.issues : [];
   const openNotices = (workspace.delivery.notices || []).filter((notice) => (
@@ -1486,7 +1546,7 @@ export function workflowChecks(workspace) {
   const bankReconciliationSummary = buildBankAccountReconciliationSummary(workspace, {
     period: workspace.currentPeriod,
   });
-  const openBankReconciliationTasks = openExceptionTasks.filter((task) => (
+  const openBankReconciliationTasks = blockingExceptionTasks.filter((task) => (
     task.sourceType === "bankReconciliation"
     && (!task.period || task.period === workspace.currentPeriod)
   ));
@@ -1494,9 +1554,11 @@ export function workflowChecks(workspace) {
   const isBankAccount = (accountId) => String(accountId || "").split(":")[0] === "bank"
     || (String(accountId || "").split(":")[0] !== "cash" && accountDefinition(accountId, workspace).cash);
   const hasBankData = Boolean(
-    workspace.bankAccounts?.length || workspace.accounts?.length || workspace.transactions?.length || workspace.bankImports?.length
+    workspace.bankAccounts?.length
+    || currentTransactions.length
+    || (workspace.bankImports || []).some((record) => record.period === workspace.currentPeriod)
     || Object.entries(workspace.openingLedger || {}).some(([accountId, balance]) => Number(balance) !== 0 && isBankAccount(accountId))
-    || (workspace.vouchers || []).some((voucher) => (voucher.lines || []).some((line) =>
+    || (workspace.vouchers || []).some((voucher) => (voucher.period || String(voucher.date || "").slice(0, 7)) === workspace.currentPeriod && (voucher.lines || []).some((line) =>
       (Number(line.debit || 0) !== 0 || Number(line.credit || 0) !== 0) && isBankAccount(line.account)))
   );
   const bankReconciliationApplicable = workspaceModuleEnabled(workspace, "reconcile") || hasBankData || openBankReconciliationTasks.length > 0;
@@ -1529,11 +1591,12 @@ export function workflowChecks(workspace) {
     (voucher.period || String(voucher.date || "").slice(0, 7)) === workspace.currentPeriod && !["posted", "superseded", "invalidated", "replaced"].includes(voucher.status)
   ));
   const latestVersion = getLatestReportVersion(workspace);
-  const sourceIsCurrent = isPeriodArchived(workspace) ? Boolean(latestVersion) : payrollVersionHasCurrentSources(workspace, latestVersion) && (latestVersion?.sourceFingerprint
-    ? workflowSourceMatches(latestVersion.sourceFingerprint, workspace)
-    : Boolean(latestVersion)
-      && workspace.tax?.frozenAt === latestVersion.createdAt
-      && comparableSnapshot(latestVersion.snapshot) === comparableSnapshot(snapshot));
+  const sourceIsCurrent = isPeriodArchived(workspace) ? Boolean(latestVersion) : payrollVersionHasCurrentSources(workspace, latestVersion)
+    && (latestVersion?.sourceFingerprint
+      ? workflowSourceMatches(latestVersion.sourceFingerprint, workspace)
+      : Boolean(latestVersion)
+        && workspace.tax?.frozenAt === latestVersion.createdAt
+        && comparableSnapshot(latestVersion.snapshot) === comparableSnapshot(snapshot));
   const version = sourceIsCurrent ? latestVersion : null;
   const filing = workspace.delivery.filing;
   const initialConfirmation = (workspace.confirmations || []).find((item) => item.id === filing.initialConfirmationId);
@@ -1569,10 +1632,10 @@ export function workflowChecks(workspace) {
     receipt: "导入外部办理回执",
   };
   const checks = [
-    { id: "opening", label: "本期期初余额已确认", ok: openingBalancesReady(workspace), page: "reports", detail: workspace.openingStatus?.message || "可确认实际期初余额，或从上一个已归档月份结转" },
+    { id: "opening", label: "本期期初余额已确认", ok: openingBalancesReady(workspace), page: "reports", section: "opening-balances", detail: workspace.openingStatus?.message || "可确认实际期初余额，或从上一个已归档月份结转" },
     { id: "balanced", label: "试算、资产负债与现金变动勾稽通过", ok: statementsBalanced, page: "reports", detail: statementsBalanced ? "三项校验通过" : "至少一项校验存在差异" },
-    { id: "bank", label: bankReconciliationApplicable ? "本期银行流水余额勾稽通过" : "银行勾稽不适用", applicable: bankReconciliationApplicable, ok: bankReconciliationPassed, page: "setup", detail: bankReconciliationDetail },
-    { id: "exceptions", label: "流水、异常、工资与跨期事项已完成复核", ok: unresolved.length === 0 && openExceptionTasks.length === 0 && openNotices.length === 0 && payrollAccountingIssues.length === 0, page: payrollAccountingIssues.length ? "tax" : openNotices.length ? "overview" : "reconcile", detail: payrollAccountingIssues.length ? payrollAccounting.message : unresolved.length || openExceptionTasks.length || openNotices.length ? `${unresolved.length} 笔流水、${openExceptionTasks.length} 项异常、${openNotices.length} 项跨期待办未完成` : "已完成" },
+    { id: "bank", label: bankReconciliationApplicable ? "本期银行流水余额勾稽通过" : "银行勾稽不适用", applicable: bankReconciliationApplicable, ok: bankReconciliationPassed, page: "bankImport", detail: bankReconciliationDetail },
+    { id: "exceptions", label: "流水、异常、工资与跨期事项已完成复核", ok: unresolved.length === 0 && blockingExceptionTasks.length === 0 && openNotices.length === 0 && payrollAccountingIssues.length === 0, page: payrollAccountingIssues.length ? "tax" : openNotices.length ? "overview" : "reconcile", detail: payrollAccountingIssues.length ? payrollAccounting.message : unresolved.length || blockingExceptionTasks.length || openNotices.length ? `${unresolved.length} 笔流水、${blockingExceptionTasks.length} 项异常、${openNotices.length} 项跨期待办未完成` : "已完成" },
     { id: "vouchers", label: "本期凭证已全部复核入账", ok: pendingVouchers.length === 0, page: "reconcile", detail: pendingVouchers.length ? `${pendingVouchers.length} 张草稿或更正待处理` : "已完成" },
     { id: "frozen", label: "本期当前数据已有冻结版本", ok: Boolean(version), page: "reports", detail: latestVersion && !version ? "上游数据已变化，请重新冻结" : undefined },
     { id: "finance", label: `${terminology.customer}已完成首次财务确认`, ok: Boolean(initialConfirmationCurrent && workspace.tax.financeConfirmedAt && workspace.tax.financeConfirmedVersionId === version.id), page: "tax" },
@@ -1598,6 +1661,8 @@ export function workflowChecks(workspace) {
     snapshot,
     unresolved,
     openExceptionTasks,
+    blockingExceptionTasks,
+    liveDocumentTasks,
     payrollAccounting,
     payrollAccountingIssues,
     openNotices,
@@ -1609,6 +1674,50 @@ export function workflowChecks(workspace) {
     pendingVouchers,
     latestVersion,
     version,
+  };
+}
+
+export function monthlyCloseStageState(workspace, existingFlow) {
+  const flow = existingFlow || workflowChecks(workspace);
+  const periodTransactions = (workspace.transactions || []).filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
+  const periodDocuments = (workspace.documents || []).filter((item) => item.period === workspace.currentPeriod);
+  const periodPostedVouchers = (workspace.vouchers || []).filter((item) => (
+    item.status === "posted" && (item.period || String(item.date || "").slice(0, 7)) === workspace.currentPeriod
+  ));
+  const postedVoucherIds = new Set(periodPostedVouchers.map((voucher) => voucher.id));
+  const postedSourceIds = new Set(periodPostedVouchers.flatMap((voucher) => [
+    ...(voucher.sourceIds || []),
+    ...(voucher.lines || []).flatMap((line) => line.sourceIds || []),
+  ]));
+  const openDocumentTasks = flow.liveDocumentTasks
+    || (flow.openExceptionTasks || []).filter((task) => task.code === "missing_document");
+  const matchingComplete = periodTransactions.length > 0 && periodTransactions.every((item) => (
+    item.status === "ignored"
+    || ["recognized", "reconciled", "posted"].includes(item.status)
+    || Boolean(item.bankBusinessEventId || item.businessEventId)
+  ));
+  const transactionPostingComplete = periodTransactions.every((item) => (
+    item.status === "ignored"
+    || (item.status === "posted" && (
+      postedSourceIds.has(item.id)
+      || postedVoucherIds.has(item.postedVoucherId)
+      || (item.postedVoucherIds || []).some((voucherId) => postedVoucherIds.has(voucherId))
+    ))
+  ));
+  const payrollPostingComplete = !flow.payrollAccounting?.applicable || Boolean(flow.payrollAccounting.postedAndMatched);
+  const accountingWorkExists = periodTransactions.length > 0
+    || periodPostedVouchers.length > 0
+    || Boolean(flow.payrollAccounting?.applicable);
+  return {
+    documents: periodDocuments.length > 0 && openDocumentTasks.length === 0,
+    match: matchingComplete,
+    reconcile: periodTransactions.length > 0 && flow.unresolved.length === 0,
+    vouchers: accountingWorkExists
+      && transactionPostingComplete
+      && payrollPostingComplete
+      && flow.pendingVouchers.length === 0,
+    reports: Boolean(flow.version),
+    confirm: Boolean(flow.checks.find((item) => item.id === "owner")?.ok),
   };
 }
 

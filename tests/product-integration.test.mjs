@@ -28,6 +28,7 @@ import {
   buildStructuredInvoiceVatSummary,
   createDocumentMetadata,
   preparePayrollSocialImport,
+  syncDocumentMissingTasks,
 } from "../src/features/intake/documentIntake.js";
 import { createMemoryFileVault } from "../src/features/intake/browserFileVault.js";
 import { postVoucherWithEvidence } from "../src/domain/accounting/vouchers.js";
@@ -55,6 +56,7 @@ import {
   freezeReportVersion,
   getPayrollSocialConfirmationState,
   markPackageExported,
+  monthlyCloseStageState,
   prepareFilingDraft,
   recordFinalConfirmation,
   recordInitialConfirmationSection,
@@ -85,8 +87,16 @@ function integratedStore(workspace) {
 function closeableWorkspace() {
   let workspace = normalizeWorkspace(ensureWorkspace(createAccountingFixture()), { now: fixedNow });
   workspace.bills = workspace.bills.map((bill) => bill.id === "bill-prepay-1" ? { ...bill, cashFlowCategory: "operating" } : bill);
+  workspace.documents = workspace.documents.map((document) => ({
+    ...document,
+    storage: { ...(document.storage || {}), availableLocally: true },
+  }));
   workspace.transactions = workspace.transactions.map((transaction) => ({ ...transaction, status: "ignored" }));
-  workspace.vouchers = workspace.vouchers.map((voucher) => ({ ...voucher, status: "posted" }));
+  workspace.vouchers = workspace.vouchers.map((voucher) => ({
+    ...voucher,
+    status: "posted",
+    evidenceIds: voucher.evidenceIds?.length ? voucher.evidenceIds : ["doc-bank"],
+  }));
   workspace.exceptionTasks = [];
   workspace.bankImports = [];
   for (const account of workspace.bankAccounts) {
@@ -652,6 +662,7 @@ test("structured invoice VAT, first confirmation, final confirmation and actual 
   const period = workspace.currentPeriod;
   const invoice = (id, taxDirection, amount, taxAmount) => ({
     id, name: `${id}.pdf`, category: "发票", period, hash: `${id}-original-hash`, relatedObjectIds: ["txn-split"],
+    storage: { mode: "indexeddb", blobId: id, availableLocally: true },
     structuredData: {
       kind: "invoice", invoiceNumber: id, invoiceDate: `${period}-04`, taxDirection, amount, taxAmount,
       taxRate: taxDirection === "output" ? 13 : 6, verificationStatus: "unverified", redLetterStatus: "normal", voidStatus: "valid",
@@ -1140,9 +1151,7 @@ test("only posted and explicitly ignored items stop blocking the product close w
 });
 
 test("an inherited open notice is visible to the workflow and blocks a new close until resolved", () => {
-  const workspace = ensureWorkspace(createAccountingFixture());
-  workspace.transactions = workspace.transactions.map((transaction) => ({ ...transaction, status: "ignored" }));
-  workspace.exceptionTasks = [];
+  const workspace = closeableWorkspace();
   workspace.delivery.notices = [{
     id: "carry-2026-08-txn-old",
     period: workspace.currentPeriod,
@@ -1178,6 +1187,88 @@ test("a frozen report becomes stale after its financial source data changes", ()
   assert.equal(flow.version, null);
   assert.equal(flow.checks.find((item) => item.id === "frozen").ok, false);
   assert.match(flow.checks.find((item) => item.id === "frozen").detail, /重新冻结/);
+});
+
+test("current-period live document gaps stay visible without invalidating a compatible frozen report", () => {
+  const workspace = closeableWorkspace();
+  const pending = workspace.transactions.find((item) => String(item.date || "").startsWith(workspace.currentPeriod));
+  pending.status = "pending";
+  pending.evidenceIds = [];
+  pending.documentIds = [];
+
+  const beforeSync = workflowChecks(workspace);
+  assert.ok(beforeSync.liveDocumentTasks.some((task) => task.sourceId === pending.id));
+  assert.equal(beforeSync.liveDocumentTasks.every((task) => ["bankTransaction", "businessEvent"].includes(task.sourceType)), true);
+
+  const synced = syncDocumentMissingTasks(workspace, { actor: "测试会计", at: "2026-09-04T08:00:40.000Z" }).workspace;
+  const afterSync = workflowChecks(synced);
+  assert.deepEqual(afterSync.openExceptionTasks.map((task) => task.identity), beforeSync.openExceptionTasks.map((task) => task.identity));
+  assert.deepEqual(afterSync.archive.map((check) => [check.id, check.ok]), beforeSync.archive.map((check) => [check.id, check.ok]));
+  assert.deepEqual(monthlyCloseStageState(synced, afterSync), monthlyCloseStageState(workspace, beforeSync));
+
+  const frozen = freezeReportVersion(closeableWorkspace(), "测试会计");
+  const frozenFlow = workflowChecks(frozen);
+  assert.deepEqual(frozenFlow.liveDocumentTasks, []);
+  assert.equal(frozenFlow.version?.id, frozen.delivery.reportVersions.at(-1).id);
+});
+
+test("a current valid voucher with a missing original still blocks the close workflow", () => {
+  const workspace = closeableWorkspace();
+  const voucher = workspace.vouchers.find((item) => item.id === "voucher-0011");
+  voucher.evidenceIds = [];
+
+  const unlinked = workflowChecks(workspace);
+  assert.ok(unlinked.liveDocumentTasks.some((task) => (
+    task.sourceType === "voucher"
+    && task.sourceId === voucher.id
+    && task.missingEvidence.some((item) => item.id.startsWith("voucher-original:"))
+  )));
+  assert.equal(unlinked.checks.find((check) => check.id === "exceptions").ok, false);
+
+  voucher.evidenceIds = ["doc-bank"];
+  workspace.documents = workspace.documents.map((document) => document.id === "doc-bank"
+    ? { ...document, storage: { ...(document.storage || {}), availableLocally: false } }
+    : document);
+  const unavailable = workflowChecks(workspace);
+  assert.ok(unavailable.liveDocumentTasks.some((task) => (
+    task.sourceType === "voucher"
+    && task.sourceId === voucher.id
+    && task.missingEvidence.some((item) => item.id.startsWith("document:"))
+  )));
+  assert.equal(unavailable.checks.find((check) => check.id === "exceptions").ok, false);
+});
+
+test("the voucher stage waits for every current transaction and applicable payroll accrual", () => {
+  const workspace = {
+    currentPeriod: "2026-09",
+    documents: [],
+    transactions: [
+      { id: "transaction-posted", date: "2026-09-01", status: "posted", postedVoucherId: "voucher-posted" },
+      { id: "transaction-pending", date: "2026-09-02", status: "pending" },
+    ],
+    vouchers: [{ id: "voucher-posted", date: "2026-09-01", status: "posted", sourceIds: ["transaction-posted"], lines: [] }],
+  };
+  const flow = {
+    checks: [],
+    liveDocumentTasks: [],
+    openExceptionTasks: [],
+    pendingVouchers: [],
+    unresolved: [workspace.transactions[1]],
+    payrollAccounting: { applicable: false, postedAndMatched: false },
+    version: null,
+  };
+
+  assert.equal(monthlyCloseStageState(workspace, flow).vouchers, false);
+
+  workspace.transactions[1] = { ...workspace.transactions[1], status: "posted", postedVoucherId: "voucher-second" };
+  workspace.vouchers.push({ id: "voucher-second", date: "2026-09-02", status: "posted", sourceIds: ["transaction-pending"], lines: [] });
+  flow.unresolved = [];
+  assert.equal(monthlyCloseStageState(workspace, flow).vouchers, true);
+
+  flow.payrollAccounting = { applicable: true, postedAndMatched: false };
+  assert.equal(monthlyCloseStageState(workspace, flow).vouchers, false);
+  flow.payrollAccounting.postedAndMatched = true;
+  assert.equal(monthlyCloseStageState(workspace, flow).vouchers, true);
 });
 
 test("a frozen report also becomes stale when the company identity changes", () => {

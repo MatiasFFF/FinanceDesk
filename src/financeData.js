@@ -692,15 +692,21 @@ export function transactionStatus(transaction) {
 export function closeReadiness(workspace) {
   const periodTransactions = workspace.transactions.filter((item) => item.date.startsWith(workspace.currentPeriod));
   const exceptions = periodTransactions.filter((item) => item.status === "exception" || item.status === "pending");
-  const drafts = workspace.vouchers.filter((voucher) => voucher.status === "draft");
-  const bankOk = workspace.accounts.length > 0 && workspace.accounts.every((account) => Math.abs(bankMetrics(workspace, account).difference) < 0.01);
+  const periodDocuments = workspace.documents.filter((document) => document.period === workspace.currentPeriod);
+  const periodVouchers = workspace.vouchers.filter((voucher) => (voucher.period || String(voucher.date || "").slice(0, 7)) === workspace.currentPeriod);
+  const drafts = periodVouchers.filter((voucher) => voucher.status === "draft");
+  const posted = periodVouchers.filter((voucher) => voucher.status === "posted");
+  const bankOk = periodTransactions.length > 0 && workspace.accounts.length > 0 && workspace.accounts.every((account) => {
+    const movement = roundMoney(periodTransactions.filter((transaction) => transaction.accountId === account.id).reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0));
+    return Math.abs(roundMoney(Number(account.statementClosing || 0) - (Number(account.openingBalance || 0) + movement))) < 0.01;
+  });
   const statements = statementMetrics(workspace);
   const steps = [
-    { id: "documents", label: "资料归集", done: workspace.documents.length > 0 || periodTransactions.length === 0, page: "documents" },
+    { id: "documents", label: "资料归集", done: periodDocuments.length > 0, page: "documents" },
     { id: "bank", label: "银行对账", done: bankOk, page: "reconcile" },
-    { id: "reconcile", label: "流水核销", done: exceptions.length === 0, page: "reconcile" },
-    { id: "vouchers", label: "凭证复核", done: drafts.length === 0 && workspace.vouchers.length > 0, page: "vouchers" },
-    { id: "reports", label: "三表校验", done: Math.abs(statements.difference) < 0.01 && workspace.vouchers.length > 0, page: "reports" },
+    { id: "reconcile", label: "流水核销", done: periodTransactions.length > 0 && exceptions.length === 0, page: "reconcile" },
+    { id: "vouchers", label: "凭证复核", done: drafts.length === 0 && posted.length > 0, page: "vouchers" },
+    { id: "reports", label: "三表校验", done: Math.abs(statements.difference) < 0.01 && posted.length > 0, page: "reports" },
     { id: "confirm", label: "客户确认", done: Boolean(workspace.tax.ownerConfirmedAt), page: "tax" },
   ];
   return { steps, completed: steps.filter((step) => step.done).length, exceptions, bankOk, statements };

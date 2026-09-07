@@ -191,6 +191,7 @@ export function ManualVoucherPanel({ onToast, request }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [pendingRequest, setPendingRequest] = useState(null);
+  const [focusedVoucherId, setFocusedVoucherId] = useState("");
   const handledRequest = useRef(null);
   const editorRef = useRef(null);
   const editorBaseline = useRef(JSON.stringify(editor));
@@ -228,6 +229,7 @@ export function ManualVoucherPanel({ onToast, request }) {
     editorBaseline.current = JSON.stringify(blank);
     setEditorOpen(false);
     setReviewNotes({});
+    setFocusedVoucherId("");
     setError("");
   }, [activeWorkspace?.id, activeWorkspace?.currentPeriod]);
 
@@ -343,6 +345,7 @@ export function ManualVoucherPanel({ onToast, request }) {
     }
     try {
       const current = store.getActiveWorkspace();
+      const previousVoucherIds = new Set((current.vouchers || []).map((voucher) => voucher.id));
       const next = editor.voucherId
         ? reviseDraftVoucher(current, {
           voucherId: editor.voucherId,
@@ -359,12 +362,19 @@ export function ManualVoucherPanel({ onToast, request }) {
           evidenceIds: editor.evidenceIds,
           basis: editor.basis,
         }, { actor, mode: "manual" });
+      const savedVoucherId = editor.voucherId || (next.vouchers || []).find((voucher) => !previousVoucherIds.has(voucher.id))?.id || "";
       actions.replaceWorkspace(current.id, next);
+      setFocusedVoucherId(savedVoucherId);
       onToast?.(editor.voucherId ? "手工凭证草稿修订已保存" : "手工凭证草稿已保存");
       const blank = emptyEditor(next);
       setEditor(blank);
       editorBaseline.current = JSON.stringify(blank);
       setEditorOpen(false);
+      if (savedVoucherId) window.requestAnimationFrame(() => {
+        const target = document.getElementById(`manual-voucher-${savedVoucherId}`);
+        target?.focus({ preventScroll: true });
+        target?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
     } catch (caught) {
       setError(caught.message || "手工凭证草稿保存失败");
     }
@@ -533,7 +543,7 @@ export function ManualVoucherPanel({ onToast, request }) {
           const evidenceAssessment = assessManualVoucherEvidence(activeWorkspace, voucher);
           const evidenceTask = (activeWorkspace.exceptionTasks || []).find((task) => task.sourceId === voucher.id && task.code === "voucher_evidence" && task.status !== "resolved");
           return (
-            <article className={`manual-voucher-record is-${status.tone}`} key={voucher.id}>
+            <article className={`manual-voucher-record is-${status.tone}${focusedVoucherId === voucher.id ? " is-new" : ""}`} id={`manual-voucher-${voucher.id}`} key={voucher.id} tabIndex={-1}>
               <div className="manual-voucher-record-heading">
                 <div><h4>{voucher.summary}</h4><small>{voucher.no || "未编号草稿"} · V{voucher.version || 1}</small><span className={`manual-voucher-status is-${status.tone}`}>{status.label}</span><p>{voucher.date} · 借贷各 ¥{money(voucherValidation.debit)} · {voucher.lines?.length || 0} 行分录</p></div>
                 {editable && <button className="secondary-button" type="button" disabled={busy} onClick={() => editing ? setEditorOpen(true) : loadDraft(voucher)}><NotePencil size={15} />{editing ? "继续修改" : "载入修改"}</button>}
@@ -556,7 +566,7 @@ export function ManualVoucherPanel({ onToast, request }) {
               {voucher.status === "posted" && <details className="manual-voucher-posting-details"><summary>更正此凭证</summary><div className="manual-voucher-posting"><label><span>更正原因</span><textarea value={reviewNotes[voucher.id] || ""} onChange={(event) => setReviewNotes((notes) => ({ ...notes, [voucher.id]: event.target.value }))} placeholder="原凭证保留，新的更正草稿复核入账后替代原版本" /></label><button className="secondary-button" type="button" disabled={busy || !String(reviewNotes[voucher.id] || "").trim()} onClick={() => createRevision(voucher)}>创建更正草稿</button></div></details>}
             </article>
           );
-        })}</div> : <div className="manual-voucher-empty"><Receipt size={20} /><strong>本期还没有手工凭证</strong><p>点击“录入手工凭证”开始；可先保存草稿，再补齐依据。</p></div>}
+        })}</div> : <div className="manual-voucher-empty"><Receipt size={20} /><strong>本期还没有手工凭证</strong><p>可先保存草稿，再补齐依据。</p><button className="primary-button" type="button" onClick={() => setEditorOpen(true)}>录入第一张手工凭证</button></div>}
       </section>
     </section>
   );

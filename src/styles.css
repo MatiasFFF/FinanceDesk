@@ -1451,7 +1451,10 @@ button:disabled {
     inset: auto 0 0;
     z-index: 45;
     display: grid;
-    grid-template-columns: repeat(7, minmax(0, 1fr));
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(54px, 1fr);
+    grid-template-columns: none;
+    overflow-x: auto;
     min-height: 64px;
     padding: 6px max(8px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
     border-top: 1px solid var(--line);
@@ -4521,7 +4524,8 @@ summary.forecast-week-row {
   }
 
   .bottom-nav {
-    grid-template-columns: repeat(7, minmax(0, 1fr));
+    grid-auto-columns: minmax(54px, 1fr);
+    grid-template-columns: none;
   }
 
   .topbar {
@@ -7044,12 +7048,32 @@ summary.forecast-week-row {
 .reconcile-page .workspace-toolbar .search-field input { min-width: 0; width: 100%; }
 .reconcile-page .batch-bar,
 .reconcile-page .batch-bar > div { flex-wrap: wrap; }
+.batch-context-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 10px;
+  padding: 12px 14px;
+  border: 1px solid rgba(217, 119, 87, 0.28);
+  border-radius: 10px;
+  background: var(--clay-soft);
+}
+.batch-context-bar > span { display: grid; gap: 2px; min-width: 0; }
+.batch-context-bar strong { color: var(--espresso); font-size: var(--font-body); }
+.batch-context-bar small { color: var(--muted); font-size: var(--font-helper); }
+.batch-context-bar.is-complete { border-color: rgba(114, 128, 106, 0.32); background: var(--sage-soft); }
 .reconcile-page .table-panel { box-shadow: none; border-color: var(--line-soft); }
 .transaction-detail-slot { min-width: 0; align-self: stretch; padding: 14px 22px 24px 0; }
 .transaction-detail-slot .transaction-detail-panel { position: sticky; top: 104px; z-index: 1; width: 100%; height: calc(100dvh - 126px); margin: 0; overflow: hidden; border: 1px solid var(--line-soft); border-radius: 12px; box-shadow: none; }
 .transaction-detail-slot .detail-heading { padding: 14px 16px; }
 .transaction-detail-slot .detail-heading h2 { font-size: 21px; }
 .transaction-detail-slot .detail-section { padding: 16px; }
+.transaction-detail-slot .transaction-primary-action {
+  border-block: 1px solid rgba(217, 119, 87, 0.26);
+  background: var(--clay-soft);
+}
 .transaction-detail-slot .detail-actions { padding: 12px 16px; gap: 10px; }
 .transaction-detail-slot .detail-action-note { font-size: var(--font-helper); line-height: 1.5; white-space: normal; }
 .with-transaction-detail .transaction-head { display: none; }
@@ -7093,6 +7117,18 @@ summary.forecast-week-row {
 .reports-page .version-panel { padding: 18px; }
 
 .tax-page .tax-stage-summary { padding: 16px 18px; margin-bottom: 16px; }
+.tax-payroll-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  margin-bottom: 16px;
+  padding: 14px 18px;
+}
+.tax-payroll-entry > div { display: grid; gap: 3px; min-width: 0; flex: 1 1 360px; }
+.tax-payroll-entry h2 { margin: 0; font-size: var(--font-card-title); }
+.tax-payroll-entry p { margin: 0; color: var(--muted); font-size: var(--font-helper); line-height: 1.6; }
 .stage-next-action { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; }
 .stage-next-action h2 { margin: 0; font-size: 23px; }
 .local-filing-note { display: flex; align-items: flex-start; gap: 7px; margin: 10px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
@@ -7147,6 +7183,7 @@ summary.forecast-week-row {
 .archive-status-strip > span { margin-left: auto; }
 .archive-page .archive-toolbar { padding: 12px 14px; gap: 12px; }
 .archive-page .archive-tools { display: flex; flex-wrap: wrap; min-width: 0; gap: 8px; }
+.archive-page .archive-tools .compact-select { flex: 0 1 180px; min-width: 150px; }
 .archive-page .archive-tools .search-field { flex: 1 1 200px; }
 .archive-page .document-grid { gap: 0; padding: 0 16px; }
 .archive-page .document-card { border: 0; border-bottom: 1px solid var(--line-soft); border-radius: 0; box-shadow: none; padding: 15px 3px; background: transparent; }
@@ -7154,6 +7191,27 @@ summary.forecast-week-row {
 .archive-page .receipt-upload-card { margin-top: 16px; padding: 14px 18px; box-shadow: none; }
 .archive-page .archive-check-panel { margin-top: 16px; }
 .boundary-note { padding: 12px 2px; border: 0; background: transparent; box-shadow: none; }
+
+.settlement-empty-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.settlement-empty-action p { margin: 0; }
+.settlement-bill-primary-action {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: var(--font-helper);
+}
+.settlement-bill-row.is-new { outline: 2px solid rgba(217, 119, 87, 0.35); outline-offset: -2px; }
 
 @media (max-width: 1050px) {
   .tax-page .tax-layout { grid-template-columns: minmax(0, 1fr); }
@@ -7175,6 +7233,12 @@ summary.forecast-week-row {
   .archive-page .archive-toolbar { grid-template-columns: minmax(0, 1fr); }
   .archive-page .document-grid { grid-template-columns: minmax(0, 1fr); }
   .report-key-metrics > span:last-child { margin-left: 0; }
+}
+
+@media (max-width: 1280px) {
+  .reports-page .reports-layout { grid-template-columns: minmax(0, 1fr); }
+  .reports-page .version-panel { min-width: 0; }
+  .reports-page .report-toolbar-actions { justify-content: flex-start; }
 }
 @media (max-width: 560px) {
   .reconcile-heading { padding-inline: 16px; }
@@ -7325,4 +7389,22 @@ summary.forecast-week-row {
   color: var(--muted);
   font-size: var(--font-body, 14px);
   font-weight: 600;
+}
+
+@media (max-width: 1280px) {
+  .reports-page .report-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .reports-page .report-toolbar > div:first-child,
+  .reports-page .report-toolbar-actions {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .reports-page .report-toolbar-actions {
+    justify-content: flex-start;
+  }
 }

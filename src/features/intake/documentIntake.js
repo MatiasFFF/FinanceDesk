@@ -2494,6 +2494,7 @@ export function filterLocalDocuments(workspace, filters = {}) {
   const query = normalizedText(filters.query);
   const category = filters.category || "all";
   const status = filters.status || "all";
+  const period = filters.period || "all";
   return [...(workspace?.documents || [])]
     .filter((document) => {
       const usage = getLocalDocumentUsage(workspace, document.id);
@@ -2509,6 +2510,7 @@ export function filterLocalDocuments(workspace, filters = {}) {
         ...usage.map((item) => item.label),
       ].filter(Boolean).join(" "));
       if (query && !searchText.includes(query)) return false;
+      if (period !== "all" && document.period !== period) return false;
       if (category !== "all" && document.category !== category) return false;
       if (status === "active" && archived) return false;
       if (status === "archived" && !archived) return false;
@@ -3300,6 +3302,7 @@ function voucherAttachmentTaskRequirements(workspace) {
       ))
       .map((item) => ({
         identity: `voucher-attachment:${voucher.id}:${item.key}`,
+        requirementKind: item.kind,
         sourceType: "voucher",
         sourceId: voucher.id,
         sourceIds: [voucher.id, item.documentId, ...plan.sourceIds].filter(Boolean),

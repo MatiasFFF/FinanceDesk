@@ -410,6 +410,11 @@
   border-radius: 10px;
   background: var(--canvas);
 }
+
+.manual-voucher-record.is-new {
+  outline: 2px solid rgba(217, 119, 87, 0.32);
+  outline-offset: 3px;
+}
 .manual-voucher-record.is-posted {
   border-color: rgba(66, 99, 79, 0.2);
 }

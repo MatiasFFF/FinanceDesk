@@ -22,6 +22,7 @@ import {
   reconcileBankAccountPeriod,
 } from "./bankStatementImport.js";
 import { hashLocalFile, removeLocalDocument, saveLocalDocument } from "./documentIntake.js";
+import "../workspaces/foundation-ui.css";
 import "./bank-import-panel.css";
 
 const MAPPING_FIELDS = ["date", "amount", "credit", "debit", "direction", "counterparty", "counterpartyAccount", "summary", "serial", "balance", "channel", "currency"];
@@ -62,13 +63,14 @@ function displayAccountIdentity(account) {
   ].join(" · ");
 }
 
-export function BankImportPanel({ compact = false, onToast, onComplete, onRequestAccountSetup }) {
+export function BankImportPanel({ compact = false, onToast, onComplete, onRequestAccountSetup, onDraftStateChange }) {
   const { activeWorkspace, actions, store, fileVault } = useFinanceDesk();
   const terminology = useMemo(() => normalizeWorkspaceTerminology(activeWorkspace.terminology), [activeWorkspace.terminology]);
   const inputRef = useRef(null);
   const settlementInputRef = useRef(null);
   const applyingRef = useRef(false);
   const settlementApplyingRef = useRef(false);
+  const bankReadControllerRef = useRef(null);
   const [accountId, setAccountId] = useState(activeWorkspace.bankAccounts[0]?.id || "");
   const [period, setPeriod] = useState(activeWorkspace.currentPeriod || "");
   const [parsed, setParsed] = useState(null);
@@ -76,9 +78,11 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
   const [openingBalance, setOpeningBalance] = useState("");
   const [statementClosing, setStatementClosing] = useState("");
   const [plan, setPlan] = useState(null);
+  const [completedImport, setCompletedImport] = useState(null);
   const [counterpartyMappings, setCounterpartyMappings] = useState({});
   const [counterpartyMappingDirty, setCounterpartyMappingDirty] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [bankReadProgress, setBankReadProgress] = useState(null);
   const [reconciling, setReconciling] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -93,6 +97,13 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
   const bankDraftGuardId = usePeriodLeaveGuard({ dirty: Boolean(parsed) });
   const settlementDraftGuardId = usePeriodLeaveGuard({ dirty: Boolean(settlementParsed) });
   usePeriodLeaveGuard({ busy: busy || settlementBusy || reconciling });
+  useEffect(() => () => bankReadControllerRef.current?.abort(), []);
+  useEffect(() => {
+    onDraftStateChange?.({
+      dirty: Boolean(parsed || settlementParsed),
+      busy: busy || settlementBusy || reconciling,
+    });
+  }, [parsed, settlementParsed, busy, settlementBusy, reconciling, onDraftStateChange]);
   const bankAccountStateSignature = JSON.stringify(activeWorkspace.bankAccounts.map((item) => [
     item.id,
     item.openingBalance ?? "",
@@ -120,6 +131,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
     setStatementClosing(next?.statementClosing ?? "");
     setParsed(null);
     setPlan(null);
+    setCompletedImport(null);
     setCounterpartyMappings({});
     setCounterpartyMappingDirty(false);
     setError("");
@@ -128,7 +140,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
     setSettlementPlan(null);
     setSettlementError("");
     setSettlementNotice("");
-  }, [activeWorkspace.id, activeWorkspace.currentPeriod, firstAccountId, bankAccountStateSignature]);
+  }, [activeWorkspace.id, firstAccountId]);
 
   useEffect(() => {
     if (!account) return;
@@ -138,7 +150,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
     setSettlementPlan(null);
     setNotice("");
     setSettlementNotice("");
-  }, [accountId]);
+  }, [accountId, bankAccountStateSignature]);
 
   useEffect(() => {
     if (!settlementParsed && settlementNotice.startsWith("已读取")) setSettlementNotice("");
@@ -256,23 +268,63 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
+    const controller = new AbortController();
+    bankReadControllerRef.current = controller;
     setBusy(true);
+    setBankReadProgress({ phase: "reading", percent: 0, fileName: file.name });
     setError("");
     setNotice("");
     setPlan(null);
+    setCompletedImport(null);
     try {
-      const result = await readBankFile(file);
-      const fileHash = await hashLocalFile(file);
-      setParsed({ ...result, fileHash, file });
-      setMapping(result.inspection.mapping);
+      const result = await readBankFile(file, {
+        signal: controller.signal,
+        computeHash: true,
+        onProgress: (progress) => setBankReadProgress({ ...progress, fileName: file.name }),
+      });
+      if (controller.signal.aborted) throw Object.assign(new Error("已取消读取银行流水文件"), { name: "AbortError" });
+      const fileHash = result.fileHash;
+      if (controller.signal.aborted) throw Object.assign(new Error("已取消读取银行流水文件"), { name: "AbortError" });
+      setBankReadProgress({ phase: "prechecking", percent: null, fileName: file.name });
+      const nextParsed = { ...result, fileHash, file };
+      const nextMapping = result.inspection.mapping;
+      setParsed(nextParsed);
+      setMapping(nextMapping);
       setCounterpartyMappings({});
       setCounterpartyMappingDirty(false);
-      setNotice(`已读取 ${result.fileName}，请核对字段映射与账户余额`);
+      try {
+        const nextPlan = prepareBankImport(activeWorkspace, {
+          accountId,
+          period,
+          fileName: result.fileName,
+          fileHash,
+          sheetName: result.sheetName,
+          table: result.table,
+          mapping: nextMapping,
+          openingBalance,
+          statementClosing,
+          counterpartyMappings: {},
+        });
+        setPlan(nextPlan);
+        setNotice(`已读取并预检查 ${result.fileName}：新增 ${nextPlan.importableRowCount} 笔，重复 ${nextPlan.duplicateCount} 笔，错误 ${nextPlan.errorCount} 行`);
+      } catch (previewError) {
+        setPlan(null);
+        setError(`文件已读取，但自动预检查需要补充信息：${previewError.message || "请核对字段映射与余额"}`);
+      }
     } catch (caught) {
       setParsed(null);
-      setError(caught.message || "银行流水文件读取失败");
+      if (caught.name === "AbortError") {
+        setError("");
+        setNotice("已取消读取当前银行流水文件");
+      } else {
+        setError(caught.message || "银行流水文件读取失败");
+      }
     } finally {
-      setBusy(false);
+      if (bankReadControllerRef.current === controller) {
+        bankReadControllerRef.current = null;
+        setBankReadProgress(null);
+        setBusy(false);
+      }
     }
   }
 
@@ -290,6 +342,10 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
   }
 
   function cancelBankFile() {
+    if (bankReadControllerRef.current) {
+      bankReadControllerRef.current.abort();
+      return;
+    }
     setParsed(null);
     setPlan(null);
     setCounterpartyMappings({});
@@ -392,7 +448,8 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
       committed = true;
       const importedWorkspace = nextState.workspaces.find((workspace) => workspace.id === workspaceId);
       const record = importedWorkspace?.bankImports?.find((item) => item.id === finalPlan.id);
-      completedPlan = { ...finalPlan, ...(record || {}) };
+      completedPlan = { ...finalPlan, ...(record || {}), transactions: finalPlan.transactions };
+      setCompletedImport(completedPlan);
       setParsed(null);
       setPlan(null);
       setCounterpartyMappings({});
@@ -420,7 +477,6 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
       const message = `已导入 ${completedPlan.importableRowCount} 笔流水，跳过 ${completedPlan.duplicateCount} 笔重复${recognitionText}${anomalyText}${reconciliationText}`;
       setNotice(message);
       onToast?.(message);
-      onComplete?.(completedPlan);
     }
   }
 
@@ -657,7 +713,7 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
 
   return (
     <section className={`foundation-section bank-import-panel ${compact ? "compact" : "intake-wide"}`}>
-      <div className="foundation-section-heading"><div><h3><Table size={18} />银行流水导入</h3></div>{parsed && <button className="foundation-icon-button" disabled={busy} type="button" aria-label="取消当前文件" onClick={cancelBankFile}><X size={16} /></button>}</div>
+      <div className="foundation-section-heading"><div><h3><Table size={18} />银行流水导入</h3></div>{(parsed || bankReadProgress) && <button className="foundation-icon-button" disabled={busy && !bankReadProgress} type="button" aria-label={bankReadProgress ? "取消读取当前文件" : "取消当前文件"} onClick={cancelBankFile}><X size={16} /></button>}</div>
       <div className="bank-import-template-bar">
         <span><strong>导入模板</strong><small>按模板整理银行流水或平台结算数据。</small></span>
         <div>
@@ -683,10 +739,19 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
         </>
       )}
 
+      {bankReadProgress && <div className="foundation-notice import-feedback bank-read-progress" role="status" aria-live="polite"><span><strong>{{ "loading-parser": "正在加载 Excel 解析器", reading: "正在读取本地文件", parsing: "正在解析字段", complete: "读取完成", hashing: "正在生成本地去重指纹", prechecking: "正在进行导入预检查" }[bankReadProgress.phase] || "正在处理本地文件"}</strong><small>{bankReadProgress.fileName}{Number.isFinite(bankReadProgress.percent) ? ` · ${bankReadProgress.percent}%` : ""}</small></span>{["reading", "loading-parser", "hashing"].includes(bankReadProgress.phase) && <button className="secondary-button" type="button" onClick={cancelBankFile}>取消读取</button>}</div>}
       {error && <div className="foundation-error" role="alert"><WarningCircle size={18} /><span>{error}</span></div>}
       {notice && <div className="foundation-notice import-feedback" role="status" aria-live="polite"><CheckCircle size={18} weight="fill" /><span>{notice}</span></div>}
 
-      {period && accountReconciliationSummary.accountCount > 0 && (
+      {completedImport && <div className="bank-import-workspace bank-import-complete" role="status">
+        <div className="bank-file-summary"><span><strong>本批次已保存</strong><small>{completedImport.fileName} · {completedImport.period} · 新增 {completedImport.importableRowCount} 笔 · 跳过重复 {completedImport.duplicateCount} 笔</small></span><span className="mapping-badge">导入完成</span></div>
+        <p className="foundation-hint">结果会保留在这里，进入业务处理后只显示本批流水，并从第一笔待处理交易开始。</p>
+        <div className="foundation-inline-actions"><button className="primary-button" type="button" onClick={() => onComplete?.(completedImport)}>开始处理本批</button><button className="secondary-button" type="button" onClick={() => setCompletedImport(null)}>留在这里继续导入</button></div>
+      </div>}
+
+      {period && account && <details className="bank-import-history">
+        <summary><span><strong>本期账户勾稽与历史批次</strong><small>{displayAccountIdentity(account)} · {period}</small></span><span className={monthlyReconciliation.passed ? "mapping-badge" : "mapping-badge warning"}>{monthlyReconciliation.passed ? "已完成" : "待核对"}</span></summary>
+      {accountReconciliationSummary.accountCount > 0 && (
         <div className="bank-import-workspace bank-reconciliation-overview">
           <div className="bank-file-summary">
             <span><strong>{period} 逐账户勾稽总览</strong><small>{accountReconciliationSummary.completedCount} / {accountReconciliationSummary.accountCount} 个账户已完成</small></span>
@@ -714,7 +779,6 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
         </div>
       )}
 
-      {account && period && (
         <div className="bank-import-workspace bank-reconciliation-current">
           <div className="bank-file-summary"><span><strong>{displayAccountIdentity(account)} · {period} 月度勾稽</strong><small>{monthlyReconciliation.batchCount} 个导入批次 · {monthlyReconciliation.transactionCount} 笔账户流水{monthlyReconciliation.dateFrom ? ` · ${monthlyReconciliation.dateFrom} 至 ${monthlyReconciliation.dateTo}` : ""}</small></span><div className="foundation-inline-actions"><span className={monthlyReconciliation.passed ? "mapping-badge" : "mapping-badge warning"}>{monthlyReconciliation.passed ? "已完成" : "未完成"}</span><button className="secondary-button" disabled={busy || reconciling} type="button" onClick={recheckMonthlyReconciliation}>{reconciling ? "正在重新勾稽…" : "重新勾稽"}</button></div></div>
           <div className={`import-report ${monthlyReconciliation.passed ? "passed" : "warning"}`}><span>{monthlyReconciliation.passed ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} />}</span><div><strong>{monthlyReconciliation.message}</strong><p>期初 {displayMoney(monthlyReconciliation.openingBalance)} ＋ 收入 {displayMoney(monthlyReconciliation.income)} − 支出 {displayMoney(monthlyReconciliation.expense)} ＝ 计算期末 {displayMoney(monthlyReconciliation.calculatedClosing)}；对账单期末 {displayMoney(monthlyReconciliation.statementClosing)}；差额 {displayMoney(monthlyReconciliation.difference)}</p>{monthlyReconciliation.balanceSource === "account_recheck" && <small>余额口径：基础资料中的账户余额；最后重新勾稽 {displayDateTime(monthlyReconciliation.balanceReviewedAt)}{monthlyReconciliation.balanceReviewedBy ? ` · ${monthlyReconciliation.balanceReviewedBy}` : ""}</small>}</div></div>
@@ -723,17 +787,11 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
             : "上期该账户未完成勾稽，新期期初需核实后填写。"}</p>}
           {monthlyReconciliation.imports.length > 0 && <div className="bank-preview-scroll"><table><thead><tr><th>导入文件</th><th>数据起止日期</th><th>导入时间</th><th>操作者</th><th>新增</th><th>重复</th><th>流水异常</th><th>导入时勾稽</th></tr></thead><tbody>{monthlyReconciliation.imports.map((record) => <tr key={record.id}><td>{record.fileName}</td><td>{record.dateFrom || "—"} 至 {record.dateTo || "—"}</td><td>{displayDateTime(record.importedAt)}</td><td>{record.actor}</td><td>{record.importableRowCount} 笔</td><td>{record.duplicateCount} 笔</td><td>{record.anomalousRowCount} 笔</td><td>{record.reconciliation?.passed ? "已通过" : record.reconciliation?.message || "未完成"}</td></tr>)}</tbody></table></div>}
         </div>
-      )}
+      </details>}
 
       {parsed && inspection && (
         <div className="bank-import-workspace bank-import-file-workspace">
           <div className="bank-file-summary"><span><strong>{parsed.fileName}</strong><small>{parsed.sheetName ? `工作表：${parsed.sheetName} · ` : ""}{inspection.rowCount} 行</small></span><span className={inspection.missingFields.length ? "mapping-badge warning" : "mapping-badge"}>{inspection.missingFields.length ? `缺 ${inspection.missingFields.length} 项映射` : "必要字段已识别"}</span></div>
-
-          <div className="mapping-grid bank-field-mapping-grid">
-            {MAPPING_FIELDS.map((field) => (
-              <label className="foundation-field" key={field}><span>{BANK_FIELD_DEFINITIONS[field].label}{BANK_FIELD_DEFINITIONS[field].required ? " *" : ""}</span><select value={mapping[field] ?? ""} onChange={(event) => changeMapping(field, event.target.value)}><option value="">不导入此字段</option>{inspection.headers.map((header, index) => <option value={index} key={`${field}-${index}`}>{header}</option>)}</select></label>
-            ))}
-          </div>
 
           <div className="balance-inputs">
             <label className="foundation-field"><span>期初余额</span><input type="number" step="0.01" value={openingBalance} onChange={(event) => { setOpeningBalance(event.target.value); setPlan(null); setNotice(""); }} /></label>
@@ -741,10 +799,31 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
             <label className="foundation-field"><span>对账单期末余额</span><input type="number" step="0.01" value={statementClosing} onChange={(event) => { setStatementClosing(event.target.value); setPlan(null); setNotice(""); }} /></label>
           </div>
 
-          <div className="bank-preview-scroll"><table><thead><tr><th>原始行</th>{inspection.headers.slice(0, 7).map((header) => <th key={header}>{header}</th>)}</tr></thead><tbody>{inspection.preview.map((row) => <tr key={row.rowNumber}><td>{row.rowNumber}</td>{row.cells.slice(0, 7).map((cell, index) => <td key={`${row.rowNumber}-${index}`}>{String(cell.value)}</td>)}</tr>)}</tbody></table></div>
+          {plan && <div className={`import-report ${bankPlanTone}`}>
+            <span>{bankPlanTone === "passed" ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} />}</span>
+            <div>
+              <div className="import-decision-line"><span className={`import-decision-badge ${bankPlanBlocked ? "blocked" : bankPlanReconciliationPending ? "pending" : "ready"}`}>{bankPlanBlocked ? "不可导入" : bankPlanReconciliationPending ? "可导入 · 勾稽未完成" : "可导入"}</span><strong>{bankPlanHeadline}</strong></div>
+              <p>账期 {plan.period} · 新增 {plan.importableRowCount} 笔 · 重复 {plan.duplicateCount} 笔 · 自动识别 {plan.recognitionCount || 0} 项 · 流水异常 {plan.anomalyCount || 0} 项 · 字段错误 {plan.errorCount} 行 · 流水变动 {plan.reconciliation.movement.toFixed(2)} 元</p>
+              {bankPlanReconciliationPending && <small className="reconciliation-followup">保存后会生成账户月度勾稽异常，月度状态保持“未完成”；后续补导缺失流水时继续重算。</small>}
+              {(plan.recognitions || []).slice(0, 5).map((item) => <small key={`${item.id}-${item.transactionId}`}>第 {plan.transactions.find((transaction) => transaction.id === item.transactionId)?.sourceRow || "—"} 行 · {item.label}：{item.message}</small>)}
+              {plan.recognitionCount > 5 && <small>另有 {plan.recognitionCount - 5} 项确定事项将在导入时一并写入。</small>}
+              {plan.errors.slice(0, 3).map((item) => <small key={`error-${item.rowNumber}`}>第 {item.rowNumber} 行：{item.message}</small>)}
+              {(plan.anomalies || []).slice(0, 5).map((item) => <small key={`${item.transactionId}-${item.code}`}>第 {item.sourceRow} 行 · {item.label}：{item.message}</small>)}
+              {plan.anomalyCount > 5 && <small>另有 {plan.anomalyCount - 5} 项流水异常，导入后进入待复核。</small>}
+            </div>
+          </div>}
 
-          {plan && counterpartyPreviewGroups.length > 0 && (
-            <div className="counterparty-mapping-list">
+          <details className="bank-import-advanced" defaultOpen={inspection.missingFields.length > 0}>
+            <summary>字段映射、交易对手与原始预览</summary>
+            <div className="mapping-grid bank-field-mapping-grid">
+              {MAPPING_FIELDS.map((field) => (
+                <label className="foundation-field" key={field}><span>{BANK_FIELD_DEFINITIONS[field].label}{BANK_FIELD_DEFINITIONS[field].required ? " *" : ""}</span><select value={mapping[field] ?? ""} onChange={(event) => changeMapping(field, event.target.value)}><option value="">不导入此字段</option>{inspection.headers.map((header, index) => <option value={index} key={`${field}-${index}`}>{header}</option>)}</select></label>
+              ))}
+            </div>
+            <div className="bank-preview-scroll"><table><thead><tr><th>原始行</th>{inspection.headers.slice(0, 7).map((header) => <th key={header}>{header}</th>)}</tr></thead><tbody>{inspection.preview.map((row) => <tr key={row.rowNumber}><td>{row.rowNumber}</td>{row.cells.slice(0, 7).map((cell, index) => <td key={`${row.rowNumber}-${index}`}>{String(cell.value)}</td>)}</tr>)}</tbody></table></div>
+
+            {plan && counterpartyPreviewGroups.length > 0 && (
+              <div className="counterparty-mapping-list">
               <div className="bank-file-summary">
                 <span><strong>交易对手标准化</strong><small>把原始名称映射到当前工作台对象，或填写手工标准名称；确认导入后保存为本地别名规则。</small></span>
                 <span className={counterpartyMappingDirty ? "mapping-badge warning" : "mapping-badge"}>{counterpartyMappingDirty ? "待重新预检查" : "映射已计入预览"}</span>
@@ -764,34 +843,21 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
                   </div>
                 );
               })}
-            </div>
-          )}
+              </div>
+            )}
+          </details>
 
           <div className="foundation-inline-actions bank-import-actions">
-            <button className="secondary-button" disabled={busy} type="button" onClick={previewImport}>{counterpartyMappingDirty ? "保存映射并重新预检查" : "预检查去重、余额与异常"}</button>
+            <button className="secondary-button" disabled={busy} type="button" onClick={previewImport}>{counterpartyMappingDirty ? "保存映射并重新预检查" : "重新预检查"}</button>
             {plan && <button className="primary-button" type="button" onClick={applyImport} disabled={busy || bankPlanBlocked}>{busy ? "正在写入…" : bankPlanReconciliationPending ? `保存 ${plan.importableRowCount} 笔并继续勾稽` : `确认导入 ${plan.importableRowCount} 笔`}</button>}
             <button className="text-danger-button" disabled={busy} type="button" onClick={cancelBankFile}>取消本次文件</button>
           </div>
-
-          {plan && <div className={`import-report ${bankPlanTone}`}>
-            <span>{bankPlanTone === "passed" ? <CheckCircle size={19} weight="fill" /> : <WarningCircle size={19} />}</span>
-            <div>
-              <div className="import-decision-line"><span className={`import-decision-badge ${bankPlanBlocked ? "blocked" : bankPlanReconciliationPending ? "pending" : "ready"}`}>{bankPlanBlocked ? "不可导入" : bankPlanReconciliationPending ? "可导入 · 勾稽未完成" : "可导入"}</span><strong>{bankPlanHeadline}</strong></div>
-              <p>账期 {plan.period} · 新增 {plan.importableRowCount} 笔 · 重复 {plan.duplicateCount} 笔 · 自动识别 {plan.recognitionCount || 0} 项 · 流水异常 {plan.anomalyCount || 0} 项 · 字段错误 {plan.errorCount} 行 · 流水变动 {plan.reconciliation.movement.toFixed(2)} 元</p>
-              {bankPlanReconciliationPending && <small className="reconciliation-followup">保存后会生成账户月度勾稽异常，月度状态保持“未完成”；后续补导缺失流水时继续重算。</small>}
-              {(plan.recognitions || []).slice(0, 5).map((item) => <small key={`${item.id}-${item.transactionId}`}>第 {plan.transactions.find((transaction) => transaction.id === item.transactionId)?.sourceRow || "—"} 行 · {item.label}：{item.message}</small>)}
-              {plan.recognitionCount > 5 && <small>另有 {plan.recognitionCount - 5} 项确定事项将在导入时一并写入。</small>}
-              {plan.errors.slice(0, 3).map((item) => <small key={`error-${item.rowNumber}`}>第 {item.rowNumber} 行：{item.message}</small>)}
-              {(plan.anomalies || []).slice(0, 5).map((item) => <small key={`${item.transactionId}-${item.code}`}>第 {item.sourceRow} 行 · {item.label}：{item.message}</small>)}
-              {plan.anomalyCount > 5 && <small>另有 {plan.anomalyCount - 5} 项流水异常，导入后进入待复核。</small>}
-            </div>
-          </div>}
         </div>
       )}
 
       {settlementNotice && <div className="foundation-notice import-feedback platform-import-feedback" role="status" aria-live="polite"><CheckCircle size={18} weight="fill" /><span>{settlementNotice}</span>{settlementParsed && <button className="text-danger-button" disabled={settlementBusy} type="button" onClick={cancelSettlementFile}>取消本次结算文件</button>}</div>}
 
-      {account && period && <div className="bank-import-workspace"><div className="foundation-section-heading"><div><h3><Table size={18} />平台结算单导入</h3><p>微信、支付宝和 POS 结算单</p></div>{settlementParsed && <button className="foundation-icon-button" disabled={settlementBusy} type="button" aria-label="取消当前结算文件" onClick={() => { setSettlementParsed(null); setSettlementPlan(null); }}><X size={16} /></button>}</div><div className="bank-import-start"><label className="foundation-field"><span>结算渠道</span><select value={settlementChannel} onChange={(event) => { setSettlementChannel(event.target.value); setSettlementPlan(null); }}>{Object.entries(PLATFORM_SETTLEMENT_CHANNELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><button className="secondary-button" disabled={settlementBusy} type="button" onClick={() => settlementInputRef.current?.click()}><FileArrowUp size={17} />{settlementBusy ? "正在处理…" : settlementParsed ? "更换结算文件" : "选择结算单 CSV / Excel"}</button><input ref={settlementInputRef} type="file" hidden accept=".csv,.txt,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={chooseSettlementFile} /></div><p className="foundation-hint">银行只核对净结算额；营业收入保留交易总额，平台手续费与退款分别保存。</p>{settlementError && <div className="foundation-error"><WarningCircle size={18} />{settlementError}</div>}{settlementParsed && settlementInspection && <><div className="bank-file-summary"><span><strong>{settlementParsed.fileName}</strong><small>{settlementParsed.sheetName ? `工作表：${settlementParsed.sheetName} · ` : ""}{settlementInspection.rowCount} 行</small></span><span className={settlementInspection.missingFields.length ? "mapping-badge warning" : "mapping-badge"}>{settlementInspection.missingFields.length ? `缺 ${settlementInspection.missingFields.length} 项映射` : "结算字段已识别"}</span></div><div className="mapping-grid">{SETTLEMENT_MAPPING_FIELDS.map((field) => <label className="foundation-field" key={field}><span>{PLATFORM_SETTLEMENT_FIELD_DEFINITIONS[field].label} *</span><select value={settlementMapping[field] ?? ""} onChange={(event) => changeSettlementMapping(field, event.target.value)}><option value="">请选择列</option>{settlementInspection.headers.map((header, index) => <option value={index} key={`${field}-${index}`}>{header}</option>)}</select></label>)}</div><div className="bank-preview-scroll"><table><thead><tr><th>原始行</th>{settlementInspection.headers.slice(0, 7).map((header) => <th key={header}>{header}</th>)}</tr></thead><tbody>{settlementInspection.preview.map((row) => <tr key={row.rowNumber}><td>{row.rowNumber}</td>{row.cells.slice(0, 7).map((cell, index) => <td key={`${row.rowNumber}-${index}`}>{String(cell.value)}</td>)}</tr>)}</tbody></table></div><div className="foundation-inline-actions"><button className="secondary-button" disabled={settlementBusy} type="button" onClick={previewSettlementImport}>预检查结算构成与银行到账</button>{settlementPlan && <button className="primary-button" disabled={settlementBusy || !settlementPlan.importableRowCount || settlementPlan.errorCount > 0} type="button" onClick={applySettlementImport}>{settlementBusy ? "正在写入…" : `确认导入 ${settlementPlan.importableRowCount} 份`}</button>}</div>{settlementPlan && <div className={`import-report ${settlementPlan.anomalyCount ? "warning" : "passed"}`}><span>{settlementPlan.anomalyCount ? <WarningCircle size={19} /> : <CheckCircle size={19} weight="fill" />}</span><div><strong>可导入 {settlementPlan.importableRowCount} 份 · 已匹配到账 {settlementPlan.matchedCount} 份</strong><p>重复 {settlementPlan.duplicateCount} 份 · 异常 {settlementPlan.anomalousRowCount} 份 · 错误 {settlementPlan.errorCount} 行</p>{settlementPlan.errors.slice(0, 3).map((item) => <small key={`settlement-error-${item.rowNumber}`}>第 {item.rowNumber} 行：{item.message}</small>)}{settlementPlan.anomalies.slice(0, 5).map((item) => <small key={`${item.settlementId}-${item.code}`}>{item.settlementNo} · {item.label}：{item.message}</small>)}</div></div>}{settlementPlan && <div className="bank-preview-scroll"><table><thead><tr><th>结算日</th><th>渠道 / 单号</th><th>交易总额</th><th>手续费</th><th>退款</th><th>净结算额</th><th>银行到账</th></tr></thead><tbody>{settlementPlan.settlements.map((item) => <tr key={item.id}><td>{item.settlementDate}</td><td>{item.channelLabel} · {item.settlementNo}</td><td>{displayMoney(item.grossAmount)}</td><td>{displayMoney(item.feeAmount)}</td><td>{displayMoney(item.refundAmount)}</td><td>{displayMoney(item.netAmount)}</td><td>{item.bankTransactionId ? `已匹配 ${displayMoney(item.bankAmount)}` : item.candidateBankTransactionId ? `差异 ${displayMoney(item.amountDifference)}` : "未匹配"}</td></tr>)}</tbody></table></div>}</>}{platformSettlements.length > 0 && <><div className="bank-file-summary"><span><strong>本期已导入平台结算</strong><small>{platformSettlements.length} 份 · 数据保存在当前工作台</small></span></div><div className="bank-preview-scroll"><table><thead><tr><th>结算日</th><th>渠道 / 单号</th><th>交易总额</th><th>手续费</th><th>退款</th><th>净额</th><th>到账状态</th></tr></thead><tbody>{platformSettlements.map((item) => <tr key={item.id}><td>{item.settlementDate}</td><td>{item.channelLabel} · {item.settlementNo}</td><td>{displayMoney(item.grossAmount)}</td><td>{displayMoney(item.feeAmount)}</td><td>{displayMoney(item.refundAmount)}</td><td>{displayMoney(item.netAmount)}</td><td>{item.bankTransactionId ? "已匹配银行流水" : item.candidateBankTransactionId ? `金额差异 ${displayMoney(item.amountDifference)}` : "未匹配"}</td></tr>)}</tbody></table></div></>}</div>}
+      {account && period && <div className="bank-import-workspace"><div className="foundation-section-heading"><div><h3><Table size={18} />平台结算单导入</h3><p>微信、支付宝和 POS 结算单</p></div>{settlementParsed && <button className="foundation-icon-button" disabled={settlementBusy} type="button" aria-label="取消当前结算文件" onClick={() => { setSettlementParsed(null); setSettlementPlan(null); }}><X size={16} /></button>}</div><div className="bank-import-start bank-platform-settlement-controls"><label className="foundation-field"><span>结算渠道</span><select value={settlementChannel} onChange={(event) => { setSettlementChannel(event.target.value); setSettlementPlan(null); }}>{Object.entries(PLATFORM_SETTLEMENT_CHANNELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><button className="secondary-button" disabled={settlementBusy} type="button" onClick={() => settlementInputRef.current?.click()}><FileArrowUp size={17} />{settlementBusy ? "正在处理…" : settlementParsed ? "更换结算文件" : "选择结算单 CSV / Excel"}</button><input ref={settlementInputRef} type="file" hidden accept=".csv,.txt,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={chooseSettlementFile} /></div><p className="foundation-hint">银行只核对净结算额；营业收入保留交易总额，平台手续费与退款分别保存。</p>{settlementError && <div className="foundation-error"><WarningCircle size={18} />{settlementError}</div>}{settlementParsed && settlementInspection && <><div className="bank-file-summary"><span><strong>{settlementParsed.fileName}</strong><small>{settlementParsed.sheetName ? `工作表：${settlementParsed.sheetName} · ` : ""}{settlementInspection.rowCount} 行</small></span><span className={settlementInspection.missingFields.length ? "mapping-badge warning" : "mapping-badge"}>{settlementInspection.missingFields.length ? `缺 ${settlementInspection.missingFields.length} 项映射` : "结算字段已识别"}</span></div><div className="mapping-grid">{SETTLEMENT_MAPPING_FIELDS.map((field) => <label className="foundation-field" key={field}><span>{PLATFORM_SETTLEMENT_FIELD_DEFINITIONS[field].label} *</span><select value={settlementMapping[field] ?? ""} onChange={(event) => changeSettlementMapping(field, event.target.value)}><option value="">请选择列</option>{settlementInspection.headers.map((header, index) => <option value={index} key={`${field}-${index}`}>{header}</option>)}</select></label>)}</div><div className="bank-preview-scroll"><table><thead><tr><th>原始行</th>{settlementInspection.headers.slice(0, 7).map((header) => <th key={header}>{header}</th>)}</tr></thead><tbody>{settlementInspection.preview.map((row) => <tr key={row.rowNumber}><td>{row.rowNumber}</td>{row.cells.slice(0, 7).map((cell, index) => <td key={`${row.rowNumber}-${index}`}>{String(cell.value)}</td>)}</tr>)}</tbody></table></div><div className="foundation-inline-actions"><button className="secondary-button" disabled={settlementBusy} type="button" onClick={previewSettlementImport}>预检查结算构成与银行到账</button>{settlementPlan && <button className="primary-button" disabled={settlementBusy || !settlementPlan.importableRowCount || settlementPlan.errorCount > 0} type="button" onClick={applySettlementImport}>{settlementBusy ? "正在写入…" : `确认导入 ${settlementPlan.importableRowCount} 份`}</button>}</div>{settlementPlan && <div className={`import-report ${settlementPlan.anomalyCount ? "warning" : "passed"}`}><span>{settlementPlan.anomalyCount ? <WarningCircle size={19} /> : <CheckCircle size={19} weight="fill" />}</span><div><strong>可导入 {settlementPlan.importableRowCount} 份 · 已匹配到账 {settlementPlan.matchedCount} 份</strong><p>重复 {settlementPlan.duplicateCount} 份 · 异常 {settlementPlan.anomalousRowCount} 份 · 错误 {settlementPlan.errorCount} 行</p>{settlementPlan.errors.slice(0, 3).map((item) => <small key={`settlement-error-${item.rowNumber}`}>第 {item.rowNumber} 行：{item.message}</small>)}{settlementPlan.anomalies.slice(0, 5).map((item) => <small key={`${item.settlementId}-${item.code}`}>{item.settlementNo} · {item.label}：{item.message}</small>)}</div></div>}{settlementPlan && <div className="bank-preview-scroll"><table><thead><tr><th>结算日</th><th>渠道 / 单号</th><th>交易总额</th><th>手续费</th><th>退款</th><th>净结算额</th><th>银行到账</th></tr></thead><tbody>{settlementPlan.settlements.map((item) => <tr key={item.id}><td>{item.settlementDate}</td><td>{item.channelLabel} · {item.settlementNo}</td><td>{displayMoney(item.grossAmount)}</td><td>{displayMoney(item.feeAmount)}</td><td>{displayMoney(item.refundAmount)}</td><td>{displayMoney(item.netAmount)}</td><td>{item.bankTransactionId ? `已匹配 ${displayMoney(item.bankAmount)}` : item.candidateBankTransactionId ? `差异 ${displayMoney(item.amountDifference)}` : "未匹配"}</td></tr>)}</tbody></table></div>}</>}{platformSettlements.length > 0 && <><div className="bank-file-summary"><span><strong>本期已导入平台结算</strong><small>{platformSettlements.length} 份 · 数据保存在当前工作台</small></span></div><div className="bank-preview-scroll"><table><thead><tr><th>结算日</th><th>渠道 / 单号</th><th>交易总额</th><th>手续费</th><th>退款</th><th>净额</th><th>到账状态</th></tr></thead><tbody>{platformSettlements.map((item) => <tr key={item.id}><td>{item.settlementDate}</td><td>{item.channelLabel} · {item.settlementNo}</td><td>{displayMoney(item.grossAmount)}</td><td>{displayMoney(item.feeAmount)}</td><td>{displayMoney(item.refundAmount)}</td><td>{displayMoney(item.netAmount)}</td><td>{item.bankTransactionId ? "已匹配银行流水" : item.candidateBankTransactionId ? `金额差异 ${displayMoney(item.amountDifference)}` : "未匹配"}</td></tr>)}</tbody></table></div></>}</div>}
     </section>
   );
 }

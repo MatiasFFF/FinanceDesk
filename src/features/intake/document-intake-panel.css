@@ -24,6 +24,51 @@
   box-shadow: none;
 }
 
+.payroll-workspace {
+  display: flex !important;
+  flex-direction: column;
+}
+
+.payroll-workspace > * { order: 7; }
+.payroll-workspace > .payroll-next-step { order: 0; }
+.payroll-workspace > .payroll-import-heading { order: 1; }
+.payroll-workspace > .payroll-import-hint { order: 2; }
+.payroll-workspace > .payroll-import-controls { order: 3; }
+.payroll-workspace > .bank-import-workspace { order: 4; }
+.payroll-workspace > .payroll-person-review { order: 5; }
+.payroll-workspace > .payroll-accounting-summary { order: 6; }
+
+.payroll-next-step {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 13px 14px;
+  border: 1px solid rgba(217, 119, 87, 0.3);
+  border-radius: 10px;
+  background: var(--sand);
+}
+
+.payroll-next-step > span { display: grid; gap: 3px; min-width: 0; }
+.payroll-next-step strong { color: var(--espresso); font-size: var(--font-card-title, 16px); }
+.payroll-next-step small { color: var(--muted); font-size: var(--font-helper, 12px); }
+
+.document-empty-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.document-empty-action p { margin: 0; }
+
+.document-return-target:focus {
+  outline: 2px solid rgba(217, 119, 87, 0.52);
+  outline-offset: 3px;
+}
+
 .document-recognition {
   display: grid;
   gap: 10px;

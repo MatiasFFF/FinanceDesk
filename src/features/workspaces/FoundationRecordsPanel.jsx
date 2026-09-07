@@ -35,17 +35,14 @@ import {
   normalizeManagementReportConfig,
   normalizeWorkspaceTerminology,
 } from "../../domain/foundation.js";
-import { BankImportPanel } from "../intake/BankImportPanel.jsx";
-import { DocumentIntakePanel } from "../intake/DocumentIntakePanel.jsx";
 import "./foundation-ui.css";
 
 const STAGES = [
   { id: "s0", label: "企业资料" },
   { id: "s1", label: "账务规则" },
   { id: "s2", label: "往来与合同" },
-  { id: "s3", label: "银行流水" },
+  { id: "s3", label: "银行账户" },
   { id: "s4", label: "发票与人员" },
-  { id: "documents", label: "本地资料库" },
 ];
 
 const STATUS_OPTIONS = [
@@ -1468,34 +1465,17 @@ function StageStatusControl({ stage, onToast }) {
   );
 }
 
-export function FoundationRecordsPanel({ initialStage = "s0", onToast, onNavigate }) {
+export function FoundationRecordsPanel({ initialStage = "s0", onToast }) {
   const { activeWorkspace } = useFinanceDesk();
   const [stage, setStage] = useState(initialStage);
   const [visitedStages, setVisitedStages] = useState([initialStage]);
-  const [documentSection, setDocumentSection] = useState("files");
   const [pendingDeletion, setPendingDeletion] = useState(null);
-  const [navigationNotice, setNavigationNotice] = useState("");
-  const pageRef = useRef(null);
 
   useEffect(() => setPendingDeletion(null), [stage, activeWorkspace.id]);
 
   function navigateStage(nextStage) {
-    setNavigationNotice("");
     setVisitedStages((current) => current.includes(nextStage) ? current : [...current, nextStage]);
     setStage(nextStage);
-  }
-
-  function navigatePage(page) {
-    const pending = pageRef.current?.querySelector('.is-editing, [data-unsaved-changes="true"], .bank-import-file-workspace, .bank-import-panel [aria-label="取消当前结算文件"]');
-    if (pending) {
-      const pendingStage = pending.closest(".foundation-stage-panel")?.dataset.foundationStage;
-      if (pendingStage) navigateStage(pendingStage);
-      for (let details = pending.closest("details"); details; details = details.parentElement?.closest("details")) details.open = true;
-      setNavigationNotice("页面跳转尚未执行。请先完成或取消当前编辑或导入，输入内容已保留。");
-      return;
-    }
-    setNavigationNotice("");
-    onNavigate?.(page);
   }
 
   function renderStage(stageId) {
@@ -1508,7 +1488,6 @@ export function FoundationRecordsPanel({ initialStage = "s0", onToast, onNavigat
       onCancelDelete={() => setPendingDeletion(null)}
     />;
     const disclosure = (title, description, children) => <details className="foundation-disclosure"><summary><span><strong>{title}</strong><small>{description}</small></span><CaretDown size={16} /></summary><div className="foundation-disclosure-body">{children}</div></details>;
-    if (stageId === "documents") return <DocumentIntakePanel onToast={onToast} onNavigate={onNavigate ? navigatePage : undefined} activeSection={documentSection} onSectionChange={setDocumentSection} />;
     if (stageId === "s0") return <>
       <CompanyProfile onToast={onToast} onBeginEditing={() => setPendingDeletion(null)} />
       {disclosure("账套与门店", "会计制度、本位币与经营场所", <>{entityEditor("books")}{entityEditor("stores")}</>)}
@@ -1517,18 +1496,17 @@ export function FoundationRecordsPanel({ initialStage = "s0", onToast, onNavigat
     </>;
     if (stageId === "s1") return <><AccountCatalogEditor onToast={onToast} /><AccountingRuleEditor onToast={onToast} />{disclosure("管理报表显示偏好", "选择管理指标与显示名称", <ManagementReportDisplayEditor onToast={onToast} />)}</>;
     if (stageId === "s2") return <>{entityEditor("counterparties")}{entityEditor("contracts")}{entityEditor("bills")}{entityEditor("businessEvents")}</>;
-    if (stageId === "s3") return <>{entityEditor("bankAccounts")}<BankImportPanel onToast={onToast} /></>;
+    if (stageId === "s3") return entityEditor("bankAccounts");
     return <>{entityEditor("invoices")}{entityEditor("approvals")}{entityEditor("personnelRecords")}</>;
   }
 
   return (
-    <div className="page-content foundation-page" ref={pageRef}>
+    <div className="page-content foundation-page">
       <div className="foundation-navigation">
         <nav className="foundation-stage-tabs" aria-label="基础资料分组">{STAGES.map((item) => <button className={stage === item.id ? "active" : ""} aria-pressed={stage === item.id} key={item.id} type="button" onClick={() => navigateStage(item.id)}>{item.label}</button>)}</nav>
       </div>
-      {navigationNotice && <div className="foundation-notice" role="status"><WarningCircle size={18} /><span>{navigationNotice}</span></div>}
       {STAGES.filter((item) => visitedStages.includes(item.id)).map((item) => <div className="foundation-grid foundation-stage-panel" data-foundation-stage={item.id} hidden={stage !== item.id} key={item.id}>{renderStage(item.id)}</div>)}
-      {stage !== "documents" && <StageStatusControl key={stage} stage={stage} onToast={onToast} />}
+      <StageStatusControl key={stage} stage={stage} onToast={onToast} />
     </div>
   );
 }

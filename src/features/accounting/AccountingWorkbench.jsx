@@ -711,7 +711,7 @@ function AccountingLedgerPanel({ workspace, onToast }) {
   );
 }
 
-export function MemberBusinessAccountingQueue({ onToast }) {
+export function MemberBusinessAccountingQueue({ onToast, onNavigate }) {
   const { activeWorkspace, actions, state, store, fileVault } = useFinanceDesk();
   const terminology = workspaceTerminology(activeWorkspace);
   const displayText = (value) => applyWorkspaceTerminology(value, activeWorkspace);
@@ -924,19 +924,20 @@ export function MemberBusinessAccountingQueue({ onToast }) {
               </details>
             </article>
           );
-        }) : <p className="settlement-empty">本期还没有已确认的{terminology.member}业务。请先到{terminology.member}台账记录并确认业务状态。</p>}
+        }) : <div className="settlement-empty settlement-empty-action"><p>本期还没有已确认的{terminology.member}业务。</p>{onNavigate && <button className="primary-button" type="button" onClick={() => onNavigate("members")}>去{terminology.member}台账记录业务</button>}</div>}
       </div>
     </section>
   );
 }
 
-export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true, onOpenManualVoucher }) {
+export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true, onOpenManualVoucher, onNavigate }) {
   const { activeWorkspace, actions, state, store, fileVault } = useFinanceDesk();
   const terminology = workspaceTerminology(activeWorkspace);
   const displayText = (value) => applyWorkspaceTerminology(value, activeWorkspace);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(() => emptyBillForm(activeWorkspace?.currentPeriod || new Date().toISOString().slice(0, 7)));
   const [recognitionLinks, setRecognitionLinks] = useState({});
+  const [createdBillId, setCreatedBillId] = useState("");
   const [busy, setBusy] = useState(false);
   usePeriodLeaveGuard({ dirty: (showForm && JSON.stringify(form) !== JSON.stringify(emptyBillForm(activeWorkspace.currentPeriod))) || Object.values(recognitionLinks).some((item) => item.id || item.amount), busy });
   const [advanceUsage, setAdvanceUsage] = useState({});
@@ -974,6 +975,7 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true, o
     setAdvanceUsage({});
     setAdvanceVoucherNotes({});
     setRecognitionLinks({});
+    setCreatedBillId("");
     setError("");
   }, [activeWorkspace?.id, activeWorkspace?.currentPeriod]);
 
@@ -1003,10 +1005,18 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true, o
     try {
       const current = store.getActiveWorkspace();
       const next = createSettlementBill(current, { ...form, amount: Number(form.amount) }, { actor });
+      const previousIds = new Set((current.bills || []).map((bill) => bill.id));
+      const created = (next.bills || []).find((bill) => !previousIds.has(bill.id));
       actions.replaceWorkspace(current.id, next);
+      setCreatedBillId(created?.id || "");
       setForm(emptyBillForm(current.currentPeriod));
       setShowForm(false);
       onToast?.("账单已登记；请核对期初往来或原确认凭证，核销只结转应收应付");
+      if (created) window.requestAnimationFrame(() => {
+        const target = document.getElementById(`settlement-bill-${created.id}`);
+        target?.focus({ preventScroll: true });
+        target?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
     } catch (caught) {
       setError(displayText(caught.message || "账单保存失败"));
     }
@@ -1082,7 +1092,7 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true, o
 
   return (
     <>
-      {showMemberBusiness && memberBusinessEnabled(activeWorkspace) && <MemberBusinessAccountingQueue onToast={onToast} />}
+      {showMemberBusiness && memberBusinessEnabled(activeWorkspace) && <MemberBusinessAccountingQueue onToast={onToast} onNavigate={onNavigate} />}
       <section className="panel settlement-panel">
       <div className="settlement-heading">
         <div><h2>往来账单</h2><p>登记账单后核对期初或确认凭证；收付款核销只结转往来。</p></div>
@@ -1115,17 +1125,18 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true, o
           const meta = localizedBillKindMeta(bill.kind, activeWorkspace);
           const sourceCount = allocations.length + advanceApplications.length;
           const recognitionRow = recognition.rows.find((row) => row.billId === bill.id);
+          const recognitionIncomplete = !recognitionRow || recognitionRow.unrecognizedAmount > 0.01 || recognitionRow.ambiguous;
           const recognitionOptions = buildBillRecognitionOptions(activeWorkspace, bill.id);
           const selectedLink = recognitionLinks[bill.id] || { id: "", amount: "" };
           return (
-            <article className="settlement-bill-row" key={bill.id}>
+            <article className={`settlement-bill-row${createdBillId === bill.id ? " is-new" : ""}`} id={`settlement-bill-${bill.id}`} key={bill.id} tabIndex={-1}>
               <div className="settlement-bill-main"><span className="settlement-kind">{meta.label}</span><strong>{bill.no || bill.id} · {bill.counterparty}</strong><small>{bill.summary} · {bill.date} 到期 {bill.dueDate || bill.date}</small></div>
               <div className="settlement-bill-amounts"><span><small>账单金额</small><strong>¥{money(bill.amount)}</strong></span><span><small>累计核销</small><strong>¥{money(settlement.allocated)}</strong></span><span><small>{meta.balance}</small><strong>¥{money(settlement.remaining)}</strong></span></div>
+              {recognitionIncomplete && onOpenManualVoucher && <div className="settlement-bill-primary-action"><span>账面确认仍缺 {money(recognitionRow?.unrecognizedAmount ?? bill.amount)} 元</span><button className="primary-button" type="button" onClick={() => onOpenManualVoucher(bill.id)}>补确认凭证</button></div>}
               <details>
                 <summary>{sourceCount ? `${sourceCount} 条核销来源 · 查看明细` : "尚无核销来源"}</summary>
                 <p>总账已确认 ¥{money(recognitionRow?.recognizedAmount)}{recognitionRow?.openingAmount > 0 ? `（含期初 ¥${money(recognitionRow.openingAmount)}）` : ""} · 待核对 ¥{money(recognitionRow?.unrecognizedAmount)}</p>
-                {(recognitionRow?.unrecognizedAmount > 0.01 || recognitionRow?.ambiguous) && <div className="engine-form">
-                  {onOpenManualVoucher && <button className="secondary-button" type="button" onClick={() => onOpenManualVoucher(bill.id)}>按实际业务补确认凭证</button>}
+                {recognitionIncomplete && <div className="engine-form">
                   {recognitionOptions.length > 0 && <>
                     <label className="full"><span>已有确认凭证</span><select value={selectedLink.id} onChange={(event) => setRecognitionLinks((current) => ({ ...current, [bill.id]: { ...selectedLink, id: event.target.value } }))}><option value="">选择这张账单的原确认分录</option>{recognitionOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
                     <label><span>关联金额</span><input type="number" min="0.01" step="0.01" value={selectedLink.amount} onChange={(event) => setRecognitionLinks((current) => ({ ...current, [bill.id]: { ...selectedLink, amount: event.target.value } }))} /></label>
@@ -1142,7 +1153,7 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true, o
               </details>
             </article>
           );
-        }) : <p className="settlement-empty">还没有月结应收或应付账单。</p>}
+        }) : <div className="settlement-empty settlement-empty-action"><p>还没有月结应收或应付账单。</p><button className="primary-button" type="button" onClick={() => setShowForm(true)}>新增第一张账单</button></div>}
       </div>
 
       <div className="settlement-bill-list">
@@ -1236,7 +1247,7 @@ function voucherStatusLabel(status) {
   return { unprocessed: "待处理", draft: "待复核", changes_requested: "待修订", posted: "已入账", superseded: "历史版本", invalidated: "已失效" }[status] || status;
 }
 
-function WorkspaceVoucherPanel({ onToast, voucherIds, showLedger = true, title = "本期凭证", actionBlockedReason = "" }) {
+function WorkspaceVoucherPanel({ onToast, voucherIds, focusVoucherId, focusRequestNonce, showLedger = true, title = "本期凭证", actionBlockedReason = "" }) {
   const { activeWorkspace, actions, state, store, fileVault } = useFinanceDesk();
   const [filter, setFilter] = useState("current");
   const [notes, setNotes] = useState({});
@@ -1250,8 +1261,20 @@ function WorkspaceVoucherPanel({ onToast, voucherIds, showLedger = true, title =
   const pending = vouchers.filter((voucher) => ["draft", "changes_requested"].includes(voucher.status));
   const posted = vouchers.filter((voucher) => voucher.status === "posted");
   const visible = vouchers.filter((voucher) => filter === "all" || (filter === "pending" ? pending.includes(voucher) : ["posted", "draft", "changes_requested"].includes(voucher.status)));
+  const focusVoucherAvailable = Boolean(focusVoucherId && vouchers.some((voucher) => voucher.id === focusVoucherId));
 
   useEffect(() => { setNotes({}); setLineDrafts({}); setError(""); }, [activeWorkspace.id, activeWorkspace.currentPeriod]);
+  useEffect(() => {
+    if (!focusVoucherAvailable) return;
+    setFilter("all");
+    window.requestAnimationFrame(() => {
+      const target = document.getElementById(`workspace-voucher-${focusVoucherId}`);
+      if (!target) return;
+      target.open = true;
+      target.focus({ preventScroll: true });
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, [focusVoucherId, focusRequestNonce, focusVoucherAvailable, activeWorkspace.id, activeWorkspace.currentPeriod]);
 
   async function changeVoucher(voucher, action) {
     if (busy || actionBlockedReason) return;
@@ -1296,7 +1319,7 @@ function WorkspaceVoucherPanel({ onToast, voucherIds, showLedger = true, title =
         const lines = lineDrafts[voucher.id] || voucher.lines;
         const validation = validateVoucherBalance({ lines }, accountingRules(activeWorkspace).amountTolerance, draft ? activeWorkspace : null);
         const attachments = buildAttachmentPackage(activeWorkspace, voucher.id);
-        return <details className="workspace-voucher-record" key={voucher.id}>
+        return <details className={`workspace-voucher-record${focusVoucherId === voucher.id ? " is-focused" : ""}`} id={`workspace-voucher-${voucher.id}`} key={voucher.id} tabIndex={-1}>
           <summary><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>{voucher.date} · {voucher.lines?.length || 0} 行分录</small></span><b>¥{money(validation.debit)}</b><em className={draft ? "engine-badge warning" : "engine-badge"}>{voucherStatusLabel(voucher.status)}</em></summary>
           <div className="workspace-voucher-content">
             {voucher.status === "invalidated" && <p className="engine-next-note">{voucher.invalidationReason}</p>}
