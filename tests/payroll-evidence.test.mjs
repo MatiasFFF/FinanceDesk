@@ -116,28 +116,38 @@ test("工资金额、人员部门和原件版本改变时依据失效，重新�
   assert.notEqual(buildPayrollSocialEvidence(next).fingerprint, baseline);
 });
 
-test("原件异步保存期间工作台或导入任务变化会撤销新文件，不覆盖现有记录", async (t) => {
+test("原件异步保存保留工作台新修改，导入任务失效仍撤销新文件", async (t) => {
   for (const scenario of ["workspace", "job"]) await t.test(scenario, async () => {
-    let current = { id: "workspace", documents: [] };
+    let current = { id: "workspace", currentPeriod: period, documents: [] };
     let isCurrent = true;
     let replacements = 0;
     const store = {
       getState: () => ({ workspaces: [current] }),
-      actions: { replaceWorkspace: () => { replacements += 1; } },
+      actions: { replaceWorkspace: (_workspaceId, next) => { replacements += 1; current = next; } },
     };
     const fileVault = createMemoryFileVault();
     const put = fileVault.put;
     fileVault.put = async (record) => {
       await put(record);
-      if (scenario === "workspace") current = { ...current, documents: [{ id: "newer-document" }] };
+      if (scenario === "workspace") current = { ...current, company: { legalName: "保存期间的新公司名称" }, documents: [{ id: "newer-document" }] };
       else isCurrent = false;
     };
-    await assert.rejects(saveLocalDocument({
+    const saving = saveLocalDocument({
       store, fileVault, workspaceId: current.id, file: new Blob(["工资表"]),
       isCurrent: () => isCurrent,
-    }), /工作台数据或导入任务已变化/);
-    assert.equal(replacements, 0);
-    assert.equal((await fileVault.listByWorkspace(current.id)).length, 0);
-    if (scenario === "workspace") assert.deepEqual(current.documents, [{ id: "newer-document" }]);
+    });
+    if (scenario === "workspace") {
+      const saved = await saving;
+      assert.equal(replacements, 1);
+      assert.equal(current.company.legalName, "保存期间的新公司名称");
+      assert.deepEqual(current.documents, [{ id: "newer-document" }, saved]);
+      assert.equal((await fileVault.listByWorkspace(current.id)).length, 1);
+      assert.equal(await (await fileVault.get(saved.id)).blob.text(), "工资表");
+    } else {
+      await assert.rejects(saving, /资料导入任务已变化/);
+      assert.equal(replacements, 0);
+      assert.deepEqual(current.documents, []);
+      assert.equal((await fileVault.listByWorkspace(current.id)).length, 0);
+    }
   });
 });

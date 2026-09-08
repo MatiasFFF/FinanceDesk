@@ -1,6 +1,6 @@
 import { createId } from "../../domain/foundation.js";
 import { exportBackupJson, importBackupJson } from "../../storage/localFoundationRepository.js";
-import { hashLocalFile } from "../intake/documentIntake.js";
+import { hashLocalFile, pruneUnreferencedLocalFiles, refreshLocalFileAvailability } from "../intake/documentIntake.js";
 
 const FORMAT = "financedesk-full-backup";
 const VERSION = 1;
@@ -56,6 +56,7 @@ export async function restoreWorkspaceBackup({ store, fileVault, file, mode = "m
   if (!fileVault) throw new Error("当前浏览器无法保存备份原件");
   if (!["merge", "replace"].includes(mode)) throw new Error("请选择有效的导入方式");
   const initialState = store.getState();
+  const preserveExistingFiles = store.getPersistenceStatus().status === "recovery_required";
   const { default: JSZip } = await import("jszip");
   const zip = await JSZip.loadAsync(await file.arrayBuffer(), { checkCRC32: true });
   const manifestFile = zip.file("manifest.json");
@@ -90,7 +91,7 @@ export async function restoreWorkspaceBackup({ store, fileVault, file, mode = "m
   }
   const missing = targets.reduce((total, workspace) => total + (workspace.documents || []).length, 0) - prepared.length;
   if (manifest.complete && missing) throw new Error("备份标为完整，但有资料没有对应原件");
-  const previousFiles = mode === "replace"
+  const previousFiles = mode === "replace" && !preserveExistingFiles
     ? (await Promise.all(initialState.workspaces.map((workspace) => fileVault.listByWorkspace(workspace.id)))).flat()
     : [];
   const staged = [];
@@ -112,5 +113,25 @@ export async function restoreWorkspaceBackup({ store, fileVault, file, mode = "m
   for (const record of previousFiles) {
     try { await fileVault.delete(record.id); } catch { retainedOldFiles += 1; }
   }
-  return { restored: prepared.length, missing, workspaces: targets.length, retainedOldFiles };
+  return { restored: prepared.length, missing, workspaces: targets.length, retainedOldFiles, preserveExistingFiles };
+}
+
+export async function restoreWorkspaceJsonBackup({ store, fileVault, text, mode = "merge", actor = "本地用户" }) {
+  const preserveExistingFiles = store.getPersistenceStatus().status === "recovery_required";
+  const previousWorkspaceIds = new Set(store.getState().workspaces.map((workspace) => workspace.id));
+  store.actions.importBackup(text, { mode });
+  if (mode === "replace" && fileVault && !preserveExistingFiles) {
+    const nextIds = new Set(store.getState().workspaces.map((workspace) => workspace.id));
+    for (const workspaceId of previousWorkspaceIds) if (!nextIds.has(workspaceId)) await fileVault.clearWorkspace(workspaceId);
+  }
+  const availability = await refreshLocalFileAvailability({ store, fileVault });
+  const cleanup = preserveExistingFiles ? { removed: 0 } : await pruneUnreferencedLocalFiles({ store, fileVault });
+  const current = store.getActiveWorkspace();
+  store.actions.replaceWorkspace(current.id, current, {
+    allowArchivedTransition: true, requiredPermission: "workspace.manage",
+    audit: { actor, action: "导入工作台备份",
+      detail: `${mode === "merge" ? "合并" : "替换"}导入；${availability.available} 份原文件仍可用，${availability.repaired} 份旧副本已隔离，${availability.missing} 份需重新关联，${preserveExistingFiles ? "无法读取的旧账本原件全部保留" : `清理 ${cleanup.removed} 份孤立文件`}`,
+    },
+  });
+  return { ...availability, cleanup, preserveExistingFiles };
 }

@@ -3,6 +3,7 @@ import {
   activeWorkspaceUser,
   assertWorkspacePermission,
   clearWorkspace,
+  createId,
   deleteWorkspace,
   getWorkspace,
   linkEvidence,
@@ -22,7 +23,7 @@ import { createLocalFoundationRepository, exportBackupJson, importBackupJson } f
 import { confirmationWritePermissions } from "../domain/confirmationPermissions.js";
 import { applyBankImport } from "../features/intake/bankStatementImport.js";
 import { enterAccountingPeriod, recordInitialConfirmationSection, recordFinalConfirmation } from "../productWorkflow.js";
-import { activateWorkspacePeriod } from "../domain/periods.js";
+import { activateWorkspacePeriod, isPeriodArchived } from "../domain/periods.js";
 
 export function createFinanceDeskStore(options = {}) {
   const repository = options.repository || createLocalFoundationRepository(options.repositoryOptions);
@@ -34,14 +35,14 @@ export function createFinanceDeskStore(options = {}) {
     listeners.forEach((listener) => listener(state));
   }
 
-  function commit(nextState) {
-    repository.assertCanWrite?.();
-    for (const next of nextState.workspaces) {
+  function commit(nextState, { restoring = false } = {}) {
+    if (!restoring) repository.assertCanWrite?.();
+    for (const next of restoring ? [] : nextState.workspaces) {
       const previous = state.workspaces.find((workspace) => workspace.id === next.id);
       if (!previous) continue;
       for (const permission of confirmationWritePermissions(previous, next)) assertWorkspaceAccess(previous.id, permission);
     }
-    state = repository.save(nextState);
+    state = restoring ? repository.restore(nextState) : repository.save(nextState);
     emit();
     return state;
   }
@@ -54,8 +55,8 @@ export function createFinanceDeskStore(options = {}) {
   function assertActivePeriodWritable(workspaceId, actionOptions = {}) {
     if (actionOptions.allowArchivedTransition) return;
     const workspace = getWorkspace(state, workspaceId);
-    const archived = workspace?.delivery?.archives?.some((item) => item.period === workspace.currentPeriod);
-    if (archived || workspace?.delivery?.filing?.archivedAt) {
+    if (!workspace) throw new Error(`找不到工作台：${workspaceId}`);
+    if (isPeriodArchived(workspace, actionOptions.period || workspace.currentPeriod)) {
       throw new Error("当前账期已经归档，只能查看；如需继续，请先进入下一期，历史更正需走新的更正版流程");
     }
   }
@@ -70,11 +71,19 @@ export function createFinanceDeskStore(options = {}) {
   function assertWorkspaceAccess(workspaceId, permission) {
     const workspace = getWorkspace(state, workspaceId);
     if (workspace && !workspace.localUsersConfigured && !workspace.users?.length) return null;
-    return assertWorkspacePermission(state, workspaceId, permission);
+    return assertWorkspacePermission(identityState(workspaceId), workspaceId, permission);
+  }
+
+  // Identity comes from the local host, never from operation parameters or an
+  // audit display name. Other workspaces need an explicitly resolved local user.
+  function identityState(workspaceId) {
+    return options.resolveWorkspaceUserId
+      ? { ...state, activeUserId: options.resolveWorkspaceUserId(workspaceId, state) }
+      : state;
   }
 
   function withActor(workspaceId, actionOptions = {}) {
-    const actor = activeWorkspaceUser(state, workspaceId)?.name || "本地用户";
+    const actor = activeWorkspaceUser(identityState(workspaceId), workspaceId)?.name || "本地用户";
     return {
       ...actionOptions,
       actor: actionOptions.actor || actor,
@@ -204,10 +213,31 @@ export function createFinanceDeskStore(options = {}) {
     },
     applyBankImport(workspaceId, plan, actionOptions) {
       assertWorkspaceAccess(workspaceId, "data.write");
-      assertActivePeriodWritable(workspaceId, actionOptions);
+      assertActivePeriodWritable(workspaceId, { period: plan.period });
       const resolved = withActor(workspaceId, actionOptions);
-      const imported = applyBankImport(state, workspaceId, plan, resolved);
-      return commit(updateWorkspace(imported, workspaceId, (workspace) => enterAccountingPeriod(workspace, plan.period, resolved.actor), null, resolved));
+      const displayPeriod = getWorkspace(state, workspaceId).currentPeriod;
+      let base = state;
+      if (plan.sourceDocumentId) {
+        assertWorkspaceAccess(workspaceId, "documents.add");
+        const source = getWorkspace(state, workspaceId).documents.find((item) => item.id === plan.sourceDocumentId);
+        if (!source || source.hash !== plan.fileHash || source.period !== plan.period
+          || !source.storage?.availableLocally || !source.storage?.blobId) throw new Error("银行流水原件已变化，请重新选择文件");
+        base = updateWorkspace(state, workspaceId, (workspace) => ({
+          ...workspace,
+          documents: workspace.documents.map((document) => document.id === source.id ? {
+            ...document, relatedObjectIds: [...new Set([...(document.relatedObjectIds || []), plan.accountId])],
+          } : document),
+          evidenceLinks: [...workspace.evidenceLinks, {
+            id: createId("evidence-link"), documentIds: [source.id], objectIds: [plan.accountId],
+            relation: "bank-statement-source", note: `银行导入 ${plan.id} 的原始文件`, status: "active",
+            createdAt: plan.importedAt, updatedAt: plan.importedAt,
+          }],
+        }), null, resolved);
+      }
+      const imported = applyBankImport(base, workspaceId, plan, resolved);
+      return commit(updateWorkspace(imported, workspaceId, (workspace) => activateWorkspacePeriod(
+        enterAccountingPeriod(workspace, plan.period, resolved.actor), displayPeriod,
+      ), null, resolved));
     },
     exportBackup(exportOptions) {
       assertWorkspaceAccess(state.activeWorkspaceId, "data.read");
@@ -215,7 +245,9 @@ export function createFinanceDeskStore(options = {}) {
     },
     importBackup(text, importOptions = {}) {
       assertWorkspaceAccess(state.activeWorkspaceId, "workspace.manage");
-      return commit(importBackupJson(text, { ...importOptions, currentState: state }));
+      const restoring = repository.getPersistenceStatus?.().status === "recovery_required";
+      if (restoring && importOptions.mode !== "replace") throw new Error("本地数据无法读取，请使用有效备份替换恢复，不能合并初始模板");
+      return commit(importBackupJson(text, { ...importOptions, currentState: state }), { restoring });
     },
   };
 
@@ -223,6 +255,13 @@ export function createFinanceDeskStore(options = {}) {
     getState: () => state,
     getActiveWorkspace: () => getWorkspace(state),
     getLoadReport: () => ({ ...loaded, state: undefined }),
+    assertWorkspaceAccess,
+    assertWorkspaceWritable(workspaceId, period, permission = "data.write") {
+      const user = assertWorkspaceAccess(workspaceId, permission);
+      assertActivePeriodWritable(workspaceId, { period });
+      repository.assertCanWrite?.();
+      return user;
+    },
     getPersistenceStatus: repository.getPersistenceStatus || (() => READY_PERSISTENCE_STATUS),
     subscribePersistence: repository.subscribePersistence || (() => () => {}),
     startPersistenceSession: repository.startSession || (() => () => {}),

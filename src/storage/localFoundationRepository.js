@@ -4,6 +4,7 @@ import {
   FINANCE_DESK_STORAGE_KEY,
   LEGACY_STORAGE_KEYS,
   assertValidState,
+  createId,
   createInitialState,
   deepClone,
   migrateState,
@@ -109,6 +110,7 @@ export function createLocalFoundationRepository(options = {}) {
   const eventTarget = options.eventTarget || (browserStorage ? window : null);
   let baseline = storage.getItem(key);
   let pendingInitialState = null;
+  let recoveryRequired = false;
   let session = null;
   const persistenceListeners = new Set();
   const messages = {
@@ -116,6 +118,7 @@ export function createLocalFoundationRepository(options = {}) {
     stale: "其他 FinanceDesk 窗口已保存新内容，本页已暂停保存。尚未保存的输入仍保留在本页；请先复制这些输入，再到最新打开的工作台窗口继续。",
     unsupported: "当前环境暂时无法安全保存。本页输入会保留；请先复制未保存内容，再用支持本地保存的现代浏览器打开工作台。",
     closed: "本页保存已暂停，尚未保存的输入仍保留。请先保留输入，再重新打开工作台继续。",
+    recovery_required: "本地账本无法读取，原始内容已保留，当前模板仅供查看，保存已暂停。请在备份入口选择有效备份并替换恢复；恢复前会另存无法读取的原文。",
   };
   let persistenceStatus = Object.freeze({ canWrite: !requiresSession, status: requiresSession ? "waiting" : "ready", message: requiresSession ? messages.waiting : "" });
 
@@ -141,7 +144,7 @@ export function createLocalFoundationRepository(options = {}) {
     assertUnchanged();
     if (!persistenceStatus.canWrite) {
       const error = new Error(persistenceStatus.message);
-      error.code = "LOCAL_SAVE_PAUSED";
+      error.code = recoveryRequired ? "LOCAL_RECOVERY_REQUIRED" : "LOCAL_SAVE_PAUSED";
       throw error;
     }
   }
@@ -184,7 +187,7 @@ export function createLocalFoundationRepository(options = {}) {
       assertUnchanged();
       if (pendingInitialState) writeState(pendingInitialState);
       const held = new Promise((resolve) => { current.release = resolve; });
-      setPersistenceStatus("ready");
+      setPersistenceStatus(recoveryRequired ? "recovery_required" : "ready");
       await held;
     }));
     request.catch((error) => {
@@ -212,33 +215,36 @@ export function createLocalFoundationRepository(options = {}) {
 
   function load() {
     const primary = storage.getItem(key);
+    const backup = storage.getItem(backupKey);
     baseline = primary;
     pendingInitialState = null;
+    recoveryRequired = false;
     function initialCopy(state) {
       if (requiresSession && !persistenceStatus.canWrite) pendingInitialState = state;
       else writeState(state);
     }
-    if (primary) {
+    const errors = [];
+    if (primary != null) {
       try {
         const state = parseStoredState(primary, migrationOptions());
         return { state, source: "primary", recovered: false, errors: [] };
       } catch (error) {
-        const backup = storage.getItem(backupKey);
-        if (backup) {
-          try {
-            const state = parseStoredState(backup, migrationOptions());
-            initialCopy(state);
-            return { state, source: "backup", recovered: true, errors: [error.message] };
-          } catch (backupError) {
-            const state = createInitialState(migrationOptions());
-            initialCopy(state);
-            return { state, source: "seed", recovered: true, errors: [error.message, backupError.message] };
-          }
-        }
-        const state = createInitialState(migrationOptions());
-        initialCopy(state);
-        return { state, source: "seed", recovered: true, errors: [error.message] };
+        errors.push(error.message);
       }
+    }
+    if (backup != null) {
+      try {
+        const state = parseStoredState(backup, migrationOptions());
+        initialCopy(state);
+        return { state, source: "backup", recovered: true, errors };
+      } catch (error) {
+        errors.push(error.message);
+      }
+    }
+    if (errors.length) {
+      recoveryRequired = true;
+      setPersistenceStatus("recovery_required");
+      return { state: createInitialState(migrationOptions()), source: "unreadable", recovered: false, recoveryRequired: true, errors };
     }
 
     for (const legacyKey of LEGACY_STORAGE_KEYS) {
@@ -259,6 +265,25 @@ export function createLocalFoundationRepository(options = {}) {
     return { state, source: "seed", recovered: false, errors: [] };
   }
 
+  function restore(state) {
+    if (!recoveryRequired) return save(state);
+    assertUnchanged();
+    if (requiresSession && !session?.release) throw new Error(messages.waiting);
+    const valid = assertValidState(migrateState(state, migrationOptions()));
+    // This explicit restore is the only path that may replace unreadable data.
+    // Save both original strings first; a failed rescue write leaves them intact.
+    const recoveryKey = `${key}.unreadable.${createId("recovery")}`;
+    const originals = JSON.stringify({ savedAt: clock().toISOString(), entries: {
+      [key]: storage.getItem(key), [backupKey]: storage.getItem(backupKey),
+    } });
+    storage.setItem(recoveryKey, originals);
+    if (storage.getItem(recoveryKey) !== originals) throw new Error("无法保存损坏原文，恢复已停止，原数据未替换");
+    writeState(valid);
+    recoveryRequired = false;
+    setPersistenceStatus("ready");
+    return deepClone(valid);
+  }
+
   function clearPrimary() {
     assertCanWrite();
     storage.removeItem(key);
@@ -276,7 +301,7 @@ export function createLocalFoundationRepository(options = {}) {
   }
 
   return {
-    key, backupKey, load, save, clearPrimary, clearAllLocalCopies, startSession, assertCanWrite,
+    key, backupKey, load, save, restore, clearPrimary, clearAllLocalCopies, startSession, assertCanWrite,
     getPersistenceStatus: () => persistenceStatus,
     subscribePersistence(listener) {
       persistenceListeners.add(listener);

@@ -15,8 +15,8 @@ import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
 import { BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS } from "../../domain/foundation.js";
 import { localAccountingPeriod } from "../../domain/periods.js";
 import { WORKSPACE_MODULE_OPTIONS, defaultWorkspaceModules } from "../../productWorkflow.js";
-import { copyWorkspaceLocalFiles, pruneUnreferencedLocalFiles, refreshLocalFileAvailability } from "../intake/documentIntake.js";
-import { generateWorkspaceBackup, restoreWorkspaceBackup } from "./workspaceBackup.js";
+import { copyWorkspaceLocalFiles } from "../intake/documentIntake.js";
+import { generateWorkspaceBackup, restoreWorkspaceBackup, restoreWorkspaceJsonBackup } from "./workspaceBackup.js";
 import "./foundation-ui.css";
 
 const DEFAULT_TERMINOLOGY = Object.freeze({
@@ -319,26 +319,7 @@ export function WorkspaceManager({ open, onClose, onToast }) {
         return;
       }
       const text = await file.text();
-      const previousWorkspaceIds = new Set(store.getState().workspaces.map((workspace) => workspace.id));
-      actions.importBackup(text, { mode });
-      if (mode === "replace" && fileVault) {
-        const nextIds = new Set(store.getState().workspaces.map((workspace) => workspace.id));
-        for (const workspaceId of previousWorkspaceIds) {
-          if (!nextIds.has(workspaceId)) await fileVault.clearWorkspace(workspaceId);
-        }
-      }
-      const availability = await refreshLocalFileAvailability({ store, fileVault });
-      const cleanup = await pruneUnreferencedLocalFiles({ store, fileVault });
-      const current = store.getActiveWorkspace();
-      actions.replaceWorkspace(current.id, current, {
-        allowArchivedTransition: true,
-        requiredPermission: "workspace.manage",
-        audit: {
-          actor: currentActorName(),
-          action: "导入工作台备份",
-          detail: `${mode === "merge" ? "合并" : "替换"}导入；${availability.available} 份原文件仍可用，${availability.repaired} 份旧副本已隔离，${availability.missing} 份需重新关联，清理 ${cleanup.removed} 份孤立文件`,
-        },
-      });
+      const availability = await restoreWorkspaceJsonBackup({ store, fileVault, text, mode, actor: currentActorName() });
       onToast?.(`${mode === "merge" ? "备份已合并" : "本地数据已替换"}；${availability.missing ? `${availability.missing} 份原文件需重新关联` : "本地原文件状态已核对"}`);
     } catch (caught) {
       setError(caught.message || "备份导入失败");

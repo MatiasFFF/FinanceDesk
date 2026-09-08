@@ -2532,26 +2532,33 @@ export async function saveLocalDocument(input) {
   const actor = input.metadata?.actor
     || current.users?.find((user) => user.id === store.getState().activeUserId && user.status === "active")?.name
     || "本地用户";
+  const targetPeriod = input.metadata?.period || current.currentPeriod;
+  store.assertWorkspaceWritable?.(workspaceId, targetPeriod, "documents.add");
   const metadata = await createDocumentMetadata(file, { ...(input.metadata || {}), actor });
-  const allowedIds = linkableObjectIds(current);
-  const invalidIds = metadata.relatedObjectIds.filter((objectId) => !allowedIds.has(objectId));
-  if (invalidIds.length) throw new Error(`关联对象不属于当前工作台：${invalidIds.join("、")}`);
-  assertUniqueInvoiceNumber(current, metadata);
-  await fileVault.put({
-    id: metadata.id,
-    workspaceId,
-    name: metadata.name,
-    mimeType: metadata.mimeType,
-    size: metadata.size,
-    hash: metadata.hash,
-    blob: file,
-    createdAt: metadata.createdAt,
-  });
+  function latestTarget() {
+    const workspace = store.getState().workspaces.find((item) => item.id === workspaceId);
+    if (!workspace) throw new Error("找不到资料所属工作台");
+    if (input.isCurrent && !input.isCurrent()) throw new Error("资料导入任务已变化，请重新选择文件");
+    store.assertWorkspaceWritable?.(workspaceId, targetPeriod, "documents.add");
+    const allowedIds = linkableObjectIds(workspace);
+    const invalidIds = metadata.relatedObjectIds.filter((objectId) => !allowedIds.has(objectId));
+    if (invalidIds.length) throw new Error(`关联对象不属于当前工作台：${invalidIds.join("、")}`);
+    assertUniqueInvoiceNumber(workspace, metadata);
+    return workspace;
+  }
+  latestTarget();
   try {
-    if ((input.isCurrent && !input.isCurrent())
-      || store.getState().workspaces.find((workspace) => workspace.id === workspaceId) !== current) {
-      throw new Error("资料保存期间工作台数据或导入任务已变化，请重新选择文件");
-    }
+    await fileVault.put({
+      id: metadata.id,
+      workspaceId,
+      name: metadata.name,
+      mimeType: metadata.mimeType,
+      size: metadata.size,
+      hash: metadata.hash,
+      blob: file,
+      createdAt: metadata.createdAt,
+    });
+    const current = latestTarget();
     let next = {
       ...current,
       documents: [...(current.documents || []), metadata],
@@ -2585,6 +2592,7 @@ export async function saveLocalDocument(input) {
     }
     store.actions.replaceWorkspace(workspaceId, next, {
       requiredPermission: "documents.add",
+      period: targetPeriod,
       audit: {
         actor,
         action: "添加本地资料",
@@ -2593,7 +2601,11 @@ export async function saveLocalDocument(input) {
     });
     return metadata;
   } catch (error) {
-    await fileVault.delete(metadata.id);
+    const saved = store.getState().workspaces.some((workspace) => workspace.documents?.some((document) => document.storage?.blobId === metadata.id));
+    if (!saved) {
+      try { await fileVault.delete(metadata.id); }
+      catch (cleanupError) { error.cleanup = { documentId: metadata.id, message: cleanupError.message }; }
+    }
     throw error;
   }
 }
@@ -2947,22 +2959,41 @@ export async function removeLocalDocument(input) {
   const actor = input.actor
     || workspace.users?.find((user) => user.id === store.getState().activeUserId && user.status === "active")?.name
     || "本地用户";
-  const usage = getLocalDocumentUsage(workspace, documentId);
-  if (usage.length) throw new Error(`该资料正在使用，不能删除：${usage.map((item) => item.label).join("、")}；请先解除普通业务关联，凭证或归档引用需通过更正／新版本处理`);
+  const targetPeriod = document.period || workspace.currentPeriod;
+  const original = JSON.stringify(document);
+  function latestTarget() {
+    const latest = store.getState().workspaces.find((item) => item.id === workspaceId);
+    const target = latest?.documents?.find((item) => item.id === documentId);
+    if (!target) throw new Error("要删除的资料或所属工作台已不存在");
+    if (JSON.stringify(target) !== original) throw new Error("删除期间资料已变化，请重新核对后删除");
+    const usage = getLocalDocumentUsage(latest, documentId);
+    if (usage.length) throw new Error(`该资料正在使用，不能删除：${usage.map((item) => item.label).join("、")}；请先解除普通业务关联，凭证或归档引用需通过更正／新版本处理`);
+    store.assertWorkspaceWritable?.(workspaceId, targetPeriod, "documents.add");
+    return latest;
+  }
+  latestTarget();
   if (document.storage?.availableLocally && !fileVault) throw new Error("当前浏览器无法访问本地文件保险箱，不能安全删除原文件");
   const blobId = document?.storage?.blobId || (document?.storage?.mode === "indexeddb" ? null : documentId);
   const ownedRecord = blobId && fileVault
-    ? await (fileVault.getOwned?.(blobId, workspaceId, document.hash) || fileVault.get(blobId).then((record) => record?.workspaceId === workspaceId ? record : null))
+    ? await (fileVault.getOwned?.(blobId, workspaceId, document.hash) || fileVault.get(blobId).then((record) => record?.workspaceId === workspaceId && (!document.hash || record.hash === document.hash) ? record : null))
     : null;
-  const next = {
-    ...workspace,
-    documents: workspace.documents.filter((item) => item.id !== documentId),
-    evidenceLinks: (workspace.evidenceLinks || []).filter((link) => !link.documentIds?.includes(documentId)),
-  };
-  if (ownedRecord) await fileVault.delete(blobId);
+  latestTarget();
+  const sharedBlob = () => store.getState().workspaces.some((item) => item.documents?.some((candidate) => (
+    (item.id !== workspaceId || candidate.id !== documentId) && candidate.storage?.blobId === blobId
+  )));
+  const deleteBlob = ownedRecord && !sharedBlob();
   try {
+    if (deleteBlob) await fileVault.delete(blobId);
+    const latest = latestTarget();
+    if (deleteBlob && sharedBlob()) throw new Error("删除期间原件新增引用，请重新核对后删除");
+    const next = {
+      ...latest,
+      documents: latest.documents.filter((item) => item.id !== documentId),
+      evidenceLinks: (latest.evidenceLinks || []).filter((link) => !link.documentIds?.includes(documentId)),
+    };
     store.actions.replaceWorkspace(workspaceId, next, {
       requiredPermission: "documents.add",
+      period: targetPeriod,
       audit: {
         actor,
         action: "删除本地资料",
@@ -2970,7 +3001,14 @@ export async function removeLocalDocument(input) {
       },
     });
   } catch (error) {
-    if (ownedRecord) await fileVault.put(ownedRecord);
+    if (deleteBlob) {
+      try {
+        // A concurrent relink/restore may already have written a newer record.
+        // Restore only a missing original, never overwrite that newer file.
+        if (!await fileVault.get(blobId)) await fileVault.put(ownedRecord);
+      }
+      catch (restoreError) { error.cleanup = { documentId, message: `原件恢复失败：${restoreError.message}` }; }
+    }
     throw error;
   }
 }

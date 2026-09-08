@@ -6,6 +6,7 @@ import { CheckCircle, DownloadSimple, FileArrowUp, Table, WarningCircle, X } fro
 
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
 import { normalizeWorkspaceTerminology } from "../../domain/foundation.js";
+import { createFinanceDeskService } from "../../application/financeDeskService.js";
 import {
   BANK_FIELD_DEFINITIONS,
   PLATFORM_SETTLEMENT_CHANNELS,
@@ -15,9 +16,7 @@ import {
   buildBankMonthlyReconciliation,
   inspectBankTable,
   inspectPlatformSettlementTable,
-  prepareBankImport,
   preparePlatformSettlementImport,
-  readBankFile,
   readPlatformSettlementFile,
   reconcileBankAccountPeriod,
 } from "./bankStatementImport.js";
@@ -65,6 +64,7 @@ function displayAccountIdentity(account) {
 
 export function BankImportPanel({ compact = false, onToast, onComplete, onRequestAccountSetup, onDraftStateChange }) {
   const { activeWorkspace, actions, store, fileVault } = useFinanceDesk();
+  const bankService = useMemo(() => createFinanceDeskService({ store, fileVault }), [store, fileVault]);
   const terminology = useMemo(() => normalizeWorkspaceTerminology(activeWorkspace.terminology), [activeWorkspace.terminology]);
   const inputRef = useRef(null);
   const settlementInputRef = useRef(null);
@@ -93,6 +93,9 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
   const [settlementBusy, setSettlementBusy] = useState(false);
   const [settlementError, setSettlementError] = useState("");
   const [settlementNotice, setSettlementNotice] = useState("");
+  useEffect(() => () => bankService.dispose(), [bankService]);
+  useEffect(() => () => { if (parsed?.fileRef) bankService.releaseBankFile(parsed.fileRef); }, [bankService, parsed?.fileRef]);
+  useEffect(() => () => { if (plan?.planId) bankService.releaseBankPlan(plan.planId); }, [bankService, plan?.planId]);
   const firstAccountId = activeWorkspace.bankAccounts[0]?.id || "";
   const bankDraftGuardId = usePeriodLeaveGuard({ dirty: Boolean(parsed) });
   const settlementDraftGuardId = usePeriodLeaveGuard({ dirty: Boolean(settlementParsed) });
@@ -277,29 +280,25 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
     setPlan(null);
     setCompletedImport(null);
     try {
-      const result = await readBankFile(file, {
+      const result = await bankService.registerBankFile(file, {
+        workspaceId: activeWorkspace.id,
         signal: controller.signal,
-        computeHash: true,
         onProgress: (progress) => setBankReadProgress({ ...progress, fileName: file.name }),
       });
       if (controller.signal.aborted) throw Object.assign(new Error("已取消读取银行流水文件"), { name: "AbortError" });
-      const fileHash = result.fileHash;
-      if (controller.signal.aborted) throw Object.assign(new Error("已取消读取银行流水文件"), { name: "AbortError" });
       setBankReadProgress({ phase: "prechecking", percent: null, fileName: file.name });
-      const nextParsed = { ...result, fileHash, file };
+      const nextParsed = result;
       const nextMapping = result.inspection.mapping;
       setParsed(nextParsed);
       setMapping(nextMapping);
       setCounterpartyMappings({});
       setCounterpartyMappingDirty(false);
       try {
-        const nextPlan = prepareBankImport(activeWorkspace, {
+        const nextPlan = bankService.prepareBankImport({
+          workspaceId: activeWorkspace.id,
+          fileRef: result.fileRef,
           accountId,
           period,
-          fileName: result.fileName,
-          fileHash,
-          sheetName: result.sheetName,
-          table: result.table,
           mapping: nextMapping,
           openingBalance,
           statementClosing,
@@ -359,13 +358,11 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
     try {
       const incompleteManual = Object.values(counterpartyMappings).find((item) => item.targetKey === "manual" && !item.standardName?.trim());
       if (incompleteManual) throw new Error(`请填写「${incompleteManual.rawName || incompleteManual.counterpartyAccount}」的手工标准名称`);
-      const nextPlan = prepareBankImport(activeWorkspace, {
+      const nextPlan = bankService.prepareBankImport({
+        workspaceId: activeWorkspace.id,
+        fileRef: parsed.fileRef,
         accountId,
         period,
-        fileName: parsed.fileName,
-        fileHash: parsed.fileHash,
-        sheetName: parsed.sheetName,
-        table: parsed.table,
         mapping,
         openingBalance,
         statementClosing,
@@ -389,86 +386,40 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
   async function applyImport() {
     if (applyingRef.current || !plan || !parsed) return;
     setError("");
-    let sourceDocument = null;
-    let committed = false;
     let completedPlan = null;
+    let completedResult = null;
     const workspaceId = activeWorkspace.id;
     try {
-      if (!fileVault) throw new Error("当前浏览器无法保存银行流水原文件，请更换支持 IndexedDB 的浏览器");
-      const latestState = store.getState();
-      const latestWorkspace = latestState.workspaces.find((workspace) => workspace.id === workspaceId);
+      const latestWorkspace = store.getState().workspaces.find((workspace) => workspace.id === workspaceId);
       if (!latestWorkspace) throw new Error("当前工作台已不存在，请重新选择工作台");
-      const actor = latestWorkspace.users?.find((user) => (
-        user.id === latestState.activeUserId && user.status === "active"
-      ))?.name?.trim() || latestWorkspace.users?.find((user) => user.status === "active")?.name?.trim() || "本地用户";
-      const refreshedPlan = prepareBankImport(latestWorkspace, {
-        accountId,
-        period,
-        fileName: parsed.fileName,
-        fileHash: parsed.fileHash,
-        sheetName: parsed.sheetName,
-        table: parsed.table,
-        mapping,
-        openingBalance,
-        statementClosing,
-        importedAt: plan.importedAt,
-        importId: plan.id,
-        largeTransactionThreshold: plan.largeTransactionThreshold,
-        counterpartyMappings,
-      });
-      if (refreshedPlan.errorCount > 0) throw new Error(`文件仍有 ${refreshedPlan.errorCount} 行错误，请修正后重新预检查`);
-      if (!refreshedPlan.importableRowCount) throw new Error("没有可导入的新流水，全部为重复记录");
-      if (refreshedPlan.period !== latestWorkspace.currentPeriod
+      if (plan.period !== latestWorkspace.currentPeriod
         && !allowPeriodNavigation({ ignoreDirtyGuardId: bankDraftGuardId })) return;
       applyingRef.current = true;
       setBusy(true);
-      sourceDocument = await saveLocalDocument({
-        store,
-        fileVault,
-        workspaceId,
-        file: parsed.file,
-        metadata: {
-          category: "银行流水",
-          period: refreshedPlan.period,
-          relatedObjectIds: [refreshedPlan.accountId],
-          actor,
-        },
-        relation: "bank-statement-source",
-        note: `银行导入 ${refreshedPlan.id} 的原始文件`,
-      });
-      const finalPlan = {
-        ...refreshedPlan,
-        sourceDocumentId: sourceDocument.id,
-        transactions: refreshedPlan.transactions.map((transaction) => ({
-          ...transaction,
-          evidenceIds: [...new Set([...(transaction.evidenceIds || []), sourceDocument.id])],
-        })),
-      };
-      const nextState = actions.applyBankImport(workspaceId, finalPlan, { actor });
-      committed = true;
-      const importedWorkspace = nextState.workspaces.find((workspace) => workspace.id === workspaceId);
-      const record = importedWorkspace?.bankImports?.find((item) => item.id === finalPlan.id);
-      completedPlan = { ...finalPlan, ...(record || {}), transactions: finalPlan.transactions };
+      const result = await bankService.executeBankImport({ workspaceId, planId: plan.planId });
+      completedResult = result;
+      completedPlan = result.import;
+      // The service leaves the displayed month alone. This page owns the same
+      // post-import navigation as before, after its unsaved-input guard passed.
+      if (store.getState().activeWorkspaceId === workspaceId
+        && store.getActiveWorkspace().currentPeriod !== result.period) actions.setPeriod(workspaceId, result.period);
       setCompletedImport(completedPlan);
       setParsed(null);
       setPlan(null);
       setCounterpartyMappings({});
       setCounterpartyMappingDirty(false);
     } catch (caught) {
-      if (sourceDocument && !committed) {
-        try {
-          await removeLocalDocument({ store, fileVault, workspaceId, documentId: sourceDocument.id });
-        } catch {
-          // Keep the original import error; any local residue remains visible in the documents list.
-        }
-      }
       setNotice("");
-      setError(caught.message || "导入失败");
+      setError([caught.message || "导入失败", caught.cleanup?.message].filter(Boolean).join("；"));
     } finally {
       applyingRef.current = false;
       setBusy(false);
     }
-    if (completedPlan) {
+    if (completedResult?.status === "duplicate" || completedResult?.status === "already_imported") {
+      const message = "这些流水已保存，本次没有重复导入";
+      setNotice(message);
+      onToast?.(message);
+    } else if (completedPlan) {
       const recognitionText = completedPlan.recognitionCount ? `，自动识别 ${completedPlan.recognitionCount} 项` : "";
       const anomalyText = completedPlan.anomalyCount ? `，形成 ${completedPlan.anomalyCount} 项异常待复核` : "";
       const reconciliationText = completedPlan.monthlyReconciliation?.passed === false
