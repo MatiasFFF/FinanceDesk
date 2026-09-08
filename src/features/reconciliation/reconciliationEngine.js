@@ -19,6 +19,7 @@ import {
   transactionUnallocatedAmount,
 } from "../../domain/accounting/model.js";
 import { settlementBillIsEffective, settlementRecordIsEffective, settlementTransactionIsEffective, settlementPeriodEnd } from "./settlementRecognition.js";
+import { assertBillWrite } from "../../domain/accounting/billWriteRules.js";
 import {
   applyManualClassification,
   classifyBankTransaction,
@@ -34,6 +35,7 @@ import {
 } from "../evidence/evidenceEngine.js";
 import {
   assertAccountingPeriodWritable,
+  cancelVoucherDraft,
   buildReconciliationCorrectionLines,
   createPostedVoucherRevision,
   invalidateReconciliationDrafts,
@@ -392,6 +394,7 @@ export function createSettlementBill(workspace, input, context = {}) {
     createdAt: resolvedContext.at,
     createdBy: resolvedContext.actor,
   };
+  assertBillWrite(next, null, bill);
   next.bills = [...(next.bills || []), bill];
   appendAuditEntry(next, {
     action: "reconciliation.bill_create",
@@ -2097,23 +2100,9 @@ export function createReconciliationCorrection(workspace, { allocationId, billId
 
 export function cancelReconciliationCorrection(workspace, { voucherId, reason }, context = {}) {
   if (!reason?.trim()) throw new AccountingRuleError("REVISION_REASON_REQUIRED", "取消更正草稿必须填写原因");
-  const next = cloneAccountingState(workspace);
-  const voucher = (next.vouchers || []).find((item) => item.id === voucherId);
+  const voucher = (workspace.vouchers || []).find((item) => item.id === voucherId);
   if (!voucher?.revisionOf || !["draft", "changes_requested"].includes(voucher.status)) throw new AccountingRuleError("CORRECTION_DRAFT_REQUIRED", "只能取消尚未入账的更正草稿");
-  assertAccountingPeriodWritable(next, voucher.period);
-  const resolvedContext = operationContext(context);
-  voucher.status = "invalidated";
-  voucher.invalidatedAt = resolvedContext.at;
-  voucher.invalidationReason = reason.trim();
-  (next.exceptionTasks || []).filter((task) => task.sourceId === voucher.id && task.status !== "resolved").forEach((task) => {
-    task.status = "resolved";
-    task.resolution = "revision_cancelled";
-    task.resolvedAt = resolvedContext.at;
-    task.resolvedBy = resolvedContext.actor;
-    task.history = [...(task.history || []), { at: resolvedContext.at, actor: resolvedContext.actor, action: "revision_cancelled", note: reason.trim() }];
-  });
-  appendAuditEntry(next, { action: "voucher.cancel_revision", entityType: "voucher", entityId: voucher.id, detail: `${reason.trim()}；原核销与原凭证保持有效`, sourceIds: collectSourceIds(voucher.id, voucher.revisionOf, voucher.sourceIds) }, resolvedContext);
-  return next;
+  return cancelVoucherDraft(workspace, { voucherId, reason }, context);
 }
 
 // Called on postVoucher's private clone. Any later posting error discards this

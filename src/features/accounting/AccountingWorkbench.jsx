@@ -12,6 +12,7 @@ import {
   WarningCircle,
 } from "@phosphor-icons/react";
 import { assertWorkspacePermission } from "../../domain/foundation.js";
+import { postWorkspaceVoucher } from "../../application/financeDeskService.js";
 
 import {
   BILL_KINDS,
@@ -39,6 +40,7 @@ import {
   confirmedAdvanceApplications,
   confirmedAllocationsForBill,
   cancelReconciliationCorrection,
+  cancelVoucherDraft,
   createAdvanceApplicationVoucherDraft,
   createBankBusinessEventVoucherDraft,
   createMemberEventVoucherDraft,
@@ -55,7 +57,6 @@ import {
   manualBusinessEventDefinition,
   manualBusinessEventTypesForWorkspace,
   memberBusinessEnabled,
-  postVoucherWithEvidence,
   recordManualVoucherEvidenceFailure,
   recordReconciliationSuggestions,
   reviseDraftVoucher,
@@ -826,21 +827,8 @@ export function MemberBusinessAccountingQueue({ onToast, onNavigate }) {
     setBusy(true);
     setError("");
     try {
-        const prepared = voucherLineDrafts[voucher.id]
-          ? reviseDraftVoucher(current, {
-            voucherId: voucher.id,
-            summary: voucher.summary,
-            lines: editedLines,
-            reason: reviewNote,
-          }, { actor })
-          : current;
-        const next = await postVoucherWithEvidence(prepared, {
-          voucherId: voucher.id,
-          mode: "manual",
-          reviewNote,
-        }, { actor, fileVault });
-      if (store.getActiveWorkspace() !== current) throw new Error("复核期间数据已变化，请重新操作");
-      actions.replaceWorkspace(current.id, next);
+      await postWorkspaceVoucher({ store, fileVault }, { workspaceId: current.id, period: voucher.period, voucherId: voucher.id, reviewNote,
+        ...(voucherLineDrafts[voucher.id] ? { edits: { summary: voucher.summary, lines: editedLines, reason: reviewNote } } : {}) });
       onToast?.(`${terminology.member}业务凭证已复核入账，对应报表已实时更新`);
       setReviewNotes((current) => ({ ...current, [event.id]: "" }));
       setVoucherLineDrafts((current) => {
@@ -1072,13 +1060,7 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true, o
     setBusy(true);
     const current = store.getActiveWorkspace();
     try {
-      const next = await postVoucherWithEvidence(current, {
-        voucherId,
-        mode: "manual",
-        reviewNote,
-      }, { actor, fileVault });
-      if (store.getActiveWorkspace() !== current) throw new Error("复核期间数据已变化，请重新操作");
-      actions.replaceWorkspace(current.id, next);
+      await postWorkspaceVoucher({ store, fileVault }, { workspaceId: current.id, period: current.currentPeriod, voucherId, reviewNote });
       setAdvanceVoucherNotes((notes) => ({ ...notes, [applicationId]: "" }));
       onToast?.("冲销凭证已人工复核入账，来源关系状态已回写");
     } catch (caught) {
@@ -1281,23 +1263,22 @@ function WorkspaceVoucherPanel({ onToast, voucherIds, focusVoucherId, focusReque
     setBusy(true);
     setError("");
     const current = store.getActiveWorkspace();
-    const activeUserId = store.getState().activeUserId;
     const reason = notes[voucher.id] || "";
     try {
-      if (voucher.payrollAccrual && action === "post") assertWorkspacePermission(store.getState(), current.id, "confirm.finance");
       let next = current;
       if (action === "revision") next = createPostedVoucherRevision(current, { voucherId: voucher.id, reason }, { actor });
-      else if (action === "cancel") next = cancelReconciliationCorrection(current, { voucherId: voucher.id, reason }, { actor });
+      else if (action === "cancel") next = cancelVoucherDraft(current, { voucherId: voucher.id, reason }, { actor });
+      else if (action === "post") {
+        await postWorkspaceVoucher({ store, fileVault }, { workspaceId: current.id, period: voucher.period, voucherId: voucher.id, reviewNote: reason,
+          ...(lineDrafts[voucher.id] ? { edits: { lines: lineDrafts[voucher.id], reason } } : {}) });
+      }
       else {
         if (lineDrafts[voucher.id]) next = reviseDraftVoucher(next, { voucherId: voucher.id, lines: lineDrafts[voucher.id], reason }, { actor });
-        if (action === "post") next = await postVoucherWithEvidence(next, { voucherId: voucher.id, reviewNote: reason, mode: "manual" }, { actor, fileVault });
       }
-      if (store.getActiveWorkspace() !== current) throw new Error("复核期间数据已变化，请重新操作");
-      if (voucher.payrollAccrual && store.getState().activeUserId !== activeUserId) throw new Error("复核期间操作身份已变化，请重新复核");
-      actions.replaceWorkspace(current.id, next, voucher.payrollAccrual && action === "post" ? { requiredPermission: "confirm.finance" } : undefined);
+      if (action !== "post") actions.replaceWorkspace(current.id, next);
       setLineDrafts((drafts) => { const updated = { ...drafts }; delete updated[voucher.id]; return updated; });
       setNotes((currentNotes) => ({ ...currentNotes, [voucher.id]: "" }));
-      onToast?.({ revision: "更正草稿已创建，原凭证继续有效", cancel: "更正草稿已取消，原记录继续有效", post: "凭证已复核入账", revise: "分录修订已保存" }[action]);
+      onToast?.({ revision: "更正草稿已创建，原凭证继续有效", cancel: "凭证草稿已取消", post: "凭证已复核入账", revise: "分录修订已保存" }[action]);
     } catch (caught) {
       setError(caught.message || "凭证处理失败");
       if (["VOUCHER_EVIDENCE_REQUIRED", "VOUCHER_ORIGINAL_REQUIRED"].includes(caught.code) && store.getActiveWorkspace() === current) {
@@ -1335,7 +1316,7 @@ function WorkspaceVoucherPanel({ onToast, voucherIds, focusVoucherId, focusReque
             {(draft || voucher.status === "posted") && <div className="engine-form"><label className="full"><span>{draft ? "复核 / 修改意见" : "更正原因"}</span><textarea value={notes[voucher.id] || ""} onChange={(event) => setNotes((current) => ({ ...current, [voucher.id]: event.target.value }))} /></label><div className="engine-voucher-form-actions">
               {editable && <button className="secondary-button" type="button" disabled={busy || !notes[voucher.id]?.trim() || !lineDrafts[voucher.id] || !validation.balanced} onClick={() => changeVoucher(voucher, "revise")}>保存分录修订</button>}
               {draft && <button className="primary-button" type="button" disabled={busy || Boolean(actionBlockedReason) || !notes[voucher.id]?.trim() || !validation.balanced} onClick={() => changeVoucher(voucher, "post")}>{busy ? "正在复核…" : "复核入账"}</button>}
-              {draft && voucher.revisionOf && <button className="secondary-button" type="button" disabled={busy || Boolean(actionBlockedReason) || !notes[voucher.id]?.trim()} onClick={() => changeVoucher(voucher, "cancel")}>取消更正</button>}
+              {draft && <button className="secondary-button" type="button" disabled={busy || Boolean(actionBlockedReason) || !notes[voucher.id]?.trim()} onClick={() => changeVoucher(voucher, "cancel")}>取消{voucher.revisionOf ? "更正" : "凭证"}草稿</button>}
               {voucher.status === "posted" && !voucher.payrollAccrual && <button className="secondary-button" type="button" disabled={busy || Boolean(actionBlockedReason) || !notes[voucher.id]?.trim()} onClick={() => changeVoucher(voucher, "revision")}>创建更正草稿</button>}
             </div></div>}
             <details className="engine-section"><summary>来源、附件与历史 · {attachments.manifest.length} 项</summary><ul className="engine-trace-list">{attachments.manifest.map((item) => <li key={`${item.kind}-${item.id}`}><strong>{item.kind}</strong><span>{item.name}</span></li>)}</ul><p>{voucher.versions?.length || 0} 条版本记录 · {voucher.reviews?.length || 0} 条复核记录</p>{(voucher.versions || []).map((version, index) => <p key={index}>{version.at} · {version.actor} · {version.reason}</p>)}</details>
@@ -1848,21 +1829,8 @@ function TransactionAccountingWorkbench({ transactionId, onToast }) {
     setPosting(true);
     try {
         const current = store.getActiveWorkspace();
-        const prepared = hasPendingEdits
-          ? reviseDraftVoucher(current, {
-            voucherId: voucher.id,
-            summary: voucherSummaries[voucher.id] ?? voucher.summary,
-            lines: editedLines,
-            reason: voucherNote,
-          }, { actor })
-          : current;
-        const next = await postVoucherWithEvidence(prepared, {
-          voucherId: voucher.id,
-          mode: "manual",
-          reviewNote: voucherNote,
-        }, { actor, fileVault });
-        if (store.getActiveWorkspace() !== current) throw new Error("复核期间数据已变化，请重新复核入账");
-        actions.replaceWorkspace(current.id, next);
+        await postWorkspaceVoucher({ store, fileVault }, { workspaceId: current.id, period: voucher.period, voucherId: voucher.id, reviewNote: voucherNote,
+          ...(hasPendingEdits ? { edits: { summary: voucherSummaries[voucher.id] ?? voucher.summary, lines: editedLines, reason: voucherNote } } : {}) });
         onToast?.(voucher.reconciliationCorrection ? "核销与更正凭证已同步入账，旧核销和旧凭证保留为历史" : "凭证已人工复核入账，编号和附件来源已锁定");
         clearVoucherEdits(voucher.id);
     } catch (caught) {

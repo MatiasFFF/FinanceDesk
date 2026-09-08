@@ -51,6 +51,8 @@ test("识别正文保存在原件记录，候选不改人工字段及财务指�
   assert.equal(workflowSourceFingerprint(after), fingerprint);
   assert.equal(document.contentRecognition.suggestedFields.amount.value, 128.5);
   assert.equal(document.contentRecognition.sourceHash, context.document.hash);
+  assert.equal(document.period, context.document.period, "未分配账期的资料仍保持未分配");
+  assert.equal(saved.source.period, before.currentPeriod, "保存开始时捕获原工作台的账期");
   assert.equal(JSON.stringify(document).includes(fullText), false);
   const records = await context.fileVault.listByWorkspace(context.workspaceId);
   assert.equal(records.length, 1);
@@ -59,6 +61,44 @@ test("识别正文保存在原件记录，候选不改人工字段及财务指�
   const reloaded = createFinanceDeskStore({ repository: createLocalFoundationRepository({ storage: context.storage, now }) });
   const restoredDocument = reloaded.getActiveWorkspace().documents.find((item) => item.id === document.id);
   assert.deepEqual(await getLocalDocumentRecognition({ fileVault: context.fileVault, workspaceId: context.workspaceId, document: restoredDocument }), saved);
+});
+
+test("provider results persist to an explicit background workspace without confirming fields", async () => {
+  const context = await fixture();
+  const before = context.store.getActiveWorkspace();
+  const targetUserId = context.store.getState().activeUserId;
+  const other = context.store.actions.createWorkspace({ name: "另一个工作台", currentPeriod: "2026-09" });
+  const store = createFinanceDeskStore({ repository: createLocalFoundationRepository({ storage: context.storage, now }),
+    resolveWorkspaceUserId: (id, state) => id === context.workspaceId ? targetUserId : state.activeUserId });
+  const providerResult = { ...result(), mode: "provider", provider: "fixture-provider" };
+  const saved = await saveLocalDocumentRecognition(saveInput({ ...context, store }, { period: context.document.period, sourceVersion: context.document.version, result: providerResult }));
+  assert.equal(store.getState().activeWorkspaceId, other.id);
+  const workspace = store.getState().workspaces.find((item) => item.id === context.workspaceId);
+  const document = workspace.documents.find((item) => item.id === context.document.id);
+  assert.equal(document.contentRecognition.provider, "fixture-provider");
+  assert.equal(document.contentRecognition.mode, "provider");
+  assert.equal(saved.source.workspaceId, context.workspaceId);
+  assert.deepEqual(document.structuredData, context.document.structuredData);
+  assert.equal(workflowSourceFingerprint(workspace), workflowSourceFingerprint(before));
+  assert.equal((await context.fileVault.get(context.document.id)).recognition.result.text, providerResult.text);
+});
+
+test("recognition rejects a late original version and rolls back provider text after a version race", async () => {
+  const context = await fixture();
+  const saved = await saveLocalDocumentRecognition(saveInput(context));
+  await assert.rejects(saveLocalDocumentRecognition(saveInput(context, { sourceVersion: context.document.version + 1 })), /已变化/);
+  const write = context.fileVault.setRecognition.bind(context.fileVault);
+  context.fileVault.setRecognition = async (...args) => {
+    await write(...args);
+    if (!args[4]?.expectedResultId) {
+      const workspace = structuredClone(context.store.getActiveWorkspace());
+      workspace.documents.find((item) => item.id === context.document.id).version += 1;
+      context.store.actions.replaceWorkspace(context.workspaceId, workspace);
+    }
+  };
+  await assert.rejects(saveLocalDocumentRecognition(saveInput(context, { result: { ...result("late provider text"), mode: "provider", provider: "fixture-provider" } })), /已变化/);
+  assert.equal((await context.fileVault.get(context.document.id)).recognition.id, saved.id);
+  assert.equal(currentDocument(context).contentRecognition.resultId, saved.id);
 });
 
 test("候选明确确认后保存字段和确认记录，普通资料编辑保留识别结果", async () => {
@@ -90,7 +130,7 @@ test("已取消、已切资料、错误哈希或类别的结果不写回", async
   await assert.rejects(saveLocalDocumentRecognition(saveInput(context, { isCurrent: () => false })), { name: "AbortError" });
   await assert.rejects(saveLocalDocumentRecognition(saveInput(context, { sourceHash: "wrong-hash" })), /已变化/);
   await assert.rejects(saveLocalDocumentRecognition(saveInput(context, { category: "合同" })), /已变化/);
-  await assert.rejects(saveLocalDocumentRecognition(saveInput(context, { workspaceId: "other-workspace" })), { name: "AbortError" });
+  await assert.rejects(saveLocalDocumentRecognition(saveInput(context, { workspaceId: "other-workspace" })), /已变化/);
   assert.equal(currentDocument(context).contentRecognition.resultId, undefined);
   assert.equal((await context.fileVault.get(context.document.id)).recognition, undefined);
 });

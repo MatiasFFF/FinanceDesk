@@ -1296,20 +1296,25 @@ export function buildFrozenReportExcelWorkbook(workspace, {
   };
 }
 
-export async function exportFrozenReportExcel(workspace, options = {}) {
+export async function generateFrozenReportExcel(workspace, options = {}) {
   const { workbook, metadata } = buildFrozenReportExcelWorkbook(workspace, options);
   const output = XLSX.write(workbook, { bookType: "xlsx", type: "array", cellStyles: true, compression: true });
   const bytes = output instanceof Uint8Array ? output : new Uint8Array(output);
   const digest = globalThis.crypto?.subtle ? await globalThis.crypto.subtle.digest("SHA-256", bytes) : null;
   const hash = digest ? [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("") : null;
   const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  return { bytes, blob, metadata: { ...metadata, size: blob.size, hash } };
+}
+
+export async function exportFrozenReportExcel(workspace, options = {}) {
+  const { blob, metadata } = await generateFrozenReportExcel(workspace, options);
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = metadata.fileName;
   anchor.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
-  return { ...metadata, size: blob.size, hash };
+  return metadata;
 }
 
 export function recordFrozenReportExcelExport(workspace, metadata, context = {}) {

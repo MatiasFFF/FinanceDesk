@@ -2,9 +2,17 @@ import { createId, getWorkspace } from "../domain/foundation.js";
 import { activateWorkspacePeriod, isPeriodArchived, validAccountingPeriod } from "../domain/periods.js";
 import { BANK_FIELD_DEFINITIONS, bankExceptionTasksForPeriod, buildBankMonthlyReconciliation, prepareBankImport, readBankFile, transactionDedupeKey, validateBankImportOptions } from "../features/intake/bankStatementImport.js";
 import { removeLocalDocument, saveLocalDocument, verifyStoredDocumentOriginal } from "../features/intake/documentIntake.js";
+import { accountingRules, collectSourceIds, workspaceAccountDefinitions } from "../domain/accounting/model.js";
+import { prepareVoucherPosting, reviseDraftVoucher } from "../domain/accounting/vouchers.js";
+import { attachReceipt, importLocalReceipt } from "../productWorkflow.js";
 
 const string = { type: "string", minLength: 1 };
 const target = { workspaceId: string, period: { type: "string", pattern: "^[1-9]\\d{3}-(0[1-9]|1[0-2])$" } };
+const voucherTarget = { ...target, voucherId: string };
+const voucherEdits = { type: "object", properties: {
+  summary: string, reason: string, lines: { type: "array", items: { type: "object" } },
+  evidenceIds: { type: "array", items: string }, sourceIds: { type: "array", items: string }, basis: { type: "object" },
+}, additionalProperties: false };
 const definition = (name, description, properties, required, resultFields) => ({
   name, description, parameters: { type: "object", properties, required, additionalProperties: false }, resultFields,
 });
@@ -14,6 +22,9 @@ const definition = (name, description, properties, required, resultFields) => ({
 export const FINANCE_DESK_OPERATIONS = [
   definition("listWorkspaces", "列出可读取工作台", {}, [], ["workspaces"]),
   definition("getWorkspaceContext", "查询指定工作台和账期的账户及导入记录", target, ["workspaceId", "period"], ["workspaceId", "period", "archived", "periods", "accounts", "imports"]),
+  definition("getVoucherContext", "读取指定账期凭证、补件和可用操作", voucherTarget, ["workspaceId", "period", "voucherId"], ["workspaceId", "period", "voucher", "missingItems", "nextActions"]),
+  definition("postVoucher", "核验原件后按最新目标工作台入账，可同时保存分录修订", { ...voucherTarget, reviewNote: string, edits: voucherEdits }, ["workspaceId", "period", "voucherId", "reviewNote"], ["workspaceId", "period", "voucher", "missingItems", "nextActions"]),
+  definition("importReceipt", "把本地回执原件登记到指定申报包，保存后再次确认包与原件归属", { ...target, fileRef: string, packageId: string, packageHash: string, reportVersionId: string }, ["workspaceId", "period", "fileRef", "packageId", "packageHash", "reportVersionId"], ["workspaceId", "period", "receipt"]),
   definition("prepareBankImport", "对已注册本地文件进行映射和导入预检查", {
     ...target, accountId: string, fileRef: string, mapping: { type: "object", properties: Object.fromEntries(Object.keys(BANK_FIELD_DEFINITIONS).map((field) => [field, { type: "integer", minimum: 0 }])), additionalProperties: false },
     openingBalance: { type: ["number", "string", "null"] }, statementClosing: { type: ["number", "string", "null"] },
@@ -34,6 +45,147 @@ export const FINANCE_DESK_OPERATIONS = [
 const jsonCopy = (value) => JSON.parse(JSON.stringify(value));
 function failure(message, code = "INVALID_OPERATION_INPUT", details) {
   return Object.assign(new Error(message), { code, ...(details ? { details } : {}) });
+}
+
+function voucherFor(workspace, period, voucherId) {
+  const voucher = workspace?.vouchers?.find((item) => item.id === voucherId && (item.period || item.date?.slice(0, 7)) === period);
+  if (!voucher) throw failure("找不到目标工作台和账期的凭证", "VOUCHER_NOT_FOUND");
+  return voucher;
+}
+
+function voucherResult(workspace, period, voucherId) {
+  const voucher = voucherFor(workspace, period, voucherId);
+  const missingItems = (workspace.exceptionTasks || []).filter((task) => task.sourceId === voucherId && task.status !== "resolved")
+    .map(({ id, code, message }) => ({ id, code, message }));
+  const nextActions = ["draft", "changes_requested"].includes(voucher.status) && !isPeriodArchived(workspace, period)
+    ? [{ action: "review_voucher", workspaceId: workspace.id, period, voucherId }] : [];
+  return jsonCopy({ workspaceId: workspace.id, period, voucher, missingItems, nextActions });
+}
+
+// Follow only financial records identified by this voucher and its sources.
+// A company edit or an unrelated voucher is intentionally outside this snapshot.
+function voucherPostingSources(workspace, voucher) {
+  const voucherIds = (record) => collectSourceIds(record.id, record.sourceIds, record.relatedSourceIds, record.evidenceIds,
+    record.revisionOf, record.memberEventId, record.bankBusinessEventId, record.advanceApplicationId, record.inventoryMovementId,
+    record.basis?.voucherIds, record.basis?.calculationDocumentId,
+    record.businessReferences?.map((item) => item.id), record.relatedSources?.map((item) => item.id), record.sourceReferences?.map((item) => item.id),
+    record.lines?.map((line) => [line.sourceIds, line.billId]), record.reconciliationSources?.map((item) => [item.id, item.billId]),
+    record.reconciliationCorrection?.transactionId, record.reconciliationCorrection?.originalAllocation?.id,
+    record.reconciliationCorrection?.originalAllocation?.billId, record.reconciliationCorrection?.replacement?.billId);
+  const references = (collection, record) => {
+    if (collection === "documents") return []; // An original's relatedObjectIds are reverse links, not posting inputs.
+    if (collection === "vouchers") return voucherIds(record);
+    return collectSourceIds(record.sourceIds, record.evidenceIds, record.documentIds, record.sourceDocumentId,
+      record.transactionId, record.allocationId, record.billId, record.relatedBillId, record.advanceBillId, record.targetBillId,
+      record.contractId, record.invoiceId, record.memberId, record.personnelRecordId, record.itemId,
+      record.originalRechargeId, record.commissionEventId, record.commissionSourceIds,
+      record.allocations?.map((allocation) => [allocation.id, allocation.billId]),
+      record.voucherSource?.lines?.map((line) => line.sourceIds));
+  };
+  const ids = new Set(voucherIds(voucher));
+  const records = ["transactions", "businessEvents", "bills", "advanceApplications", "vouchers", "documents", "contracts", "invoices", "approvals", "inventoryItems", "inventoryMovements", "members", "personnelRecords", "payrollRecords", "payrollImports"]
+    .flatMap((collection) => (workspace[collection] || []).map((record) => ({ collection, record })));
+  const selected = new Map();
+  let added = true;
+  while (added) {
+    added = false;
+    for (const { collection, record } of records) {
+      const key = `${collection}/${record.id}`;
+      if (selected.has(key) || !(ids.has(record.id) || (collection === "transactions" && (record.allocations || []).some((item) => ids.has(item.id)))
+        || (voucher.payrollAccrual && ["payrollRecords", "payrollImports"].includes(collection) && (record.period || record.date?.slice(0, 7)) === voucher.period))) continue;
+      selected.set(key, record);
+      references(collection, record).forEach((id) => ids.add(id));
+      added = true;
+    }
+  }
+  const links = (workspace.evidenceLinks || []).filter((link) => (link.objectIds || []).some((id) => ids.has(id)));
+  const accountIds = new Set((voucher.lines || []).map((line) => line.account));
+  const rules = accountingRules(workspace);
+  return JSON.stringify({ records: [...selected].sort(([left], [right]) => left.localeCompare(right)), links,
+    accounts: workspaceAccountDefinitions(workspace).filter((account) => accountIds.has(account.id)),
+    rules: { amountTolerance: rules.amountTolerance, confidenceThreshold: rules.confidenceThreshold, automaticPostingThreshold: rules.automaticPostingThreshold } });
+}
+
+export async function postWorkspaceVoucher({ store, fileVault }, input) {
+  const { workspaceId, period, voucherId, reviewNote, edits } = input || {};
+  if (!workspaceId || !voucherId || !validAccountingPeriod(period) || typeof reviewNote !== "string" || !reviewNote.trim()) throw failure("请指定工作台、账期、凭证及复核意见");
+  for (const key of Object.keys(input)) if (!["workspaceId", "period", "voucherId", "reviewNote", "edits"].includes(key)) throw failure(`不支持的参数：${key}`);
+  if (edits != null) {
+    if (typeof edits !== "object" || Array.isArray(edits)) throw failure("分录修订必须是对象");
+    for (const key of Object.keys(edits)) if (!Object.hasOwn(voucherEdits.properties, key)) throw failure(`不支持的分录修订参数：${key}`);
+    if (edits.lines != null && !Array.isArray(edits.lines)) throw failure("分录必须是数组");
+  }
+  const initial = getWorkspace(store.getState(), workspaceId);
+  const originalVoucher = voucherFor(initial, period, voucherId);
+  const permission = originalVoucher.payrollAccrual ? "confirm.finance" : "data.write";
+  const user = store.assertWorkspaceWritable(workspaceId, period, permission);
+  const actorId = user?.id || null;
+  const context = { actor: user?.name || "本地用户", at: new Date().toISOString(), fileVault };
+  const parameters = jsonCopy({ voucherId, reviewNote, mode: "manual" });
+  const patch = edits ? jsonCopy(edits) : null;
+  const prepare = (workspace) => {
+    const targetWorkspace = activateWorkspacePeriod(workspace, period);
+    return patch ? reviseDraftVoucher(targetWorkspace, { ...patch, voucherId, reason: patch.reason || reviewNote }, context) : targetWorkspace;
+  };
+  const prepared = prepare(initial);
+  const effectiveVoucher = voucherFor(prepared, period, voucherId);
+  const sources = voucherPostingSources(initial, effectiveVoucher);
+  const originalVersion = JSON.stringify(originalVoucher);
+  const postVerified = await prepareVoucherPosting(prepared, parameters, context);
+  const latestUser = store.assertWorkspaceWritable(workspaceId, period, permission);
+  if ((latestUser?.id || null) !== actorId) throw failure("原件核验期间目标工作台的操作身份已变化，请重新复核", "WORKSPACE_IDENTITY_CHANGED");
+  const latest = getWorkspace(store.getState(), workspaceId);
+  if (JSON.stringify(voucherFor(latest, period, voucherId)) !== originalVersion || voucherPostingSources(latest, effectiveVoucher) !== sources) {
+    throw failure("原件核验期间凭证的业务来源已变化，请按最新数据重新复核", "VOUCHER_SOURCE_CHANGED");
+  }
+  // No await between reading latest state, domain validation and the store commit.
+  const posted = postVerified(prepare(latest));
+  const restored = activateWorkspacePeriod(posted, latest.currentPeriod);
+  const state = store.actions.replaceWorkspace(workspaceId, restored, { period, requiredPermission: permission });
+  return voucherResult(getWorkspace(state, workspaceId), period, voucherId);
+}
+
+export async function importWorkspaceReceipt({ store, fileVault, file }, input) {
+  const { workspaceId, period, packageId, packageHash, reportVersionId } = input || {};
+  if (!workspaceId || !validAccountingPeriod(period) || !packageId || !packageHash || !reportVersionId || !(file instanceof Blob)) throw failure("请指定目标账期、申报包与真实回执文件");
+  for (const key of Object.keys(input)) if (!["workspaceId", "period", "packageId", "packageHash", "reportVersionId"].includes(key)) throw failure(`不支持的参数：${key}`);
+  const actor = store.assertWorkspaceWritable(workspaceId, period, "documents.add");
+  const actorId = actor?.id || null;
+  const currentTarget = () => {
+    const user = store.assertWorkspaceWritable(workspaceId, period, "documents.add");
+    store.assertWorkspaceWritable(workspaceId, period, "data.write");
+    if ((user?.id || null) !== actorId) throw failure("回执保存期间目标工作台身份已变化，请重新导入", "WORKSPACE_IDENTITY_CHANGED");
+    const workspace = getWorkspace(store.getState(), workspaceId);
+    const targetWorkspace = activateWorkspacePeriod(workspace, period);
+    const savedPackage = targetWorkspace.delivery?.filing?.exportedPackage;
+    if (savedPackage?.id !== packageId || savedPackage?.hash !== packageHash || savedPackage?.reportVersionId !== reportVersionId) throw failure("回执对应的申报包已变化，请选用最新申报包的回执重新导入", "RECEIPT_PACKAGE_CHANGED");
+    return { workspace, targetWorkspace };
+  };
+  let document;
+  try {
+    currentTarget();
+    document = await saveLocalDocument({ store, fileVault, workspaceId, file,
+      metadata: { category: "申报回执", period, deliveryArtifact: true, actor: actor?.name || "本地用户" } });
+    currentTarget();
+    const receipt = await importLocalReceipt(file);
+    let latest = currentTarget();
+    const original = latest.workspace.documents.find((item) => item.id === document.id);
+    if (!original || original.hash !== document.hash || receipt.hash !== document.hash) throw failure("回执原件已变化，请重新导入", "RECEIPT_ORIGINAL_CHANGED");
+    await verifyStoredDocumentOriginal({ fileVault, workspaceId, document: original });
+    latest = currentTarget();
+    const currentDocument = latest.workspace.documents.find((item) => item.id === document.id);
+    if (!currentDocument || currentDocument.hash !== original.hash || currentDocument.version !== original.version
+      || currentDocument.storage?.blobId !== original.storage?.blobId) throw failure("回执原件已变化，请重新导入", "RECEIPT_ORIGINAL_CHANGED");
+    const attached = attachReceipt(latest.targetWorkspace, { ...receipt, documentId: document.id, packageId, packageHash, reportVersionId }, actor?.name || "本地用户");
+    store.actions.replaceWorkspace(workspaceId, activateWorkspacePeriod(attached, latest.workspace.currentPeriod), { period, requiredPermission: "data.write" });
+    return jsonCopy({ workspaceId, period, receipt: attached.delivery.filing.receipt });
+  } catch (error) {
+    if (document && getWorkspace(store.getState(), workspaceId)?.documents?.some((item) => item.id === document.id)) {
+      try { await removeLocalDocument({ store, fileVault, workspaceId, documentId: document.id }); }
+      catch (cleanupError) { error.cleanup = { documentId: document.id, message: cleanupError.message }; }
+    }
+    throw error;
+  }
 }
 
 export function createFinanceDeskService({ store, fileVault }) {
@@ -216,6 +368,21 @@ export function createFinanceDeskService({ store, fileVault }) {
   }
 
   const operations = {
+    async importReceipt(input) {
+      const { fileRef, ...parameters } = validate("importReceipt", input);
+      const entry = fileFor(fileRef, parameters.workspaceId);
+      if (entry.kind !== "receipt") throw failure("请选择已注册的回执原件", "FILE_REFERENCE_EXPIRED");
+      entry.executing += 1;
+      try { return await importWorkspaceReceipt({ store, fileVault, file: entry.file }, parameters); }
+      finally { entry.executing -= 1; discardReleasedFile(fileRef); }
+    },
+    getVoucherContext(input) {
+      const { workspaceId, period, voucherId } = validate("getVoucherContext", input);
+      return voucherResult(workspaceFor(workspaceId), period, voucherId);
+    },
+    postVoucher(input) {
+      return postWorkspaceVoucher({ store, fileVault }, validate("postVoucher", input));
+    },
     listWorkspaces(input = {}) {
       validate("listWorkspaces", input);
       const workspaces = store.getState().workspaces.filter((workspace) => {
@@ -272,6 +439,14 @@ export function createFinanceDeskService({ store, fileVault }) {
 
   return {
     ...operations, registerBankFile, releaseBankFile,
+    registerReceiptFile(file, { workspaceId } = {}) {
+      workspaceFor(workspaceId);
+      if (!(file instanceof Blob)) throw failure("本地宿主必须提供真实回执 File 或 Blob");
+      const fileRef = createId("receipt-file");
+      files.set(fileRef, { kind: "receipt", file, workspaceId, released: false, executing: 0 });
+      return { workspaceId, fileRef };
+    },
+    releaseReceiptFile: releaseBankFile,
     releaseBankPlan(planId) { if (!plans.get(planId)?.pending) plans.delete(planId); },
     dispose() { for (const ref of files.keys()) releaseBankFile(ref); },
     async invoke(name, parameters = {}) {

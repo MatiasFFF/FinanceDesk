@@ -67,7 +67,7 @@ test("stale store cannot overwrite another window's bill; its state and pending 
   const b = storeFor(storage);
   const before = b.getState();
   const input = { financeContact: "尚未保存的联系人" };
-  a.actions.upsertEntity(a.getActiveWorkspace().id, "bills", { id: "bill-from-a", amount: 1200, kind: "receivable", period: "2026-09" });
+  a.actions.upsertEntity(a.getActiveWorkspace().id, "bills", { id: "bill-from-a", amount: 1200, kind: "receivable", period: "2026-09", counterparty: "测试客户", date: "2026-09-01", dueDate: "2026-09-30" });
   const saved = storage.getItem(FINANCE_DESK_STORAGE_KEY);
   assert.throws(() => b.actions.updateCompanyProfile(b.getActiveWorkspace().id, input), { code: "LOCAL_STATE_STALE" });
   assert.equal(b.getState(), before);
@@ -95,7 +95,7 @@ test("only the window holding the write session can save, and unchanged waiting 
   await nextTurn();
   assert.equal(a.getPersistenceStatus().canWrite, false);
   assert.equal(b.getPersistenceStatus().canWrite, true);
-  b.actions.upsertEntity(b.getActiveWorkspace().id, "bills", { id: "after-takeover", amount: 50, kind: "payable" });
+  b.actions.upsertEntity(b.getActiveWorkspace().id, "bills", { id: "after-takeover", amount: 50, kind: "payable", counterparty: "测试供应商", date: "2026-09-02", dueDate: "2026-09-30" });
   b.actions.setPeriod(b.getActiveWorkspace().id, "2026-08");
   b.actions.setPeriod(b.getActiveWorkspace().id, "2026-09");
   assert.equal(b.getPersistenceStatus().canWrite, true, "same SPA navigation does not release its session");
@@ -114,7 +114,7 @@ test("storage notices preserve local drafts; stale lock takeover and delayed sav
   await nextTurn();
   const before = b.getState();
   const delayedWorkspace = { ...b.getActiveWorkspace(), documents: [{ id: "late-document", name: "原件返回" }] };
-  a.actions.upsertEntity(a.getActiveWorkspace().id, "bills", { id: "new-bill", amount: 300, kind: "receivable" });
+  a.actions.upsertEntity(a.getActiveWorkspace().id, "bills", { id: "new-bill", amount: 300, kind: "receivable", counterparty: "测试客户", date: "2026-09-03", dueDate: "2026-09-30" });
   eventTarget.dispatchEvent(Object.assign(new Event("storage"), { key: FINANCE_DESK_STORAGE_KEY, storageArea: storage }));
   assert.equal(a.getPersistenceStatus().canWrite, true);
   assert.equal(b.getPersistenceStatus().status, "stale");

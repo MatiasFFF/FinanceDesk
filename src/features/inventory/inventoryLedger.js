@@ -10,6 +10,7 @@ import {
 } from "../../domain/accounting/model.js";
 import { assertAccountingPeriodWritable, createManualVoucherDraft, createPostedVoucherRevision, reviseDraftVoucher } from "../../domain/accounting/vouchers.js";
 import { inventoryVoucherAmountMatches, syncInventoryVoucherIntegrityTasks, syncManualVoucherEvidenceTasks } from "../evidence/evidenceEngine.js";
+import { isPeriodArchived, validAccountingPeriod } from "../../domain/periods.js";
 
 export const INVENTORY_MOVEMENT_TYPES = Object.freeze({
   RECEIPT: "receipt",
@@ -143,19 +144,50 @@ function locationKey(locationId) {
   return String(locationId || "unassigned");
 }
 
-function revalueItemMovements(workspace, item, movements) {
-  const balances = new Map();
-  const openingLocation = resolveLocation(workspace, item, item);
-  balances.set(locationKey(openingLocation.locationId), {
-    quantity: Number(item.openingQuantity || 0),
-    amount: Number(item.openingAmount ?? roundMoney(Number(item.openingQuantity || 0) * Number(item.openingUnitCost || 0))),
-  });
+export function inventoryOpeningPeriod(workspace, item) {
+  if (validAccountingPeriod(item.openingPeriod)) return item.openingPeriod;
+  const evidence = [item.createdAt, item.date, ...(workspace.inventoryMovements || [])
+    .filter((movement) => movement.itemId === item.id).map((movement) => movement.date || movement.period)]
+    .map((value) => String(value || "").slice(0, 7)).filter(validAccountingPeriod).sort();
+  const period = evidence[0] || String(workspace.createdAt || "").slice(0, 7);
+  if (!validAccountingPeriod(period)) throw inventoryError("INVENTORY_OPENING_PERIOD_REQUIRED", `物料“${item.name}”缺少初始账期和创建日期，请先补齐初始资料`);
+  return period;
+}
+
+// Historical amounts are already recorded facts. Only the requested month's
+// movements are revalued; each warehouse carries its own quantity and cost.
+export function valueInventoryPeriod(workspace, item, period = workspace.currentPeriod) {
+  const openingPeriod = inventoryOpeningPeriod(workspace, item);
+  const openingBalances = new Map();
+  const stateForOpening = (location) => {
+    const key = locationKey(location.locationId);
+    if (!openingBalances.has(key)) openingBalances.set(key, { ...location, quantity: 0, amount: 0, sourceIds: [] });
+    return openingBalances.get(key);
+  };
+  if (period >= openingPeriod) {
+    const state = stateForOpening(resolveLocation(workspace, item, item));
+    state.quantity = Number(item.openingQuantity || 0);
+    state.amount = Number(item.openingAmount ?? roundMoney(state.quantity * Number(item.openingUnitCost || 0)));
+    state.sourceIds = collectSourceIds(item.id, item.sourceIds);
+    (workspace.inventoryMovements || []).filter((movement) => movement.itemId === item.id
+      && String(movement.date || movement.period).slice(0, 7) < period).sort(movementOrder).forEach((movement) => {
+      const balance = stateForOpening(resolveLocation(workspace, movement, item));
+      const sign = INBOUND_TYPES.has(movement.type) ? 1 : -1;
+      balance.quantity = sumQuantity([balance.quantity, sign * Number(movement.quantity || 0)]);
+      balance.amount = roundMoney(balance.amount + sign * Number(movement.amount || 0));
+      balance.sourceIds = collectSourceIds(balance.sourceIds, movement.id, movement.sourceIds);
+    });
+  }
+  const movements = (workspace.inventoryMovements || []).filter((movement) => movement.itemId === item.id
+    && String(movement.date || movement.period).slice(0, 7) === period);
+  if (isPeriodArchived(workspace, period)) return { openingPeriod, openingBalances: [...openingBalances.values()], movements: [...movements].sort(movementOrder) };
+  const balances = new Map([...openingBalances].map(([key, value]) => [key, { ...value }]));
   const stateFor = (locationId) => {
     const key = locationKey(locationId);
     if (!balances.has(key)) balances.set(key, { quantity: 0, amount: 0 });
     return balances.get(key);
   };
-  return [...movements].sort(movementOrder).map((movement) => {
+  const valuedMovements = [...movements].sort(movementOrder).map((movement) => {
     const location = resolveLocation(workspace, movement, item);
     const state = stateFor(location.locationId);
     const quantity = positiveQuantity(movement.quantity);
@@ -181,7 +213,7 @@ function revalueItemMovements(workspace, item, movements) {
         );
       }
       unitCost = state.quantity > 0 ? roundMoney(state.amount / state.quantity) : 0;
-      amount = roundMoney(quantity * unitCost);
+      amount = Math.abs(quantity - state.quantity) <= 0.000001 ? state.amount : roundMoney(quantity * unitCost);
       state.quantity = Math.round((state.quantity - quantity) * 1_000_000) / 1_000_000;
       state.amount = state.quantity <= 0.000001 ? 0 : roundMoney(state.amount - amount);
     }
@@ -201,6 +233,7 @@ function revalueItemMovements(workspace, item, movements) {
       valuationMethod: "moving_weighted_average",
     };
   });
+  return { openingPeriod, openingBalances: [...openingBalances.values()], movements: valuedMovements };
 }
 
 function replaceValuedMovements(workspace, item, valuedMovements) {
@@ -208,6 +241,31 @@ function replaceValuedMovements(workspace, item, valuedMovements) {
   workspace.inventoryMovements = (workspace.inventoryMovements || []).map((movement) => (
     movement.itemId === item.id && valuedById.has(movement.id) ? valuedById.get(movement.id) : movement
   ));
+}
+
+function revalueAffectedPeriods(previous, next, item, context) {
+  const periods = [...new Set([next.currentPeriod,
+    ...(next.inventoryMovements || []).filter((movement) => movement.itemId === item.id).map((movement) => String(movement.date || movement.period).slice(0, 7)),
+    ...(next.delivery?.archives || []).map((archive) => archive.period), ...Object.keys(next.periodStates || {})])]
+    .filter((period) => validAccountingPeriod(period) && period >= next.currentPeriod).sort();
+  const balances = (valuation) => JSON.stringify(valuation.openingBalances.map(({ locationId, quantity, amount }) => ({ locationId, quantity, amount }))
+    .filter((balance) => balance.quantity || balance.amount).sort((left, right) => left.locationId.localeCompare(right.locationId)));
+  for (const period of periods) {
+    const valuation = valueInventoryPeriod(next, item, period);
+    if (isPeriodArchived(next, period)) {
+      const oldItem = findInventoryItem(previous, item.id);
+      if (balances(valuation) !== balances(valueInventoryPeriod(previous, oldItem, period))) {
+        throw inventoryError("INVENTORY_ARCHIVED_CARRY_FORWARD", `该修改会改变已归档 ${period} 的库存结余；请到最新未归档账期记录盘盈或盘亏调整。`, { itemId: item.id, archivedPeriod: period });
+      }
+      continue;
+    }
+    replaceValuedMovements(next, item, valuation.movements);
+    // These synchronizers update shared task arrays only; the displayed period
+    // stays unchanged while subsequent unarchived costs receive their own tasks.
+    const periodView = { ...next, currentPeriod: period };
+    synchronizeInventoryCostChanges(periodView, context);
+    next.exceptionTasks = periodView.exceptionTasks;
+  }
 }
 
 export function createInventoryItem(workspace, input = {}, context = {}) {
@@ -218,6 +276,7 @@ export function createInventoryItem(workspace, input = {}, context = {}) {
   const item = {
     id: nextRecordId(next.inventoryItems || [], "inventory-item"),
     ...values,
+    openingPeriod: next.currentPeriod,
     createdAt: resolvedContext.at,
     createdBy: resolvedContext.actor,
     updatedAt: resolvedContext.at,
@@ -244,18 +303,29 @@ export function updateInventoryItem(workspace, itemId, input = {}, context = {})
   if (index < 0) throw inventoryError("INVENTORY_ITEM_NOT_FOUND", `找不到库存物料：${itemId || "未选择"}`);
   const before = cloneAccountingState(next.inventoryItems[index]);
   const values = normalizeItemValues(next, input, before);
+  const openingPeriod = inventoryOpeningPeriod(next, before);
+  const openingChanged = values.openingQuantity !== Number(before.openingQuantity || 0)
+    || values.openingUnitCost !== Number(before.openingUnitCost || 0)
+    || (Number(before.openingQuantity || 0) > 0 && values.locationId !== resolveLocation(next, before, before).locationId);
+  const laterUsage = (next.inventoryMovements || []).some((movement) => movement.itemId === itemId
+    && String(movement.date || movement.period).slice(0, 7) > openingPeriod);
+  const archivedUsage = [...Object.keys(next.periodStates || {}), ...(next.delivery?.archives || []).map((archive) => archive.period), next.currentPeriod]
+    .some((period) => period >= openingPeriod && isPeriodArchived(next, period));
+  if (openingChanged && (next.currentPeriod !== openingPeriod || laterUsage || archivedUsage)) {
+    throw inventoryError("INVENTORY_OPENING_LOCKED", `该物料的初始数量和成本属于 ${openingPeriod}；已有后续流水或归档时，请在当前账期记录盘盈、盘亏调整。尚未被后续月份使用时，可回到初始账期修改。`, { itemId, openingPeriod });
+  }
   const item = {
     ...before,
     ...values,
+    openingPeriod,
     updatedAt: resolvedContext.at,
     updatedBy: resolvedContext.actor,
   };
   next.inventoryItems[index] = item;
-  const currentPeriodMovements = (next.inventoryMovements || []).filter((movement) => (
-    movement.itemId === item.id && String(movement.date || "").slice(0, 7) === next.currentPeriod
-  ));
-  replaceValuedMovements(next, item, revalueItemMovements(next, item, currentPeriodMovements));
-  synchronizeInventoryCostChanges(next, resolvedContext);
+  if (openingChanged) {
+    replaceValuedMovements(next, item, valueInventoryPeriod(next, item).movements);
+    synchronizeInventoryCostChanges(next, resolvedContext);
+  }
   appendAuditEntry(next, {
     action: "inventory.item_update",
     entityType: "inventoryItem",
@@ -279,6 +349,7 @@ export function recordInventoryMovement(workspace, input = {}, context = {}) {
     throw inventoryError("INVENTORY_MOVEMENT_TYPE_INVALID", "库存流水类型必须是入库、领用、损耗、盘盈或盘亏");
   }
   const date = validCurrentPeriodDate(next, input.date);
+  if (next.currentPeriod < inventoryOpeningPeriod(next, item)) throw inventoryError("INVENTORY_BEFORE_OPENING", "库存流水不能早于物料的初始账期");
   const quantity = positiveQuantity(input.quantity);
   const location = resolveLocation(next, input, item);
   const reason = String(input.reason || "").trim();
@@ -318,12 +389,7 @@ export function recordInventoryMovement(workspace, input = {}, context = {}) {
   };
   next.inventoryItems = [...(next.inventoryItems || [])];
   next.inventoryMovements = [...(next.inventoryMovements || []), movement];
-  const currentPeriodMovements = next.inventoryMovements.filter((candidate) => (
-    candidate.itemId === item.id && String(candidate.date || "").slice(0, 7) === next.currentPeriod
-  ));
-  const valuedMovements = revalueItemMovements(next, item, currentPeriodMovements);
-  replaceValuedMovements(next, item, valuedMovements);
-  synchronizeInventoryCostChanges(next, resolvedContext);
+  revalueAffectedPeriods(workspace, next, item, resolvedContext);
   const saved = next.inventoryMovements.find((candidate) => candidate.id === movement.id);
   appendAuditEntry(next, {
     action: `inventory.movement_${type}`,
@@ -350,23 +416,22 @@ export function buildInventorySummary(workspace, {
   locationId = null,
 } = {}) {
   const filterLocationId = String(locationId || "").trim();
-  const itemRows = (workspace.inventoryItems || []).map((item) => {
-    const allPeriodMovements = (workspace.inventoryMovements || []).filter((movement) => (
-      movement.itemId === item.id && String(movement.date || "").slice(0, 7) === period
-    ));
-    const valuedMovements = revalueItemMovements(workspace, item, allPeriodMovements);
+  const itemRows = (workspace.inventoryItems || []).filter((item) => inventoryOpeningPeriod(workspace, item) <= period).map((item) => {
+    const { openingBalances, movements: valuedMovements } = valueInventoryPeriod(workspace, item, period);
     const openingLocation = resolveLocation(workspace, item, item);
     const movements = filterLocationId
       ? valuedMovements.filter((movement) => movement.locationId === filterLocationId)
       : valuedMovements;
-    const includeOpening = !filterLocationId || openingLocation.locationId === filterLocationId;
+    const selectedBalances = openingBalances.filter((balance) => !filterLocationId || balance.locationId === filterLocationId);
+    const openingQuantity = sumQuantity(selectedBalances.map((balance) => balance.quantity));
+    const openingAmount = sumMoney(selectedBalances.map((balance) => balance.amount));
     const opening = {
-      quantity: includeOpening ? Number(item.openingQuantity || 0) : 0,
-      unitCost: includeOpening ? Number(item.openingUnitCost || 0) : 0,
-      amount: includeOpening ? Number(item.openingAmount || 0) : 0,
-      locationId: openingLocation.locationId,
-      locationName: openingLocation.locationName,
-      sourceIds: includeOpening ? collectSourceIds(item.id, item.sourceIds) : [],
+      quantity: openingQuantity,
+      unitCost: openingQuantity > 0 ? roundMoney(openingAmount / openingQuantity) : 0,
+      amount: openingAmount,
+      locationId: filterLocationId || (selectedBalances.length === 1 ? selectedBalances[0].locationId : openingLocation.locationId),
+      locationName: selectedBalances.length === 1 ? selectedBalances[0].locationName : "全部场所",
+      sourceIds: collectSourceIds(selectedBalances.map((balance) => balance.sourceIds)),
     };
     const receipts = summaryBucket(movements.filter((movement) => movement.type === INVENTORY_MOVEMENT_TYPES.RECEIPT));
     const issues = summaryBucket(movements.filter((movement) => movement.type === INVENTORY_MOVEMENT_TYPES.ISSUE));
@@ -444,10 +509,7 @@ export function createInventoryLossVoucherDraft(workspace, {
     throw inventoryError("INVENTORY_LOSS_VOUCHER_EXISTS", `该${INVENTORY_MOVEMENT_TYPE_LABELS[movement.type]}已生成有效凭证 ${duplicate.no || duplicate.id}`);
   }
   const item = findInventoryItem(workspace, movement.itemId);
-  const periodMovements = (workspace.inventoryMovements || []).filter((candidate) => (
-    candidate.itemId === item.id && String(candidate.date || "").slice(0, 7) === workspace.currentPeriod
-  ));
-  const valuedMovement = revalueItemMovements(workspace, item, periodMovements).find((candidate) => candidate.id === movement.id);
+  const valuedMovement = valueInventoryPeriod(workspace, item).movements.find((candidate) => candidate.id === movement.id);
   if (!valuedMovement || valuedMovement.amount <= 0) {
     throw inventoryError("INVENTORY_LOSS_AMOUNT_INVALID", "损耗或盘亏金额必须大于 0，才能生成凭证");
   }

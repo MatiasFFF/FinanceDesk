@@ -1330,7 +1330,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                   {structuredDetailLines(document, activeWorkspace).map((line) => <p key={line}>{line}</p>)}
                   {(recognisable || recognition?.resultId) && <div className="document-recognition">
                     <div className="document-recognition-actions">
-                      <strong>本地文字识别</strong>
+                      <strong>{recognition?.provider && recognition.provider !== "local" ? `文字识别 · ${recognition.provider}` : "本地文字识别"}</strong>
                       {recognisable && !archived && <button type="button" className="secondary-button" disabled={!canReadOriginal || recognitionPending || isEditing || standaloneFile}
                         onClick={() => recognizeDocument(document)}>{recognition?.resultId ? "重新识别" : "识别文字"}</button>}
                       {detailDocumentId === document.id && selectedRecognitionTask?.status === "ready" && <button type="button" className="secondary-button" onClick={() => { setRecognitionNotice(""); void recognitionRunner.resume({ explicit: true }); }}>保存识别结果</button>}

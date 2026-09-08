@@ -8,11 +8,22 @@ import { createBlankWorkspace } from "../src/domain/foundation.js";
 import {
   FROZEN_REPORT_EXCEL_SHEETS,
   buildFrozenReportExcelWorkbook,
+  generateFrozenReportExcel,
   recordFrozenReportExcelExport,
 } from "../src/domain/accounting/reporting.js";
 import { buildReportSnapshot, workflowSourceFingerprint } from "../src/productWorkflow.js";
 
 const generatedAt = "2026-09-05T08:30:00.000Z";
+
+test("Excel generation returns reopenable bytes without DOM and still rejects stale versions", async () => {
+  const { workspace, version, sourceFingerprint } = frozenWorkspace();
+  assert.equal(typeof globalThis.document, "undefined");
+  const generated = await generateFrozenReportExcel(workspace, { reportVersion: version, currentSourceFingerprint: sourceFingerprint, generatedAt });
+  assert.equal(generated.metadata.reportVersionId, version.id);
+  assert.equal(generated.blob.size, generated.bytes.byteLength);
+  assert.deepEqual(XLSX.read(generated.bytes, { type: "array" }).SheetNames, FROZEN_REPORT_EXCEL_SHEETS);
+  await assert.rejects(generateFrozenReportExcel(workspace, { reportVersion: version, currentSourceFingerprint: "changed" }));
+});
 
 function frozenWorkspace() {
   const base = createAccountingFixture();

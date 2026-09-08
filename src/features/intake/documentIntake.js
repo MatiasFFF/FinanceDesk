@@ -5,6 +5,8 @@ import { normalizeMoney, parseDelimitedText } from "./bankStatementImport.js";
 import { mergeAttachmentPdfs } from "./pdfAttachments.js";
 import { calculateContractPeriodAmount, normalizeContractDiscountRule, roundContractMoney, sumContractAmounts } from "./contractBillingAmounts.js";
 import { resolveContractCounterparty } from "./contractCounterparty.js";
+import { assertBillWrite } from "../../domain/accounting/billWriteRules.js";
+import { isPeriodArchived, validAccountingPeriod } from "../../domain/periods.js";
 
 const LINKABLE_COLLECTIONS = [
   "vouchers",
@@ -1193,6 +1195,7 @@ export function applyRedInvoiceBillAdjustment(workspace, input = {}, context = {
     invoiceDocumentIds: [...new Set([...(bill.invoiceDocumentIds || []), original.document.id, document.id])],
     updatedAt: at,
   };
+  assertBillWrite(workspace, bill, linkedBill, { operation: "red-invoice" });
   const originalDocument = {
     ...original.document,
     structuredData: { ...original.details, linkedBillId: bill.id },
@@ -2622,7 +2625,7 @@ function syncRecognitionReviewTasks(workspace, document, result, resultId, at) {
     if (previous && JSON.stringify(previous.recognitionFinding) === JSON.stringify(finding)) continue;
     const message = `${document.name} · ${review.label}待复核：${review.reason}`;
     const history = [...(previous?.history || []), {
-      at, actor: "本地识别", action: previous ? "recognition_updated" : "created", note: message,
+      at, actor: result.mode === "local" ? "本地识别" : `识别服务 ${result.provider}`, action: previous ? "recognition_updated" : "created", note: message,
       ...(previous?.recognitionFinding ? { previousFinding: previous.recognitionFinding } : {}),
     }];
     const task = {
@@ -2638,22 +2641,41 @@ function syncRecognitionReviewTasks(workspace, document, result, resultId, at) {
   return tasks;
 }
 
-export async function saveLocalDocumentRecognition({ store, fileVault, workspaceId, documentId, sourceHash, category, result, signal, isCurrent = () => true }) {
+export async function saveLocalDocumentRecognition({ store, fileVault, workspaceId, documentId, period, sourceVersion, sourceHash, category, result, signal, isCurrent = () => true }) {
+  signal?.throwIfAborted();
+  if (!isCurrent()) throw new DOMException("识别已取消", "AbortError");
+  const initialWorkspace = store.getState().workspaces.find((item) => item.id === workspaceId);
+  const initial = initialWorkspace?.documents?.find((item) => item.id === documentId);
+  if (!initial) throw new Error("资料或原件已变化，识别结果未保存");
+  const targetPeriod = period || initial.period || initialWorkspace.currentPeriod;
+  const assignedPeriod = initial.period || "";
+  const expectedVersion = sourceVersion ?? initial.version;
+  if (!validAccountingPeriod(targetPeriod) || (assignedPeriod && assignedPeriod !== targetPeriod)) throw new Error("识别结果的目标账期与资料不一致");
+  const user = store.assertWorkspaceWritable(workspaceId, targetPeriod, "documents.add");
+  const actorId = user?.id || null;
   const currentDocument = () => {
     signal?.throwIfAborted();
-    if (!isCurrent() || store.getState().activeWorkspaceId !== workspaceId) throw new DOMException("识别已取消", "AbortError");
+    if (!isCurrent()) throw new DOMException("识别已取消", "AbortError");
     const workspace = store.getState().workspaces.find((item) => item.id === workspaceId);
     const document = workspace?.documents?.find((item) => item.id === documentId);
-    if (!document || !sourceHash || document.hash !== sourceHash || document.category !== category) throw new Error("资料或原件已变化，识别结果未保存");
-    if (document.archiveStatus === "archived" || ["archived", "已归档"].includes(document.lifecycleStatus)) throw new Error("已归档资料不能更新识别结果");
-    assertWorkspacePermission(store.getState(), workspaceId, "documents.add");
+    if (!document || !sourceHash || document.hash !== sourceHash || document.category !== category || document.version !== expectedVersion
+      || (document.period || "") !== assignedPeriod || (document.workspaceId && document.workspaceId !== workspaceId)
+      || document.storage?.blobId !== initial.storage?.blobId) throw new Error("资料或原件已变化，识别结果未保存");
+    if (document.archiveStatus === "archived" || ["archived", "已归档"].includes(document.lifecycleStatus) || isPeriodArchived(workspace, targetPeriod)) throw new Error("已归档资料不能更新识别结果");
+    const currentUser = store.assertWorkspaceWritable(workspaceId, targetPeriod, "documents.add");
+    if ((currentUser?.id || null) !== actorId) throw new Error("识别保存期间目标工作台的操作身份已变化，请重新确认保存");
     return { workspace, document };
   };
   const { document } = currentDocument();
   if (!fileVault?.setRecognition) throw new Error("当前文件存储不支持保存识别结果");
-  if (result?.mode !== "local" || typeof result.text !== "string" || !Array.isArray(result.pages)) throw new Error("识别结果不完整");
+  if (!result || typeof result.text !== "string" || !Array.isArray(result.pages)
+    || result.pages.some((page) => !page || typeof page.text !== "string" || !Number.isInteger(page.pageNumber) || page.pageNumber < 1)) throw new Error("识别结果不完整");
+  const provider = typeof result.provider === "string" ? result.provider.trim() : result.mode === "local" ? "local" : "";
+  if (!provider) throw new Error("识别结果必须注明提供方");
+  result = structuredClone({ ...result, provider, mode: provider === "local" ? "local" : "provider" });
+  const source = { workspaceId, documentId, period: targetPeriod, version: expectedVersion, hash: sourceHash, category };
   const id = createId("recognition");
-  const envelope = { id, sourceHash, category, result };
+  const envelope = { id, sourceHash, sourceVersion: expectedVersion, category, provider, source, result };
   const previous = await getStoredDocumentRecord({ fileVault, workspaceId, document });
   currentDocument();
   // The original and full derived text share one IndexedDB record; only small candidates enter workspace JSON.
@@ -2663,7 +2685,7 @@ export async function saveLocalDocumentRecognition({ store, fileVault, workspace
     const latest = currentDocument();
     const allowedFields = normalizeDocumentStructuredData(category, {}) || {};
     const suggestedFields = Object.fromEntries(Object.entries(result.suggestedFields || {})
-      .filter(([key, candidate]) => key !== "kind" && Object.hasOwn(allowedFields, key) && candidate && ["string", "number"].includes(typeof candidate.value))
+      .filter(([key, candidate]) => key !== "kind" && Object.hasOwn(allowedFields, key) && candidate && (typeof candidate.value === "string" || (typeof candidate.value === "number" && Number.isFinite(candidate.value))))
       .map(([key, candidate]) => [key, { value: typeof candidate.value === "string" ? candidate.value.slice(0, 2000) : candidate.value,
         sourceText: String(candidate.sourceText || "").slice(0, 300), pageNumber: candidate.pageNumber,
         sourcePages: candidate.sourcePages || [candidate.pageNumber],
@@ -2671,7 +2693,7 @@ export async function saveLocalDocumentRecognition({ store, fileVault, workspace
         sourceTruncated: String(candidate.sourceText || "").length > 300,
       }]));
     const contentRecognition = {
-      mode: "local", ocrStatus: "completed", resultId: id, sourceHash, category,
+      mode: result.mode, provider, source, sourceVersion: expectedVersion, ocrStatus: "completed", resultId: id, sourceHash, category,
       recognizedAt: result.recognizedAt || new Date().toISOString(),
       pageCount: result.pages.length, suggestedFields,
       confirmation: latest.document.contentRecognition?.confirmation || null,
@@ -2681,7 +2703,7 @@ export async function saveLocalDocumentRecognition({ store, fileVault, workspace
       ...latest.workspace,
       documents: latest.workspace.documents.map((item) => item.id === documentId ? { ...item, contentRecognition } : item),
       exceptionTasks: syncRecognitionReviewTasks(latest.workspace, latest.document, result, id, contentRecognition.recognizedAt),
-    }, { requiredPermission: "documents.add", audit: { action: "保存本地识别候选", detail: `${latest.document.name} · 未修改业务字段` } });
+    }, { requiredPermission: "documents.add", period: targetPeriod, audit: { actor: user?.name || "本地用户", action: "保存识别候选", detail: `${latest.document.name} · ${provider} · 未修改业务字段` } });
     return envelope;
   } catch (error) {
     const persisted = store.getState().workspaces.find((item) => item.id === workspaceId)?.documents?.find((item) => item.id === documentId);

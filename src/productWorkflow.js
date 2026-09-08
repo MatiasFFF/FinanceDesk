@@ -2011,7 +2011,7 @@ function downloadBlob(blob, fileName) {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-export async function exportLocalFilingPackage(workspace) {
+export async function generateLocalFilingPackage(workspace) {
   const terminology = workspaceTerminology(workspace);
   const flow = workflowChecks(workspace);
   if (!flow.export.every((item) => item.ok) || !flow.version) {
@@ -2088,8 +2088,13 @@ export async function exportLocalFilingPackage(workspace) {
   const digest = await globalThis.crypto.subtle.digest("SHA-256", buffer);
   const hash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   const id = uid("filing-package");
-  downloadBlob(blob, fileName);
-  return { id, fileName, size: blob.size, hash, exportedAt: new Date().toISOString(), reportVersionId: flow.version.id };
+  return { blob, bytes: new Uint8Array(buffer), metadata: { id, fileName, size: blob.size, hash, exportedAt: new Date().toISOString(), reportVersionId: flow.version.id } };
+}
+
+export async function exportLocalFilingPackage(workspace) {
+  const { blob, metadata } = await generateLocalFilingPackage(workspace);
+  downloadBlob(blob, metadata.fileName);
+  return metadata;
 }
 
 export async function importLocalReceipt(file) {
@@ -2112,8 +2117,14 @@ export async function importLocalReceipt(file) {
 }
 
 export function attachReceipt(workspace, receipt, actor = "本地用户") {
+  if (isPeriodArchived(workspace)) throw new Error("已归档账期不能修改回执");
   const exportedPackage = workspace.delivery.filing.exportedPackage;
   if (!exportedPackage?.id || !exportedPackage.reportVersionId) throw new Error("请先导出当前版本的本地申报包，再导入对应回执");
+  if (receipt?.packageId !== exportedPackage.id || receipt?.packageHash !== exportedPackage.hash || receipt?.reportVersionId !== exportedPackage.reportVersionId) throw new Error("回执指定的申报包与当前包不一致，请重新核对回执所属版本");
+  const original = (workspace.documents || []).find((document) => document.id === receipt.documentId);
+  if (!original || (original.workspaceId && original.workspaceId !== workspace.id) || original.period !== workspace.currentPeriod
+    || !original.hash || original.hash !== receipt.hash || original.storage?.availableLocally !== true
+    || !(original.category === "申报回执" || original.deliveryArtifact === true)) throw new Error("回执缺少属于本工作台和账期的有效原件，请重新导入");
   const currentVersion = workflowChecks(workspace).version;
   if (!currentVersion || exportedPackage.reportVersionId !== currentVersion.id) {
     throw new Error("报表数据已变化，请重新冻结并导出新的本地申报包后再导入回执");
@@ -2126,6 +2137,7 @@ export function attachReceipt(workspace, receipt, actor = "本地用户") {
         ...workspace.delivery.filing,
         receipt: {
           ...receipt,
+          storage: original.storage,
           reportVersionId: exportedPackage.reportVersionId,
           packageId: exportedPackage.id,
           packageHash: exportedPackage.hash,

@@ -14,12 +14,11 @@ import {
   accountDefinition,
   accountingRules,
   assessManualVoucherEvidence,
-  cancelReconciliationCorrection,
+  cancelVoucherDraft,
   createManualVoucherDraft,
   createPostedVoucherRevision,
   MANUAL_VOUCHER_BASIS_KINDS,
   manualVoucherSourceOptions,
-  postVoucherWithEvidence,
   recordManualVoucherEvidenceFailure,
   reviseDraftVoucher,
   validateVoucherBalance,
@@ -28,6 +27,7 @@ import {
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
 import { saveLocalDocument } from "../intake/documentIntake.js";
 import { buildSettlementRecognitionDraft } from "../reconciliation/settlementRecognition.js";
+import { postWorkspaceVoucher } from "../../application/financeDeskService.js";
 import "./manual-voucher-panel.css";
 
 let lineSequence = 0;
@@ -390,10 +390,7 @@ export function ManualVoucherPanel({ onToast, request }) {
     setError("");
     setBusy(true);
     try {
-      const current = store.getActiveWorkspace();
-      const next = await postVoucherWithEvidence(current, { voucherId: voucher.id, reviewNote, mode: "manual" }, { actor, mode: "manual", fileVault });
-      if (store.getActiveWorkspace() !== current) throw new Error("原件核验期间工作台数据发生变化，请重新复核入账");
-      actions.replaceWorkspace(current.id, next);
+      await postWorkspaceVoucher({ store, fileVault }, { workspaceId: activeWorkspace.id, period: voucher.period, voucherId: voucher.id, reviewNote });
       setReviewNotes((notes) => ({ ...notes, [voucher.id]: "" }));
       onToast?.("手工凭证已完成人工复核并入账");
     } catch (caught) {
@@ -443,10 +440,10 @@ export function ManualVoucherPanel({ onToast, request }) {
   function cancelRevision(voucher) {
     try {
       const current = store.getActiveWorkspace();
-      const next = cancelReconciliationCorrection(current, { voucherId: voucher.id, reason: reviewNotes[voucher.id] }, { actor });
+      const next = cancelVoucherDraft(current, { voucherId: voucher.id, reason: reviewNotes[voucher.id] }, { actor });
       actions.replaceWorkspace(current.id, next);
       if (editor.voucherId === voucher.id) resetEditor();
-      onToast?.("更正草稿已取消，原凭证保持有效");
+      onToast?.(voucher.revisionOf ? "更正草稿已取消，原凭证保持有效" : "凭证草稿已取消");
     } catch (caught) { setError(caught.message); }
   }
 
@@ -561,7 +558,7 @@ export function ManualVoucherPanel({ onToast, request }) {
                 {!voucherValidation.balanced && <p><WarningCircle size={15} />当前草稿校验未通过，不能入账：{voucherValidation.errors.join("；")}</p>}
                 <label><span>复核意见 *</span><textarea value={reviewNotes[voucher.id] || ""} onChange={(event) => setReviewNotes((notes) => ({ ...notes, [voucher.id]: event.target.value }))} placeholder="写明已核对的分录、资料与入账结论" /></label>
                 <button className="primary-button" type="button" disabled={busy || editing || !voucherValidation.balanced || !evidenceAssessment.complete || !String(reviewNotes[voucher.id] || "").trim()} onClick={() => postDraft(voucher)}><CheckCircle size={16} />{busy ? "正在核验原件…" : "核验原件并复核入账"}</button>
-                {voucher.revisionOf && <button className="secondary-button" type="button" disabled={busy || !String(reviewNotes[voucher.id] || "").trim()} onClick={() => cancelRevision(voucher)}>按所填意见取消更正草稿</button>}
+                <button className="secondary-button" type="button" disabled={busy || !String(reviewNotes[voucher.id] || "").trim()} onClick={() => cancelRevision(voucher)}>按所填意见取消{voucher.revisionOf ? "更正" : "凭证"}草稿</button>
               </div></details>}
               {voucher.status === "posted" && <details className="manual-voucher-posting-details"><summary>更正此凭证</summary><div className="manual-voucher-posting"><label><span>更正原因</span><textarea value={reviewNotes[voucher.id] || ""} onChange={(event) => setReviewNotes((notes) => ({ ...notes, [voucher.id]: event.target.value }))} placeholder="原凭证保留，新的更正草稿复核入账后替代原版本" /></label><button className="secondary-button" type="button" disabled={busy || !String(reviewNotes[voucher.id] || "").trim()} onClick={() => createRevision(voucher)}>创建更正草稿</button></div></details>}
             </article>

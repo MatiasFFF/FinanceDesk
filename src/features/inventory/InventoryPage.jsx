@@ -313,7 +313,7 @@ export function InventoryPage({ onPage, onToast }) {
       <div className="inventory-entry-grid">
         <section className="panel inventory-editor-panel">
           <div className="panel-heading">
-            <div><h2 className="card-title"><PencilSimple size={18} /><span>{itemForm.id ? "编辑物料" : "新增物料"}</span></h2><p>期初金额 = 数量 × 单价；修改后重新计算本期成本。</p></div>
+            <div><h2 className="card-title"><PencilSimple size={18} /><span>{itemForm.id ? "编辑物料" : "新增物料"}</span></h2><p>初始库存只录入一次，后续月份自动承接；已有后续流水时通过盘盈、盘亏调整。</p></div>
           </div>
           <form className={"inventory-form" + (itemForm.id ? " is-editing" : "")} onSubmit={saveItem}>
             <label><span>物料名称 *</span><input required value={itemForm.name} onChange={(event) => setItemForm((form) => ({ ...form, name: event.target.value }))} placeholder="请输入物料名称" /></label>
@@ -394,7 +394,7 @@ export function InventoryPage({ onPage, onToast }) {
         </div> : <div className="inventory-table-empty"><Receipt size={24} /><strong>本期还没有库存流水</strong><p>新增入库、领用、损耗或盘点记录后，会按日期显示在这里。</p></div>}
         <div className="inventory-accounting-note">
           <span><strong>凭证草稿仍需人工复核</strong><small>损耗或盘亏草稿需核对原件、分录与当前成本后入账。</small></span>
-          <button className="secondary-button" type="button" onClick={() => onPage?.("manual")}>去手工凭证复核<ArrowRight size={16} /></button>
+          <button className="secondary-button" type="button" onClick={() => onPage?.("manualVouchers")}>去手工凭证复核<ArrowRight size={16} /></button>
         </div>
       </section>
     </div>

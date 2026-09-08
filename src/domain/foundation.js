@@ -1,5 +1,6 @@
 import { createDemoWorkspace } from "../financeData.js";
 import { activateWorkspacePeriod, localAccountingPeriod, saveActivePeriodState, validAccountingPeriod } from "./periods.js";
+import { assertBillWrite } from "./accounting/billWriteRules.js";
 
 export const CURRENT_SCHEMA_VERSION = 4;
 export const FINANCE_DESK_STORAGE_KEY = "financedesk.local-state.v4";
@@ -1039,6 +1040,11 @@ export function upsertWorkspaceEntity(state, workspaceId, collection, values, op
   const currentWorkspace = getWorkspace(state, workspaceId);
   if (!currentWorkspace) throw new Error(`找不到工作台：${workspaceId}`);
   const existingItem = (currentWorkspace[collection] || []).find((candidate) => candidate.id === item.id);
+  if (collection === "bills") {
+    const bill = { ...existingItem, ...item };
+    assertBillWrite(currentWorkspace, existingItem, bill);
+    if (Object.hasOwn(item, "amount")) item.amount = Number(bill.amount);
+  }
   if (collection === "bankAccounts") {
     const bankAccount = { ...existingItem, ...item };
     if (!String(bankAccount.name || "").trim()) throw new Error("银行账户名称不能为空");
@@ -1228,6 +1234,7 @@ export function removeWorkspaceEntity(state, workspaceId, collection, itemId, op
   const workspace = getWorkspace(state, workspaceId);
   const item = workspace?.[collection]?.find((candidate) => candidate.id === itemId);
   if (!item) throw new Error(`找不到要删除的记录：${collection}/${itemId}`);
+  if (collection === "bills") assertBillWrite(workspace, item, null, { operation: "delete" });
   const timestamp = options.timestamp || nowIso(options.now);
   if (state.activeUserId === itemId) throw new Error("当前正在使用的本地用户不能删除；请先切换到其他启用用户");
   if (collection === "ruleSets" && item.status === "active") throw new Error("正在生效的规则版本不能删除；请先启用另一版本或将其停用");

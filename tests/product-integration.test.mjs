@@ -271,6 +271,9 @@ function recordPackageAndReceipt(workspace) {
     }],
   };
   return attachReceipt(next, {
+    packageId: next.delivery.filing.exportedPackage.id,
+    packageHash: next.delivery.filing.exportedPackage.hash,
+    reportVersionId: next.delivery.filing.exportedPackage.reportVersionId,
     id: "receipt-test",
     name: "真实回执.txt",
     hash: "receipt-sha256",

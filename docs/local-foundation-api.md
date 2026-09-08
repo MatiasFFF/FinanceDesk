@@ -1,8 +1,8 @@
-# 财务工作台本地 API：第一批共享入口
+# 财务工作台本地 API
 
 `src/foundation.js` 是纯 JavaScript 入口，可在 Node 或浏览器中直接调用，不挂载 React。`src/foundation-react.js` 保留 Provider 和现有页面组件。
 
-本批提供银行导入的完整应用服务：查询目标 → 注册本地文件 → 准备映射与导入计划 → 保存并核验原件 → 导入流水 → 查询批次结果。当前手动银行页面已使用这一条调用链。凭证、库存、其他财务模块仍使用原有领域函数和页面流程，尚未逐项收回应用服务；模型调用、DeepSeek 和简版页面均未接入。
+应用服务已覆盖银行导入、凭证原件核验与入账、申报回执登记；对应手动页面使用相同入口。库存、账单和草稿取消保留明确的领域函数；Excel 与申报包可直接生成文件，识别持久化可接收带提供方信息的结果。模型调用、DeepSeek 和简版页面均未接入。
 
 ## 可直接运行的 Node 示例
 
@@ -67,6 +67,9 @@ JS
 | `prepareBankImport` | `workspaceId`, `period`, `accountId`, `fileRef` | `mapping`, `openingBalance`, `statementClosing`, `counterpartyMappings`, `largeTransactionThreshold` | `planId` 和现有导入预览字段：交易行、映射、错误、重复、余额勾稽、缺项和后续动作 |
 | `executeBankImport` | `workspaceId`, `planId` | 无 | 批次、交易、原件 ID，实际统计、原页面可用的 `import` 结果、缺项和后续动作 |
 | `getBankImportResult` | `workspaceId`, `importId` | 无 | 重新查询已保存批次及其当前交易、待复核事项 |
+| `getVoucherContext` | `workspaceId`, `period`, `voucherId` | 无 | `voucher`、自身 `missingItems`、`nextActions` |
+| `postVoucher` | `workspaceId`, `period`, `voucherId`, `reviewNote` | `edits`：`summary`、`lines`、`evidenceIds`、`sourceIds`、`basis`、`reason` | 最新已保存 `voucher`、自身缺项及后续操作 |
+| `importReceipt` | `workspaceId`, `period`, `fileRef`, `packageId`, `packageHash`, `reportVersionId` | 无 | 固定目标的 `receipt`，含真实原件 ID、哈希和申报包标识 |
 
 `workspaceId`、`accountId`、`planId` 和 `importId` 是非空字符串；`period` 必须明确指定为 `YYYY-MM`，并与文件内流水日期一致。一次文件仅导入一个月份。`mapping` 将字段名映射到从零开始的非负整数列序号，不能越过文件实际列数，也不接受未知字段；省略或传空对象时保留自动映射。标准字段包括 `date`、`amount`、`credit`、`debit`、`direction`、`counterparty`、`counterpartyAccount`、`summary`、`serial`、`balance`、`channel`、`currency`。
 
@@ -135,7 +138,26 @@ const store = createFinanceDeskStore({
 4. 成功后由页面显式调用 `actions.setPeriod`，保留原来的跨月导入显示行为；结果卡片和 `onComplete` 使用 `result.import`，完成提示中的勾稽状态使用 `result.currentReconciliation`。
 5. 更换文件、重做预检查或卸载时释放引用。
 
-平台结算、工资和其他资料流程仍保留既有路径，不属于本批银行应用操作清单。没有新增页面、网络识别或 AI 连接。
+`ManualVoucherPanel` 与 `AccountingWorkbench` 的会员、预收/预付冲销、通用凭证（含工资计提）、单笔银行凭证入账，共五条页面调用链都使用 `postWorkspaceVoucher({store, fileVault}, input)`，与 `service.postVoucher` 是同一函数。页面可以传本次尚未保存的分录修订；原件核验成功后，服务重新读取目标、重放修订并同步提交入账。原件读取前后都按 store 的可信身份映射验证权限，工资计提仍要求 `confirm.finance`。
+
+来源冲突只覆盖当前凭证、明确业务来源、原件和使用的科目；共用原件不会反向拉入其他凭证。公司资料、另一张无关凭证和未使用科目的新增保留。核验后到最终保存之间没有异步间隙；核销更正的旧核销撤回、替代关系和凭证入账在同一领域结果内提交，失败不留下部分更正。`VOUCHER_SOURCE_CHANGED` / `WORKSPACE_IDENTITY_CHANGED` 表示必须按最新资料重新复核，不能靠传入 actor 绕过。`prepareVoucherPosting` 是可信代码的临时核验能力，不是可序列化的工具参数或持久化凭证。
+
+回执宿主先用 `registerReceiptFile(blob, {workspaceId})` 得到 `fileRef`，再执行 `importReceipt`，最后调用 `releaseReceiptFile(fileRef)`。App 的原有回执按钮直接复用 `importWorkspaceReceipt({store, fileVault, file}, input)`；保留已有 `runPeriodOperation` 离开保护。保存、计算哈希和读取原件后均核对同一个包和文档；同月生成新包返回 `RECEIPT_PACKAGE_CHANGED`。失败仅通过现有引用保护删除本次新建的未使用原件；若已被其他业务引用则保留并返回 `cleanup` 原因。底层 `attachReceipt` 同样要求明确包标识以及本工作台、本账期的有效原件，不能传空文档或把旧包回执自动改绑新包。
+
+平台结算、其他资料录入仍保留原有路径。没有新增页面、网络识别或 AI 连接。
+
+## 领域规则与文件结果
+
+- 库存：`valueInventoryPeriod` 从唯一初始库存和之前已保存流水计算分仓月初，再估价本月流水。新物料保存 `openingPeriod`；旧数据从最早创建/业务日期推断，不使用正在显示的月份。补录未归档旧月会逐月重算受影响物料后续未归档流水，负库存则整次不保存；已入账损耗凭证保留原值，通过现有成本更正处理。归档月份展示保存金额，不重新估价；影响归档结余的回溯修改拒绝并指向最新未归档月份盘盈、盘亏。名称、规格等普通资料可继续编辑，已被后续月份使用的初始财务值不能直接改写。
+- 账单：`assertBillWrite` 用于通用 upsert/status/delete、往来新建、红票金额调整。按账单本身的业务月、日期和 period 检查归档；未使用且未归档的账单可编辑。已核销、预付款冲销或已入账的关键金额/主体/期间等字段不能静默覆盖；备注和合法到期日调整仍允许。红票不得低于已结算额或改归档历史；已入账金额差异的通用跨期联动调整尚未实现。错误给出实际关联 ID；未入账核销有银行流水撤销入口，预收/预付冲销目前没有直接撤回入口，不把同金额换账单的核销更正称为金额调整。
+- 草稿：`cancelVoucherDraft(workspace, {voucherId, reason}, context)` 将 draft/changes_requested 标记 invalidated，记录原因/历史并解决自身任务。普通手工和通用凭证列表已提供取消入口；`cancelReconciliationCorrection` 复用相同规则，保留原凭证和原核销。已入账或已归档不可直接取消。
+- Excel：`generateFrozenReportExcel(workspace, options)` 位于 reporting 模块，返回 `{bytes, blob, metadata}`；仍验证冻结版本和来源指纹。`exportFrozenReportExcel` 仅增加浏览器下载。
+- 申报包：`generateLocalFilingPackage(workspace)` 位于 productWorkflow，返回 `{bytes, blob, metadata}`，复用既有 ZIP 内容及确认条件。`exportLocalFilingPackage` 仅增加浏览器下载；纯生成不操作 DOM，也不登记为已外部提交。
+- 识别：`saveLocalDocumentRecognition({store, fileVault, workspaceId, documentId, period, sourceVersion, sourceHash, category, result, ...})` 接受 `{text, pages:[{pageNumber,text,...}], provider, mode, suggestedFields,...}`。原有 local 结果可省略 provider 并规范为 local；其他提供方须明确非空 provider。正文与提供方/来源信息存原件库，工作台只存小型候选、来源版本及人工确认状态。保存时不依赖前台工作台，按明确文档和可信宿主身份校验每个异步边界；取消、原件版本/哈希/类别变化或身份变化时回滚本次正文。前台 `createDocumentRecognitionTask` 保留切换、取消和身份变化后待确认策略，当前识别按钮仍只加载本地引擎。没有联网调用、密钥或自动业务确认。
+
+实现与证据边界见 [本轮修复矩阵](./2026-09-09-workflow-repairs.md)。
+
+识别保存也允许尚未分配账期的资料：优先使用调用方明确目标或资料已有账期，否则在开始时捕获原工作台账期；不替资料补写 period。有明确账期的资料必须与目标相符，保存途中被分配或改到账期、版本/原件变化仍拒绝晚到结果。前台任务从启动时保留这一目标，权限与归档规则继续由真实 store 校验。
 
 ## 底层 API 与数据恢复
 

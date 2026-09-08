@@ -753,7 +753,7 @@ test("月度勾稽缺少余额或存在差额时明确保持未完成", () => {
   assert.match(different.message, /勾稽未完成/);
 });
 
-test("空白工作台可随首份已勾稽流水建立活动账期，已有业务时拒绝跨期混入", () => {
+test("首份已勾稽流水建立活动账期，后续月份分别导入并保留历史流水", () => {
   const initial = createInitialState({ now: fixedNow });
   const workspaceId = initial.activeWorkspaceId;
   const blankState = updateWorkspace(initial, workspaceId, (workspace) => ({
@@ -797,7 +797,12 @@ test("空白工作台可随首份已勾稽流水建立活动账期，已有业�
     openingBalance: 1120,
     statementClosing: 1130,
   });
-  assert.throws(() => applyBankImport(applied, workspaceId, laterPlan, { now: fixedNow }), /已有业务数据时不能导入/);
+  const laterApplied = getWorkspace(applyBankImport(applied, workspaceId, laterPlan, { now: fixedNow }));
+  assert.equal(laterApplied.currentPeriod, "2026-09");
+  assert.deepEqual(laterApplied.transactions.filter((item) => item.date.startsWith("2026-08")), alreadyHasData.transactions);
+  assert.equal(laterApplied.transactions.filter((item) => item.date.startsWith("2026-09")).length, 1);
+  assert.equal(laterApplied.periodStates["2026-08"].bankBalances["bank-blank"].statementClosing, 1120);
+  assert.equal(laterApplied.bankAccounts[0].statementClosing, 1130);
 });
 
 test("同一文件混入多个账期时预检查直接拒绝", () => {
@@ -1174,6 +1179,7 @@ test("合同与审批结构化字段写回当前工作台资料记录且明确�
     kind: "contract",
     partyA: "山岚健身工作室",
     partyB: "青禾场地管理有限公司",
+    counterpartyParty: "auto",
     amount: 36000.5,
     serviceStartDate: "2026-09-01",
     serviceEndDate: "2027-08-31",
@@ -1181,6 +1187,9 @@ test("合同与审批结构化字段写回当前工作台资料记录且明确�
     settlementMode: "monthly",
     settlementCycle: "按月结算",
     periodAmount: null,
+    discountRule: { enabled: false, kind: "none", percent: null, fixedAmount: null, source: { kind: "manual", text: "" } },
+    discountTerms: "",
+    performanceTerms: "",
     firstBillDate: null,
     dueDateRule: "on_bill_date",
     dueDays: 0,
@@ -1454,6 +1463,7 @@ test("已关联审批被改回驳回或撤回时，业务关系失效、相关�
     const repository = createLocalFoundationRepository({ storage, now: fixedNow });
     const store = createFinanceDeskStore({ repository });
     const workspaceId = store.getState().activeWorkspaceId;
+    store.actions.switchUser(workspaceId, "user-owner");
     const initial = store.getActiveWorkspace();
     const document = {
       id: `approval-invalidate-${approvalStatus}`,
@@ -2392,6 +2402,7 @@ async function monthlyArchiveFixture() {
   const store = createFinanceDeskStore({ repository });
   const fileVault = createMemoryFileVault();
   const workspaceId = store.getState().activeWorkspaceId;
+  store.actions.switchUser(workspaceId, "user-owner");
   const initial = store.getActiveWorkspace();
   const bankAccountId = initial.bankAccounts[0].id;
   const reportSnapshot = {
@@ -3034,6 +3045,7 @@ test("结构化发票新增、编辑和关联变化会自动重算当前期间�
   const store = createFinanceDeskStore({ repository });
   const fileVault = createMemoryFileVault();
   const workspaceId = store.getState().activeWorkspaceId;
+  store.actions.switchUser(workspaceId, "user-owner");
   const initial = store.getActiveWorkspace();
   store.actions.replaceWorkspace(workspaceId, {
     ...initial,

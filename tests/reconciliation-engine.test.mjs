@@ -7,6 +7,7 @@ import { AccountingRuleError } from "../src/domain/accounting/model.js";
 import { buildGeneralLedger, effectivePostedVouchers } from "../src/domain/accounting/ledger.js";
 import { createVoucherDraft, postVoucher, postVoucherWithEvidence, vouchersForSource } from "../src/domain/accounting/vouchers.js";
 import { reviewTransactionEvidence } from "../src/features/evidence/evidenceEngine.js";
+import { postWorkspaceVoucher } from "../src/application/financeDeskService.js";
 import {
   createFinanceDeskStore,
   createInitialState,
@@ -746,6 +747,41 @@ test("reconciliation can be reversed and redone without deleting history", () =>
   assert.equal(billSettlement(workspace, "bill-ar-1").remaining, 0);
   assert.ok(workspace.auditLog.some((item) => item.action === "reconciliation.reverse"));
   assert.equal(workspace.auditLog.at(-1).action, "reconciliation.redo");
+});
+
+test("application service commits correction and voucher together and preserves both when latest target balance changes", async () => {
+  for (const race of [false, true]) {
+    const original = await postedSplitReceiptFixture();
+    const allocation = original.transactions.find((item) => item.id === "txn-split").allocations[0];
+    const pending = createReconciliationCorrection(original, { allocationId: allocation.id, billId: "bill-deposit-1", reason: "更正到账归属" }, context);
+    const fixture = await withVoucherEvidence(pending);
+    fixture.workspace.users = [{ id: "service-accountant", name: "服务会计", roleId: "service-accountant-role", status: "active" }];
+    fixture.workspace.roles = [...(fixture.workspace.roles || []), { id: "service-accountant-role", name: "入账会计", status: "active", permissions: ["data.read", "data.write", "documents.add"] }];
+    fixture.workspace.localUsersConfigured = true;
+    const repository = createLocalFoundationRepository({ storage: createMemoryStorage() });
+    repository.save({ ...createInitialState(), workspaces: [fixture.workspace], activeWorkspaceId: fixture.workspace.id, activeUserId: "service-accountant" });
+    const store = createFinanceDeskStore({ repository });
+    const getOwned = fixture.fileVault.getOwned.bind(fixture.fileVault);
+    let changed = false;
+    fixture.fileVault.getOwned = async (...args) => {
+      const record = await getOwned(...args);
+      if (race && !changed) {
+        changed = true;
+        const latest = structuredClone(store.getActiveWorkspace());
+        latest.transactions.push({ id: "concurrent-funding", date: `${latest.currentPeriod}-15`, amount: 2000, status: "pending",
+          allocations: [{ id: "concurrent-allocation", billId: "bill-deposit-1", amount: 2000, status: "confirmed" }] });
+        store.actions.replaceWorkspace(latest.id, latest);
+      }
+      return record;
+    };
+    const input = { workspaceId: fixture.workspace.id, period: fixture.workspace.currentPeriod, voucherId: pending.vouchers.at(-1).id, reviewNote: "已核对原核销和更正归属" };
+    if (race) await assert.rejects(postWorkspaceVoucher({ store, fileVault: fixture.fileVault }, input), (error) => error.code === "BILL_OVER_ALLOCATED");
+    else assert.equal((await postWorkspaceVoucher({ store, fileVault: fixture.fileVault }, input)).voucher.status, "posted");
+    const latest = store.getActiveWorkspace();
+    assert.equal(latest.transactions.find((item) => item.id === "txn-split").allocations[0].status, race ? "confirmed" : "reversed");
+    assert.equal(latest.vouchers.find((voucher) => voucher.id === original.vouchers[0].id).status, race ? "posted" : "superseded");
+    assert.equal(latest.vouchers.find((voucher) => voucher.id === input.voucherId).status, race ? "draft" : "posted");
+  }
 });
 
 test("posted reconciliation correction replaces bill balances and the effective ledger together", async () => {

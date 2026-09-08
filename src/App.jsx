@@ -77,7 +77,6 @@ import {
   PRODUCT_NAME,
   WORKSPACE_MODULE_OPTIONS,
   archivePeriod,
-  attachReceipt,
   audit,
   buildArchivedPeriodExport,
   buildFinalConfirmationSnapshot,
@@ -90,7 +89,6 @@ import {
   formatDateTime,
   formatPeriod,
   freezeReportVersion,
-  importLocalReceipt,
   markPackageExported,
   monthlyCloseStageState,
   prepareFilingDraft,
@@ -100,6 +98,7 @@ import {
   workflowChecks,
 } from "./productWorkflow.js";
 import { useFinanceDesk } from "./store/FinanceDeskProvider.jsx";
+import { importWorkspaceReceipt } from "./application/financeDeskService.js";
 
 const FoundationRecordsPanel = lazy(() => import("./features/workspaces/FoundationRecordsPanel.jsx").then((module) => ({ default: module.FoundationRecordsPanel })));
 const BankImportPanel = lazy(() => import("./features/intake/BankImportPanel.jsx").then((module) => ({ default: module.BankImportPanel })));
@@ -2253,30 +2252,12 @@ function App() {
   }
   async function exportPackage() { try { const meta = await exportLocalFilingPackage(workspace); mutateActive((current) => markPackageExported(current, meta, actorName)); setToast({ tone: "success", message: "本地申报包已导出；这不代表已提交税务局" }); } catch (error) { setToast({ tone: "danger", message: error.message || "本地申报包导出失败" }); } }
   async function receiveReceipt(file) {
-    let document = null;
     try {
-      document = await saveLocalDocument({
-        store,
-        fileVault,
-        workspaceId: workspace.id,
-        file,
-        metadata: {
-          category: "申报回执",
-          period: workspace.currentPeriod,
-          deliveryArtifact: true,
-        },
-      });
-      const receipt = await importLocalReceipt(file);
-      mutateActive((current) => attachReceipt(current, { ...receipt, documentId: document.id, storage: document.storage }, actorName));
+      const exportedPackage = workspace.delivery.filing.exportedPackage;
+      await importWorkspaceReceipt({ store, fileVault, file }, { workspaceId: workspace.id, period: workspace.currentPeriod,
+        packageId: exportedPackage?.id, packageHash: exportedPackage?.hash, reportVersionId: exportedPackage?.reportVersionId });
       setToast({ tone: "success", message: "真实外部回执原件与索引已保存在当前浏览器" });
     } catch (error) {
-      if (document) {
-        try {
-          await removeLocalDocument({ store, fileVault, workspaceId: workspace.id, documentId: document.id });
-        } catch {
-          // The visible document record is retained if compensating cleanup cannot complete.
-        }
-      }
       setToast({ tone: "danger", message: error.message || "无法保存该回执文件" });
     }
   }

@@ -8,6 +8,7 @@ import {
 } from "../src/domain/accounting/classification.js";
 import { createAccountingFixture } from "../src/domain/accounting/fixtures.js";
 import { EVENT_TYPES } from "../src/domain/accounting/model.js";
+import { withVoucherEvidence } from "./helpers/voucherEvidenceFixture.mjs";
 import {
   assessTransactionEvidence,
   attachEvidenceDocument,
@@ -68,9 +69,10 @@ test("the active S1 rule set changes the real review threshold", () => {
   assert.equal(relaxedAssessment.issues.some((item) => item.code === "low_confidence"), false);
 });
 
-test("supplemented evidence returns to explicit human review instead of silently posting", () => {
-  const workspace = createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
+test("supplemented evidence returns to explicit human review instead of silently posting", async () => {
+  const { workspace } = await withVoucherEvidence(createAccountingFixture({ withReconciliations: false, withPostedVouchers: false }));
   const deposit = workspace.transactions.find((item) => item.id === "txn-deposit");
+  deposit.sourceDocumentId = "doc-bank";
   deposit.evidenceIds = [];
 
   const reviewed = reviewTransactionEvidence(workspace, "txn-deposit", context);
@@ -95,8 +97,8 @@ test("supplemented evidence returns to explicit human review instead of silently
   assert.equal(confirmed.auditLog.at(-1).action, "evidence.manual_approve");
 });
 
-test("complete high-confidence supplier payment is eligible for automatic posting review", () => {
-  const workspace = createAccountingFixture({ withReconciliations: false, withPostedVouchers: false });
+test("complete high-confidence supplier payment is eligible for automatic posting review", async () => {
+  const { workspace } = await withVoucherEvidence(createAccountingFixture({ withReconciliations: false, withPostedVouchers: false }));
   const transaction = workspace.transactions.find((item) => item.id === "txn-payable");
   const classification = classifyBankTransaction(workspace, transaction);
   const assessment = assessTransactionEvidence(workspace, transaction, classification);

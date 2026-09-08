@@ -58,7 +58,7 @@ export function createDocumentRecognitionTask(store, {
         assertCurrent(current);
         publish(current, { status: "saving", progress: null, notice: "正在保存识别结果。" });
         await saveResult({ store, fileVault: current.fileVault, workspaceId: current.workspaceId,
-          documentId: current.documentId, sourceHash: current.sourceHash, category: current.category,
+          documentId: current.documentId, period: current.period, sourceHash: current.sourceHash, sourceVersion: current.sourceVersion, category: current.category,
           result: current.result, signal: current.controller.signal,
           isCurrent: () => job === current && !current.controller.signal.aborted && Boolean(sourceCurrent(current))
             && !current.authorizationChanged && authority(current.workspaceId) === current.authority,
@@ -104,6 +104,7 @@ export function createDocumentRecognitionTask(store, {
         throw new Error("已有一份资料正在识别或等待保存，请完成或取消后再试。");
       }
       const current = { workspaceId, documentId: document.id, sourceHash: document.hash, sourceVersion: document.version, category: document.category,
+        period: document.period || store.getState().workspaces.find((workspace) => workspace.id === workspaceId)?.currentPeriod,
         actorId: store.getState().activeUserId, authority: authority(workspaceId), authorizationChanged: false,
         fileVault, controller: new AbortController(), result: null, saving: null };
       job = current;

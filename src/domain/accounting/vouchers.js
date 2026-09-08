@@ -78,6 +78,29 @@ export function assertAccountingPeriodWritable(workspace, period = workspace.cur
   }
 }
 
+export function cancelVoucherDraft(workspace, { voucherId, reason }, context = {}) {
+  if (!String(reason || "").trim()) throw new AccountingRuleError("VOUCHER_CANCEL_REASON_REQUIRED", "取消凭证草稿必须填写原因");
+  const next = cloneAccountingState(workspace);
+  const voucher = (next.vouchers || []).find((item) => item.id === voucherId);
+  if (!voucher || !["draft", "changes_requested"].includes(voucher.status)) throw new AccountingRuleError("VOUCHER_DRAFT_REQUIRED", "只能取消尚未入账的凭证草稿");
+  assertAccountingPeriodWritable(next, voucher.period);
+  const resolved = operationContext(context);
+  const note = reason.trim();
+  const previousStatus = voucher.status;
+  voucher.status = "invalidated";
+  voucher.invalidatedAt = resolved.at;
+  voucher.invalidatedBy = resolved.actor;
+  voucher.invalidationReason = note;
+  voucher.versions = [...(voucher.versions || []), { at: resolved.at, actor: resolved.actor, action: "cancel_draft", reason: note, previousStatus }];
+  (next.exceptionTasks || []).filter((task) => task.sourceId === voucher.id && task.status !== "resolved").forEach((task) => {
+    Object.assign(task, { status: "resolved", resolution: "voucher_draft_cancelled", resolvedAt: resolved.at, resolvedBy: resolved.actor });
+    task.history = [...(task.history || []), { at: resolved.at, actor: resolved.actor, action: "voucher_draft_cancelled", note }];
+  });
+  appendAuditEntry(next, { action: voucher.revisionOf ? "voucher.cancel_revision" : "voucher.cancel_draft", entityType: "voucher", entityId: voucher.id,
+    detail: `${note}${voucher.revisionOf ? "；原核销与原凭证保持有效" : ""}`, sourceIds: collectSourceIds(voucher.id, voucher.revisionOf, voucher.sourceIds) }, resolved);
+  return next;
+}
+
 function voucherSourceIds(voucher) {
   return collectSourceIds(voucher.sourceIds, (voucher.lines || []).map((line) => line.sourceIds));
 }
@@ -1318,7 +1341,7 @@ function prepareReconciliationPosting(workspace, voucher, context) {
   commitReconciliationCorrection(workspace, voucher, context);
 }
 
-export async function postVoucherWithEvidence(workspace, input, context = {}) {
+export async function prepareVoucherPosting(workspace, input, context = {}) {
   const snapshot = cloneAccountingState(workspace);
   const voucher = findVoucher(snapshot, input.voucherId);
   assertAccountingPeriodWritable(snapshot, voucher.period);
@@ -1345,12 +1368,31 @@ export async function postVoucherWithEvidence(workspace, input, context = {}) {
       throw new AccountingRuleError("VOUCHER_ORIGINAL_REQUIRED", `${document.name || document.id}：${error.message}；请载入草稿，重新上传原件并替换资料关联`, { documentId: document.id });
     }
   }
-  verifiedManualPostings.set(snapshot, { voucherId: voucher.id, files: verifiedFiles, documentIds: assessment.documentIds });
-  try {
-    return postVoucher(snapshot, input, context);
-  } finally {
-    verifiedManualPostings.delete(snapshot);
-  }
+  const voucherVersion = JSON.stringify(voucher);
+  const documentVersions = assessment.documents.map((document) => [document.id, JSON.stringify(document)]);
+  // The returned capability is in-memory only. The host can read latest state,
+  // apply domain posting and commit synchronously after the final file await.
+  return (latestWorkspace = workspace) => {
+    const latest = cloneAccountingState(latestWorkspace);
+    if (latest.id !== snapshot.id || JSON.stringify(findVoucher(latest, voucher.id)) !== voucherVersion
+      || documentVersions.some(([id, version]) => JSON.stringify((latest.documents || []).find((document) => document.id === id)) !== version)) {
+      throw new AccountingRuleError("VOUCHER_SOURCE_CHANGED", "原件核验期间凭证或关联资料已变化，请重新复核入账");
+    }
+    const evidenceState = voucher.reconciliationCorrection ? cloneAccountingState(latest) : latest;
+    const currentVoucher = findVoucher(evidenceState, voucher.id);
+    prepareReconciliationPosting(evidenceState, currentVoucher, operationContext({ ...context, mode: input.mode || "manual" }));
+    const currentAssessment = isManualVoucher(currentVoucher) ? assessManualVoucherEvidence(evidenceState, currentVoucher) : assessVoucherEvidence(evidenceState, currentVoucher);
+    if (!currentAssessment.complete) throw new AccountingRuleError("VOUCHER_EVIDENCE_REQUIRED", currentAssessment.issues.map((issue) => issue.message).join("；"), currentAssessment);
+    if (JSON.stringify([...currentAssessment.documentIds].sort()) !== JSON.stringify([...assessment.documentIds].sort())) throw new AccountingRuleError("VOUCHER_SOURCE_CHANGED", "入账所需原件集合已变化，请重新核验");
+    verifiedManualPostings.set(latest, { voucherId: voucher.id, files: verifiedFiles, documentIds: assessment.documentIds });
+    try { return postVoucher(latest, input, context); }
+    finally { verifiedManualPostings.delete(latest); }
+  };
+}
+
+export async function postVoucherWithEvidence(workspace, input, context = {}) {
+  const postVerified = await prepareVoucherPosting(workspace, input, context);
+  return postVerified(workspace);
 }
 
 export function postVoucher(workspace, { voucherId, reviewNote, mode = "manual" }, context = {}) {

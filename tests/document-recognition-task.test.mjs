@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { createDocumentRecognitionTask } from "../src/features/intake/documentRecognitionTask.js";
 import { createDocumentMetadata } from "../src/features/intake/documentIntake.js";
 import { createMemoryFileVault } from "../src/features/intake/browserFileVault.js";
+import { assertWorkspacePermission } from "../src/domain/foundation.js";
+import { isPeriodArchived, validAccountingPeriod } from "../src/domain/periods.js";
 
 function deferred() {
   let resolve, reject;
@@ -15,7 +17,7 @@ async function fixture() {
   const fileVault = createMemoryFileVault();
   const blob = Object.assign(new Blob(["original"]), { name: "资料.png" });
   const document = await createDocumentMetadata(blob, { id: "doc", category: "合同", structuredData: { partyA: "人工甲方" } });
-  const workspace = (id) => ({ id, documents: [structuredClone(document)], exceptionTasks: [],
+  const workspace = (id) => ({ id, currentPeriod: "2026-09", documents: [structuredClone(document)], exceptionTasks: [],
     users: [{ id: "user-a", name: "甲员工", roleId: "role", status: "active" }, { id: "user-b", name: "乙员工", roleId: "role", status: "active" }],
     roles: [{ id: "role", status: "active", permissions: ["documents.add"] }], personnelRecords: [],
   });
@@ -24,6 +26,11 @@ async function fixture() {
   const audits = [];
   const store = {
     getState: () => state,
+    assertWorkspaceWritable(workspaceId, period, permission) {
+      assert.ok(validAccountingPeriod(period));
+      assert.equal(isPeriodArchived(state.workspaces.find((workspace) => workspace.id === workspaceId), period), false);
+      return assertWorkspacePermission(state, workspaceId, permission);
+    },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     change(change) { state = change(state); [...listeners].forEach((listener) => listener(state)); },
     actions: { replaceWorkspace(id, next) {

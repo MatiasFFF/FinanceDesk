@@ -97,7 +97,7 @@ test("registered bytes and stored plans cannot be replaced by caller-supplied wo
   assert.equal((await f.service.invoke("executeBankImport", { workspaceId: "view", planId: plan.planId })).error.code, "BANK_PLAN_EXPIRED");
   assert.equal((await f.service.invoke("replaceWorkspace", {})).error.code, "UNKNOWN_OPERATION");
   await assert.rejects(f.service.registerBankFile({ name: "fake.csv", arrayBuffer() {} }, { workspaceId: "target" }), /真实 File 或 Blob/);
-  assert.deepEqual(FINANCE_DESK_OPERATIONS.map((item) => item.name).sort(), ["executeBankImport", "getBankImportResult", "getWorkspaceContext", "listWorkspaces", "prepareBankImport"].sort());
+  assert.deepEqual(FINANCE_DESK_OPERATIONS.map((item) => item.name).sort(), ["executeBankImport", "getBankImportResult", "getWorkspaceContext", "listWorkspaces", "prepareBankImport", "getVoucherContext", "postVoucher", "importReceipt"].sort());
 });
 
 test("repeated requests, concurrent same-plan requests and a reselected duplicate file never duplicate entries or originals", async () => {

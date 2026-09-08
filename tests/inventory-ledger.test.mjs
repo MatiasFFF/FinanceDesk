@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createBlankWorkspace } from "../src/domain/foundation.js";
+import { activateWorkspacePeriod } from "../src/domain/periods.js";
 import { AccountingRuleError } from "../src/domain/accounting/model.js";
 import { postVoucherWithEvidence } from "../src/domain/accounting/vouchers.js";
 import { createDocumentMetadata } from "../src/features/intake/documentIntake.js";
@@ -19,6 +20,73 @@ import {
 } from "../src/features/inventory/inventoryLedger.js";
 
 const context = { actor: "测试会计", at: "2026-09-01T08:00:00.000Z" };
+
+test("inventory carries each warehouse across months and empty months without changing archived facts", () => {
+  let workspace = createInventoryItem(inventoryWorkspace(), { name: "跨月物料", unit: "件", locationId: "location-main", openingQuantity: 10, openingUnitCost: 10 }, context);
+  const itemId = workspace.inventoryItems[0].id;
+  workspace = recordInventoryMovement(workspace, { itemId, type: "receipt", date: "2026-09-02", quantity: 5, unitCost: 30, locationId: "location-west" }, context);
+  workspace = recordInventoryMovement(workspace, { itemId, type: "issue", date: "2026-09-03", quantity: 2, locationId: "location-main" }, context);
+  const historical = structuredClone(workspace.inventoryMovements);
+  workspace.delivery = { ...workspace.delivery, archives: [{ period: "2026-09" }] };
+  workspace = activateWorkspacePeriod(workspace, "2026-10");
+  assert.equal(buildInventorySummary(workspace).totals.openingAmount, 230);
+  workspace = recordInventoryMovement(workspace, { itemId, type: "loss", date: "2026-10-01", quantity: 2, locationId: "location-west", reason: "破损" }, context);
+  assert.equal(workspace.inventoryMovements.at(-1).amount, 60);
+  workspace = createInventoryLossVoucherDraft(workspace, { movementId: workspace.inventoryMovements.at(-1).id }, context);
+  assert.equal(workspace.vouchers.at(-1).lines[0].debit, 60);
+  assert.deepEqual(workspace.inventoryMovements.slice(0, 2), historical);
+  workspace = activateWorkspacePeriod(workspace, "2026-12");
+  assert.equal(buildInventorySummary(workspace, { locationId: "location-main" }).totals.openingAmount, 80);
+  assert.equal(buildInventorySummary(workspace, { locationId: "location-west" }).totals.openingAmount, 90);
+  workspace = updateInventoryItem(workspace, itemId, { name: "新名称", specification: "新版规格" }, context);
+  assert.equal(workspace.inventoryItems[0].name, "新名称");
+  assert.deepEqual(workspace.inventoryMovements.slice(0, 2), historical);
+  assert.throws(() => updateInventoryItem(workspace, itemId, { openingQuantity: 20 }, context), (error) => error.code === "INVENTORY_OPENING_LOCKED");
+});
+
+test("new items have one initial period and legacy items use dated evidence instead of displayed month", () => {
+  let workspace = activateWorkspacePeriod(inventoryWorkspace(), "2026-10");
+  workspace = createInventoryItem(workspace, { name: "十月新增", unit: "件", openingQuantity: 4, openingUnitCost: 5 }, context);
+  assert.equal(workspace.inventoryItems[0].openingPeriod, "2026-10");
+  assert.equal(buildInventorySummary(workspace, { period: "2026-09" }).items.length, 0);
+  assert.equal(buildInventorySummary(workspace, { period: "2026-12" }).totals.openingAmount, 20);
+  delete workspace.inventoryItems[0].openingPeriod;
+  workspace.inventoryItems[0].createdAt = "2026-09-01T00:00:00Z";
+  workspace.inventoryMovements = [{ id: "legacy-issue", itemId: workspace.inventoryItems[0].id, date: "2026-09-05", type: "issue", quantity: 1, amount: 5, unitCost: 5, locationId: "unassigned" }];
+  assert.equal(buildInventorySummary(workspace, { period: "2026-12" }).totals.openingAmount, 15);
+});
+
+test("backdated receipts revalue later open costs atomically and cannot change archived carry forward", async () => {
+  let workspace = createInventoryItem(inventoryWorkspace(), { name: "回溯物料", unit: "件", openingQuantity: 10, openingUnitCost: 10 }, context);
+  const itemId = workspace.inventoryItems[0].id;
+  workspace = activateWorkspacePeriod(workspace, "2026-10");
+  workspace = recordInventoryMovement(workspace, { itemId, type: "loss", date: "2026-10-01", quantity: 2, reason: "损耗" }, context);
+  workspace = createInventoryLossVoucherDraft(workspace, { movementId: workspace.inventoryMovements[0].id }, context);
+  const fixture = await withVoucherEvidence(workspace);
+  workspace = await postVoucherWithEvidence(fixture.workspace, { voucherId: workspace.vouchers[0].id, reviewNote: "按初始成本入账" }, { ...context, fileVault: fixture.fileVault });
+  const originalVoucher = structuredClone(workspace.vouchers[0]);
+  workspace = activateWorkspacePeriod(workspace, "2026-09");
+  workspace = recordInventoryMovement(workspace, { itemId, type: "receipt", date: "2026-09-02", quantity: 10, unitCost: 30 }, context);
+  assert.equal(workspace.currentPeriod, "2026-09");
+  assert.equal(workspace.inventoryMovements[0].amount, 40);
+  assert.deepEqual(workspace.vouchers[0], originalVoucher);
+  assert.ok(workspace.exceptionTasks.some((task) => task.code === "inventory_posted_cost_changed" && task.period === "2026-10" && task.status === "open"));
+  workspace.delivery.archives = [{ period: "2026-10" }];
+  const before = structuredClone(workspace);
+  assert.throws(() => recordInventoryMovement(workspace, { itemId, type: "receipt", date: "2026-09-03", quantity: 1, unitCost: 60 }, context), (error) => error.code === "INVENTORY_ARCHIVED_CARRY_FORWARD");
+  assert.deepEqual(workspace, before);
+});
+
+test("archived summary preserves recorded rounding amounts", () => {
+  let workspace = createInventoryItem(inventoryWorkspace(), { name: "旧成本舍入", unit: "件", openingQuantity: 3, openingUnitCost: 0.33 }, context);
+  const itemId = workspace.inventoryItems[0].id;
+  workspace.inventoryItems[0].openingAmount = 1;
+  workspace.inventoryMovements = [{ id: "historical-rounded", itemId, date: "2026-09-01", type: "issue", quantity: 3, unitCost: 0.33, amount: 0.99, locationId: "unassigned" }];
+  workspace.delivery.archives = [{ period: "2026-09" }];
+  assert.equal(buildInventorySummary(workspace).items[0].issues.amount, 0.99);
+  assert.equal(buildInventorySummary(workspace).items[0].movements[0].unitCost, 0.33);
+  assert.equal(workspace.inventoryMovements[0].amount, 0.99);
+});
 
 async function costChangeFixture() {
   let workspace = inventoryWorkspace();
