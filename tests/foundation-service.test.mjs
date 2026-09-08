@@ -6,6 +6,7 @@ import {
   getWorkspace, prepareBankImport, removeLocalDocument, saveLocalDocument,
 } from "../src/foundation.js";
 import { activateWorkspacePeriod, capturePeriodState } from "../src/domain/periods.js";
+import { bankExceptionTasksForPeriod, reconcileBankAccountPeriod } from "../src/features/intake/bankStatementImport.js";
 
 const now = () => new Date("2026-09-08T08:00:00.000Z");
 const csv = "日期,对方,摘要,收入,支出,流水号,余额\n2026-08-01,客户甲,服务款,100,,S001,200\n2026-08-02,银行,手续费,,25,S002,175";
@@ -296,4 +297,195 @@ test("asynchronous deletion keeps concurrent company edits and refuses new links
     assert.equal(target.documents.length, change === "company" ? 0 : 1);
     assert.equal(Boolean(await f.fileVault.get(document.id)), change !== "company");
   }
+});
+
+test("bank options reject malformed values before storage while keeping empty UI mappings and zero-threshold defaults", async () => {
+  const f = fixture();
+  const parsed = await f.service.registerBankFile(file(), { workspaceId: "target" });
+  const input = { workspaceId: "target", period: "2026-08", accountId: "target-bank", fileRef: parsed.fileRef };
+  const before = f.store.getState();
+  const badOptions = [
+    { mapping: [] }, { mapping: { date: "0" } }, { mapping: { date: -1 } },
+    { mapping: { date: 0.5 } }, { mapping: { date: parsed.table[0].length } }, { mapping: { unknown: 0 } },
+    { openingBalance: NaN }, { statementClosing: Infinity }, { openingBalance: Number.MAX_VALUE },
+    { statementClosing: "不是金额" }, { openingBalance: {} },
+    { largeTransactionThreshold: "10000" }, { largeTransactionThreshold: -1 }, { largeTransactionThreshold: Infinity },
+    { counterpartyMappings: [] }, { counterpartyMappings: { key: "客户甲" } },
+    { counterpartyMappings: { key: { objectId: 12 } } }, { counterpartyMappings: { key: { unexpected: "值" } } },
+  ];
+  for (const options of badOptions) {
+    assert.throws(() => f.service.prepareBankImport({ ...input, ...options }), { code: "BANK_IMPORT_INPUT_INVALID" });
+    assert.throws(() => prepareBankImport(getWorkspace(before, "target"), { ...input, table: parsed.table, ...options }), { code: "BANK_IMPORT_INPUT_INVALID" });
+  }
+  const valid = f.service.prepareBankImport({ ...input, mapping: {}, counterpartyMappings: {}, openingBalance: "  ", statementClosing: null, largeTransactionThreshold: 0 });
+  assert.equal(valid.importableRowCount, 2);
+  assert.equal(valid.reconciliation.openingBalance, 100);
+  assert.equal(valid.reconciliation.statementClosing, 175);
+  assert.ok(valid.largeTransactionThreshold >= 10000);
+  const numericStrings = f.service.prepareBankImport({ ...input, openingBalance: "100.00", statementClosing: "175.00" });
+  assert.equal(numericStrings.reconciliation.passed, true);
+  assert.equal(f.store.getState(), before);
+  assert.equal((await f.fileVault.listByWorkspace("target")).length, 0);
+});
+
+test("counterparty mappings resolve target-workspace identities and preserve departed personnel and manual names", async () => {
+  const f = fixture();
+  f.store.actions.replaceWorkspace("view", { ...getWorkspace(f.store.getState(), "view"), counterparties: [{ id: "foreign-partner", name: "其他工作台客户", kind: "customer", status: "active" }] });
+  f.store.actions.replaceWorkspace("target", { ...getWorkspace(f.store.getState(), "target"),
+    counterparties: [{ id: "real-partner", name: "真实关联方", kind: "related_party", status: "inactive" }],
+    personnelRecords: [{ id: "departed-person", name: "已离职员工", kind: "supplier", status: "departed" }],
+  });
+  const { parsed, plan } = await preview(f);
+  const key = plan.transactions[0].counterpartyAliasKey;
+  const input = { workspaceId: "target", period: "2026-08", accountId: "target-bank", fileRef: parsed.fileRef };
+  const mapping = { rawName: "客户甲", counterpartyAccount: "", standardName: "调用方伪造的客户名称", objectType: "counterparty", objectId: "real-partner", kind: "customer", targetKey: "counterparty:real-partner" };
+  for (const invalid of [{ objectId: "foreign-partner" }, { objectId: "missing" }, { objectType: "personnelRecord" }]) {
+    const counterpartyMappings = { [key]: { ...mapping, ...invalid } };
+    assert.throws(() => f.service.prepareBankImport({ ...input, counterpartyMappings }), { code: "BANK_COUNTERPARTY_UNAVAILABLE" });
+    assert.throws(() => prepareBankImport(getWorkspace(f.store.getState(), "target"), { ...input, table: parsed.table, counterpartyMappings }), { code: "BANK_COUNTERPARTY_UNAVAILABLE" });
+  }
+  const actual = f.service.prepareBankImport({ ...input, counterpartyMappings: { [key]: mapping } });
+  assert.equal(actual.transactions[0].counterparty, "真实关联方");
+  assert.equal(actual.transactions[0].counterpartyKind, "related_party");
+  assert.equal(actual.anomalyCounts.bank_related_party, 1, "caller cannot relabel a related party as an ordinary customer");
+  const departed = f.service.prepareBankImport({ ...input, counterpartyMappings: { [key]: { ...mapping, objectType: "personnelRecord", objectId: "departed-person", targetKey: "personnelRecord:departed-person" } } });
+  assert.equal(departed.transactions[0].counterparty, "已离职员工");
+  assert.equal(departed.transactions[0].counterpartyKind, "employee");
+  const settled = await f.service.executeBankImport({ workspaceId: "target", planId: departed.planId });
+  assert.equal(settled.import.transactions[0].counterpartyObjectId, "departed-person", "departure does not erase a financial identity");
+
+  const manualFixture = fixture();
+  const manual = await preview(manualFixture, { counterpartyMappings: { [key]: { ...mapping, objectType: "manual", objectId: null, targetKey: "manual", standardName: " 手工标准名称 " } } });
+  const manualResult = await manualFixture.service.executeBankImport(manual.input);
+  assert.equal(manualResult.import.transactions[0].counterparty, "手工标准名称");
+  assert.equal(manualResult.import.transactions[0].counterpartyObjectId, null);
+  assert.equal(manualResult.import.transactions[0].counterpartyKind, "customer");
+});
+
+test("execution re-resolves renamed objects and refuses objects deleted during original I/O without orphaning data", async () => {
+  for (const change of ["rename", "delete"]) {
+    const f = fixture();
+    f.store.actions.replaceWorkspace("target", { ...getWorkspace(f.store.getState(), "target"), counterparties: [{ id: "partner", name: "原名称", kind: "customer", status: "active" }] });
+    const first = await preview(f);
+    const mapping = { rawName: "客户甲", objectId: "partner", objectType: "counterparty", standardName: "原名称", kind: "customer" };
+    const prepared = await preview(f, { counterpartyMappings: { [first.plan.transactions[0].counterpartyAliasKey]: mapping } });
+    const put = f.fileVault.put.bind(f.fileVault);
+    f.fileVault.put = async (record) => {
+      await put(record);
+      const target = getWorkspace(f.store.getState(), "target");
+      f.store.actions.replaceWorkspace("target", { ...target, counterparties: change === "delete" ? [] : [{ ...target.counterparties[0], name: "最新名称", kind: "related_party", status: "inactive" }] });
+    };
+    if (change === "delete") {
+      await assert.rejects(f.service.executeBankImport(prepared.input), { code: "BANK_COUNTERPARTY_UNAVAILABLE" });
+      assert.equal(getWorkspace(f.store.getState(), "target").transactions.length, 0);
+      assert.equal(getWorkspace(f.store.getState(), "target").documents.length, 0);
+      assert.equal((await f.fileVault.listByWorkspace("target")).length, 0);
+    } else {
+      const result = await f.service.executeBankImport(prepared.input);
+      assert.equal(result.import.transactions[0].counterparty, "最新名称");
+      assert.equal(result.import.transactions[0].counterpartyKind, "related_party");
+      const nextFile = await f.service.registerBankFile(file(csv.replaceAll("S00", "LATER-00")), { workspaceId: "target" });
+      const next = f.service.prepareBankImport({ workspaceId: "target", period: "2026-08", accountId: "target-bank", fileRef: nextFile.fileRef });
+      assert.equal(next.transactions[0].counterparty, "最新名称", "saved aliases retain still-existing inactive identities");
+      assert.equal(next.transactions[0].counterpartyKind, "related_party");
+    }
+  }
+});
+
+test("saved, repeated-plan and duplicate-file results keep import snapshots but use the latest account reconciliation", async () => {
+  const f = fixture();
+  const first = await preview(f, { statementClosing: 999 });
+  const saved = await f.service.executeBankImport(first.input);
+  assert.equal(saved.import.monthlyReconciliation.passed, false);
+  assert.ok(saved.missingItems.some((item) => item.code === "bank_monthly_reconciliation_incomplete"));
+  const originalRecord = structuredClone(getWorkspace(f.store.getState(), "target").bankImports[0]);
+  const august = activateWorkspacePeriod(getWorkspace(f.store.getState(), "target"), "2026-08");
+  august.bankAccounts[0].statementClosing = 175;
+  const rechecked = reconcileBankAccountPeriod(august, { accountId: "target-bank", period: "2026-08", reconciledAt: "2026-09-08T09:00:00.000Z" });
+  f.store.actions.replaceWorkspace("target", activateWorkspacePeriod(rechecked.workspace, "2026-09"));
+  const beforeQuery = f.store.getState();
+  const queried = f.service.getBankImportResult({ workspaceId: "target", importId: saved.import.id });
+  assert.equal(f.store.getState(), beforeQuery, "current results are computed without rewriting historical records");
+  const repeated = await f.service.executeBankImport(first.input);
+  const next = await preview(f);
+  const duplicate = await f.service.executeBankImport(next.input);
+  for (const result of [queried, repeated, duplicate]) {
+    assert.equal(result.import.monthlyReconciliation.passed, false);
+    assert.equal(result.importSnapshots[0].monthlyReconciliation.passed, false);
+    assert.equal(result.currentReconciliation.passed, true);
+    assert.equal(result.currentReconciliation.balanceSource, "account_recheck");
+    assert.equal(result.nextActions.some((action) => action.action === "reconcile_bank_account"), false);
+    assert.equal(result.missingItems.some((item) => item.code === "bank_monthly_reconciliation_incomplete"), false);
+    assert.deepEqual(result.currentReconciliation, queried.currentReconciliation);
+    assert.deepEqual(result.missingItems, queried.missingItems);
+  }
+  assert.deepEqual(getWorkspace(f.store.getState(), "target").bankImports[0], originalRecord);
+  assert.equal(getWorkspace(f.store.getState(), "target").currentPeriod, "2026-09");
+});
+
+test("supplemental imports update current monthly results and duplicate files can identify several historical batches", async () => {
+  const f = fixture();
+  const header = "日期,对方,摘要,收入,支出,流水号,余额";
+  const rows = ["2026-08-01,客户甲,服务款,100,,PART-1,200", "2026-08-02,客户乙,补收款,25,,PART-2,225"];
+  async function importRows(selectedRows, balances) {
+    const registered = await f.service.registerBankFile(file([header, ...selectedRows].join("\n")), { workspaceId: "target" });
+    const plan = f.service.prepareBankImport({ workspaceId: "target", period: "2026-08", accountId: "target-bank", fileRef: registered.fileRef, ...balances });
+    return f.service.executeBankImport({ workspaceId: "target", planId: plan.planId });
+  }
+  const first = await importRows([rows[0]], { openingBalance: 100, statementClosing: 225 });
+  assert.equal(first.currentReconciliation.passed, false);
+  const second = await importRows([rows[1]], { openingBalance: 200, statementClosing: 225 });
+  assert.equal(second.currentReconciliation.passed, true);
+  const queried = f.service.getBankImportResult({ workspaceId: "target", importId: first.import.id });
+  assert.equal(queried.importSnapshots[0].monthlyReconciliation.passed, false);
+  assert.equal(queried.currentReconciliation.passed, true);
+  assert.equal(queried.currentReconciliation.transactionCount, 2);
+  assert.ok(queried.missingItems.some((item) => item.sourceId === second.transactionIds[0]), "current missing items cover the target account and month, including later batches");
+  const duplicate = await importRows(rows);
+  assert.equal(duplicate.status, "duplicate");
+  assert.equal(duplicate.import, null);
+  assert.deepEqual(new Set(duplicate.importIds), new Set([first.import.id, second.import.id]));
+  assert.equal(duplicate.importSnapshots.length, 2);
+  assert.deepEqual(duplicate.currentReconciliation, queried.currentReconciliation);
+  assert.deepEqual(duplicate.missingItems, queried.missingItems);
+  assert.equal(duplicate.nextActions.find((action) => action.action === "review_bank_transactions").transactionIds.length, 2);
+  assert.equal(duplicate.nextActions.some((action) => action.action === "reconcile_bank_account"), false);
+  assert.equal((await f.fileVault.listByWorkspace("target")).length, 2);
+});
+
+test("legacy bank tasks follow real source months without contaminating September or losing current-month issues", async () => {
+  const f = fixture();
+  const prepared = await preview(f);
+  const augustImport = await f.service.executeBankImport(prepared.input);
+  const target = getWorkspace(f.store.getState(), "target");
+  assert.ok(target.exceptionTasks.every((task) => task.period === "2026-08"), "new bank tasks record their period");
+  const legacyAugustTasks = target.exceptionTasks.map(({ period, ...task }) => task);
+  f.store.actions.replaceWorkspace("target", { ...target, exceptionTasks: legacyAugustTasks });
+  const beforeSeptember = getWorkspace(f.store.getState(), "target");
+  const augustState = structuredClone(beforeSeptember.periodStates["2026-08"]);
+  const septemberFile = await f.service.registerBankFile(file("日期,对方,摘要,收入,支出,流水号,余额\n2026-09-02,银行,手续费,,25,SEP-1,875"), { workspaceId: "target" });
+  const septemberPlan = f.service.prepareBankImport({ workspaceId: "target", period: "2026-09", accountId: "target-bank", fileRef: septemberFile.fileRef, openingBalance: 900, statementClosing: 875 });
+  const septemberImport = await f.service.executeBankImport({ workspaceId: "target", planId: septemberPlan.planId });
+  const afterSeptember = getWorkspace(f.store.getState(), "target");
+  assert.equal(afterSeptember.stages.s3.status, "complete");
+  assert.deepEqual(afterSeptember.exceptionTasks.filter((task) => legacyAugustTasks.some((old) => old.id === task.id)), legacyAugustTasks);
+  assert.deepEqual(afterSeptember.periodStates["2026-08"], augustState);
+  assert.equal(septemberImport.missingItems.length, 0);
+  assert.ok(f.service.getBankImportResult({ workspaceId: "target", importId: augustImport.import.id }).missingItems.length);
+  const currentTask = { id: "legacy-september", sourceType: "bankTransaction", sourceId: septemberImport.transactionIds[0], code: "bank_review_required", message: "本月需要复核", status: "open" };
+  const withLegacyCurrent = { ...afterSeptember, exceptionTasks: [...afterSeptember.exceptionTasks, currentTask] };
+  const rechecked = reconcileBankAccountPeriod(withLegacyCurrent, { accountId: "target-bank", period: "2026-09" });
+  assert.equal(rechecked.reconciliation.passed, true);
+  assert.equal(rechecked.workspace.stages.s3.status, "needs_review");
+  assert.deepEqual(bankExceptionTasksForPeriod(rechecked.workspace, "2026-09").map((task) => task.id), [currentTask.id]);
+  const sourceFallbacks = [
+    { id: "by-import", sourceType: "bankTransaction", importId: augustImport.import.id },
+    { id: "by-source-list", sourceType: "bankTransaction", sourceIds: augustImport.transactionIds },
+    { id: "by-reconciliation", sourceType: "bankReconciliation", sourceId: "target-bank", reconciliation: { period: "2026-08" } },
+    { id: "by-identity", sourceType: "bankReconciliation", sourceId: "target-bank", identity: "bank_monthly_reconciliation_incomplete:target-bank:2026-08" },
+    { id: "unknown-month", sourceType: "bankTransaction", sourceId: "missing-source" },
+  ];
+  assert.deepEqual(bankExceptionTasksForPeriod(afterSeptember, "2026-08", { accountId: "target-bank", tasks: sourceFallbacks }).map((task) => task.id), sourceFallbacks.slice(0, 4).map((task) => task.id));
+  assert.deepEqual(bankExceptionTasksForPeriod(afterSeptember, "2026-09", { tasks: sourceFallbacks }), []);
+  assert.equal(sourceFallbacks[4].sourceId, "missing-source", "unattributable historical data is preserved rather than assigned to the displayed month");
 });

@@ -137,6 +137,86 @@ function aliasRuleMatches(rule, transaction) {
   return Boolean((rawName && ruleName && rawName === ruleName) || (account && ruleAccount && account === ruleAccount));
 }
 
+function bankImportInputError(field, message) {
+  return Object.assign(new Error(message), { code: "BANK_IMPORT_INPUT_INVALID", details: { field } });
+}
+
+function isRecord(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value)
+    && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+}
+
+// Shared by the application boundary and the domain preparation path. Do this
+// before JSON copying so invalid numbers are not silently converted to null.
+export function validateBankImportOptions(input) {
+  const next = { ...input };
+  if (input.mapping !== undefined) {
+    if (!isRecord(input.mapping)) throw bankImportInputError("mapping", "字段映射必须是字段名与列序号组成的对象");
+    for (const [field, column] of Object.entries(input.mapping)) {
+      if (!Object.hasOwn(BANK_FIELD_DEFINITIONS, field) || !Number.isInteger(column) || column < 0
+        || (input.table?.[0] && column >= input.table[0].length)) {
+        throw bankImportInputError(`mapping.${field}`, `字段 ${field} 必须映射到文件中有效的非负整数列序号`);
+      }
+    }
+    next.mapping = { ...input.mapping };
+  }
+  for (const field of ["openingBalance", "statementClosing"]) {
+    const value = input[field];
+    if (value === undefined) continue;
+    if (value === null || (typeof value === "string" && !value.trim())) { next[field] = null; continue; }
+    const amount = ["number", "string"].includes(typeof value) ? normalizeMoney(value) : null;
+    if (!Number.isFinite(amount)) {
+      throw bankImportInputError(field, `${field === "openingBalance" ? "期初余额" : "期末余额"}必须是有效金额，留空表示使用已有余额`);
+    }
+    next[field] = amount;
+  }
+  if (input.largeTransactionThreshold !== undefined && (typeof input.largeTransactionThreshold !== "number"
+    || !Number.isFinite(input.largeTransactionThreshold) || input.largeTransactionThreshold < 0)) {
+    throw bankImportInputError("largeTransactionThreshold", "大额阈值必须是非负有限数值，0 表示使用默认阈值");
+  }
+  if (input.counterpartyMappings !== undefined) {
+    if (!isRecord(input.counterpartyMappings)) throw bankImportInputError("counterpartyMappings", "交易对手映射必须是对象");
+    const fields = new Set(["rawName", "counterpartyAccount", "standardName", "objectId", "objectType", "kind", "targetKey", "ruleId", "createdAt"]);
+    for (const [key, mapping] of Object.entries(input.counterpartyMappings)) {
+      if (!isRecord(mapping)) throw bankImportInputError(`counterpartyMappings.${key}`, "每项交易对手映射必须是对象");
+      for (const [field, value] of Object.entries(mapping)) {
+        if (!fields.has(field) || (typeof value !== "string" && !(field === "objectId" && value === null))) {
+          throw bankImportInputError(`counterpartyMappings.${key}.${field}`, `交易对手映射字段 ${field} 无效`);
+        }
+      }
+    }
+  }
+  return next;
+}
+
+function resolveCounterpartyMapping(workspace, mapping) {
+  const objectType = mapping.objectType || "manual";
+  const objectId = normalizeText(mapping.objectId);
+  const rawName = normalizeText(mapping.rawName);
+  const counterpartyAccount = normalizeText(mapping.counterpartyAccount);
+  if (!rawName && !counterpartyAccount) throw bankImportInputError("counterpartyMappings", "交易对手映射缺少银行原始名称或账号");
+  if (objectType === "manual") {
+    if (objectId) throw bankImportInputError("counterpartyMappings.objectId", "手工名称不能附带业务对象 ID，请明确选择对象类型");
+    const standardName = normalizeText(mapping.standardName);
+    const kind = mapping.kind || "other";
+    if (!standardName) throw bankImportInputError("counterpartyMappings.standardName", "请填写手工交易对手的标准名称");
+    if (!["customer", "supplier", "employee", "related_party", "other"].includes(kind)) throw bankImportInputError("counterpartyMappings.kind", "手工交易对手类别无效");
+    return { ...mapping, rawName, counterpartyAccount, objectType, objectId: null, standardName, kind };
+  }
+  const collection = { counterparty: "counterparties", personnelRecord: "personnelRecords" }[objectType];
+  const target = collection && (workspace[collection] || []).find((item) => item.id === objectId);
+  if (!target) {
+    throw Object.assign(new Error(`交易对手 ${objectType}:${objectId || "未指定"} 不属于目标工作台中的对象，请重新选择`), {
+      code: "BANK_COUNTERPARTY_UNAVAILABLE", details: { objectType, objectId },
+    });
+  }
+  const standardName = normalizeText(target.name || target.employeeName);
+  if (!standardName) throw bankImportInputError("counterpartyMappings.objectId", "所选交易对手缺少名称，请先补齐对象资料");
+  return { ...mapping, rawName, counterpartyAccount, objectType, objectId, standardName,
+    kind: objectType === "personnelRecord" ? "employee" : (target.kind || "other"),
+  };
+}
+
 function buildAliasRule(mapping, importedAt) {
   const rawName = normalizeText(mapping.rawName);
   const counterpartyAccount = normalizeText(mapping.counterpartyAccount);
@@ -178,7 +258,9 @@ function applyAliasRule(transaction, rule, source) {
 
 export function applyCounterpartyAliasRules(workspace, transactions, mappings = {}, options = {}) {
   const importedAt = options.importedAt || transactions[0]?.importedAt || new Date().toISOString();
-  const suppliedRules = options.rules || Object.values(mappings || {}).map((mapping) => buildAliasRule(mapping, importedAt)).filter(Boolean);
+  const suppliedRules = options.rules
+    ? options.rules.map((rule) => resolveCounterpartyMapping(workspace, rule))
+    : Object.values(mappings || {}).map((mapping) => buildAliasRule(resolveCounterpartyMapping(workspace, mapping), importedAt));
   const suppliedIds = new Set(suppliedRules.map((rule) => rule.id));
   const savedRules = [...(workspace.counterpartyAliasRules || [])]
     .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")));
@@ -186,10 +268,10 @@ export function applyCounterpartyAliasRules(workspace, transactions, mappings = 
   const applications = [];
   const standardized = transactions.map((transaction) => {
     const exactMapping = mappings?.[transaction.counterpartyAliasKey];
-    const exactRule = exactMapping ? buildAliasRule(exactMapping, importedAt) : null;
+    const exactRule = exactMapping ? buildAliasRule(resolveCounterpartyMapping(workspace, exactMapping), importedAt) : null;
     const rule = exactRule || rules.find((candidate) => aliasRuleMatches(candidate, transaction));
     if (!rule) return transaction;
-    const mapped = applyAliasRule(transaction, rule, suppliedIds.has(rule.id) || exactRule ? "manual" : "saved-alias");
+    const mapped = applyAliasRule(transaction, resolveCounterpartyMapping(workspace, rule), suppliedIds.has(rule.id) || exactRule ? "manual" : "saved-alias");
     applications.push({
       transactionId: transaction.id,
       sourceRow: transaction.sourceRow,
@@ -846,6 +928,22 @@ function reconciliationTaskIdentity(accountId, period) {
   return `${BANK_RECONCILIATION_EXCEPTION_CODE}:${accountId}:${period}`;
 }
 
+export function bankExceptionTasksForPeriod(workspace, period, { accountId, tasks = workspace.exceptionTasks || [] } = {}) {
+  const transactions = new Map((workspace.transactions || []).map((item) => [item.id, item]));
+  const imports = new Map((workspace.bankImports || []).map((item) => [item.id, item]));
+  return tasks.filter((task) => {
+    if (!["bankTransaction", "bankReconciliation"].includes(task.sourceType)) return false;
+    const sourceIds = [task.sourceId, ...(task.sourceIds || [])];
+    const transaction = sourceIds.map((id) => transactions.get(id)).find(Boolean);
+    const bankImport = imports.get(task.importId) || sourceIds.map((id) => imports.get(id)).find(Boolean);
+    const identityPeriod = task.sourceType === "bankReconciliation" ? String(task.identity || "").match(/:(\d{4}-(?:0[1-9]|1[0-2]))$/)?.[1] : null;
+    const taskPeriod = [task.period, transaction?.date?.slice(0, 7), bankImport?.period, task.reconciliation?.period, identityPeriod].find(validPeriod);
+    const taskAccountId = task.accountId || transaction?.accountId || bankImport?.accountId
+      || (task.sourceType === "bankReconciliation" ? task.sourceId : null);
+    return taskPeriod === period && (!accountId || taskAccountId === accountId);
+  });
+}
+
 function synchronizeBankReconciliationTask(tasks, monthly, plan, actor) {
   const next = [...(tasks || [])];
   const identity = reconciliationTaskIdentity(plan.accountId, plan.period);
@@ -854,6 +952,7 @@ function synchronizeBankReconciliationTask(tasks, monthly, plan, actor) {
   if (monthly.passed) {
     if (current) next[index] = {
       ...current,
+      period: plan.period,
       status: "resolved",
       resolution: "monthly_reconciliation_completed",
       resolvedAt: plan.importedAt,
@@ -875,6 +974,7 @@ function synchronizeBankReconciliationTask(tasks, monthly, plan, actor) {
   if (current) {
     next[index] = {
       ...current,
+      period: plan.period,
       message,
       status: "open",
       workflowState: "awaiting_reconciliation",
@@ -1043,10 +1143,8 @@ export function buildBankAccountReconciliationSummary(workspace, { period }) {
 
 function bankReconciliationStageState(workspace, exceptionTasks, period, updatedAt) {
   const accountSummary = buildBankAccountReconciliationSummary(workspace, { period });
-  const hasOpenImportTasks = (exceptionTasks || []).some((task) => (
-    task.status !== "resolved"
-    && ["bankTransaction", "bankReconciliation"].includes(task.sourceType)
-  ));
+  const hasOpenImportTasks = bankExceptionTasksForPeriod(workspace, period, { tasks: exceptionTasks })
+    .some((task) => task.status !== "resolved");
   return {
     accountSummary,
     stage: {
@@ -1460,6 +1558,7 @@ export function applyPlatformSettlementImport(state, workspaceId, plan, options 
 }
 
 export function prepareBankImport(workspace, input) {
+  input = validateBankImportOptions(input);
   const account = workspace.bankAccounts.find((candidate) => candidate.id === input.accountId);
   if (!account) throw new Error(`找不到银行账户：${input.accountId}`);
   const selectedPeriod = input.period == null || input.period === "" ? null : String(input.period);
@@ -1648,6 +1747,7 @@ export function applyBankImport(state, workspaceId, plan, options = {}) {
     code: anomaly.code,
     sourceType: "bankTransaction",
     sourceId: anomaly.transactionId,
+    period: effectivePlan.period,
     message: anomaly.message,
     missingEvidence: [],
     status: "open",
@@ -1732,6 +1832,7 @@ export function applyBankImport(state, workspaceId, plan, options = {}) {
         code: "bank_related_party",
         sourceType: "bankTransaction",
         sourceId: transaction.id,
+        period: transaction.date?.slice(0, 7),
         message: `交易对手「${transaction.counterparty}」已标记为关联方，需要人工确认`,
         missingEvidence: [],
         status: "open",

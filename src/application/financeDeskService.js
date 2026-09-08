@@ -1,6 +1,6 @@
 import { createId, getWorkspace } from "../domain/foundation.js";
 import { activateWorkspacePeriod, isPeriodArchived, validAccountingPeriod } from "../domain/periods.js";
-import { prepareBankImport, readBankFile, transactionDedupeKey } from "../features/intake/bankStatementImport.js";
+import { BANK_FIELD_DEFINITIONS, bankExceptionTasksForPeriod, buildBankMonthlyReconciliation, prepareBankImport, readBankFile, transactionDedupeKey, validateBankImportOptions } from "../features/intake/bankStatementImport.js";
 import { removeLocalDocument, saveLocalDocument, verifyStoredDocumentOriginal } from "../features/intake/documentIntake.js";
 
 const string = { type: "string", minLength: 1 };
@@ -15,16 +15,20 @@ export const FINANCE_DESK_OPERATIONS = [
   definition("listWorkspaces", "列出可读取工作台", {}, [], ["workspaces"]),
   definition("getWorkspaceContext", "查询指定工作台和账期的账户及导入记录", target, ["workspaceId", "period"], ["workspaceId", "period", "archived", "periods", "accounts", "imports"]),
   definition("prepareBankImport", "对已注册本地文件进行映射和导入预检查", {
-    ...target, accountId: string, fileRef: string, mapping: { type: "object", additionalProperties: { type: "integer", minimum: 0 } },
+    ...target, accountId: string, fileRef: string, mapping: { type: "object", properties: Object.fromEntries(Object.keys(BANK_FIELD_DEFINITIONS).map((field) => [field, { type: "integer", minimum: 0 }])), additionalProperties: false },
     openingBalance: { type: ["number", "string", "null"] }, statementClosing: { type: ["number", "string", "null"] },
-    counterpartyMappings: { type: "object" }, largeTransactionThreshold: { type: "number", minimum: 0 },
+    counterpartyMappings: { type: "object", additionalProperties: { type: "object", properties: {
+      rawName: { type: "string" }, counterpartyAccount: { type: "string" }, standardName: { type: "string" },
+      objectId: { type: ["string", "null"] }, objectType: { enum: ["manual", "counterparty", "personnelRecord"] },
+      kind: { type: "string" }, targetKey: { type: "string" }, ruleId: { type: "string" }, createdAt: { type: "string" },
+    }, additionalProperties: false } }, largeTransactionThreshold: { type: "number", minimum: 0 },
   }, ["workspaceId", "period", "accountId", "fileRef"], ["planId", "transactions", "errors", "duplicates", "reconciliation", "missingItems", "nextActions"]),
   definition("executeBankImport", "按最新工作台数据执行服务生成的导入计划", {
     workspaceId: string, planId: string,
-  }, ["workspaceId", "planId"], ["status", "workspaceId", "period", "accountId", "importIds", "transactionIds", "documentIds", "counts", "import", "missingItems", "nextActions"]),
+  }, ["workspaceId", "planId"], ["status", "workspaceId", "period", "accountId", "importIds", "transactionIds", "documentIds", "counts", "import", "importSnapshots", "currentReconciliation", "missingItems", "nextActions"]),
   definition("getBankImportResult", "读取已保存的银行导入结果", {
     workspaceId: string, importId: string,
-  }, ["workspaceId", "importId"], ["status", "workspaceId", "period", "accountId", "importIds", "transactionIds", "documentIds", "counts", "import", "missingItems", "nextActions"]),
+  }, ["workspaceId", "importId"], ["status", "workspaceId", "period", "accountId", "importIds", "transactionIds", "documentIds", "counts", "import", "importSnapshots", "currentReconciliation", "missingItems", "nextActions"]),
 ];
 
 const jsonCopy = (value) => JSON.parse(JSON.stringify(value));
@@ -44,7 +48,7 @@ export function createFinanceDeskService({ store, fileVault }) {
     for (const key of Object.keys(input)) if (!Object.hasOwn(spec.parameters.properties, key)) throw failure(`不支持的参数：${key}`);
     for (const key of spec.parameters.required) if (typeof input[key] !== "string" || !input[key].trim()) throw failure(`缺少参数：${key}`);
     if (Object.hasOwn(input, "period") && !validAccountingPeriod(input.period)) throw failure("请选择有效的导入账期");
-    return input;
+    return name === "prepareBankImport" ? validateBankImportOptions(input) : input;
   }
 
   function workspaceFor(workspaceId) {
@@ -101,12 +105,22 @@ export function createFinanceDeskService({ store, fileVault }) {
 
   function followup(workspace, record, transactions) {
     const ids = new Set(transactions.map((item) => item.id));
-    const missingItems = (workspace.exceptionTasks || []).filter((task) => task.status !== "resolved"
-      && (ids.has(task.sourceId) || (task.sourceType === "bankReconciliation" && task.accountId === record.accountId && task.period === record.period)))
+    const { imports, ...currentReconciliation } = buildBankMonthlyReconciliation(activateWorkspacePeriod(workspace, record.period), {
+      accountId: record.accountId, period: record.period,
+    });
+    const missingItems = bankExceptionTasksForPeriod(workspace, record.period, { accountId: record.accountId })
+      .filter((task) => task.status !== "resolved")
       .map((task) => ({ id: task.id, code: task.code, message: task.message, sourceId: task.sourceId, missingEvidence: task.missingEvidence || [] }));
-    const nextActions = [{ action: "review_bank_transactions", workspaceId: workspace.id, period: record.period, accountId: record.accountId, importId: record.id, transactionIds: [...ids] }];
-    if (record.monthlyReconciliation?.passed !== true) nextActions.push({ action: "reconcile_bank_account", workspaceId: workspace.id, period: record.period, accountId: record.accountId });
-    return { missingItems, nextActions };
+    const nextActions = ids.size ? [{ action: "review_bank_transactions", workspaceId: workspace.id, period: record.period, accountId: record.accountId, ...(record.id ? { importId: record.id } : {}), transactionIds: [...ids] }] : [];
+    if (!currentReconciliation.passed) nextActions.push({ action: "reconcile_bank_account", workspaceId: workspace.id, period: record.period, accountId: record.accountId });
+    return { currentReconciliation, missingItems, nextActions };
+  }
+
+  function importSnapshot(record) {
+    return { importId: record.id, importedAt: record.importedAt,
+      counts: { imported: record.importableRowCount, duplicates: record.duplicateCount, errors: record.errorCount },
+      reconciliation: record.reconciliation, monthlyReconciliation: record.monthlyReconciliation,
+    };
   }
 
   function resultFor(workspace, record) {
@@ -115,7 +129,7 @@ export function createFinanceDeskService({ store, fileVault }) {
       status: "imported", workspaceId: workspace.id, period: record.period, accountId: record.accountId,
       importIds: [record.id], transactionIds: transactions.map((item) => item.id), documentIds: record.sourceDocumentId ? [record.sourceDocumentId] : [],
       counts: { imported: transactions.length, duplicates: record.duplicateCount, errors: record.errorCount },
-      import: { ...record, transactions }, ...followup(workspace, record, transactions),
+      import: { ...record, transactions }, importSnapshots: [importSnapshot(record)], ...followup(workspace, record, transactions),
     });
   }
 
@@ -126,12 +140,14 @@ export function createFinanceDeskService({ store, fileVault }) {
     const record = workspace.bankImports.find((item) => item.accountId === plan.accountId && item.period === plan.period && item.fileHash === plan.fileHash)
       || (importIds.length === 1 ? workspace.bankImports.find((item) => item.id === importIds[0]) : null);
     const previous = record ? resultFor(workspace, record) : {};
+    const records = workspace.bankImports.filter((item) => importIds.includes(item.id));
     return jsonCopy({
       ...previous, status: "duplicate", workspaceId: workspace.id, period: plan.period, accountId: plan.accountId,
       importIds, transactionIds: transactions.map((item) => item.id),
-      documentIds: [...new Set(workspace.bankImports.filter((item) => importIds.includes(item.id)).map((item) => item.sourceDocumentId).filter(Boolean))],
+      documentIds: [...new Set(records.map((item) => item.sourceDocumentId).filter(Boolean))],
       counts: { imported: 0, duplicates: plan.duplicateCount, errors: 0 }, import: previous.import || null,
-      missingItems: previous.missingItems || [], nextActions: previous.nextActions || [],
+      importSnapshots: records.map(importSnapshot),
+      ...followup(workspace, { accountId: plan.accountId, period: plan.period, ...(record ? { id: record.id } : {}) }, transactions),
     });
   }
 
@@ -217,7 +233,7 @@ export function createFinanceDeskService({ store, fileVault }) {
       });
     },
     prepareBankImport(input) {
-      validate("prepareBankImport", input);
+      input = validate("prepareBankImport", input);
       const workspace = workspaceFor(input.workspaceId);
       const file = fileFor(input.fileRef, input.workspaceId);
       const entry = { id: createId("bank-import"), importedAt: new Date().toISOString(), input: jsonCopy(input), pending: null };

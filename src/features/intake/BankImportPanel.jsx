@@ -422,8 +422,8 @@ export function BankImportPanel({ compact = false, onToast, onComplete, onReques
     } else if (completedPlan) {
       const recognitionText = completedPlan.recognitionCount ? `，自动识别 ${completedPlan.recognitionCount} 项` : "";
       const anomalyText = completedPlan.anomalyCount ? `，形成 ${completedPlan.anomalyCount} 项异常待复核` : "";
-      const reconciliationText = completedPlan.monthlyReconciliation?.passed === false
-        ? `；${completedPlan.monthlyReconciliation.message}，已生成月度勾稽异常，可继续补导后重新勾稽`
+      const reconciliationText = completedResult.currentReconciliation?.passed === false
+        ? `；${completedResult.currentReconciliation.message}，已生成月度勾稽异常，可继续补导后重新勾稽`
         : "";
       const message = `已导入 ${completedPlan.importableRowCount} 笔流水，跳过 ${completedPlan.duplicateCount} 笔重复${recognitionText}${anomalyText}${reconciliationText}`;
       setNotice(message);
