@@ -151,10 +151,11 @@ export function createLocalFoundationRepository(options = {}) {
 
   function writeState(valid) {
     const previous = storage.getItem(key);
+    let previousIsValid = false;
     if (previous) {
       try {
         parseStoredState(previous, migrationOptions());
-        storage.setItem(backupKey, previous);
+        previousIsValid = true;
       } catch {
         // A corrupt primary copy is never promoted to the last-good backup.
       }
@@ -163,6 +164,14 @@ export function createLocalFoundationRepository(options = {}) {
     storage.setItem(key, serialized);
     baseline = serialized;
     pendingInitialState = null;
+    // Replacing the primary is atomic. Do it before growing the secondary copy
+    // so a large previous snapshot cannot consume room needed by this save.
+    // If there is no room to rotate the backup, its existing value survives;
+    // the successfully saved primary must not be reported as a failed commit.
+    if (previousIsValid) {
+      try { storage.setItem(backupKey, previous); }
+      catch { /* Keep the existing backup; never delete either saved copy. */ }
+    }
   }
 
   // Keep a single browser writer for this repository. Waiting/stale pages retain

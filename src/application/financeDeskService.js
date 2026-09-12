@@ -1,6 +1,6 @@
 import { createId, getWorkspace } from "../domain/foundation.js";
 import { activateWorkspacePeriod, isPeriodArchived, validAccountingPeriod } from "../domain/periods.js";
-import { BANK_FIELD_DEFINITIONS, bankExceptionTasksForPeriod, buildBankMonthlyReconciliation, prepareBankImport, readBankFile, transactionDedupeKey, validateBankImportOptions } from "../features/intake/bankStatementImport.js";
+import { BANK_FIELD_DEFINITIONS, bankExceptionTasksForPeriod, buildBankMonthlyReconciliation, inspectBankSourceGroups, matchBankSourceAccounts, prepareBankImport, readBankFile, transactionDedupeKey, validateBankImportOptions } from "../features/intake/bankStatementImport.js";
 import { removeLocalDocument, saveLocalDocument, verifyStoredDocumentOriginal } from "../features/intake/documentIntake.js";
 import { accountingRules, collectSourceIds, workspaceAccountDefinitions } from "../domain/accounting/model.js";
 import { prepareVoucherPosting, reviseDraftVoucher } from "../domain/accounting/vouchers.js";
@@ -29,7 +29,7 @@ export const FINANCE_DESK_OPERATIONS = [
   definition("reverseAdvanceApplication", "撤回指定账期尚未入账的预收/预付冲销，恢复余额并保留撤回历史", { ...target, applicationId: string, reason: string }, ["workspaceId", "period", "applicationId", "reason"], ["workspaceId", "period", "application", "advance", "target", "cancelledVoucherIds"]),
   definition("importReceipt", "把本地回执原件登记到指定申报包，保存后再次确认包与原件归属", { ...target, fileRef: string, packageId: string, packageHash: string, reportVersionId: string }, ["workspaceId", "period", "fileRef", "packageId", "packageHash", "reportVersionId"], ["workspaceId", "period", "receipt"]),
   definition("prepareBankImport", "对已注册本地文件进行映射和导入预检查", {
-    ...target, accountId: string, fileRef: string, mapping: { type: "object", properties: Object.fromEntries(Object.keys(BANK_FIELD_DEFINITIONS).map((field) => [field, { type: "integer", minimum: 0 }])), additionalProperties: false },
+    ...target, accountId: string, fileRef: string, sourceGroupId: string, mapping: { type: "object", properties: Object.fromEntries(Object.keys(BANK_FIELD_DEFINITIONS).map((field) => [field, { type: "integer", minimum: 0 }])), additionalProperties: false },
     openingBalance: { type: ["number", "string", "null"] }, statementClosing: { type: ["number", "string", "null"] },
     counterpartyMappings: { type: "object", additionalProperties: { type: "object", properties: {
       rawName: { type: "string" }, counterpartyAccount: { type: "string" }, standardName: { type: "string" },
@@ -242,6 +242,7 @@ export function createFinanceDeskService({ store, fileVault }) {
     workspaceFor(workspaceId);
     if (!(file instanceof Blob)) throw failure("本地宿主必须提供真实 File 或 Blob，不能传入文件描述对象");
     const parsed = await readBankFile(file, { signal, onProgress, fileName, sheetName, encoding, computeHash: true });
+    parsed.sourceAnalysis = inspectBankSourceGroups(parsed.table, parsed);
     signal?.throwIfAborted();
     const workspace = workspaceFor(workspaceId);
     if (sourceDocumentId) {
@@ -251,6 +252,20 @@ export function createFinanceDeskService({ store, fileVault }) {
     const fileRef = createId("bank-file");
     files.set(fileRef, { file, parsed, workspaceId, sourceDocumentId, exactMapping, released: false, executing: 0 });
     return jsonCopy({ fileRef, workspaceId, ...parsed });
+  }
+
+  function inspectBankFileSources(input) {
+    const { workspaceId, period, fileRef, mapping } = input || {};
+    if (!workspaceId || !validAccountingPeriod(period) || !fileRef) throw failure("请指定工作台、账期和已注册的银行文件");
+    for (const key of Object.keys(input)) if (!["workspaceId", "period", "fileRef", "mapping"].includes(key)) throw failure(`不支持的参数：${key}`);
+    const workspace = activateWorkspacePeriod(workspaceFor(workspaceId), period);
+    const file = fileFor(fileRef, workspaceId);
+    validateBankImportOptions({ mapping, table: file.parsed.table });
+    const analysis = mapping === undefined && !file.exactMapping ? file.parsed.sourceAnalysis
+      : inspectBankSourceGroups(file.parsed.table, { ...file.parsed, mapping, exactMapping: file.exactMapping });
+    return jsonCopy({ ...analysis, workspaceId, period, fileRef, groups: analysis.groups.map((group) => ({
+      ...group, ...matchBankSourceAccounts(group, workspace.bankAccounts, analysis.groups),
+    })) });
   }
 
   function discardReleasedFile(fileRef) {
@@ -314,7 +329,7 @@ export function createFinanceDeskService({ store, fileVault }) {
 
   function duplicateResult(workspace, plan) {
     const keys = new Set(plan.duplicates.map((item) => item.dedupeKey));
-    const transactions = workspace.transactions.filter((item) => keys.has(item.dedupeKey || transactionDedupeKey(item)));
+    const transactions = workspace.transactions.filter((item) => keys.has(transactionDedupeKey(item)));
     const importIds = [...new Set(transactions.map((item) => item.importId).filter(Boolean))];
     const record = workspace.bankImports.find((item) => item.accountId === plan.accountId && item.period === plan.period && item.fileHash === plan.fileHash)
       || (importIds.length === 1 ? workspace.bankImports.find((item) => item.id === importIds[0]) : null);
@@ -391,6 +406,7 @@ export function createFinanceDeskService({ store, fileVault }) {
         transactions: plan.transactions.map((transaction) => ({ ...transaction, evidenceIds: [...new Set([...(transaction.evidenceIds || []), sourceDocument.id])] })),
       });
       workspace = getWorkspace(nextState, workspaceId);
+      file.sourceDocumentId = sourceDocument.id;
       return resultFor(workspace, workspace.bankImports.find((item) => item.id === plan.id));
     } catch (error) {
       const workspace = getWorkspace(store.getState(), workspaceId);
@@ -479,7 +495,7 @@ export function createFinanceDeskService({ store, fileVault }) {
   };
 
   return {
-    ...operations, registerBankFile, releaseBankFile,
+    ...operations, registerBankFile, releaseBankFile, inspectBankFileSources,
     registerReceiptFile(file, { workspaceId } = {}) {
       workspaceFor(workspaceId);
       if (!(file instanceof Blob)) throw failure("本地宿主必须提供真实回执 File 或 Blob");

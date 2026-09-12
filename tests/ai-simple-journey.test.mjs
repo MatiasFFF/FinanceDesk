@@ -50,8 +50,11 @@ test("journey: revised CSV import, human business confirmation and original-back
   const duplicateRound = scriptedAssistant(f, [
     assistantReply("重新读取同一份原件", [toolCall("import_duplicate", "prepare_bank_import", input)]), assistantReply("本批流水已存在"),
   ]);
-  const duplicate = (await duplicateRound.run()).toolResults[0].result.proposal;
-  assert.equal((await f.service.confirmProposal(duplicate.id)).result.counts.imported, 0);
+  const duplicate = (await duplicateRound.run()).toolResults[0].result;
+  assert.equal(duplicate.status, "already_imported");
+  assert.deepEqual(duplicate.proposals, [], "a fully imported original does not ask the user to confirm again");
+  assert.equal(duplicate.alreadyImportedGroups.length, 1);
+  assert.deepEqual(duplicate.alreadyImportedGroups[0].counts, { imported: 0, duplicates: 2, errors: 0 });
   assert.equal(workspace(f).transactions.length, 2);
   assert.equal(workspace(f).bankImports.length, 1);
   assert.equal(workspace(f).documents.length, 1);
@@ -181,18 +184,21 @@ test("journey: recoverable tool input, provider failure and cancellation retain 
   ]);
   let interrupted;
   await assert.rejects(recoveryRound.run(), (error) => { interrupted = error; return error.code === "ASSISTANT_UNAVAILABLE"; });
-  assert.equal(recoveryRound.trace.providerRequests.length, 3, "a recoverable field error must return to the provider before retry");
+  assert.equal(recoveryRound.trace.providerRequests.length, 3, "a reviewable missing account must return to the provider before retry");
   assert.equal(interrupted.toolResults.length, 2);
   const missing = interrupted.toolResults[0].result;
-  assert.equal(missing.status, "needs_input");
-  assert.equal(missing.ok, false);
-  assert.equal(missing.error.recoverable, true);
-  assert.ok(missing.error.requiredFields.includes("accountId"));
+  assert.equal(missing.status, "needs_correction");
+  assert.equal(missing.proposal.preview.accountResolution.status, "missing");
+  assert.equal(missing.proposal.preview.canConfirm, false);
+  assert.deepEqual(missing.proposal.sourceIds, [attachment.documentId]);
+  assert.equal(proposalById(f, missing.proposal.id).status, "pending", "missing business account stays reviewable after the provider fails");
   const prepared = interrupted.toolResults[1].result.proposal;
   assert.equal(proposalById(f, prepared.id).status, "pending");
   assert.equal(workspace(f).transactions.length, 0);
   assert.equal(workspace(f).documents.length, 1);
   f = reloadJourney(f);
+  assert.equal(proposalById(f, missing.proposal.id).status, "pending");
+  assert.ok((await f.service.readOriginal(attachment.documentId)).blob);
   const resumed = scriptedAssistant(f, [
     assistantReply("重新查询工作台现状", [toolCall("resume_context", "get_context", { section: "overview" })]), assistantReply("导入建议仍在，等待人工确认"),
   ], { messages: [...interrupted.messages, { role: "user", content: "连接恢复，继续查看刚才的导入建议" }] });

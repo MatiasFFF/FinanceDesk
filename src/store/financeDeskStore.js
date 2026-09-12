@@ -217,12 +217,28 @@ export function createFinanceDeskStore(options = {}) {
       const resolved = withActor(workspaceId, actionOptions);
       const displayPeriod = getWorkspace(state, workspaceId).currentPeriod;
       let base = state;
+      if (actionOptions?.createAccount) {
+        const account = actionOptions.createAccount;
+        if (!account || typeof account !== "object" || Array.isArray(account) || account.id !== plan.accountId
+          || typeof account.name !== "string" || !account.name.trim()
+          || typeof account.accountNumber !== "string" || !account.accountNumber.trim()) throw new Error("请核对本组银行账户后重新确认");
+        assertWorkspaceAccess(workspaceId, permissionForCollection("bankAccounts"));
+        const accounts = getWorkspace(state, workspaceId).bankAccounts;
+        const number = account.accountNumber.replace(/\s/g, "");
+        if (accounts.some((item) => item.id === account.id || String(item.accountNumber || "").replace(/\s/g, "") === number)) {
+          throw Object.assign(new Error("银行账户已变化，请重新核对并复用现有账户"), { code: "AI_SOURCE_CHANGED" });
+        }
+        base = upsertWorkspaceEntity(base, workspaceId, "bankAccounts", {
+          id: account.id, name: account.name.trim(), accountNumber: number,
+          openingBalance: account.openingBalance ?? null, statementClosing: account.statementClosing ?? null, status: "active",
+        }, resolved).state;
+      }
       if (plan.sourceDocumentId) {
         assertWorkspaceAccess(workspaceId, "documents.add");
         const source = getWorkspace(state, workspaceId).documents.find((item) => item.id === plan.sourceDocumentId);
         if (!source || source.hash !== plan.fileHash || source.period !== plan.period
           || !source.storage?.availableLocally || !source.storage?.blobId) throw new Error("银行流水原件已变化，请重新选择文件");
-        base = updateWorkspace(state, workspaceId, (workspace) => ({
+        base = updateWorkspace(base, workspaceId, (workspace) => ({
           ...workspace,
           documents: workspace.documents.map((document) => document.id === source.id ? {
             ...document, relatedObjectIds: [...new Set([...(document.relatedObjectIds || []), plan.accountId])],

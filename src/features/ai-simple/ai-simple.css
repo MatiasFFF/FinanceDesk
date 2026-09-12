@@ -242,6 +242,14 @@
 .ai-operation-result p { margin: 7px 0; }
 .ai-operation-result .ai-proposal-originals { margin: 4px 0; }
 .ai-operation-pending { margin-top: 15px; }
+.ai-bank-summary { margin: 20px 0; }
+.ai-bank-summary .ai-preview-table { min-width: 580px; }
+.ai-bank-summary th small { display: block; margin-top: 5px; color: #7286a2; font-size: 12px; font-weight: 400; }
+.ai-bank-summary td > .ai-text-button { display: block; margin-top: 4px; min-height: 36px; }
+.ai-bank-account-resolution { min-width: 0; margin: 14px 0; padding: 14px 16px; border: 1px solid #dce7f7; border-radius: 12px; background: #f7faff; }
+.ai-bank-account-resolution .ai-dialog-actions { margin-bottom: 0; }
+.ai-retry-actions { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 6px; }
+.ai-retry-actions .ai-inline-button { min-height: 36px; margin-left: 0; }
 .ai-pending-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 0 15px; border-top: 1px solid #e0eafa; font-size: 14px; line-height: 1.6; }
 .ai-pending-bar > span { min-width: 0; }
 .ai-pending-bar .ai-helper { display: block; font-size: 12px; }

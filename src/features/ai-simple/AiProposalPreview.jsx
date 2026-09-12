@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { BUSINESS_EVENT_INVOICE_STATUSES, BUSINESS_EVENT_TAX_TREATMENTS, manualBusinessEventTypesForWorkspace } from "../reconciliation/reconciliationEngine.js";
 import { workspaceAccountDefinitions } from "../../domain/accounting/model.js";
 import { buildProposalUpdates, invoiceFieldLabels, periodTransactions, proposalAccountLabel, proposalEditValues } from "./aiWorkflow.js";
+import { bankAmountRows, bankGroupView, bankMoney, bankSourceRows } from "./aiBankSelfService.js";
 
 const money = (value) => value == null || value === "" ? "未填写" : Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fieldLabels = invoiceFieldLabels;
@@ -13,18 +14,27 @@ function Details({ rows }) {
 
 export function BankPreview({ preview }) {
   const transactions = preview.transactions || [];
+  const grouped = !!preview.group;
+  const view = bankGroupView({ preview });
+  const errors = preview.errors || preview.group?.errors || [];
+  const sourceRows = grouped ? (preview.rows || []).filter((row) => view.group.sourceRowNumbers?.includes(row.rowNumber)) : preview.rows || [];
+  const amounts = bankAmountRows(preview);
   return <>
-    <Details rows={[["原件", preview.fileName], ["银行账户", preview.accountName], ["本次可导入", `${preview.importedCount || 0} 笔`], ["重复记录", `${preview.duplicateCount || 0} 笔`], ["需修正记录", `${preview.errorCount || 0} 笔`]]} />
-    {!!preview.missingFields?.length && <p className="ai-error">还缺少列对应关系：{preview.missingFields.map((key) => preview.mappingFields?.[key]?.label || key).join("、")}。</p>}
-    {!!transactions.length && <div className="ai-preview-table-wrap"><table className="ai-preview-table"><caption>流水预览{preview.importedCount > transactions.length ? `（前 ${transactions.length} 笔，共 ${preview.importedCount} 笔可导入）` : ""}</caption><thead><tr><th>日期</th><th>交易对方 / 摘要</th><th>金额（元）</th><th>余额（元）</th></tr></thead><tbody>{transactions.map((row, index) => <tr key={row.id || index}><td>{row.date}</td><td>{row.counterparty || "对方待补充"}<small>{row.summary}</small></td><td>{money(row.amount)}</td><td>{money(row.balance)}</td></tr>)}</tbody></table></div>}
-    {!!preview.errors?.length && <ul className="ai-preview-errors">{preview.errors.map((error, index) => <li key={index}>{typeof error === "string" ? error : `${error.rowNumber ? `第 ${error.rowNumber} 行：` : ""}${error.message || error.reason || "该行需要核对"}`}</li>)}</ul>}
-    {!!preview.rows?.length && <div className="ai-preview-table-wrap"><table className="ai-preview-table"><caption>原文件样例行</caption><thead><tr><th>行号</th>{preview.headers.map((header, index) => <th key={index}>{header}</th>)}</tr></thead><tbody>{preview.rows.map((row) => <tr key={row.rowNumber}><th>{row.rowNumber}</th>{row.cells.map((cell, index) => <td key={index}>{String(cell.value ?? "")}</td>)}</tr>)}</tbody></table></div>}
-    {preview.headers?.length > 0 && <details className="ai-preview-mapping"><summary>查看列对应关系</summary><Details rows={Object.entries(preview.mapping || {}).filter(([, column]) => Number.isInteger(column) && column >= 0).map(([key, column]) => [preview.mappingFields?.[key]?.label || "数据列", preview.headers[column] || "未选择"])} /></details>}
+    <Details rows={[["原件", preview.fileName], ["银行账户", grouped ? view.label : preview.accountName], ...(grouped ? [["原表记录", `${view.rowCount ?? "待核对"} 行`], ["日期范围", view.dateRange], ...amounts.main] : []), ["本次新增流水", `${preview.importedCount ?? "待核对"} 笔`], ["重复或已存在", `${preview.duplicateCount ?? "待核对"} 笔`], ["需修正记录", `${preview.errorCount ?? view.summary.errorCount ?? "待核对"} 笔`]]} />
+    {grouped && !!amounts.original.length && <details className="ai-preview-mapping"><summary>查看原表收支合计</summary><Details rows={amounts.original} /></details>}
+    {grouped && <p className="ai-helper">{bankSourceRows(view.group)}。以上收支为原表金额；已有流水不重复新增。</p>}
+    {grouped && <Details rows={[["按首笔流水推算期初", `${bankMoney(view.summary.openingBalance)} 元`], ["原表期末余额", `${bankMoney(view.summary.statementClosing)} 元`], ["表内余额差异", `${bankMoney(view.summary.balanceDifference)} 元`]]} />}
+    {grouped && view.summary.balanceDifference == null && <p className="ai-helper">原表尚不足以完成余额核对，请结合银行对账单确认余额。</p>}
+    {!!preview.missingFields?.length && <p className="ai-error">原表尚无法确定{preview.missingFields.map((key) => preview.mappingFields?.[key]?.label || "必要交易信息").join("、")}，请核对原件中是否有清楚的日期、收入或支出信息。</p>}
+    {!!transactions.length && <details className="ai-preview-mapping"><summary>查看流水预览{preview.importedCount > transactions.length ? `（前 ${transactions.length} 笔，共 ${preview.importedCount} 笔可导入）` : `（${transactions.length} 笔）`}</summary><div className="ai-preview-table-wrap"><table className="ai-preview-table"><caption>流水预览</caption><thead><tr><th>日期</th><th>交易对方 / 摘要</th><th>金额（元）</th><th>余额（元）</th></tr></thead><tbody>{transactions.map((row, index) => <tr key={row.id || index}><td>{row.date}</td><td>{row.counterparty || "对方待补充"}<small>{row.summary}</small></td><td>{money(row.amount)}</td><td>{money(row.balance)}</td></tr>)}</tbody></table></div></details>}
+    {!!errors.length && <ul className="ai-preview-errors">{errors.map((error, index) => <li key={index}>{typeof error === "string" ? error : `${error.rowNumber ? `原表第 ${error.rowNumber} 行：` : ""}${error.message || error.reason || "该行需要核对"}`}</li>)}</ul>}
+    {!!sourceRows.length && <details className="ai-preview-mapping"><summary>查看{grouped ? "本组" : "原文件"}原始样例</summary><div className="ai-preview-table-wrap"><table className="ai-preview-table"><caption>原文件样例行</caption><thead><tr><th>行号</th>{(preview.headers || []).map((header, index) => <th key={index}>{header}</th>)}</tr></thead><tbody>{sourceRows.map((row) => <tr key={row.rowNumber}><th>{row.rowNumber}</th>{row.cells.map((cell, index) => <td key={index}>{String(cell.value ?? "")}</td>)}</tr>)}</tbody></table></div></details>}
+    {preview.headers?.length > 0 && <details className="ai-preview-mapping"><summary>查看原表识别依据</summary><Details rows={Object.entries(preview.mapping || {}).filter(([, column]) => Number.isInteger(column) && column >= 0).map(([key, column]) => [preview.mappingFields?.[key]?.label || "交易信息", preview.headers[column] || "待核对"])} /></details>}
   </>;
 }
 
 export function proposalHasPreview(proposal) {
-  if (proposal.kind === "bank_import") return !!proposal.preview && Array.isArray(proposal.preview.transactions);
+  if (proposal.kind === "bank_import") return !!proposal.preview && (Array.isArray(proposal.preview.transactions) || !!proposal.preview.group);
   if (proposal.kind === "document_fields") return Array.isArray(proposal.preview?.fields) && proposal.preview.fields.length > 0;
   if (proposal.kind === "bank_business") return !!proposal.preview?.transaction && !!proposal.preview?.businessTypeLabel;
   return false;

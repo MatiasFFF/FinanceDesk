@@ -9,6 +9,9 @@ const MAX_BODY_BYTES = 1_000_000;
 const MAX_TOOL_CALLS = 8;
 const MAX_REASONING_CHARS = 256_000;
 const toolNames = new Set(AI_FINANCE_TOOLS.map((tool) => tool.function.name));
+// Only an opaque token leaves this module. Live reasoning and tool transcripts
+// remain in memory and are never part of the saved conversation or error JSON.
+const continuations = new WeakMap();
 class AssistantClientError extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
@@ -17,6 +20,25 @@ const isObject = (value) => value !== null && typeof value === "object" && !Arra
 const cancelled = () => fail("ASSISTANT_CANCELLED", "已停止本轮整理，已保存的资料和待确认事项会保留");
 
 function boundedToolResult(value, key, toolName) {
+  if (["read_bank_statement", "prepare_bank_import"].includes(toolName) && isObject(value)) {
+    const groupSummary = (group) => {
+      const { sourceRowNumbers: _rows, mapping: _mapping, headers: _headers, errors, ...summary } = group;
+      return { ...summary, errors: errors?.slice(0, 10), errorsTruncated: (errors?.length || 0) > 10 };
+    };
+    const proposalSummary = (proposal) => {
+      const { editableValues: _editable, preview, ...summary } = proposal;
+      if (!preview) return summary;
+      const { rows: _rows, mapping: _mapping, mappingFields: _fields, headers: _headers, transactions, group, errors, ...counts } = preview;
+      return { ...summary, preview: { ...counts, ...(group ? { group: groupSummary(group) } : {}), errors: errors?.slice(0, 10),
+        transactions: transactions?.slice(0, 3), sampleCount: Math.min(transactions?.length || 0, 3),
+        sampleIsComplete: (preview.importedCount || 0) <= 3 } };
+    };
+    const { preview: _duplicatePreview, ...rest } = value;
+    value = { ...rest, ...(value.analysis ? { analysis: { ...value.analysis, groups: value.analysis.groups.map(groupSummary) } } : {}),
+      ...(value.proposals ? { proposals: value.proposals.map(proposalSummary) } : {}),
+      ...(value.proposal ? { proposal: proposalSummary(value.proposal) } : {}),
+      coverage: "analysis和每组summary由程序读取全部原件计算；transactions仅为样例，错误明细可能省略，完整核对事项保留在本地。" };
+  }
   const serialized = redact(JSON.stringify(value ?? null), key);
   if (new TextEncoder().encode(serialized).byteLength <= ASSISTANT_TOOL_RESULT_LIMIT) return JSON.parse(serialized);
   let remaining = 12000;
@@ -268,26 +290,42 @@ export async function listDeepSeekModels({ apiKey, signal, fetchImpl = globalThi
 
 /** Transport only. executeTool must validate business inputs and must not treat a call as user confirmation. */
 export async function runFinanceAssistant({ apiKey, messages: inputMessages, tools = AI_FINANCE_TOOLS, executeTool,
-  model, thinking, reasoningEffort, signal, onMessage = () => {}, onToolResult = () => {}, fetchImpl = globalThis.fetch }) {
+  model, thinking, reasoningEffort, continuation, signal, onMessage = () => {}, onToolResult = () => {}, fetchImpl = globalThis.fetch }) {
   const key = typeof apiKey === "string" ? apiKey.trim() : "";
   if (!/^[A-Za-z0-9_-]{8,512}$/.test(key)) throw fail("KEY_REQUIRED", "请先在 DeepSeek 设置中填写有效密钥，输入和附件会保留");
   let messages = [];
   const toolResults = [];
+  let settings;
+  let round = 0;
+  let awaitingReply = false;
   try {
-    let settings;
     try { settings = normalizeDeepSeekModelSettings({ model, thinking, reasoningEffort }); }
     catch (error) { throw fail("ASSISTANT_INVALID_MODEL_SETTINGS", error.message); }
     if (settings.model.includes(key)) throw fail("ASSISTANT_INVALID_MODEL_SETTINGS", "模型标识不正确，请重新选择");
-    messages = copyMessages(inputMessages, key);
-    if (settings.thinking === "enabled") messages = prepareThinkingHistory(messages);
-    else messages = messages.map(publicMessage);
+    if (continuation) {
+      const saved = continuations.get(continuation);
+      if (!saved || saved.settings.model !== settings.model || (saved.settings.thinking === "disabled" && settings.thinking === "enabled")) {
+        throw fail("ASSISTANT_CONTINUATION_EXPIRED", "本次继续内容已失效或模型设置已变化，请按当前工作台重新发起整理");
+      }
+      messages = copyMessages(saved.messages, key);
+      if (settings.thinking === "disabled") messages = messages.map(publicMessage);
+      round = saved.round;
+      toolResults.push(...saved.toolResults);
+      continuations.delete(continuation);
+    } else {
+      messages = copyMessages(inputMessages, key);
+      if (settings.thinking === "enabled") messages = prepareThinkingHistory(messages);
+      else messages = messages.map(publicMessage);
+    }
     if (!Array.isArray(tools) || tools.some((tool) => !toolNames.has(tool?.function?.name))) {
       throw fail("ASSISTANT_INVALID_TOOL", "本轮工具配置不正确，已停止处理");
     }
     const allowedNames = new Set(tools.map((tool) => tool.function.name));
     const completedIds = new Set(messages.flatMap((message) => message.role === "tool" ? [message.tool_call_id] : []));
-    for (let round = 0; round < ASSISTANT_MAX_ROUNDS; round += 1) {
+    for (; round < ASSISTANT_MAX_ROUNDS; round += 1) {
+      awaitingReply = true;
       const { message, finishReason } = await requestCompletion({ apiKey: key, messages, settings, signal, fetchImpl });
+      awaitingReply = false;
       const calls = message.tool_calls || [];
       if (calls.length && round === ASSISTANT_MAX_ROUNDS - 1) {
         throw fail("ASSISTANT_ROUND_LIMIT", "本轮整理已到上限，已生成的待确认事项会保留；核对后可继续处理");
@@ -345,6 +383,14 @@ export async function runFinanceAssistant({ apiKey, messages: inputMessages, too
       signal?.aborted ? cancelled().message : redact(error?.message || "本轮整理未能完成，请稍后继续", key));
     safeError.messages = messages.map(publicMessage);
     safeError.toolResults = toolResults;
+    const canContinue = !signal?.aborted && awaitingReply && ["ASSISTANT_TIMEOUT", "ASSISTANT_INCOMPLETE"].includes(safeError.code);
+    safeError.recovery = { canContinue, completedToolCount: toolResults.length,
+      ...(settings ? { model: settings.model, thinking: settings.thinking, reasoningEffort: settings.reasoningEffort } : {}) };
+    if (canContinue) {
+      const token = Object.freeze({});
+      continuations.set(token, { messages, settings, toolResults: [...toolResults], round });
+      safeError.continuation = token;
+    }
     throw safeError;
   }
 }

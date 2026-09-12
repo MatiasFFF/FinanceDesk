@@ -11,6 +11,7 @@ import { AiSettings } from "./AiSettings.jsx";
 import { selectAiAttachments } from "./aiAttachments.js";
 import { useAiSession, useAiSessionState } from "./AiSessionContext.jsx";
 import { aiSessionContextKey, closeAiWorkspaceCreation, resumeAiHomeSubmission } from "./aiModeSession.js";
+import { hasLocalBankAttachments } from "./aiBankSelfService.js";
 import blueBackground from "../../assets/ai-blue-background.png";
 import "./ai-simple.css";
 
@@ -93,7 +94,7 @@ export default function AiSimpleApp({ onOpenFullVersion }) {
   function continueHomeSubmission() {
     const current = store.getActiveWorkspace();
     const currentDraft = getSnapshot().contexts[aiSessionContextKey(current?.id, current?.currentPeriod)]?.draft;
-    return resumeAiHomeSubmission({ pendingRef: pendingHomeSendRef, workspace: current, draft: currentDraft, configured: !!readKey(), onSend: () => {
+    return resumeAiHomeSubmission({ pendingRef: pendingHomeSendRef, workspace: current, draft: currentDraft, configured: !!readKey() || hasLocalBankAttachments(currentDraft), onSend: () => {
       setSendOnEnter((value) => value + 1);
       updateContext(current.id, current.currentPeriod, "screen", "workbench");
     } });
@@ -102,7 +103,7 @@ export default function AiSimpleApp({ onOpenFullVersion }) {
     if (!draft.text.trim() && !draft.files.length) return;
     pendingHomeSendRef.current = { workspaceId, period, draft };
     if (!activeWorkspace) { setCreateOpen(true); return; }
-    if (!readKey()) { setSettingsOpen(true); return; }
+    if (!readKey() && !hasLocalBankAttachments(draft)) { setSettingsOpen(true); return; }
     continueHomeSubmission();
   }
   function switchWorkspace(id) {
@@ -188,7 +189,7 @@ export default function AiSimpleApp({ onOpenFullVersion }) {
       updateContext(created.id, created.currentPeriod, "screen", "workbench");
       setCreateOpen(false); setSendOnEnter(0);
       pendingHomeSendRef.current = continueSubmission ? { ...pending, workspaceId: created.id, period: created.currentPeriod } : null;
-      if (continueSubmission) { if (readKey()) continueHomeSubmission(); else setSettingsOpen(true); }
+      if (continueSubmission) { if (readKey() || hasLocalBankAttachments(draft)) continueHomeSubmission(); else setSettingsOpen(true); }
     }} />}
     {resources && activeWorkspace && <Suspense fallback={<AiDialog title="资料与报表" wide onClose={() => setResources(null)}><p className="ai-helper">正在打开…</p></AiDialog>}><Resources key={targetKey} {...resources} onRememberState={rememberResourceState} onOpenFullWorkbench={openFullWorkbench} onClose={() => setResources(null)} onToast={setNotice} /></Suspense>}
     {notice && <div className="ai-toast" role="status">{notice}</div>}

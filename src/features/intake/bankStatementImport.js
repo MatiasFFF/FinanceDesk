@@ -7,18 +7,22 @@ import {
 import { activateWorkspacePeriod, isPeriodArchived } from "../../domain/periods.js";
 
 export const BANK_FIELD_DEFINITIONS = Object.freeze({
-  date: { label: "交易日期", required: true, aliases: ["交易日期", "交易时间", "记账日期", "入账日期", "日期", "date", "transaction date"] },
+  date: { label: "交易日期", required: true, aliases: ["交易日期", "交易日", "记账日期", "入账日期", "日期", "date", "transaction date", "交易时间", "transaction datetime"] },
+  time: { label: "交易时间", aliases: ["交易时间", "发生时间", "时间", "transaction time", "time"] },
   amount: { label: "交易金额", aliases: ["交易金额", "发生额", "金额", "amount", "transaction amount"] },
   credit: { label: "收入金额", aliases: ["收入", "贷方发生额", "收入金额", "收款金额", "credit", "deposit"] },
   debit: { label: "支出金额", aliases: ["支出", "借方发生额", "支出金额", "付款金额", "debit", "withdrawal"] },
   direction: { label: "收支方向", aliases: ["收支方向", "交易方向", "借贷标志", "方向", "direction", "type"] },
-  counterparty: { label: "对方名称", aliases: ["对方户名", "对方名称", "交易对手", "对方", "counterparty", "payee", "payer"] },
-  counterpartyAccount: { label: "对方账号", aliases: ["对方账号", "对方账户", "对方卡号", "counterparty account"] },
+  counterparty: { label: "对方名称", aliases: ["对方户名", "对方名称", "收(付)方名称", "收款人名称", "付款人名称", "交易对手", "对方", "counterparty", "payee", "payer"] },
+  counterpartyAccount: { label: "对方账号", aliases: ["对方账号", "对方账户", "对方卡号", "收(付)方账号", "收款人账号", "付款人账号", "counterparty account"] },
   summary: { label: "摘要", aliases: ["交易摘要", "摘要", "用途", "备注", "附言", "summary", "description", "memo"] },
   serial: { label: "流水号", aliases: ["银行流水号", "交易流水号", "流水号", "交易号", "参考号", "serial", "reference", "transaction id"] },
   balance: { label: "账户余额", aliases: ["账户余额", "交易后余额", "余额", "balance"] },
   channel: { label: "交易渠道", aliases: ["交易渠道", "渠道", "交易方式", "channel", "method"] },
   currency: { label: "币种", aliases: ["币种", "货币", "currency"] },
+  sourceAccount: { label: "本方账号", aliases: ["本方账号", "本方账户", "本方银行账号", "账户账号", "银行账号", "账号", "帐号", "account number"] },
+  sourceAccountName: { label: "本方账户名称", aliases: ["本方户名", "本方账户名称", "账号名称", "账户名称", "账户户名", "户名", "account name"] },
+  sourceBank: { label: "本方银行", aliases: ["本方银行", "本方开户行", "开户银行", "开户行", "银行名称", "银行", "bank name", "bank"] },
 });
 
 export const PLATFORM_SETTLEMENT_CHANNELS = Object.freeze({
@@ -150,6 +154,9 @@ function isRecord(value) {
 // before JSON copying so invalid numbers are not silently converted to null.
 export function validateBankImportOptions(input) {
   const next = { ...input };
+  if (input.sourceGroupId !== undefined && (typeof input.sourceGroupId !== "string" || !input.sourceGroupId.trim())) {
+    throw bankImportInputError("sourceGroupId", "请选择文件中有效的账户分组");
+  }
   if (input.mapping !== undefined) {
     if (!isRecord(input.mapping)) throw bankImportInputError("mapping", "字段映射必须是字段名与列序号组成的对象");
     for (const [field, column] of Object.entries(input.mapping)) {
@@ -346,7 +353,7 @@ export function parseDelimitedText(text, options = {}) {
       cell = "";
     } else if (character === "\n") {
       row.push(cell.replace(/\r$/, "").trim());
-      if (row.some((value) => value !== "")) table.push(row);
+      table.push(row);
       row = [];
       cell = "";
     } else {
@@ -368,7 +375,8 @@ export function detectBankFieldMapping(headers) {
   // “金额” field from stealing “收入金额” or “支出金额” during fuzzy matching.
   definitions.forEach(([field, definition]) => {
     const aliases = definition.aliases.map(normalizedHeader);
-    const index = normalized.findIndex((header, candidateIndex) => !used.has(candidateIndex) && aliases.includes(header));
+    const index = aliases.map((alias) => normalized.findIndex((header, candidateIndex) => !used.has(candidateIndex) && header === alias))
+      .find((candidateIndex) => candidateIndex >= 0) ?? -1;
     if (index >= 0) {
       mapping[field] = index;
       used.add(index);
@@ -377,8 +385,13 @@ export function detectBankFieldMapping(headers) {
 
   definitions.forEach(([field, definition]) => {
     if (mapping[field] != null) return;
+    // A generic account/bank substring must never steal the other party's
+    // account, and a clock-only column is not a calendar date.
+    if (["time", "sourceAccount", "sourceBank", "sourceAccountName"].includes(field)) return;
     const aliases = definition.aliases.map(normalizedHeader);
-    const index = normalized.findIndex((header, candidateIndex) => !used.has(candidateIndex) && aliases.some((alias) => header.includes(alias) || alias.includes(header)));
+    const index = normalized.findIndex((header, candidateIndex) => header && !used.has(candidateIndex)
+      && !(field === "date" && ["时间", "time"].includes(header))
+      && aliases.some((alias) => header.includes(alias) || alias.includes(header)));
     if (index >= 0) {
       mapping[field] = index;
       used.add(index);
@@ -452,7 +465,7 @@ export function inspectPlatformSettlementTable(table, options = {}) {
 }
 
 function parseExcelDate(serial) {
-  if (!Number.isFinite(serial)) return null;
+  if (!Number.isFinite(serial) || serial < 1 || serial > 2958465) return null;
   const milliseconds = Date.UTC(1899, 11, 30) + Math.floor(serial) * 86_400_000;
   const date = new Date(milliseconds);
   return Number.isNaN(date.valueOf()) ? null : date.toISOString().slice(0, 10);
@@ -460,16 +473,47 @@ function parseExcelDate(serial) {
 
 export function normalizeBankDate(value) {
   if (value instanceof Date && !Number.isNaN(value.valueOf())) return value.toISOString().slice(0, 10);
-  if (typeof value === "number") return parseExcelDate(value);
   const text = normalizeText(value);
   if (!text) return null;
-  if (/^\d{5}(?:\.\d+)?$/.test(text)) return parseExcelDate(Number(text));
-  const compact = text.match(/^(\d{4})(\d{2})(\d{2})$/);
-  const match = compact || text.match(/^(\d{4})[\-/.年](\d{1,2})[\-/.月](\d{1,2})日?(?:\s.*)?$/);
+  const compact = text.match(/^(\d{4})(\d{2})(\d{2})(?:(\d{6})|[T\s]+(.+))?$/);
+  if (!compact && typeof value === "number") return parseExcelDate(value);
+  if (!compact && /^\d{5}(?:\.\d+)?$/.test(text)) return parseExcelDate(Number(text));
+  const match = compact || text.match(/^(\d{4})[\-/.年](\d{1,2})[\-/.月](\d{1,2})日?(?:[T\s]+(.+))?$/);
   if (!match) return null;
+  const clockText = compact ? match[4] || match[5] : match[4];
+  if (clockText && !normalizeBankTime(clockText)) return null;
   const candidate = `${match[1]}-${String(Number(match[2])).padStart(2, "0")}-${String(Number(match[3])).padStart(2, "0")}`;
   const date = new Date(`${candidate}T00:00:00Z`);
   return Number.isNaN(date.valueOf()) || date.toISOString().slice(0, 10) !== candidate ? null : candidate;
+}
+
+function normalizeBankTime(value) {
+  if (value instanceof Date && !Number.isNaN(value.valueOf())) return value.toISOString().slice(11, 23);
+  if (typeof value === "number" && value >= 0 && value < 2958466 && (value < 1 || value % 1 !== 0)) {
+    const milliseconds = Math.round((value % 1) * 86400000) % 86400000;
+    return new Date(milliseconds).toISOString().slice(11, 23);
+  }
+  const text = normalizeText(value);
+  if (/^\d{14}$/.test(text)) return normalizeBankDate(text) ? normalizeBankTime(text.slice(8)) : null;
+  const clock = typeof value === "number" && /^\d{1,6}$/.test(text) ? text.padStart(6, "0") : text;
+  const match = text.match(/(?:^|[T\s])(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(?:Z|[+-]\d{2}:?\d{2})?$/)
+    || clock.match(/^(\d{2})(\d{2})(\d{2})$/);
+  if (!match || Number(match[1]) > 23 || Number(match[2]) > 59 || Number(match[3] || 0) > 59) return null;
+  return `${match[1].padStart(2, "0")}:${match[2]}:${(match[3] || "00").padStart(2, "0")}.${(match[4] || "0").padEnd(3, "0")}`;
+}
+
+function transactionTime(transaction) {
+  if (transaction.time) return normalizeBankTime(transaction.time);
+  const raw = transaction.raw || {};
+  const headers = Object.keys(raw);
+  const mapping = detectBankFieldMapping(headers);
+  return normalizeBankTime(raw[headers[mapping.time]]) || normalizeBankTime(raw[headers[mapping.date]]);
+}
+
+function compareStatementRows(left, right) {
+  return String(left.date || "").localeCompare(String(right.date || ""))
+    || String(transactionTime(left) || "").localeCompare(String(transactionTime(right) || ""))
+    || Number(left.sourceRow || 0) - Number(right.sourceRow || 0);
 }
 
 export function normalizeMoney(value) {
@@ -517,10 +561,19 @@ export function transactionDedupeKey(transaction) {
     accountId,
     transaction.date,
     Number(transaction.amount || 0).toFixed(2),
-    normalizeText(transaction.counterparty).toLowerCase(),
+    normalizeText(transaction.counterpartyRaw ?? transaction.counterparty).toLowerCase(),
     normalizeText(transaction.summary).toLowerCase(),
+    transactionTime(transaction) || "",
+    transaction.balance == null ? "" : Number(transaction.balance).toFixed(2),
+    normalizeCounterpartyAccount(transaction.counterpartyAccount),
+    normalizeText(transaction.currency || "CNY").toUpperCase(),
+    normalizeText(transaction.channel),
+    // Keep every available source discriminator. Identical amounts on the same
+    // day are not proof of duplication, nor is a timestamp unique by itself.
+    JSON.stringify(Object.entries(transaction.raw || {}).map(([key, value]) => [normalizedHeader(key),
+      value instanceof Date ? value.toISOString() : normalizeText(value)]).sort(([left], [right]) => left.localeCompare(right))),
   ].join("|");
-  return `${accountId}|row|${stableHash(fallback)}`;
+  return `${accountId}|row-v2|${stableHash(fallback)}`;
 }
 
 export function normalizeBankTable(table, mapping, options = {}) {
@@ -533,7 +586,7 @@ export function normalizeBankTable(table, mapping, options = {}) {
   const accepted = [];
   const errors = [];
   table.slice(1).forEach((row, index) => {
-    const rowNumber = index + 2;
+    const rowNumber = options.sourceRowNumbers?.[index] ?? index + 2;
     if (!row.some((value) => normalizeText(value))) return;
     const date = normalizeBankDate(valueAt(row, inspection.mapping.date));
     const amount = amountFromRow(row, inspection.mapping);
@@ -551,6 +604,7 @@ export function normalizeBankTable(table, mapping, options = {}) {
       id: createId("txn"),
       accountId: options.accountId,
       date,
+      time: normalizeBankTime(valueAt(row, inspection.mapping.time)) || normalizeBankTime(valueAt(row, inspection.mapping.date)),
       amount,
       counterpartyRaw,
       counterparty: counterpartyRaw || "未识别交易对象",
@@ -569,6 +623,10 @@ export function normalizeBankTable(table, mapping, options = {}) {
       sourceFileName: options.fileName || "本地银行流水",
       importId,
       sourceRow: rowNumber,
+      sourceFileHash: options.fileHash || null,
+      sourceGroupId: options.sourceGroupId || null,
+      sourceAccount: normalizeText(valueAt(row, inspection.mapping.sourceAccount)),
+      sourceBank: normalizeText(valueAt(row, inspection.mapping.sourceBank)),
       raw,
       importedAt,
       createdAt: importedAt,
@@ -578,6 +636,137 @@ export function normalizeBankTable(table, mapping, options = {}) {
     accepted.push(transaction);
   });
   return { importId, headers: inspection.headers, mapping: inspection.mapping, accepted, errors };
+}
+
+function sourceAccountNumber(value) {
+  // Keep mask characters: a masked number is not the same identity as a full
+  // account that happens to share the visible digits.
+  return normalizeText(value).replace(/[\s-]/g, "").toLowerCase();
+}
+
+function sourceGroupError(code, message, details) {
+  return Object.assign(new Error(message), { code, details });
+}
+
+function statementSummary(rows, rowCount, errors, duplicates, rawRows, mapping) {
+  const ordered = [...rows].sort(compareStatementRows);
+  const moneySum = (items, predicate) => Math.round(items.reduce((sum, row) => sum + (predicate(row.amount) ? Math.abs(row.amount) : 0), 0) * 100) / 100;
+  const income = moneySum(ordered, (amount) => amount > 0);
+  const expense = moneySum(ordered, (amount) => amount < 0);
+  const movement = Math.round((income - expense) * 100) / 100;
+  const first = ordered[0];
+  const last = ordered.at(-1);
+  const openingBalance = first?.balance == null ? null : Math.round((first.balance - first.amount) * 100) / 100;
+  const statementClosing = last?.balance ?? null;
+  const balanceDifference = openingBalance == null || statementClosing == null ? null : Math.round((statementClosing - openingBalance - movement) * 100) / 100;
+  const balanceBreaks = [];
+  for (let index = 1; index < ordered.length; index += 1) {
+    const previous = ordered[index - 1];
+    const current = ordered[index];
+    if (previous.balance == null || current.balance == null) continue;
+    const difference = Math.round((current.balance - previous.balance - current.amount) * 100) / 100;
+    if (Math.abs(difference) >= 0.01) balanceBreaks.push({ rowNumber: current.sourceRow, previousRowNumber: previous.sourceRow, difference });
+  }
+  const rawAmounts = rawRows.map((row) => ({ amount: amountFromRow(row, mapping) ?? 0 }));
+  return { rowCount, validRowCount: rows.length + duplicates.length, uniqueRowCount: rows.length,
+    importableRowCount: rows.length, duplicateCount: duplicates.length, errorCount: errors.length,
+    income, expense, movement, rawIncome: moneySum(rawAmounts, (amount) => amount > 0), rawExpense: moneySum(rawAmounts, (amount) => amount < 0),
+    dateFrom: first?.date || null, dateTo: last?.date || null, openingBalance, statementClosing, balanceDifference,
+    openingBalanceSource: openingBalance == null ? null : "first_transaction_balance",
+    openingBalanceInferred: openingBalance != null,
+    balanceBreaks, balanceCheckPassed: balanceDifference != null && Math.abs(balanceDifference) < 0.01 && !balanceBreaks.length && !errors.length,
+  };
+}
+
+// Deterministic whole-table analysis. Filtering stays inside this module so
+// callers can select a known group, but cannot invent row lists or lose source
+// row numbers by sending a sliced table to the shared import service.
+export function inspectBankSourceGroups(table, options = {}) {
+  const inspection = inspectBankTable(table, options);
+  const detected = detectBankFieldMapping(inspection.headers);
+  const mapping = { ...inspection.mapping };
+  for (const field of ["sourceAccount", "sourceBank", "sourceAccountName"]) {
+    if (detected[field] != null) mapping[field] = detected[field];
+  }
+  const buckets = new Map();
+  (table || []).slice(1).forEach((row, index) => {
+    if (!row.some((value) => normalizeText(value))) return;
+    const sourceAccount = normalizeText(valueAt(row, mapping.sourceAccount));
+    const sourceBank = normalizeText(valueAt(row, mapping.sourceBank));
+    const sourceAccountName = normalizeText(valueAt(row, mapping.sourceAccountName));
+    const key = JSON.stringify([sourceAccountNumber(sourceAccount), normalizedHeader(sourceBank)]);
+    let group = buckets.get(key);
+    if (!group) {
+      group = { groupId: `bank-source-${stableHash(`${options.fileHash || ""}|${options.sheetName || ""}`)}-${buckets.size + 1}`,
+        sourceAccount, sourceBank, sourceAccountName, accountTail: sourceAccountNumber(sourceAccount).match(/(\d{4})$/)?.[1] || "",
+        fileHash: options.fileHash || null, sheetName: options.sheetName || null,
+        headers: inspection.headers, mapping, sourceRowNumbers: [], rows: [] };
+      buckets.set(key, group);
+    }
+    group.sourceRowNumbers.push(index + 2);
+    group.rows.push(row);
+  });
+  const groups = [...buckets.values()].map(({ rows, ...group }) => {
+    const normalized = inspection.missingFields.length
+      ? { accepted: [], errors: rows.map((row, index) => ({ rowNumber: group.sourceRowNumbers[index], code: "missing_fields",
+        message: `无法识别${inspection.missingFields.map((field) => BANK_FIELD_DEFINITIONS[field].label).join("、")}`, raw: rowObject(inspection.headers, row) })) }
+      : normalizeBankTable([table[0], ...rows], mapping, { ...options, exactMapping: true,
+        accountId: group.groupId, sourceGroupId: group.groupId, sourceRowNumbers: group.sourceRowNumbers });
+    const keys = new Set();
+    const uniqueRows = [];
+    const duplicates = [];
+    for (const transaction of normalized.accepted) {
+      if (keys.has(transaction.dedupeKey)) duplicates.push({ rowNumber: transaction.sourceRow, reason: "文件内重复", dedupeKey: transaction.dedupeKey });
+      else { keys.add(transaction.dedupeKey); uniqueRows.push(transaction); }
+    }
+    return { ...group, rowCount: rows.length, missingFields: inspection.missingFields,
+      summary: statementSummary(uniqueRows, rows.length, normalized.errors, duplicates, rows, mapping),
+      errors: normalized.errors, duplicates };
+  });
+  const totals = groups.reduce((summary, group) => {
+    for (const field of ["rowCount", "validRowCount", "uniqueRowCount", "importableRowCount", "duplicateCount", "errorCount", "income", "expense", "movement", "rawIncome", "rawExpense"]) {
+      summary[field] = Math.round(((summary[field] || 0) + group.summary[field]) * 100) / 100;
+    }
+    return summary;
+  }, { rowCount: 0, validRowCount: 0, uniqueRowCount: 0, importableRowCount: 0, duplicateCount: 0, errorCount: 0, income: 0, expense: 0, movement: 0, rawIncome: 0, rawExpense: 0 });
+  return { fileHash: options.fileHash || null, fileName: options.fileName || null, sheetName: options.sheetName || null,
+    headers: inspection.headers, mapping, missingFields: inspection.missingFields, rowCount: totals.rowCount, groups, summary: totals };
+}
+
+export function matchBankSourceAccounts(group, accounts, groups = [group]) {
+  const sourceNumber = sourceAccountNumber(group.sourceAccount);
+  const active = (accounts || []).filter((account) => account.status !== "inactive");
+  const exact = sourceNumber ? active.filter((account) => sourceAccountNumber(account.accountNumber || account.number) === sourceNumber) : [];
+  const tails = group.accountTail ? active.filter((account) => sourceAccountNumber(account.accountNumber || account.number).endsWith(group.accountTail)) : [];
+  const candidates = exact.length ? exact : tails;
+  const sameTailGroups = group.accountTail ? groups.filter((item) => item.accountTail === group.accountTail) : [];
+  const unique = candidates.length === 1 && (sourceNumber.length > 4 && exact.length === 1 || sameTailGroups.length === 1);
+  return { matchedAccountId: unique ? candidates[0].id : null,
+    candidateAccounts: candidates.map(({ id, name, accountNumber, number, currency }) => ({ id, name, accountNumber: accountNumber || number || "", currency })),
+    accountMatchReason: unique ? "账号唯一匹配" : !sourceNumber ? "文件未提供本方账号，请确认对应账户"
+      : !candidates.length ? "尚无对应银行账户" : "账号信息不足以唯一匹配，请确认对应账户" };
+}
+
+function bankImportSource(workspace, input, account) {
+  const analysis = inspectBankSourceGroups(input.table, input);
+  if (analysis.groups.length > 1 && !input.sourceGroupId) {
+    throw sourceGroupError("BANK_SOURCE_GROUP_REQUIRED", "文件包含多个银行账户，请分别确认各账户流水", { groups: analysis.groups });
+  }
+  const group = input.sourceGroupId ? analysis.groups.find((item) => item.groupId === input.sourceGroupId) : analysis.groups[0];
+  if (input.sourceGroupId && !group) throw sourceGroupError("BANK_SOURCE_GROUP_INVALID", "账户分组已变化，请重新读取这份银行流水", { sourceGroupId: input.sourceGroupId });
+  if (!group) return { table: input.table, mapping: input.mapping, analysis, group: null };
+  const targetNumber = sourceAccountNumber(account.accountNumber || account.number);
+  const sourceNumber = sourceAccountNumber(group.sourceAccount);
+  if (sourceNumber && targetNumber && sourceNumber !== targetNumber
+    && !(targetNumber.length === 4 && group.accountTail === targetNumber)) {
+    throw sourceGroupError("BANK_SOURCE_ACCOUNT_MISMATCH", "所选账户与该组原始账号不一致，请确认对应银行账户", { sourceGroupId: group.groupId, accountId: account.id });
+  }
+  const match = matchBankSourceAccounts(group, workspace.bankAccounts, analysis.groups);
+  if (match.matchedAccountId && match.matchedAccountId !== account.id) {
+    throw sourceGroupError("BANK_SOURCE_ACCOUNT_MISMATCH", "该组账号对应另一个已有银行账户，请使用匹配账户", { sourceGroupId: group.groupId, accountId: match.matchedAccountId });
+  }
+  return { table: [input.table[0], ...group.sourceRowNumbers.map((rowNumber) => input.table[rowNumber - 1])],
+    mapping: group.mapping, analysis, group };
 }
 
 function dayDistance(left, right) {
@@ -874,7 +1063,7 @@ function reconcileRows(rows, account, options = {}) {
     ? account.openingBalance
     : options.openingBalance;
   const openingBalance = normalizeMoney(openingInput);
-  const lastRowBalance = [...rows].reverse().find((transaction) => transaction.balance != null)?.balance;
+  const lastRowBalance = [...rows].sort(compareStatementRows).at(-1)?.balance;
   const statementClosingInput = options.statementClosing == null || options.statementClosing === ""
     ? (lastRowBalance ?? account.statementClosing)
     : options.statementClosing;
@@ -1563,15 +1752,21 @@ export function prepareBankImport(workspace, input) {
   if (!account) throw new Error(`找不到银行账户：${input.accountId}`);
   const selectedPeriod = input.period == null || input.period === "" ? null : String(input.period);
   if (selectedPeriod && !validPeriod(selectedPeriod)) throw new Error("请选择有效的导入账期");
-  const normalized = normalizeBankTable(input.table, input.mapping, {
-    exactMapping: input.exactMapping,
+  const source = bankImportSource(workspace, input, account);
+  const normalized = normalizeBankTable(source.table, source.mapping, {
+    exactMapping: true,
     accountId: input.accountId,
     fileName: input.fileName,
+    fileHash: input.fileHash,
+    sourceGroupId: source.group?.groupId,
+    sourceRowNumbers: source.group?.sourceRowNumbers,
     currency: account.currency,
     importedAt: input.importedAt,
     importId: input.importId,
   });
-  const existingKeys = new Set(workspace.transactions.map((transaction) => transaction.dedupeKey || transactionDedupeKey(transaction)));
+  // Old row keys intentionally are not authoritative. Reconstruct identity
+  // from retained raw evidence without migrating or deleting historical rows.
+  const existingKeys = new Set(workspace.transactions.map(transactionDedupeKey));
   const fileKeys = new Set();
   const statementRows = [];
   const newTransactions = [];
@@ -1622,11 +1817,15 @@ export function prepareBankImport(workspace, input) {
     fileName: input.fileName || "本地银行流水",
     fileHash: input.fileHash || null,
     sheetName: input.sheetName || null,
+    sourceGroupId: source.group?.groupId || null,
+    sourceGroup: source.group || null,
+    sourceRowNumbers: source.group?.sourceRowNumbers || [],
+    fileRowCount: source.analysis.rowCount,
     period,
     importedAt: input.importedAt || new Date().toISOString(),
     mapping: normalized.mapping,
     headers: normalized.headers,
-    rowCount: Math.max(0, input.table.length - 1),
+    rowCount: source.group?.rowCount || 0,
     validRowCount: statementRows.length,
     dateFrom: statementDates[0] || null,
     dateTo: statementDates.at(-1) || null,
@@ -1648,6 +1847,13 @@ export function prepareBankImport(workspace, input) {
     counterpartyAliasRules: aliasAnalysis.rules,
     counterpartyApplications: aliasAnalysis.applications,
     reconciliation,
+    balanceInputs: { openingBalance: input.openingBalance != null, statementClosing: input.statementClosing != null },
+    balanceConflicts: ["openingBalance", "statementClosing"].flatMap((field) => {
+      const saved = normalizeMoney(periodAccount[field]);
+      const proposed = reconciliation[field];
+      return input[field] == null && saved != null && proposed != null && saved !== proposed
+        ? [{ field, saved, statement: proposed, preserved: true }] : [];
+    }),
     reconciliationIssue: reconciliationAlert,
     reconciliationIssueCount: reconciliationAlert ? 1 : 0,
     canImport,
@@ -1681,14 +1887,19 @@ export function applyBankImport(state, workspaceId, plan, options = {}) {
   if ((plan.transactions || []).some((transaction) => transaction.date?.slice(0, 7) !== plan.period)) {
     throw new Error(`导入流水日期与所选账期 ${plan.period} 不一致`);
   }
+  if ((plan.transactions || []).some((transaction) => transaction.accountId !== plan.accountId
+    || (plan.sourceGroupId && (transaction.sourceGroupId !== plan.sourceGroupId
+      || !(plan.sourceRowNumbers || []).includes(transaction.sourceRow)
+      || transaction.sourceFileHash !== (plan.fileHash || null))))) {
+    throw sourceGroupError("BANK_SOURCE_ACCOUNT_MISMATCH", "导入计划混入其他账户或来源行，请重新读取文件");
+  }
   if (isPeriodArchived(existingWorkspace, plan.period)) throw new Error(`${plan.period} 已归档，不能继续导入`);
-  const existingKeys = new Set((existingWorkspace.transactions || [])
-    .map((transaction) => transaction.dedupeKey || transactionDedupeKey(transaction)));
+  const existingKeys = new Set((existingWorkspace.transactions || []).map(transactionDedupeKey));
   const incomingKeys = new Set();
   const lateDuplicates = [];
   const importableTransactions = [];
   (plan.transactions || []).forEach((transaction) => {
-    const dedupeKey = transaction.dedupeKey || transactionDedupeKey(transaction);
+    const dedupeKey = transactionDedupeKey(transaction);
     if (existingKeys.has(dedupeKey) || incomingKeys.has(dedupeKey)) {
       lateDuplicates.push({
         rowNumber: transaction.sourceRow,
@@ -1850,7 +2061,8 @@ export function applyBankImport(state, workspaceId, plan, options = {}) {
     const nextBankAccounts = workspace.bankAccounts.map((account) => account.id === effectivePlan.accountId ? {
       ...account,
       openingBalance: effectivePlan.reconciliation.openingBalance ?? account.openingBalance,
-      statementClosing: effectivePlan.reconciliation.statementClosing ?? account.statementClosing,
+      statementClosing: effectivePlan.balanceInputs?.statementClosing || normalizeMoney(account.statementClosing) == null
+        ? effectivePlan.reconciliation.statementClosing ?? account.statementClosing : account.statementClosing,
       lastImportedAt: effectivePlan.importedAt,
       lastImportedPeriod: effectivePlan.period,
       updatedAt: effectivePlan.importedAt,

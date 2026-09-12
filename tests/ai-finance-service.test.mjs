@@ -59,7 +59,11 @@ test("uploaded bank original, user message and pending import survive reload; co
   assert.equal(first.result.counts.imported, 2);
   assert.deepEqual((await service.confirmProposal(proposal.id)).result, first.result);
   const duplicate = await service.invokeTool("prepare_bank_import", { documentId: attachment.documentId, accountId: account.id });
-  assert.equal((await service.confirmProposal(duplicate.proposal.id)).result.counts.imported, 0);
+  assert.equal(duplicate.status, "already_imported");
+  assert.deepEqual(duplicate.proposals, []);
+  assert.equal(duplicate.alreadyImportedGroups.length, 1);
+  assert.deepEqual(duplicate.alreadyImportedGroups[0].counts, { imported: 0, duplicates: 2, errors: 0 });
+  assert.ok(duplicate.alreadyImportedGroups[0].documentIds.includes(attachment.documentId));
   const workspace = reloaded.getActiveWorkspace();
   assert.equal(workspace.transactions.length, 2);
   assert.equal(workspace.documents.length, 1);
@@ -83,18 +87,30 @@ test("failed import retains the uploaded original and pending proposal for a del
   assert.equal((await f.service.confirmProposal(proposal.id)).result.counts.imported, 2);
 });
 
-test("unknown column names return actual headers and rows; an explicit valid mapping can then prepare import", async () => {
+test("unknown column names keep the original and a blocked review; a corrected business-labelled file needs no technical mapping", async () => {
   const f = fixture();
   const account = f.service.createBankAccount({ name: "映射账户" });
   const [attachment] = await f.service.uploadFiles([bankFile("甲列,乙列,丙列,丁列\n2026-09-01,银行,-25,管理手续费")]);
   const input = { documentId: attachment.documentId, accountId: account.id };
   const missing = await f.service.invokeTool("prepare_bank_import", input);
-  assert.equal(missing.status, "needs_mapping");
+  assert.equal(missing.status, "needs_correction");
   assert.deepEqual(missing.preview.headers, ["甲列", "乙列", "丙列", "丁列"]);
   assert.equal(missing.preview.rows[0].cells[2].value, "-25");
-  const ready = await f.service.invokeTool("prepare_bank_import", { ...input, mapping: { date: 0, counterparty: 1, amount: 2, summary: 3 } });
+  assert.equal(missing.proposal.preview.canConfirm, false);
+  assert.deepEqual(missing.preview.missingFields, ["date", "amount"]);
+  assert.match(missing.preview.message, /业务字段|银行导出文件/);
+  assert.doesNotMatch(missing.preview.message, /列号|mapping|列映射/);
+  await assert.rejects(f.service.confirmProposal(missing.proposal.id));
+  assert.equal(f.store.getActiveWorkspace().transactions.length, 0);
+  assert.ok((await f.service.readOriginal(attachment.documentId)).blob);
+  const [corrected] = await f.service.uploadFiles([bankFile("日期,对方,金额,摘要\n2026-09-01,银行,-25,管理手续费")]);
+  const ready = await f.service.invokeTool("prepare_bank_import", { documentId: corrected.documentId, accountId: account.id });
   assert.equal(ready.status, "pending_confirmation");
   assert.equal(ready.proposal.preview.importedCount, 1);
+  assert.equal(f.store.getActiveWorkspace().documents.length, 2, "the unreadable original remains evidence beside its corrected replacement");
+  await f.service.confirmProposal(ready.proposal.id);
+  assert.equal(f.store.getActiveWorkspace().transactions.length, 1);
+  assert.ok(f.store.getActiveWorkspace().transactions[0].evidenceIds.includes(corrected.documentId));
 });
 
 test("switching period during original validation stops bank import and keeps its original", async () => {
@@ -195,11 +211,12 @@ test("an invalid recalculated mapping leaves the old suggestion pending without 
   const mapping = { ...proposal.editableValues.mapping };
   delete mapping.date;
   const result = await f.service.reviseProposal(proposal.id, { mapping });
-  assert.equal(result.status, "needs_mapping");
+  assert.equal(result.status, "needs_correction");
   assert.deepEqual(result.preview.missingFields, ["date"]);
   assert.equal(f.service.getConversation().proposals.length, 1);
   assert.equal(f.service.getConversation().proposals[0].status, "pending");
   assert.equal(f.store.getActiveWorkspace().transactions.length, 0);
+  assert.equal((await f.service.confirmProposal(proposal.id)).result.counts.imported, 2, "the rejected edit cannot make the original valid review unusable");
 });
 
 test("human invoice revisions rebuild before/after values and never accept changed or already handled sources", async () => {

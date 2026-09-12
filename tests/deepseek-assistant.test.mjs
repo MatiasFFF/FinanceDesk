@@ -63,7 +63,8 @@ test("client and fixed proxy complete a real messages/tool_calls/tool-result loo
           assert.equal(payload.model, "deepseek-flash");
           assert.deepEqual(payload.thinking, { type: "disabled" });
           assert.equal(payload.stream, false);
-          assert.equal(payload.tools.length, 5);
+          assert.equal(payload.tools.length, 6);
+          assert.ok(payload.tools.some((tool) => tool.function.name === "read_bank_statement"));
           assert.equal(payload.tools.some((tool) => /confirm|post_voucher/.test(tool.function.name)), false);
           if (requests.length === 1) return upstream("先查询当前账期", [call()]);
           if (requests.length === 2) return upstream("读取票据", [call("call_2", "read_document", { documentId: "doc_1" })]);

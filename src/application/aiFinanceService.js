@@ -4,7 +4,7 @@ import { workspaceAccountDefinitions } from "../domain/accounting/model.js";
 import { createVoucherDraft } from "../domain/accounting/vouchers.js";
 import { buildFinancialStatements, buildTaxWorkpaper } from "../domain/accounting/reporting.js";
 import { BUSINESS_EVENT_INVOICE_STATUSES, BUSINESS_EVENT_TAX_TREATMENTS, confirmBankTransactionBusinessEvent, manualBusinessEventTypesForWorkspace } from "../features/reconciliation/reconciliationEngine.js";
-import { BANK_FIELD_DEFINITIONS, inspectBankTable } from "../features/intake/bankStatementImport.js";
+import { BANK_FIELD_DEFINITIONS } from "../features/intake/bankStatementImport.js";
 import { getLocalDocumentRecognition, getStoredDocumentRecord, hashLocalFile, normalizeDocumentStructuredData, saveLocalDocument, saveLocalDocumentRecognition, updateLocalDocumentMetadata, verifyStoredDocumentOriginal } from "../features/intake/documentIntake.js";
 import { createFinanceDeskService, postWorkspaceVoucher } from "./financeDeskService.js";
 import { AI_FINANCE_TOOLS } from "./aiFinanceTools.js";
@@ -18,7 +18,7 @@ const safeText = (value, limit = 32000) => String(value ?? "").replace(/sk-[A-Za
 const documentVersion = (document) => JSON.stringify([document.id, document.hash, document.version, document.period,
   document.category, document.storage?.blobId, document.structuredData, document.contentRecognition?.resultId, document.archiveStatus, document.lifecycleStatus]);
 const fieldNames = { invoice: ["invoiceNumber", "invoiceDate", "counterparty", "amount", "taxAmount", "taxRate"] };
-const recoverableToolCodes = new Set(["AI_INVALID_INPUT", "AI_BANK_ACCOUNT_REQUIRED", "BANK_IMPORT_INPUT_INVALID",
+const recoverableToolCodes = new Set(["AI_INVALID_INPUT", "AI_BANK_ACCOUNT_REQUIRED", "BANK_IMPORT_INPUT_INVALID", "BANK_SOURCE_GROUP_REQUIRED", "BANK_SOURCE_ACCOUNT_MISMATCH",
   "BUSINESS_EVENT_TYPE_REQUIRED", "BUSINESS_EVENT_DIRECTION_INVALID", "BUSINESS_EVENT_COUNTERPARTY_REQUIRED",
   "BUSINESS_EVENT_REFERENCE_REQUIRED", "BUSINESS_EVENT_BILL_KIND_INVALID", "BUSINESS_EVENT_BILL_DIRECTION_INVALID",
   "BUSINESS_EVENT_TAX_REQUIRED", "BUSINESS_EVENT_INVOICE_STATUS_REQUIRED", "BUSINESS_EVENT_ACCOUNT_INVALID"]);
@@ -26,8 +26,13 @@ const select = (record, keys) => Object.fromEntries(keys.filter((key) => record?
 const proposalSummary = (proposal) => select(proposal, ["id", "kind", "status", "title", "summary", "sourceIds", "revisesProposalId", "supersededBy", "appliedAt", "message"]);
 const documentSummary = (document) => ({ ...select(document, ["id", "name", "period", "category"]), recognitionStatus: document.contentRecognition?.ocrStatus || "not_started" });
 const transactionSummary = (transaction) => select(transaction, ["id", "date", "amount", "summary", "counterparty", "accountId", "evidenceIds", "status", "bankBusinessEventId", "classification"]);
+const bankPreviewTransaction = (transaction) => select(transaction, ["id", "date", "time", "amount", "summary", "counterparty", "balance", "sourceRow", "sourceGroupId", "sourceFileHash", "accountId", "evidenceIds"]);
+const bankResultReference = (result) => select(result, ["status", "workspaceId", "period", "accountId", "importIds", "transactionIds", "documentIds", "counts"]);
+const storedBankProposal = (proposal) => proposal.kind !== "bank_import" ? proposal : { ...proposal,
+  ...(proposal.preview ? { preview: { ...proposal.preview, transactions: (proposal.preview.transactions || []).map(bankPreviewTransaction) } } : {}),
+  ...(proposal.result ? { result: bankResultReference(proposal.result) } : {}) };
 const publicProposal = ({ payload, fingerprint, ...proposal }) => copy({ ...proposal,
-  editableValues: proposal.kind === "bank_import" ? { mapping: payload.mapping || {} }
+  editableValues: proposal.kind === "bank_import" ? { mapping: payload.mapping || proposal.preview?.mapping || {}, accountId: payload.accountId || "" }
     : proposal.kind === "document_fields" ? { fields: payload.fields }
       : { classification: Object.fromEntries(Object.entries(payload).filter(([key]) => !["transactionId", "businessPeriod"].includes(key))) } });
 
@@ -74,8 +79,16 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
   }
   // Existing async financial operations also check the fixed target at their
   // final synchronous write, including cancellation while verifying originals.
-  function scopedStore(signal, transform, beforeWrite, finalizeBankImport) {
+  function scopedStore(signal, transform, beforeWrite, finalizeBankImport, pendingAccount) {
     return { ...store,
+      ...(pendingAccount ? { getState: () => {
+        const state = store.getState();
+        const account = pendingAccount();
+        if (!account) return state;
+        return { ...state, workspaces: state.workspaces.map((workspace) => workspace.id !== workspaceId
+          || workspace.bankAccounts.some((item) => item.id === account.id) ? workspace
+          : { ...workspace, bankAccounts: [...workspace.bankAccounts, account] }) };
+      } } : {}),
       assertWorkspaceAccess: (...args) => { target("data.read", signal); return store.assertWorkspaceAccess(...args); },
       assertWorkspaceWritable: (...args) => { target("data.read", signal); return store.assertWorkspaceWritable(...args); },
       actions: new Proxy(store.actions, { get(actions, key) {
@@ -84,7 +97,8 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
           target("data.read", signal);
           beforeWrite?.();
           if (key === "replaceWorkspace" && transform) args[1] = transform(args[1]);
-          if (key === "applyBankImport" && finalizeBankImport) args[2] = { ...args[2], finalizeWorkspace: finalizeBankImport };
+          if (key === "applyBankImport") args[2] = { ...args[2], ...(finalizeBankImport ? { finalizeWorkspace: finalizeBankImport } : {}),
+            ...(pendingAccount?.() ? { createAccount: pendingAccount() } : {}) };
           return actions[key](...args);
         };
       } }),
@@ -94,7 +108,11 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
     return workspace.aiSimple?.conversations?.[period] || { messages: [], proposals: [] };
   }
   function withConversation(workspace, next) {
-    return { ...workspace, aiSimple: { ...workspace.aiSimple, conversations: { ...workspace.aiSimple?.conversations, [period]: next } } };
+    // Bank rows and original fields already live in the shared financial core.
+    // Also shrink earlier applied results during the next normal write, so a
+    // pending group can recover from quota failure without deleting user data.
+    const saved = { ...next, proposals: next.proposals.map(storedBankProposal) };
+    return { ...workspace, aiSimple: { ...workspace.aiSimple, conversations: { ...workspace.aiSimple?.conversations, [period]: saved } } };
   }
   function saveConversation(updater, permission = "data.write") {
     const workspace = target(permission);
@@ -115,6 +133,8 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
     if (kind === "bank_import") {
       const document = documentFor(payload.documentId, workspace);
       return JSON.stringify({ document: documentVersion(document), account: workspace.bankAccounts.find((item) => item.id === payload.accountId),
+        matchingAccounts: payload.createAccount ? workspace.bankAccounts.filter((item) => String(item.accountNumber || "").replace(/\s/g, "")
+          === String(payload.createAccount.accountNumber || "").replace(/\s/g, "")) : undefined,
         imports: workspace.bankImports.filter((item) => item.accountId === payload.accountId && item.period === period && item.fileHash === document.hash) });
     }
     const transaction = transactionFor(payload.transactionId, workspace);
@@ -162,7 +182,17 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
   }
   function appliedResponse(id) {
     const proposal = proposalFor(id);
-    return { proposal: publicProposal(proposal), result: proposal.result, message: proposal.message, ...(proposal.result?.voucherId ? { voucherId: proposal.result.voucherId } : {}) };
+    let result = proposal.result;
+    if (proposal.kind === "bank_import" && result?.importIds?.length) {
+      const workspace = target();
+      const importIds = result.importIds.filter((importId) => workspace.bankImports.some((item) => item.id === importId));
+      if (importIds.length) {
+        const bank = createFinanceDeskService({ store: scopedStore(), fileVault });
+        const imports = importIds.map((importId) => bank.getBankImportResult({ workspaceId, importId }));
+        result = { ...imports[0], ...bankResultReference(result), importSnapshots: imports.flatMap((item) => item.importSnapshots) };
+      }
+    }
+    return { proposal: publicProposal(proposal), result, message: proposal.message, ...(result?.voucherId ? { voucherId: result.voucherId } : {}) };
   }
   const importMessage = (result) => `已导入${result.counts.imported}笔流水，跳过${result.counts.duplicates}笔重复；尚未入账。`;
   function preparedImportResult(workspace, importId) {
@@ -338,36 +368,153 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
     } catch (error) { error.uploaded = uploaded; throw error; }
   }
 
-  async function bankPlan(payload, signal, callback, beforeWrite, finalizeBankImport) {
-    const document = documentFor(payload.documentId, target("data.write", signal));
-    if (!target().bankAccounts.some((account) => account.id === payload.accountId)) throw fail("请先在当前工作台添加或选择银行账户", "AI_BANK_ACCOUNT_REQUIRED");
+  async function withBankFile(input, signal, callback, { beforeWrite, finalizeBankImport, permission = "data.write" } = {}) {
+    const document = documentFor(input.documentId, target(permission, signal));
     if (document.category !== "银行流水") throw fail("请选择已上传的银行CSV或Excel原件");
-    if (payload.mapping) for (const key of Object.keys(payload.mapping)) if (!Object.hasOwn(BANK_FIELD_DEFINITIONS, key)) throw fail(`不支持的银行列：${key}`);
+    if (input.mapping) for (const key of Object.keys(input.mapping)) if (!Object.hasOwn(BANK_FIELD_DEFINITIONS, key)) throw fail(`不支持的银行列：${key}`);
     const original = await readOriginal(document.id, { signal });
-    const bank = createFinanceDeskService({ store: scopedStore(signal, null, beforeWrite, finalizeBankImport), fileVault });
-    const file = await bank.registerBankFile(original.blob, { workspaceId, fileName: document.name, sourceDocumentId: document.id, exactMapping: payload.mapping !== undefined, signal });
+    let pendingAccount = null;
+    const bank = createFinanceDeskService({ store: scopedStore(signal, null, beforeWrite, finalizeBankImport, () => pendingAccount), fileVault });
+    const file = await bank.registerBankFile(original.blob, { workspaceId, fileName: document.name, sourceDocumentId: document.id,
+      exactMapping: input.mapping !== undefined, signal });
     try {
-      target("data.write", signal);
-      const inspection = inspectBankTable(file.table, { mapping: payload.mapping, exactMapping: payload.mapping !== undefined });
-      if (inspection.missingFields.length) return await callback({ bank, plan: null, file, document, inspection });
-      const plan = bank.prepareBankImport({ workspaceId, period, accountId: payload.accountId, fileRef: file.fileRef, ...(payload.mapping ? { mapping: payload.mapping } : {}) });
-      return await callback({ bank, plan, file, document, inspection });
+      target(permission, signal);
+      if (documentVersion(documentFor(document.id)) !== documentVersion(document)) throw fail("银行原件已变化，请重新读取", "AI_SOURCE_CHANGED");
+      const analysis = bankAnalysisStatus(bank.inspectBankFileSources({ workspaceId, period, fileRef: file.fileRef, ...(input.mapping ? { mapping: input.mapping } : {}) }), document.id);
+      return await callback({ bank, file, document, analysis, setPendingAccount: (account) => { pendingAccount = account; } });
     } finally { bank.releaseBankFile(file.fileRef); }
   }
-  async function prepareImport(input, signal, revision = null) {
-    return bankPlan(input, signal, ({ plan, document, inspection }) => {
-      if (!plan) return { status: "needs_mapping", message: "请根据原文件表头和样例行指定缺少的列映射", preview: {
-        fileName: document.name, headers: inspection.headers, mapping: inspection.mapping, missingFields: inspection.missingFields,
-        rows: inspection.preview, mappingFields: BANK_FIELD_DEFINITIONS } };
-      const preview = { fileName: document.name, accountId: input.accountId, accountName: target().bankAccounts.find((item) => item.id === input.accountId)?.name,
-        headers: inspection.headers, mapping: inspection.mapping, mappingFields: BANK_FIELD_DEFINITIONS,
-        importedCount: plan.importableRowCount, duplicateCount: plan.duplicateCount, errorCount: plan.errorCount,
-        transactions: plan.transactions.slice(0, 20), errors: plan.errors.slice(0, 30), reconciliation: plan.reconciliation };
-      if (plan.errorCount || (!plan.importableRowCount && !plan.duplicateCount)) return { status: "needs_correction", preview, message: "请先核对文件与列映射，尚未创建导入确认事项" };
-      const proposal = addProposal("bank_import", { ...input, mapping: preview.mapping }, { title: `导入 ${document.name}`,
-        summary: `${plan.importableRowCount}笔可导入，${plan.duplicateCount}笔重复；确认后保存流水。`, preview, sourceIds: [document.id] }, "data.write", revision);
-      return { status: "pending_confirmation", proposal };
+  function bankAnalysisStatus(analysis, documentId) {
+    const workspace = target();
+    return { ...analysis, groups: analysis.groups.map((group) => {
+      const imports = workspace.bankImports.filter((item) => item.period === period && item.fileHash === analysis.fileHash && item.sourceGroupId === group.groupId);
+      const importIds = imports.map((item) => item.id);
+      const pending = conversation(workspace).proposals.filter((item) => item.kind === "bank_import" && item.status === "pending"
+        && item.payload.documentId === documentId && item.payload.sourceGroupId === group.groupId);
+      return { ...group, importIds, importedCount: workspace.transactions.filter((item) => importIds.includes(item.importId)).length,
+        pendingProposalIds: pending.map((item) => item.id), importStatus: imports.length ? "imported" : pending.length ? "pending_confirmation" : "not_imported" };
+    }) };
+  }
+  function sourceGroups(analysis, sourceGroupId) {
+    if (!sourceGroupId) return analysis.groups;
+    const group = analysis.groups.find((item) => item.groupId === sourceGroupId);
+    if (!group) throw fail("原件中的账户分组已变化，请重新读取", "AI_SOURCE_CHANGED");
+    return [group];
+  }
+  function accountForGroup(group, input, revision, accountChoice) {
+    const workspace = target();
+    const candidateAccounts = group.candidateAccounts || [];
+    const accountId = accountChoice?.accountId || input.accountId || group.matchedAccountId;
+    if (accountId) {
+      const account = workspace.bankAccounts.find((item) => item.id === accountId && item.status !== "inactive");
+      if (!account) throw fail("所选银行账户已不可用，请重新核对当前账户", "AI_BANK_ACCOUNT_REQUIRED");
+      return { status: "existing", accountId, accountName: account.name, candidateAccounts };
+    }
+    if (candidateAccounts.length && !accountChoice?.name) return { status: "ambiguous", candidateAccounts };
+    const number = String(accountChoice?.accountNumber || group.accountTail || "").trim().replace(/[\s-]/g, "").match(/(\d{4})$/)?.[1] || "";
+    if (!number) return { status: "missing", candidateAccounts: workspace.bankAccounts.map((item) => select(item, ["id", "name", "accountNumber"])) };
+    const name = String(accountChoice?.name || [group.sourceBank, group.sourceAccountName, group.accountTail ? `尾号${group.accountTail}` : ""].filter(Boolean).join(" · ") || `银行账户 ${number.slice(-4)}`).trim();
+    const prior = revision || conversation(workspace).proposals.findLast((item) => item.kind === "bank_import" && item.status === "pending"
+      && item.payload.documentId === input.documentId && item.payload.sourceGroupId === group.groupId);
+    const previous = prior?.payload.createAccount;
+    const suggestedAccount = { id: previous?.accountNumber === number ? previous.id : createId("bank-account"), name, accountNumber: number,
+      openingBalance: null, statementClosing: null, status: "active" };
+    return { status: "new", accountId: suggestedAccount.id, accountName: name, suggestedAccount, candidateAccounts };
+  }
+  function prepareGroupPlan({ bank, file, setPendingAccount }, payload) {
+    setPendingAccount(payload.createAccount || null);
+    return bank.prepareBankImport({ workspaceId, period, fileRef: file.fileRef, accountId: payload.accountId, sourceGroupId: payload.sourceGroupId,
+      ...(payload.mapping ? { mapping: payload.mapping } : {}) });
+  }
+  async function bankPlan(payload, signal, callback, beforeWrite, finalizeBankImport) {
+    return withBankFile(payload, signal, async (context) => {
+      const groups = sourceGroups(context.analysis, payload.sourceGroupId);
+      if (groups.length !== 1) throw fail("此原件包含多个账户，请按账户分别核对后导入", "BANK_SOURCE_GROUP_REQUIRED");
+      if (!payload.accountId) throw fail("请先确认本组流水属于哪个账户", "AI_BANK_ACCOUNT_REQUIRED");
+      const plan = prepareGroupPlan(context, { ...payload, sourceGroupId: groups[0].groupId });
+      return callback({ ...context, group: groups[0], plan });
+    }, { beforeWrite, finalizeBankImport });
+  }
+  async function prepareImport(input, signal, revision = null, accountChoice = null) {
+    return withBankFile(input, signal, (context) => {
+      const { analysis, document } = context;
+      const groups = sourceGroups(analysis, input.sourceGroupId);
+      if (input.accountId && groups.length > 1) throw fail("此文件包含多个账户，不能将整份文件导入同一账户，请逐组核对", "BANK_SOURCE_GROUP_REQUIRED");
+      const proposals = [];
+      const alreadyImportedGroups = [];
+      for (const group of groups) {
+        const accountResolution = accountForGroup(group, input, revision, accountChoice);
+        const payload = { documentId: document.id, sourceGroupId: group.groupId, ...(input.mapping ? { mapping: input.mapping } : {}),
+          ...(accountResolution.accountId ? { accountId: accountResolution.accountId } : {}),
+          ...(accountResolution.suggestedAccount ? { createAccount: accountResolution.suggestedAccount } : {}) };
+        let plan = null;
+        let planError = null;
+        if (payload.accountId && !analysis.missingFields?.length) {
+          try { plan = prepareGroupPlan(context, payload); }
+          catch (error) {
+            target("data.write", signal);
+            if (["AI_TARGET_CHANGED", "AI_ACCESS_DENIED", "AI_SOURCE_CHANGED", "AI_PERIOD_ARCHIVED", "BANK_ORIGINAL_CHANGED"].includes(error.code)) throw error;
+            planError = { code: error.code || "BANK_GROUP_INVALID", message: safeText(error.message, 1000) };
+          } finally { context.setPendingAccount(null); }
+        }
+        if (plan && !plan.errorCount && !plan.importableRowCount && plan.duplicateCount) {
+          const workspace = target("data.write", signal);
+          const imports = workspace.bankImports.filter((item) => item.period === period && item.fileHash === document.hash
+            && item.sourceDocumentId === document.id && item.sourceGroupId === group.groupId && item.accountId === payload.accountId);
+          if (imports.length) {
+            if (revision) assertProposalCurrent(revision, signal);
+            alreadyImportedGroups.push({ sourceGroupId: group.groupId, accountId: payload.accountId, importIds: imports.map((item) => item.id),
+              documentIds: [document.id], counts: { imported: 0, duplicates: plan.duplicateCount, errors: 0 } });
+            continue;
+          }
+        }
+        const errors = plan?.errors || group.errors || [];
+        const canConfirm = Boolean(plan && !plan.errorCount && (plan.importableRowCount || plan.duplicateCount));
+        const preview = { fileName: document.name, sourceGroupId: group.groupId, group, summary: group.summary,
+          fileSummary: analysis.summary, fileGroupCount: analysis.groups.length, accountResolution, canConfirm,
+          accountId: payload.accountId, accountName: accountResolution.accountName,
+          headers: group.headers, mapping: plan?.mapping || input.mapping || group.mapping, mappingFields: BANK_FIELD_DEFINITIONS,
+          missingFields: analysis.missingFields || [], importedCount: plan?.importableRowCount || 0, duplicateCount: plan?.duplicateCount || 0,
+          errorCount: Math.max(plan?.errorCount || 0, group.summary?.errorCount || 0, planError ? 1 : 0),
+          transactions: plan?.transactions.slice(0, 20).map(bankPreviewTransaction) || [], rows: (group.sourceRowNumbers || []).slice(0, 5).map((rowNumber) => ({ rowNumber,
+            cells: group.headers.map((header, columnIndex) => ({ columnIndex, header, value: String(context.file.table[rowNumber - 1]?.[columnIndex] ?? "") })) })),
+          sampleCount: Math.min(20, plan?.transactions.length || 0), sampleIsComplete: (plan?.transactions.length || 0) <= 20,
+          errors: [...errors, ...(planError ? [planError] : [])], reconciliation: plan?.reconciliation,
+          message: planError?.message || (analysis.missingFields?.length ? "原件缺少可识别的必要业务字段，请补充完整银行导出文件。"
+            : accountResolution.status === "ambiguous" ? "此组可能对应多个已有账户，请选择实际账户。"
+              : accountResolution.status === "missing" ? "原件未标明本方账户，请确认这组流水属于哪个账户。" : "") };
+        if (revision && revision.preview.canConfirm !== false && !canConfirm) {
+          assertProposalCurrent(revision, signal);
+          return { status: "needs_correction", analysis, preview,
+            message: `${preview.message || "修改后的内容无法导入，请核对具体错误。"}原待确认事项已保留。` };
+        }
+        const summary = canConfirm ? `${group.summary.rowCount}行，收入${group.summary.income}元，支出${group.summary.expense}元；${preview.importedCount}笔可导入，${preview.duplicateCount}笔重复。`
+          : `${group.summary.rowCount}行待核对。${preview.message || "存在需要处理的流水行，请查看具体原因。"}`;
+        proposals.push(addProposal("bank_import", { ...payload, mapping: preview.mapping }, { title: `${group.sourceBank || accountResolution.accountName || "银行流水"}${group.accountTail ? ` · 尾号${group.accountTail}` : ""}`,
+          summary, preview, sourceIds: [document.id] }, "data.write", revision));
+      }
+      const allImported = !proposals.length && alreadyImportedGroups.length > 0;
+      const existingCount = alreadyImportedGroups.reduce((total, group) => total + group.counts.duplicates, 0);
+      return { status: allImported ? "already_imported" : proposals.some((item) => item.preview.canConfirm) ? "pending_confirmation" : "needs_correction",
+        analysis: bankAnalysisStatus(analysis, document.id), proposals, alreadyImportedGroups,
+        ...(proposals.length === 1 ? { proposal: proposals[0], preview: proposals[0].preview } : {}),
+        message: allImported ? `这份原件的${existingCount}条记录已全部存在，没有新增，不需要再次确认。`
+          : proposals.length ? `${alreadyImportedGroups.length ? `${existingCount}条记录已存在；` : ""}已按原件中的账户分别整理，请核对剩余分组。`
+            : "原件没有可识别的流水，请补充完整银行导出文件。" };
     });
+  }
+  async function resolveBankImportAccount(id, choice, { signal } = {}) {
+    const original = proposalFor(id);
+    assertProposalCurrent(original, signal);
+    if (original.kind !== "bank_import" || confirming.has(id) || revising.has(id)) throw fail("请完成当前事项后再核对银行账户", "AI_PROPOSAL_BUSY");
+    if (!choice || typeof choice !== "object" || Array.isArray(choice)
+      || Object.keys(choice).some((key) => !["accountId", "name", "accountNumber"].includes(key))
+      || (choice.accountId ? Object.keys(choice).length !== 1 : typeof choice.name !== "string" || !choice.name.trim()
+        || typeof choice.accountNumber !== "string" || !choice.accountNumber.trim())) throw fail("请选择实际银行账户，或填写本方账户名称和账号");
+    revising.add(id);
+    try { return await prepareImport({ documentId: original.payload.documentId, sourceGroupId: original.payload.sourceGroupId,
+      ...(original.payload.mapping ? { mapping: original.payload.mapping } : {}) }, signal, original, choice); }
+    finally { revising.delete(id); }
   }
   function businessInput(input, workspace = target()) {
     transactionFor(input.transactionId, workspace);
@@ -417,6 +564,9 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
   }
 
   async function reviseProposal(id, updates, { signal } = {}) {
+    if (proposalFor(id).kind === "bank_import" && updates && Object.keys(updates).length === 1 && Object.hasOwn(updates, "accountId")) {
+      return resolveBankImportAccount(id, updates, { signal });
+    }
     const original = proposalFor(id);
     assertProposalCurrent(original, signal);
     if (confirming.has(id) || revising.has(id)) throw fail("该事项正在处理，请完成当前操作后再修改", "AI_PROPOSAL_BUSY");
@@ -425,7 +575,7 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
       || !updates[key] || typeof updates[key] !== "object" || Array.isArray(updates[key])) throw fail("请只修改本类建议允许的字段");
     const tool = { bank_import: "prepare_bank_import", document_fields: "propose_document_fields", bank_business: "propose_bank_business" }[original.kind];
     const schema = AI_FINANCE_TOOLS.find((item) => item.function.name === tool).function.parameters;
-    let input = copy(original.payload);
+    let input = original.kind === "bank_import" ? select(original.payload, ["documentId", "sourceGroupId", "mapping", ...(!original.payload.createAccount ? ["accountId"] : [])]) : copy(original.payload);
     if (key === "classification") {
       for (const field of Object.keys(updates.classification)) if (field === "transactionId" || !Object.hasOwn(schema.properties, field)) throw fail(`不能修改流水来源、金额、账期或此字段：${field}`);
       input = { ...input, ...updates.classification };
@@ -449,6 +599,7 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
     if (proposal.status === "applied") return appliedResponse(id);
     let workspace = assertProposalCurrent(proposal, signal);
     if (proposal.kind === "bank_import") {
+      if (proposal.preview.canConfirm === false) throw fail(proposal.preview.message || "请先处理本组的账户或流水问题，再重新核对", "AI_BANK_ACCOUNT_REQUIRED");
       const result = await bankPlan(proposal.payload, signal, async ({ bank, plan }) => {
         assertProposalCurrent(proposal, signal);
         if (!plan) throw fail("银行列映射已失效，请重新整理");
@@ -490,7 +641,11 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
   }
 
   return {
-    getContext, getAssistantContext, uploadFiles, readOriginal, reviseProposal,
+    getContext, getAssistantContext, uploadFiles, readOriginal, reviseProposal, resolveBankImportAccount,
+    prepareBankFile(input, { signal } = {}) {
+      validateValue(input, AI_FINANCE_TOOLS.find((item) => item.function.name === "prepare_bank_import").function.parameters);
+      return prepareImport(input, signal);
+    },
     getConversation() { const current = conversation(); return { messages: copy(current.messages), proposals: current.proposals.map(publicProposal) }; },
     appendMessage(input) {
       if (!input || !["user", "assistant"].includes(input.role) || typeof input.content !== "string") throw fail("对话角色或内容不正确");
@@ -516,6 +671,7 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
         validateValue(input, schema);
         if (name === "get_context") return getAssistantContext(input.section, { offset: input.offset });
         if (name === "read_document") return await readDocument(input.documentId, signal, input.offset);
+        if (name === "read_bank_statement") return await withBankFile(input, signal, ({ analysis }) => ({ status: "analyzed", analysis }), { permission: "data.read" });
         if (name === "prepare_bank_import") return await prepareImport(input, signal);
         if (name === "propose_bank_business") return proposeBusiness(input);
         return await proposeFields(input, signal);
