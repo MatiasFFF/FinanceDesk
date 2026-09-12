@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { ArrowLeft, MagnifyingGlass } from "@phosphor-icons/react";
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
 import { AiDialog } from "./AiDialog.jsx";
-import { filterTransactions, navigationTargetError, periodTransactions, rememberAiDocumentFocus, resolveAiResourceNavigation, resolveWorkbenchNavigation, transactionBrowseState } from "./aiWorkflow.js";
+import { filterTransactions, navigationTargetError, periodTransactions, rememberAiDocumentFocus, rememberAiVoucherFocus, resolveAiResourceNavigation, resolveWorkbenchNavigation, transactionBrowseState } from "./aiWorkflow.js";
 
 const Documents = lazy(() => import("../intake/DocumentIntakePanel.jsx").then((module) => ({ default: module.DocumentIntakePanel })));
 const Accounting = lazy(() => import("../accounting/AccountingWorkbench.jsx").then((module) => ({ default: module.AccountingWorkbench })));
@@ -90,12 +90,12 @@ export function AiResources({ initialTab = "documents", workspaceId, period, tra
     {error && <p className="ai-error" role="alert">{error}</p>}
     {targetError ? <p className="ai-error" role="alert">{targetError}</p> : <div className="ai-resource-body"><Suspense fallback={<p className="ai-helper" role="status">正在打开…</p>}>
       {tab === "documents" && <Documents onToast={onToast} onNavigate={navigate} focusRequest={{ ...location.options, nonce: location.nonce }} onDocumentFocusChange={(documentId) => setLocation((current) => rememberAiDocumentFocus(current, documentId))} />}
-      {tab === "vouchers" && <Accounting onToast={onToast} focusVoucherId={location.options.voucherId} focusRequestNonce={location.nonce} />}
+      {tab === "vouchers" && <Accounting onToast={onToast} onNavigate={navigate} focusVoucherId={location.options.voucherId} focusRequestNonce={location.nonce} onVoucherFocusChange={(voucherId, open) => setLocation((current) => rememberAiVoucherFocus(current, voucherId, open))} />}
       {tab === "reports" && <><Reports workspace={activeWorkspace} initialSection={reportSection} onSectionChange={setReportSection} onToast={onToast} onNavigate={navigate} onVouchers={({ voucherId: id } = {}) => navigate("vouchers", { voucherId: id || "" })} /><div className="ai-resource-toolbar"><button type="button" className="ai-text-button" onClick={() => navigate("reports", { section: "opening-balances" })}>期初余额</button><button type="button" className="ai-text-button" onClick={() => navigate("archive")}>本期归档</button></div></>}
       {tab === "setup" && <button type="button" className="ai-secondary-button" onClick={() => navigate("setup", location.options)}>在完整工作台打开基础设置</button>}
       {tab === "bankImport" && <BankImport onToast={onToast} onRequestAccountSetup={() => navigate("setup", { stage: "s3" })} onComplete={(plan) => { setQuery(""); setFilter("all"); setLimit(50); changeLocation({ tab: "transactions", detail: false, options: { importId: plan?.id || "" } }); }} />}
       {tab === "transactions" && <div className="ai-transactions">
-        {location.detail ? currentTransaction ? <Accounting key={selectedTransaction} transactionId={selectedTransaction} onToast={onToast} /> : <p className="ai-error">这笔流水已不在当前账期，请返回列表选择。</p> : <>
+        {location.detail ? currentTransaction ? <Accounting key={selectedTransaction} transactionId={selectedTransaction} onToast={onToast} onNavigate={navigate} /> : <p className="ai-error">这笔流水已不在当前账期，请返回列表选择。</p> : <>
           <div className="ai-resource-toolbar"><p className="ai-helper">本期 {transactions.length} 笔流水</p><button type="button" className="ai-text-button" onClick={() => navigate("bankImport")}>导入流水</button></div>
           <div className="ai-transaction-filters"><label className="ai-field"><span><MagnifyingGlass size={16} />搜索流水</span><input type="search" value={query} placeholder="对方、摘要、日期或金额" onChange={(event) => { setQuery(event.target.value); setLimit(50); }} /></label><label className="ai-field"><span>处理状态</span><select value={filter} onChange={(event) => { setFilter(event.target.value); setLimit(50); }}>{[["all", "全部状态"], ["exception", "待核对"], ["pending", "待整理"], ["draft", "有凭证草稿"], ["posted", "有已入账凭证"]].map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label></div>
           {batchFilter && <p className="ai-helper">当前查看所选批次的导入流水。<button type="button" className="ai-inline-button" onClick={() => changeLocation({ options: { ...location.options, importId: "", importDocumentId: "" } })}>显示本期全部</button></p>}

@@ -4,14 +4,17 @@ import { createAiFinanceService } from "../../application/aiFinanceService.js";
 import { runFinanceAssistant } from "../../application/deepseekClient.js";
 import { AI_FINANCE_SYSTEM } from "../../application/aiFinanceTools.js";
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
+import { hasWorkspacePermission } from "../../domain/foundation.js";
 import { isPeriodArchived } from "../../domain/periods.js";
 import { usePeriodLeaveGuard } from "../workspaces/periodNavigation.js";
 import { AiComposer } from "./AiComposer.jsx";
+import { conversationSendBlocker } from "./aiAttachments.js";
 import { AiDialog } from "./AiDialog.jsx";
 import { AiProposalEditor, AiProposalPreview, proposalHasPreview } from "./AiProposalPreview.jsx";
 import { AiMessageContent } from "./AiMessageContent.jsx";
 import { useAiSession, useAiSessionState } from "./AiSessionContext.jsx";
 import { currentModelLabel, messageModelLabel, replyModelMetadata, snapshotModelSettings } from "./aiModelSettings.js";
+import { canCloseCompletedReview, hasProposalReviewChanges, moveRevisedProposalNote } from "./aiProposalInteractions.js";
 import { cleanAssistantText as cleanText, conversationOperations, fileProgressText, proposalDestinations, proposalLabels, remainingDraft } from "./aiWorkflow.js";
 
 function ProposalReview({ proposals, service, busy, onConfirm, onDismiss, onRevise, onClose, onOriginal, onAccountCreated, onTransaction, workspace, focusId }) {
@@ -24,30 +27,50 @@ function ProposalReview({ proposals, service, busy, onConfirm, onDismiss, onRevi
   const [editorDirty, setEditorDirty] = useState(false);
   const [highlightId, setHighlightId] = useState(focusId || "");
   const pending = proposals.filter((proposal) => proposal.status === "pending");
-  const dirty = editorDirty || !!accountName.trim() || !!accountNumber || Object.values(notes).some((note) => note.trim());
-  usePeriodLeaveGuard({ dirty, busy: busy || accountBusy });
+  const reviewDraft = { accountName, accountNumber, notes, editorDirty };
+  const dirty = hasProposalReviewChanges(reviewDraft);
+  const processing = busy || accountBusy;
+  usePeriodLeaveGuard({ dirty, busy: processing });
   useEffect(() => { if (highlightId) document.getElementById(`ai-review-${highlightId}`)?.scrollIntoView({ block: "nearest" }); }, [highlightId]);
   function leave(action) { if (!busy && !accountBusy && (!dirty || window.confirm("当前修改或补充说明尚未保存，确定离开并放弃吗？"))) action(); }
   function cancelEdit() { if (!editorDirty || window.confirm("修改还没有保存，确定放弃本次修改吗？")) { setEditingId(null); setEditorDirty(false); } }
   return <AiDialog wide className="ai-proposal-dialog" closeDisabled={busy || accountBusy} title={pending.length ? "查看并确认" : !workspace.bankAccounts?.length ? "添加银行账户" : "确认事项"} onClose={() => leave(onClose)}>
     <p className="ai-helper">{workspace.name} · {workspace.currentPeriod}。确认前请核对来源与内容，凭证入账仍需单独复核。</p>
     {error && <p className="ai-error" role="alert">{error}</p>}
-    {!workspace.bankAccounts?.length && <form className="ai-proposal" onSubmit={async (event) => { event.preventDefault(); setAccountBusy(true); setError(""); try { await service.createBankAccount({ name: accountName.trim(), accountNumber: accountNumber.trim() }); onAccountCreated(); } catch (caught) { setError(caught.message); } finally { setAccountBusy(false); } }}>
-      <h3>先添加流水所属银行账户</h3><div className="ai-settings-form"><label className="ai-field"><span>账户名称</span><input required value={accountName} onChange={(event) => setAccountName(event.target.value)} placeholder="例如：公司基本户" /></label><label className="ai-field"><span>账号后四位（可选）</span><input inputMode="numeric" maxLength={4} value={accountNumber} onChange={(event) => setAccountNumber(event.target.value.replace(/\D/g, ""))} /></label><div className="ai-dialog-actions"><button className="ai-primary-button" type="submit" disabled={!accountName.trim() || accountBusy}>{accountBusy ? "正在保存…" : "添加账户"}</button></div></div>
+    {!workspace.bankAccounts?.length && <form className="ai-proposal" onSubmit={async (event) => {
+      event.preventDefault(); if (processing) return;
+      setAccountBusy(true); setError("");
+      try {
+        await service.createBankAccount({ name: accountName.trim(), accountNumber: accountNumber.trim() });
+        setAccountName(""); setAccountNumber(""); onAccountCreated();
+        if (canCloseCompletedReview(service.getConversation().proposals, reviewDraft, { account: true })) onClose();
+      } catch (caught) { setError(caught.message); } finally { setAccountBusy(false); }
+    }}>
+      <h3>先添加流水所属银行账户</h3><div className="ai-settings-form"><label className="ai-field"><span>账户名称</span><input required disabled={processing} value={accountName} onChange={(event) => setAccountName(event.target.value)} placeholder="例如：公司基本户" /></label><label className="ai-field"><span>账号后四位（可选）</span><input disabled={processing} inputMode="numeric" maxLength={4} value={accountNumber} onChange={(event) => setAccountNumber(event.target.value.replace(/\D/g, ""))} /></label><div className="ai-dialog-actions"><button className="ai-primary-button" type="submit" disabled={!accountName.trim() || processing}>{accountBusy ? "正在保存…" : "添加账户"}</button></div></div>
     </form>}
     <div className="ai-proposal-list">{pending.length ? pending.map((proposal) => <section className="ai-proposal" id={`ai-review-${proposal.id}`} key={proposal.id}>
       <h3>{proposal.title || proposalLabels[proposal.kind] || "待确认事项"}</h3>
       {proposal.summary && <p>{proposal.summary}</p>}
       {proposal.revisesProposalId && <p className="ai-helper">已按修改重新计算，请核对下方新预览。</p>}
-      {editingId === proposal.id ? <AiProposalEditor proposal={proposal} workspace={workspace} busy={busy} onDirtyChange={setEditorDirty} onCancel={cancelEdit} onSave={async (id, updates) => {
+      {editingId === proposal.id ? <AiProposalEditor proposal={proposal} workspace={workspace} busy={processing} onDirtyChange={setEditorDirty} onCancel={cancelEdit} onSave={async (id, updates) => {
         const result = await onRevise(id, updates);
-        if (result?.status === "pending_confirmation") { setEditingId(null); setEditorDirty(false); setHighlightId(result.proposal.id); }
+        if (result?.status === "pending_confirmation") {
+          setNotes((current) => moveRevisedProposalNote(current, id, result.proposal.id));
+          setEditingId(null); setEditorDirty(false); setHighlightId(result.proposal.id);
+        }
         return result;
       }} /> : <AiProposalPreview proposal={proposal} workspace={workspace} />}
       <div className="ai-proposal-originals">{(proposal.sourceIds || []).filter((id) => workspace.documents?.some((document) => document.id === id)).map((id) => <button type="button" className="ai-text-button" key={id} onClick={() => onOriginal(id)}><FileText size={16} />{workspace.documents.find((document) => document.id === id)?.name || "查看原件"}</button>)}</div>
-      {proposal.kind === "bank_business" && proposal.preview?.transaction?.id && <button type="button" className="ai-text-button" disabled={busy} onClick={() => leave(() => onTransaction(proposal.preview.transaction.id))}>打开这笔流水，核对完整资料</button>}
-      <label className="ai-field"><span>补充说明（可选）</span><textarea disabled={busy} value={notes[proposal.id] || ""} onChange={(event) => setNotes((current) => ({ ...current, [proposal.id]: event.target.value }))} placeholder="有需要说明的内容，可以写在这里" /></label>
-      <div className="ai-dialog-actions ai-proposal-confirm-actions">{editingId !== proposal.id && <button type="button" className="ai-text-button" disabled={busy || !!editingId} onClick={() => { setError(""); setEditingId(proposal.id); }}>修改内容</button>}<button type="button" className="ai-text-button" disabled={busy || !!editingId} onClick={async () => { try { setError(""); await onDismiss(proposal.id); setNotes((current) => ({ ...current, [proposal.id]: "" })); } catch (caught) { setError(caught.message); } }}>暂不采用</button><button className="ai-primary-button" type="button" disabled={busy || !!editingId || !proposalHasPreview(proposal)} onClick={async () => { try { setError(""); await onConfirm(proposal.id, notes[proposal.id]?.trim() || ""); setNotes((current) => ({ ...current, [proposal.id]: "" })); } catch (caught) { setError(caught.message); } }}>{busy ? "正在处理…" : proposal.kind === "bank_import" ? "确认导入" : proposal.kind === "bank_business" ? proposal.preview?.voucher ? "确认业务并生成草稿" : "确认业务归属" : "确认并保存"}</button></div>
+      {proposal.kind === "bank_business" && proposal.preview?.transaction?.id && <button type="button" className="ai-text-button" disabled={processing} onClick={() => leave(() => onTransaction(proposal.preview.transaction.id))}>打开这笔流水，核对完整资料</button>}
+      <label className="ai-field"><span>补充说明（可选）</span><textarea disabled={processing} value={notes[proposal.id] || ""} onChange={(event) => setNotes((current) => ({ ...current, [proposal.id]: event.target.value }))} placeholder="有需要说明的内容，可以写在这里" /></label>
+      <div className="ai-dialog-actions ai-proposal-confirm-actions">{editingId !== proposal.id && <button type="button" className="ai-text-button" disabled={processing || !!editingId} onClick={() => { setError(""); setEditingId(proposal.id); }}>修改内容</button>}<button type="button" className="ai-text-button" disabled={processing || !!editingId} onClick={async () => { try { setError(""); await onDismiss(proposal.id); setNotes((current) => ({ ...current, [proposal.id]: "" })); } catch (caught) { setError(caught.message); } }}>暂不采用</button><button className="ai-primary-button" type="button" disabled={processing || !!editingId || !proposalHasPreview(proposal)} onClick={async () => {
+        try {
+          setError(""); const result = await onConfirm(proposal.id, notes[proposal.id]?.trim() || "");
+          if (!result) return;
+          setNotes((current) => ({ ...current, [proposal.id]: "" }));
+          if (canCloseCompletedReview(service.getConversation().proposals, reviewDraft, { proposalId: proposal.id })) onClose();
+        } catch (caught) { setError(caught.message); }
+      }}>{busy ? "正在处理…" : proposal.kind === "bank_import" ? "确认导入" : proposal.kind === "bank_business" ? proposal.preview?.voucher ? "确认业务并生成草稿" : "确认业务归属" : "确认并保存"}</button></div>
     </section>) : workspace.bankAccounts?.length ? <p className="ai-empty-copy">当前待确认事项已处理完，可以返回对话继续整理。</p> : null}</div>
   </AiDialog>;
 }
@@ -100,6 +123,9 @@ export default function AiConversation({ draft, onDraftChange, requestSettings, 
   const mountedRef = useRef(true);
   usePeriodLeaveGuard({ busy: () => !!jobRef.current });
   const archived = isPeriodArchived(activeWorkspace);
+  const canAddDocuments = hasWorkspacePermission(state, workspaceId, "documents.add");
+  const sendBlocker = conversationSendBlocker({ archived, persistenceStatus, accessError,
+    canAddDocuments });
   const needsBankAccount = !activeWorkspace.bankAccounts?.length && (messages.some((message) => message.attachments?.some((file) => file.kind === "bank")) || draft.files.some((entry) => /\.(csv|xlsx?)$/i.test(entry.file.name)));
 
   function status(value) { if (mountedRef.current) setProgress(value); }
@@ -154,6 +180,7 @@ export default function AiConversation({ draft, onDraftChange, requestSettings, 
   async function send(retry = false, prompt = null) {
     const submission = prompt ? { text: prompt, files: [] } : { text: draft.text, files: [...draft.files] };
     if (jobRef.current || (!retry && !submission.text.trim() && !submission.files.length)) return;
+    if (sendBlocker) { setError(sendBlocker); return; }
     const apiKey = readKey();
     if (!apiKey) { requestSettings(); return; }
     let selectedModel;
@@ -215,7 +242,7 @@ export default function AiConversation({ draft, onDraftChange, requestSettings, 
   async function confirm(id, reason) {
     const controller = startJob("正在保存确认结果…");
     if (!controller) return;
-    try { const result = await service.confirmProposal(id, { reason, signal: controller.signal }); if (result.message) onToast(result.message); if (!service.getConversation().proposals.some((proposal) => proposal.status === "pending")) setReviewOpen(false); }
+    try { const result = await service.confirmProposal(id, { reason, signal: controller.signal }); if (result.message) onToast(result.message); return result; }
     finally { finishJob(controller); }
   }
   async function dismiss(id) { await service.dismissProposal(id); }
@@ -262,7 +289,7 @@ export default function AiConversation({ draft, onDraftChange, requestSettings, 
         {operation.proposals.some((proposal) => proposal.status === "pending") && <button className="ai-text-button ai-operation-pending" type="button" disabled={busy} onClick={() => openReview(operation.proposals.find((proposal) => proposal.status === "pending").id)}>这次整理有 {operation.proposals.filter((proposal) => proposal.status === "pending").length} 项待确认</button>}
       </div>)}
       {needsBankAccount && !pending.length && <div className="ai-confirmation-summary"><p className="ai-helper">整理这批流水前，需先确定它属于哪个银行账户。</p><button className="ai-primary-button" type="button" disabled={busy || archived || !persistenceStatus.canWrite} onClick={() => openReview()}>添加银行账户</button></div>}
-      {(accountAdded || (recentApplied.length > 0 && !pending.length)) && <div className="ai-confirmation-summary"><button className="ai-primary-button" type="button" disabled={busy || archived || !persistenceStatus.canWrite} onClick={() => accountAdded && (draft.text.trim() || draft.files.length) ? send() : send(false, accountAdded ? "银行账户已添加，请继续整理刚才的流水。" : "请根据刚才的确认结果，继续整理本期流水和票据。")}>继续整理</button></div>}
+      {(accountAdded || (recentApplied.length > 0 && !pending.length)) && <div className="ai-confirmation-summary"><button className="ai-primary-button" type="button" disabled={busy || !!sendBlocker} onClick={() => accountAdded && (draft.text.trim() || draft.files.length) ? send() : send(false, accountAdded ? "银行账户已添加，请继续整理刚才的流水。" : "请根据刚才的确认结果，继续整理本期流水和票据。")}>继续整理</button></div>}
       {busy && <p className="ai-processing" role="status"><CircleNotch size={18} />{progress}</p>}
     </div>
     <div className="ai-conversation-footer">
@@ -270,11 +297,12 @@ export default function AiConversation({ draft, onDraftChange, requestSettings, 
       {!!pending.length && <div className="ai-pending-bar"><span>{pending.length} 项待确认<span className="ai-helper"> · {Object.entries(proposalLabels).filter(([kind]) => pending.some((proposal) => proposal.kind === kind)).map(([, label]) => label).join("、")}</span></span><button className="ai-primary-button" type="button" disabled={busy || archived || !persistenceStatus.canWrite} onClick={() => openReview()}>查看并确认</button></div>}
       {!!fileProgress.length && <details className="ai-job-summary" open={busy || !!error}><summary>{fileProgress.filter((item) => item.state === "completed").length}/{fileProgress.length} 份资料已处理{busy ? "，正在继续" : ""}</summary><ul className="ai-file-progress">{fileProgress.map((file) => <li className="ai-file-progress-item" data-state={file.state} key={file.id}><span><strong>{file.name}</strong><small>{file.message}</small></span>{file.documentId && <button type="button" className="ai-text-button" onClick={() => showOriginal(file.documentId)}>查看原件</button>}</li>)}</ul></details>}
       {!!toolIssues.length && <div className="ai-job-summary">{toolIssues.map((issue) => <p className="ai-notice" key={issue.id}>{issue.message}{(issue.documentId || issue.transactionId) && <button type="button" className="ai-inline-button" disabled={busy} onClick={() => onOpenResources(issue.transactionId ? { transactionId: issue.transactionId } : { initialTab: "documents", documentId: issue.documentId })}>打开对应资料</button>}</p>)}</div>}
-      {(error || accessError) && <div className="ai-error" role="alert">{accessError || error}{!accessError && !busy && (retryAvailable ? <button className="ai-inline-button" type="button" onClick={() => send(true)}>继续本次整理</button> : draft.files.length > 0 ? <button className="ai-inline-button" type="button" onClick={() => send()}>继续上传和整理</button> : null)}</div>}
+      {(error || accessError) && <div className="ai-error" role="alert">{accessError || error}{!accessError && !busy && !sendBlocker && (retryAvailable ? <button className="ai-inline-button" type="button" onClick={() => send(true)}>继续本次整理</button> : draft.files.length > 0 ? <button className="ai-inline-button" type="button" onClick={() => send()}>继续上传和整理</button> : null)}</div>}
       {archived && <p className="ai-helper">本期已归档，只能查看资料、凭证与报表。选择未归档账期后可继续整理。</p>}
-      <AiComposer attachmentNotice={attachmentNotice} value={draft.text} files={draft.files} onChange={(text) => onDraftChange((current) => ({ ...current, text }))} onFiles={(files) => onDraftChange((current) => ({ ...current, files: [...current.files, ...files.map((file) => ({ id: crypto.randomUUID(), file }))] }))} onRemoveFile={(id) => onDraftChange((current) => ({ ...current, files: current.files.filter((entry) => entry.id !== id) }))} onSend={() => send()} busy={busy} onCancel={() => { status("正在停止…"); jobRef.current?.abort(); }} disabled={archived || !persistenceStatus.canWrite || !!accessError} modelLabel={currentModelLabel(activeModelSettings || modelSettings)} onOpenSettings={requestSettings} />
+      {!archived && !canAddDocuments && !accessError && !error && <p className="ai-helper">{sendBlocker}</p>}
+      <AiComposer attachmentNotice={attachmentNotice} value={draft.text} files={draft.files} onChange={(text) => onDraftChange((current) => ({ ...current, text }))} onFiles={(files) => onDraftChange((current) => ({ ...current, files: [...current.files, ...files.map((file) => ({ id: crypto.randomUUID(), file }))] }))} onRemoveFile={(id) => onDraftChange((current) => ({ ...current, files: current.files.filter((entry) => entry.id !== id) }))} onSend={() => send()} busy={busy} onCancel={() => { status("正在停止…"); jobRef.current?.abort(); }} disabled={!!sendBlocker} modelLabel={currentModelLabel(activeModelSettings || modelSettings)} onOpenSettings={requestSettings} />
     </div>
-    {reviewOpen && <ProposalReview proposals={proposals} service={service} busy={busy} onConfirm={confirm} onDismiss={dismiss} onRevise={revise} focusId={reviewFocus} onClose={() => setReviewOpen(false)} onOriginal={showOriginal} onAccountCreated={() => { setReviewOpen(false); setAccountAdded(true); onToast("银行账户已添加，可以继续整理流水。"); }} onTransaction={(transactionId) => { setReviewOpen(false); onOpenResources({ transactionId }); }} workspace={activeWorkspace} />}
+    {reviewOpen && <ProposalReview proposals={proposals} service={service} busy={busy} onConfirm={confirm} onDismiss={dismiss} onRevise={revise} focusId={reviewFocus} onClose={() => setReviewOpen(false)} onOriginal={showOriginal} onAccountCreated={() => { setAccountAdded(true); onToast("银行账户已添加，可以继续整理流水。"); }} onTransaction={(transactionId) => { setReviewOpen(false); onOpenResources({ transactionId }); }} workspace={activeWorkspace} />}
     {original && <OriginalPreview original={original} onClose={() => setOriginal(null)} />}
   </section>;
 }

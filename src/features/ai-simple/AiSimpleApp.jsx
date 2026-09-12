@@ -10,7 +10,7 @@ import { AiDialog } from "./AiDialog.jsx";
 import { AiSettings } from "./AiSettings.jsx";
 import { selectAiAttachments } from "./aiAttachments.js";
 import { useAiSession, useAiSessionState } from "./AiSessionContext.jsx";
-import { aiSessionContextKey } from "./aiModeSession.js";
+import { aiSessionContextKey, closeAiWorkspaceCreation, resumeAiHomeSubmission } from "./aiModeSession.js";
 import blueBackground from "../../assets/ai-blue-background.png";
 import "./ai-simple.css";
 
@@ -25,8 +25,16 @@ function CreateWorkspace({ onClose, onCreated }) {
   const [operator, setOperator] = useState("");
   const [roleId, setRoleId] = useState(BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS[0]?.id || "role-owner");
   const [error, setError] = useState("");
-  const dirtyGuardId = usePeriodLeaveGuard({ dirty: !!name.trim() || !!operator.trim() || period !== localAccountingPeriod() || roleId !== BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS[0]?.id });
-  return <AiDialog title="新建工作台" onClose={onClose}><form className="ai-settings-form" onSubmit={(event) => {
+  const [initialPeriod] = useState(period);
+  const dirty = !!name.trim() || !!operator.trim() || period !== initialPeriod || roleId !== (BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS[0]?.id || "role-owner");
+  const dirtyGuardId = usePeriodLeaveGuard({ dirty });
+  useEffect(() => {
+    if (!dirty) return undefined;
+    const leave = (event) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", leave);
+    return () => window.removeEventListener("beforeunload", leave);
+  }, [dirty]);
+  return <AiDialog title="新建工作台" onClose={() => closeAiWorkspaceCreation({ dirty, confirm: (message) => window.confirm(message), onClose })}><form className="ai-settings-form" onSubmit={(event) => {
     event.preventDefault();
     try {
       if (!allowPeriodNavigation({ ignoreDirtyGuardId: dirtyGuardId })) return;
@@ -44,8 +52,8 @@ function CreateWorkspace({ onClose, onCreated }) {
 }
 
 export default function AiSimpleApp({ onOpenFullVersion }) {
-  const { state, activeWorkspace, actions, persistenceStatus } = useFinanceDesk();
-  const { readKey, configured, updateContext } = useAiSession();
+  const { state, activeWorkspace, actions, persistenceStatus, store } = useFinanceDesk();
+  const { readKey, configured, updateContext, getSnapshot } = useAiSession();
   const workspaceId = activeWorkspace?.id || "";
   const period = activeWorkspace?.currentPeriod || "";
   const [screen, setScreen] = useAiSessionState(workspaceId, period, "screen", "home");
@@ -63,6 +71,7 @@ export default function AiSimpleApp({ onOpenFullVersion }) {
   const menuRef = useRef(null);
   const menuPanelRef = useRef(null);
   const dragDepthRef = useRef(0);
+  const pendingHomeSendRef = useRef(null);
   const targetKey = aiSessionContextKey(workspaceId, period);
   const activeUsers = (activeWorkspace?.users || []).filter((user) => user.status === "active");
   const canManage = !activeWorkspace || hasWorkspacePermission(state, activeWorkspace.id, "workspace.manage");
@@ -81,12 +90,20 @@ export default function AiSimpleApp({ onOpenFullVersion }) {
   }
   function showError(error) { setNotice(error?.message || String(error)); }
   function enterWorkbench() { setMenuOpen(false); if (!activeWorkspace) setCreateOpen(true); else setScreen("workbench"); }
+  function continueHomeSubmission() {
+    const current = store.getActiveWorkspace();
+    const currentDraft = getSnapshot().contexts[aiSessionContextKey(current?.id, current?.currentPeriod)]?.draft;
+    return resumeAiHomeSubmission({ pendingRef: pendingHomeSendRef, workspace: current, draft: currentDraft, configured: !!readKey(), onSend: () => {
+      setSendOnEnter((value) => value + 1);
+      updateContext(current.id, current.currentPeriod, "screen", "workbench");
+    } });
+  }
   function sendFromHome() {
     if (!draft.text.trim() && !draft.files.length) return;
+    pendingHomeSendRef.current = { workspaceId, period, draft };
     if (!activeWorkspace) { setCreateOpen(true); return; }
     if (!readKey()) { setSettingsOpen(true); return; }
-    setSendOnEnter((value) => value + 1);
-    setScreen("workbench");
+    continueHomeSubmission();
   }
   function switchWorkspace(id) {
     try {
@@ -113,6 +130,10 @@ export default function AiSimpleApp({ onOpenFullVersion }) {
     if (resourceState) setResources((current) => ({ ...current, resourceState }));
     return returnFullVersion({ page, options, workspaceId, period });
   }
+  useEffect(() => {
+    const pending = pendingHomeSendRef.current;
+    if (pending && (pending.workspaceId !== workspaceId || pending.period !== period)) pendingHomeSendRef.current = null;
+  }, [workspaceId, period]);
   useEffect(() => {
     if (!menuOpen) return undefined;
     const frame = requestAnimationFrame(() => menuPanelRef.current?.querySelector("button")?.focus({ preventScroll: true }));
@@ -159,11 +180,15 @@ export default function AiSimpleApp({ onOpenFullVersion }) {
         {!persistenceStatus.canWrite && <p className="ai-error ai-persistence-error" role="status">{persistenceStatus.message}</p>}
         <Suspense fallback={<div className="ai-conversation-loading" role="status">正在打开工作台…</div>}><Conversation key={`${targetKey}:${state.activeUserId || ""}`} draft={draft} onDraftChange={changeDraft} attachmentNotice={attachmentNotice?.targetKey === targetKey ? attachmentNotice : null} readKey={readKey} configured={configured} requestSettings={() => setSettingsOpen(true)} autoSendNonce={sendOnEnter} onBusyChange={setBusy} onOpenResources={setResources} onToast={setNotice} /></Suspense>
       </main>}
-    {settingsOpen && <AiSettings onClose={() => setSettingsOpen(false)} onSaved={() => { setSettingsOpen(false); setNotice("DeepSeek 设置已保存。"); }} onCleared={() => { setSettingsOpen(false); setNotice("DeepSeek 密钥已清除。"); }} />}
-    {createOpen && <CreateWorkspace onClose={() => setCreateOpen(false)} onCreated={(created) => {
+    {settingsOpen && <AiSettings onClose={() => { pendingHomeSendRef.current = null; setSettingsOpen(false); }} onSaved={() => { setSettingsOpen(false); setNotice("DeepSeek 设置已保存。"); continueHomeSubmission(); }} onCleared={() => { setNotice("DeepSeek 密钥已清除。"); }} />}
+    {createOpen && <CreateWorkspace onClose={() => { pendingHomeSendRef.current = null; setCreateOpen(false); }} onCreated={(created) => {
+      const pending = pendingHomeSendRef.current;
+      const continueSubmission = !activeWorkspace && pending?.workspaceId === workspaceId && pending.period === period && pending.draft === draft;
       if (!activeWorkspace) { updateContext(created.id, created.currentPeriod, "draft", draft); changeDraft(blankDraft()); }
       updateContext(created.id, created.currentPeriod, "screen", "workbench");
       setCreateOpen(false); setSendOnEnter(0);
+      pendingHomeSendRef.current = continueSubmission ? { ...pending, workspaceId: created.id, period: created.currentPeriod } : null;
+      if (continueSubmission) { if (readKey()) continueHomeSubmission(); else setSettingsOpen(true); }
     }} />}
     {resources && activeWorkspace && <Suspense fallback={<AiDialog title="资料与报表" wide onClose={() => setResources(null)}><p className="ai-helper">正在打开…</p></AiDialog>}><Resources key={targetKey} {...resources} onRememberState={rememberResourceState} onOpenFullWorkbench={openFullWorkbench} onClose={() => setResources(null)} onToast={setNotice} /></Suspense>}
     {notice && <div className="ai-toast" role="status">{notice}</div>}

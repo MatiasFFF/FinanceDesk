@@ -67,6 +67,21 @@ export function rememberAiDocumentFocus(location, documentId) {
   return { ...location, options: { ...options, documentId: documentId || "", section: "files" } };
 }
 
+export function rememberAiVoucherFocus(location, voucherId, open) {
+  if (location.tab !== "vouchers" || (!open && location.options.voucherId !== voucherId)) return location;
+  const selected = open ? voucherId : "";
+  if ((location.options.voucherId || "") === selected) return location;
+  return { ...location, options: { ...location.options, voucherId: selected } };
+}
+
+export function voucherOriginalTarget(workspace, voucher, entry, { transactionId } = {}) {
+  if (!(workspace.documents || []).some((document) => document.id === entry.id)) return null;
+  const scope = { workspaceId: workspace.id, period: workspace.currentPeriod };
+  if (navigationTargetError(workspace, { ...scope, options: { documentId: entry.id, voucherId: voucher.id, transactionId } })) return null;
+  const returnTo = { page: "reconcile", ...scope, ...(transactionId ? { panel: "transactions", transactionId } : { panel: "vouchers", voucherId: voucher.id }) };
+  return { page: "documents", options: { ...scope, documentId: entry.id, section: "files", returnTo } };
+}
+
 export function resolveAiResourceNavigation(page, options = {}) {
   const target = resolveWorkbenchNavigation(page, options);
   const panel = target.options.panel || "transactions";

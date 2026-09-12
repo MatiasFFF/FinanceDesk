@@ -235,9 +235,14 @@ export function createFinanceDeskStore(options = {}) {
         }), null, resolved);
       }
       const imported = applyBankImport(base, workspaceId, plan, resolved);
-      return commit(updateWorkspace(imported, workspaceId, (workspace) => activateWorkspacePeriod(
-        enterAccountingPeriod(workspace, plan.period, resolved.actor), displayPeriod,
-      ), null, resolved));
+      return commit(updateWorkspace(imported, workspaceId, (workspace) => {
+        const next = activateWorkspacePeriod(enterAccountingPeriod(workspace, plan.period, resolved.actor), displayPeriod);
+        if (!actionOptions?.finalizeWorkspace) return next;
+        const finalized = actionOptions.finalizeWorkspace(next, plan);
+        if (!finalized || typeof finalized !== "object" || typeof finalized.then === "function"
+          || finalized.id !== next.id || finalized.currentPeriod !== next.currentPeriod) throw new Error("导入结果必须同步保留原工作台与账期");
+        return finalized;
+      }, null, resolved));
     },
     exportBackup(exportOptions) {
       assertWorkspaceAccess(state.activeWorkspaceId, "data.read");

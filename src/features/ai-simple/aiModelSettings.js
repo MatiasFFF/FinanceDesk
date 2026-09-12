@@ -2,6 +2,10 @@ import { DEFAULT_DEEPSEEK_MODEL_SETTINGS, getDeepSeekModelCapabilities, KNOWN_DE
 
 export const thinkingEffortLabels = { low: "轻度", high: "高", max: "最高" };
 
+export function hasModelSettingsChanges(keyDraft, selection, savedSettings) {
+  return !!keyDraft.trim() || ["model", "thinking", "reasoningEffort"].some((field) => selection[field] !== savedSettings[field]);
+}
+
 export function snapshotModelSettings(settings) {
   const normalized = normalizeDeepSeekModelSettings(settings);
   return Object.freeze({ model: normalized.model, thinking: normalized.thinking, reasoningEffort: normalized.reasoningEffort });

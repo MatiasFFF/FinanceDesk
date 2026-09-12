@@ -7,7 +7,9 @@ export const AI_FINANCE_TOOLS = [
     section: { enum: ["overview", "documents", "transactions", "tasks", "vouchers", "reports", "accounts"] },
     offset: { type: "integer", minimum: 0 },
   }, ["section"]),
-  tool("read_document", "读取本工作台本期已保存原件的本地识别正文和候选字段，不访问外部URL。", { documentId: text }, ["documentId"]),
+  tool("read_document", "读取本工作台本期已保存原件的本地识别正文和候选字段，不访问外部URL。每次最多24000字；nextOffset非空时按该offset继续读取，未读完不能当作整份内容。", {
+    documentId: text, offset: { type: "integer", minimum: 0 },
+  }, ["documentId"]),
   tool("prepare_bank_import", "读取已上传银行原件并准备导入核对，生成待用户确认事项；不会直接导入。账户必须来自get_context。mapping若提供则为完整映射，省略的列不使用，列号从0开始；缺映射时先按真实表头样例补齐。", {
     documentId: text, accountId: text, mapping: { type: "object", additionalProperties: { type: "integer", minimum: 0 } },
   }, ["documentId", "accountId"]),

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { listDeepSeekModels } from "../../application/deepseekClient.js";
 import { getDeepSeekModelCapabilities } from "../../application/deepseekModels.js";
+import { usePeriodLeaveGuard } from "../workspaces/periodNavigation.js";
 import { AiDialog } from "./AiDialog.jsx";
 import { useAiSession } from "./AiSessionContext.jsx";
-import { modelOptions, settingsForModel, snapshotModelSettings, thinkingEffortLabels } from "./aiModelSettings.js";
+import { hasModelSettingsChanges, modelOptions, settingsForModel, snapshotModelSettings, thinkingEffortLabels } from "./aiModelSettings.js";
 
 export function AiSettings({ onSaved, onCleared, onClose }) {
   const { configured, readKey, setApiKey, clearApiKey, modelSettings, setModelSettings } = useAiSession();
@@ -17,7 +18,19 @@ export function AiSettings({ onSaved, onCleared, onClose }) {
   const options = modelOptions(models, selection.model);
   const unavailable = options.find((model) => model.id === selection.model)?.unavailable;
   const hasKey = !!value.trim() || configured;
+  const dirty = hasModelSettingsChanges(value, selection, modelSettings);
+  usePeriodLeaveGuard({ dirty });
   useEffect(() => () => requestRef.current?.abort(), []);
+  useEffect(() => {
+    if (!dirty) return undefined;
+    const beforeUnload = (event) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => window.removeEventListener("beforeunload", beforeUnload);
+  }, [dirty]);
+
+  function close() {
+    if (!dirty || window.confirm("DeepSeek 设置尚未保存，确定放弃这些修改并关闭吗？")) onClose();
+  }
 
   function changeKey(next) {
     requestRef.current?.abort(); requestRef.current = null;
@@ -47,7 +60,7 @@ export function AiSettings({ onSaved, onCleared, onClose }) {
       onSaved?.(); onClose();
     } catch (caught) { setError(caught.message || "设置未能保存，请核对填写内容。"); }
   }
-  return <AiDialog title="DeepSeek 设置" onClose={onClose}>
+  return <AiDialog title="DeepSeek 设置" onClose={close}>
     <form className="ai-settings-form" onSubmit={save}>
       <label className="ai-field"><span>API 密钥{configured ? " · 已设置" : ""}</span><input type="password" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} minLength={8} maxLength={512} pattern={"[A-Za-z0-9_\\-]{8,512}"} title="请填写完整的 DeepSeek API 密钥" value={value} placeholder={configured ? "留空沿用已有密钥，填写即可更换" : "sk-…"} onChange={(event) => changeKey(event.target.value)} /></label>
       <p className="ai-helper">密钥仅在当前标签页内存中使用，刷新或关闭后需要重新填写。原件保留在本机；本次对话、相关财务字段和识别文字会发送给 DeepSeek。</p>

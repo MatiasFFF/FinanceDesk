@@ -1,5 +1,23 @@
 export const aiSessionContextKey = (workspaceId, period) => JSON.stringify([workspaceId || "", period || ""]);
 
+export function closeAiWorkspaceCreation({ dirty, confirm, onClose }) {
+  if (dirty && !confirm("新建工作台信息还没有保存。确定关闭并放弃填写内容吗？")) return false;
+  onClose();
+  return true;
+}
+
+// Only the explicitly submitted draft may resume after the required setup.
+// Consume before sending so a second save/close callback cannot send it twice.
+export function resumeAiHomeSubmission({ pendingRef, workspace, draft, configured, onSend }) {
+  const pending = pendingRef.current;
+  pendingRef.current = null;
+  if (!pending || !configured || !workspace
+    || pending.workspaceId !== workspace.id || pending.period !== workspace.currentPeriod
+    || pending.draft !== draft) return false;
+  onSend();
+  return true;
+}
+
 // This store belongs to one mounted tab. Credentials never enter its UI snapshot.
 export function createAiTabSession({ defaultModelSettings, normalizeModelSettings = (value) => value }) {
   let apiKey = "";

@@ -16,7 +16,7 @@ const fail = (code, message) => new AssistantClientError(code, message);
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const cancelled = () => fail("ASSISTANT_CANCELLED", "已停止本轮整理，已保存的资料和待确认事项会保留");
 
-function boundedToolResult(value, key) {
+function boundedToolResult(value, key, toolName) {
   const serialized = redact(JSON.stringify(value ?? null), key);
   if (new TextEncoder().encode(serialized).byteLength <= ASSISTANT_TOOL_RESULT_LIMIT) return JSON.parse(serialized);
   let remaining = 12000;
@@ -40,6 +40,37 @@ function boundedToolResult(value, key) {
     }
     remaining -= 16;
     return item;
+  }
+  if (toolName === "read_document" && isObject(value) && typeof value.text === "string"
+    && Number.isInteger(value.offset) && value.offset >= 0 && Number.isInteger(value.totalChars)) {
+    // The service's character limit can exceed the wire's UTF-8 byte limit.
+    // Keep a contiguous source prefix, then advance by exactly that prefix;
+    // generic string summaries would silently skip the omitted document text.
+    const sourceText = value.text;
+    const { text: _redactedText, ...metadata } = JSON.parse(serialized);
+    remaining = 4000;
+    const base = { ...shorten(metadata), documentId: value.documentId, offset: value.offset, totalChars: value.totalChars,
+      resultTruncated: true, coverage: "正文为连续片段；nextOffset非空时按该位置继续读取。其他字段可能已缩短，完整原件与识别结果仍保存在本地。" };
+    const prefix = (length) => JSON.parse(redact(JSON.stringify({ ...base, text: sourceText.slice(0, length),
+      nextOffset: length < sourceText.length ? value.offset + length : value.nextOffset,
+      truncated: value.offset > 0 || length < sourceText.length || value.nextOffset !== null,
+    }), key));
+    let low = 0;
+    let high = sourceText.length;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (new TextEncoder().encode(JSON.stringify(prefix(middle))).byteLength <= ASSISTANT_TOOL_RESULT_LIMIT) low = middle;
+      else high = middle - 1;
+    }
+    const keyStart = sourceText.lastIndexOf(key, low - 1);
+    if (keyStart >= 0 && keyStart < low && keyStart + key.length > low) low = keyStart;
+    // Do not split a UTF-16 surrogate pair between two independently encoded replies.
+    if (low < sourceText.length && /[\uD800-\uDBFF]/.test(sourceText[low - 1] || "") && /[\uDC00-\uDFFF]/.test(sourceText[low])) low -= 1;
+    const result = prefix(low);
+    if ((sourceText.length && !low) || new TextEncoder().encode(JSON.stringify(result)).byteLength > ASSISTANT_TOOL_RESULT_LIMIT) {
+      throw fail("ASSISTANT_TOO_LARGE", "本次资料字段过多，尚未继续读取，请缩小处理范围");
+    }
+    return result;
   }
   const compact = shorten(JSON.parse(serialized));
   const result = { ...(isObject(compact) ? compact : { data: compact }), resultTruncated: true,
@@ -282,7 +313,7 @@ export async function runFinanceAssistant({ apiKey, messages: inputMessages, too
         let result;
         try {
           const output = call.inputError || await executeTool({ ...call, signal });
-          result = boundedToolResult(output, key);
+          result = boundedToolResult(output, key, call.name);
         } catch (error) {
           if (signal?.aborted) throw cancelled();
           if (error?.name === "AbortError") throw cancelled();

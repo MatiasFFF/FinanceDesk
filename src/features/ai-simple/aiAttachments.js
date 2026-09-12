@@ -3,6 +3,14 @@ export const AI_ATTACHMENT_MAX_BYTES = 30 * 1024 * 1024;
 export const AI_ATTACHMENT_ACCEPT = ".csv,.xls,.xlsx,.pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff";
 export const AI_ATTACHMENT_HELP = "支持 CSV、Excel、PDF 和常见票据图片；每份不超过 30 MB，每次最多 20 份。";
 
+export function conversationSendBlocker({ archived, persistenceStatus, accessError, canAddDocuments }) {
+  if (archived) return "本期已归档，只能查看。请选择未归档账期后再整理。";
+  if (!persistenceStatus?.canWrite) return persistenceStatus?.message || "当前工作台暂时无法保存，请恢复保存后再整理。";
+  if (accessError) return accessError;
+  if (!canAddDocuments) return "当前操作身份没有添加资料权限，请切换有权限的操作人后再整理。";
+  return "";
+}
+
 const extensions = new Set(["csv", "xls", "xlsx", "pdf", "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"]);
 const mimeTypes = new Set(["text/csv", "application/pdf", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "image/png", "image/jpeg", "image/webp", "image/bmp", "image/tiff"]);
 

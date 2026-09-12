@@ -74,7 +74,7 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
   }
   // Existing async financial operations also check the fixed target at their
   // final synchronous write, including cancellation while verifying originals.
-  function scopedStore(signal, transform, beforeWrite) {
+  function scopedStore(signal, transform, beforeWrite, finalizeBankImport) {
     return { ...store,
       assertWorkspaceAccess: (...args) => { target("data.read", signal); return store.assertWorkspaceAccess(...args); },
       assertWorkspaceWritable: (...args) => { target("data.read", signal); return store.assertWorkspaceWritable(...args); },
@@ -84,6 +84,7 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
           target("data.read", signal);
           beforeWrite?.();
           if (key === "replaceWorkspace" && transform) args[1] = transform(args[1]);
+          if (key === "applyBankImport" && finalizeBankImport) args[2] = { ...args[2], finalizeWorkspace: finalizeBankImport };
           return actions[key](...args);
         };
       } }),
@@ -163,6 +164,15 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
     const proposal = proposalFor(id);
     return { proposal: publicProposal(proposal), result: proposal.result, message: proposal.message, ...(proposal.result?.voucherId ? { voucherId: proposal.result.voucherId } : {}) };
   }
+  const importMessage = (result) => `已导入${result.counts.imported}笔流水，跳过${result.counts.duplicates}笔重复；尚未入账。`;
+  function preparedImportResult(workspace, importId) {
+    // Read the real core result from its final, not-yet-persisted workspace.
+    // The existing store still supplies permissions; only its read method runs.
+    const state = store.getState();
+    const bank = createFinanceDeskService({ store: { ...store, getState: () => ({ ...state,
+      workspaces: state.workspaces.map((item) => item.id === workspaceId ? workspace : item) }) }, fileVault });
+    return bank.getBankImportResult({ workspaceId, importId });
+  }
 
   function getContext(section = "overview", { offset = 0 } = {}) {
     validateValue({ section, offset }, AI_FINANCE_TOOLS[0].function.parameters);
@@ -228,17 +238,54 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
     if (documentVersion(documentFor(documentId, target("data.read", signal))) !== before) throw fail("资料原件已变化，请重新打开", "AI_SOURCE_CHANGED");
     return { ...record, documentId, name: document.name, mimeType: document.mimeType || record.blob.type };
   }
-  async function readDocument(documentId, signal) {
+  async function readDocument(documentId, signal, offset = 0) {
     await readOriginal(documentId, { signal });
     const document = documentFor(documentId);
     const recognition = await getLocalDocumentRecognition({ fileVault, workspaceId, document });
     if (documentVersion(documentFor(documentId, target("data.read", signal))) !== documentVersion(document)) throw fail("资料已变化，请重新读取", "AI_SOURCE_CHANGED");
     const result = recognition?.result;
+    const fullText = safeText(result?.text, Number.MAX_SAFE_INTEGER);
+    const text = fullText.slice(offset, offset + 24000);
+    const nextOffset = offset + text.length < fullText.length ? offset + text.length : null;
     return copy({ documentId, name: document.name, period, category: document.category, version: document.version, hash: document.hash,
       fields: document.structuredData, allowedFields: fieldNames[document.structuredData?.kind] || [], recognitionStatus: document.contentRecognition?.ocrStatus || "not_started",
-      text: safeText(result?.text, 24000), truncated: (result?.text?.length || 0) > 24000,
+      text, offset, totalChars: fullText.length, nextOffset, truncated: offset > 0 || nextOffset !== null,
       pages: (result?.pages || []).slice(0, 30).map(({ pageNumber }) => ({ pageNumber })), suggestedFields: document.contentRecognition?.suggestedFields || {} });
   }
+
+  async function reuseUploadedOriginal(document, file, hash, signal) {
+    let available = true;
+    try { await readOriginal(document.id, { signal }); }
+    catch (error) { if (error.code !== "AI_ORIGINAL_UNAVAILABLE") throw error; available = false; }
+    const before = documentVersion(document);
+    const assertSameOriginal = () => {
+      const current = documentFor(document.id, target("documents.add", signal));
+      if (documentVersion(current) !== before || current.hash !== hash || Number(current.size) !== file.size) throw fail("资料索引已变化，请重新选择对应原文件", "AI_SOURCE_CHANGED");
+      if (current.archiveStatus === "archived" || ["archived", "已归档"].includes(current.lifecycleStatus)) throw fail("已归档资料不能恢复或替换原件", "AI_PERIOD_ARCHIVED");
+      return current;
+    };
+    const current = assertSameOriginal();
+    const blobId = current.storage?.blobId || current.id;
+    if (!available) {
+      const stored = await fileVault.get(blobId);
+      assertSameOriginal();
+      if (stored && stored.workspaceId !== workspaceId) throw fail("该本地文件属于其他工作台，不能覆盖", "AI_ORIGINAL_UNAVAILABLE");
+      if (stored?.hash && stored.hash !== hash) throw fail("本地原件记录已更新，请重新读取后再恢复", "AI_SOURCE_CHANGED");
+      // The user's replacement has the exact existing hash and size. Keep the
+      // original ID and references; an unrelated local record is never overwritten.
+      await fileVault.put({ id: blobId, workspaceId, name: current.name, mimeType: current.mimeType || file.type,
+        size: file.size, hash, blob: file, createdAt: stored?.createdAt || current.createdAt,
+        ...(stored?.recognition?.sourceHash === hash ? { recognition: stored.recognition } : {}) });
+    }
+    const latest = assertSameOriginal();
+    if (!latest.storage?.availableLocally || latest.storage.blobId !== blobId) {
+      const workspace = target("documents.add", signal);
+      store.actions.replaceWorkspace(workspaceId, { ...workspace, documents: workspace.documents.map((item) => item.id === latest.id
+        ? { ...item, storage: { ...item.storage, availableLocally: true, blobId } } : item) },
+      { period, requiredPermission: "documents.add", audit: { action: "恢复本地原件", detail: latest.name } });
+    }
+  }
+
   async function uploadFiles(files, { signal, onProgress } = {}) {
     const uploaded = [];
     const selected = Array.from(files || []);
@@ -254,11 +301,12 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
         onProgress?.({ stage: "saving", name, index: uploaded.length, total: selected.length });
         const hash = await hashLocalFile(file);
         let document = target("documents.add", signal).documents.find((item) => item.period === period && item.hash === hash && item.category === (bank ? "银行流水" : "发票"));
-        if (document) await readOriginal(document.id, { signal });
+        if (document) { await reuseUploadedOriginal(document, file, hash, signal); document = documentFor(document.id, target("documents.add", signal)); }
         else document = await saveLocalDocument({ store: scopedStore(signal), fileVault, workspaceId, file,
           metadata: { category: bank ? "银行流水" : "发票", period, name }, isCurrent: () => { target("documents.add", signal); return true; } });
         const attachment = { documentId: document.id, name: document.name, kind: bank ? "bank" : "document", recognitionStatus: document.contentRecognition?.ocrStatus || "not_started" };
         uploaded.push(attachment);
+        if (recognized && attachment.recognitionStatus === "completed" && !(await getLocalDocumentRecognition({ fileVault, workspaceId, document }))) attachment.recognitionStatus = "not_started";
         if (recognized && attachment.recognitionStatus !== "completed") {
           try {
             const { recognizeLocalDocument } = await import("../features/intake/localDocumentRecognition.js");
@@ -290,13 +338,13 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
     } catch (error) { error.uploaded = uploaded; throw error; }
   }
 
-  async function bankPlan(payload, signal, callback, beforeWrite) {
+  async function bankPlan(payload, signal, callback, beforeWrite, finalizeBankImport) {
     const document = documentFor(payload.documentId, target("data.write", signal));
     if (!target().bankAccounts.some((account) => account.id === payload.accountId)) throw fail("请先在当前工作台添加或选择银行账户", "AI_BANK_ACCOUNT_REQUIRED");
     if (document.category !== "银行流水") throw fail("请选择已上传的银行CSV或Excel原件");
     if (payload.mapping) for (const key of Object.keys(payload.mapping)) if (!Object.hasOwn(BANK_FIELD_DEFINITIONS, key)) throw fail(`不支持的银行列：${key}`);
     const original = await readOriginal(document.id, { signal });
-    const bank = createFinanceDeskService({ store: scopedStore(signal, null, beforeWrite), fileVault });
+    const bank = createFinanceDeskService({ store: scopedStore(signal, null, beforeWrite, finalizeBankImport), fileVault });
     const file = await bank.registerBankFile(original.blob, { workspaceId, fileName: document.name, sourceDocumentId: document.id, exactMapping: payload.mapping !== undefined, signal });
     try {
       target("data.write", signal);
@@ -405,10 +453,16 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
         assertProposalCurrent(proposal, signal);
         if (!plan) throw fail("银行列映射已失效，请重新整理");
         return bank.executeBankImport({ workspaceId, planId: plan.planId });
-      }, () => assertProposalCurrent(proposal, signal));
-      workspace = target("data.write", signal);
-      const message = `已导入${result.counts.imported}笔流水，跳过${result.counts.duplicates}笔重复；尚未入账。`;
-      store.actions.replaceWorkspace(workspaceId, appliedWorkspace(workspace, proposal, result, message), { period, requiredPermission: "data.write" });
+      }, () => assertProposalCurrent(proposal, signal), (next, plan) => {
+        const imported = preparedImportResult(next, plan.id);
+        return appliedWorkspace(next, proposal, imported, importMessage(imported));
+      });
+      // An all-duplicate result makes no bank commit, so only its confirmation
+      // needs saving. New imports already include confirmation in that commit.
+      if (proposalFor(id).status !== "applied") {
+        workspace = assertProposalCurrent(proposal, signal);
+        store.actions.replaceWorkspace(workspaceId, appliedWorkspace(workspace, proposal, result, importMessage(result)), { period, requiredPermission: "data.write" });
+      }
     } else if (proposal.kind === "bank_business") {
       const user = store.assertWorkspaceWritable(workspaceId, period, "data.write");
       const context = { actor: user?.name || "本地用户", at: stamp(), mode: "manual" };
@@ -461,7 +515,7 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
       try {
         validateValue(input, schema);
         if (name === "get_context") return getAssistantContext(input.section, { offset: input.offset });
-        if (name === "read_document") return await readDocument(input.documentId, signal);
+        if (name === "read_document") return await readDocument(input.documentId, signal, input.offset);
         if (name === "prepare_bank_import") return await prepareImport(input, signal);
         if (name === "propose_bank_business") return proposeBusiness(input);
         return await proposeFields(input, signal);

@@ -89,6 +89,7 @@ import { CASH_FLOW_CATEGORIES, confirmCashFlowClassification } from "../../domai
 import { buildCashFlowStatement } from "../../domain/accounting/reporting.js";
 import { applyWorkspaceTerminology, workspaceTerminology } from "../../productWorkflow.js";
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
+import { voucherOriginalTarget } from "../ai-simple/aiWorkflow.js";
 import "./accounting-workbench.css";
 
 const EVENT_LABELS = {
@@ -1259,13 +1260,20 @@ function voucherStatusLabel(status) {
   return { unprocessed: "待处理", draft: "待复核", changes_requested: "待修订", posted: "已入账", superseded: "历史版本", invalidated: "已失效" }[status] || status;
 }
 
-function WorkspaceVoucherPanel({ onToast, voucherIds, focusVoucherId, focusRequestNonce, showLedger = true, title = "本期凭证", actionBlockedReason = "" }) {
+function VoucherAttachmentEntry({ workspace, voucher, entry, transactionId, onNavigate }) {
+  const target = onNavigate ? voucherOriginalTarget(workspace, voucher, entry, { transactionId }) : null;
+  return <li><strong>{entry.kind}</strong>{target ? <button className="text-button" type="button" aria-label={`打开原件：${entry.name}`} onClick={() => onNavigate(target.page, target.options)}>{entry.name}</button> : <span>{entry.name}</span>}</li>;
+}
+
+function WorkspaceVoucherPanel({ onToast, onNavigate, onVoucherFocusChange, voucherIds, focusVoucherId, focusRequestNonce, showLedger = true, title = "本期凭证", actionBlockedReason = "" }) {
   const { activeWorkspace, actions, state, store, fileVault } = useFinanceDesk();
   const [filter, setFilter] = useState("current");
   const [notes, setNotes] = useState({});
   const [lineDrafts, setLineDrafts] = useState({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const voucherListRef = useRef(null);
+  const handledFocusRequest = useRef(null);
   usePeriodLeaveGuard({ dirty: Object.keys(lineDrafts).length > 0 || Object.values(notes).some(Boolean), busy });
   const accounts = useMemo(() => workspaceAccountOptions(activeWorkspace), [activeWorkspace]);
   const actor = currentActorName(state, activeWorkspace);
@@ -1277,11 +1285,15 @@ function WorkspaceVoucherPanel({ onToast, voucherIds, focusVoucherId, focusReque
 
   useEffect(() => { setNotes({}); setLineDrafts({}); setError(""); }, [activeWorkspace.id, activeWorkspace.currentPeriod]);
   useEffect(() => {
+    const requestKey = JSON.stringify([activeWorkspace.id, activeWorkspace.currentPeriod, focusRequestNonce ?? focusVoucherId]);
+    if (handledFocusRequest.current === requestKey) return;
+    handledFocusRequest.current = requestKey;
     if (!focusVoucherAvailable) return;
     setFilter("all");
     window.requestAnimationFrame(() => {
+      if (handledFocusRequest.current !== requestKey) return;
       const target = document.getElementById(`workspace-voucher-${focusVoucherId}`);
-      if (!target) return;
+      if (!target || !voucherListRef.current?.contains(target)) return;
       target.open = true;
       target.focus({ preventScroll: true });
       target.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1323,7 +1335,7 @@ function WorkspaceVoucherPanel({ onToast, voucherIds, focusVoucherId, focusReque
       <header className="settlement-heading"><div><h2>{title}</h2><p>{activeWorkspace.currentPeriod} · {pending.length} 张待复核 · {posted.length} 张已入账</p></div><label><span className="sr-only">凭证范围</span><select value={filter} onChange={(event) => setFilter(event.target.value)}><option value="current">当前有效记录</option><option value="pending">待复核</option><option value="all">包含历史与失效记录</option></select></label></header>
       {error && <div className="engine-error" role="alert"><WarningCircle size={16} />{error}</div>}
       {actionBlockedReason && <p className="engine-next-note">{actionBlockedReason}</p>}
-      <div className="workspace-voucher-list">{visible.length ? visible.map((voucher) => {
+      <div className="workspace-voucher-list" ref={voucherListRef}>{visible.length ? visible.map((voucher) => {
         const draft = ["draft", "changes_requested"].includes(voucher.status);
         const manual = voucher.sourceType === "manual" || voucher.judgement?.eventType === "manualVoucher";
         const editable = draft && !manual && !voucher.reconciliationCorrection && !actionBlockedReason;
@@ -1331,7 +1343,7 @@ function WorkspaceVoucherPanel({ onToast, voucherIds, focusVoucherId, focusReque
         const validation = validateVoucherBalance({ lines }, accountingRules(activeWorkspace).amountTolerance, draft ? activeWorkspace : null);
         const attachments = buildAttachmentPackage(activeWorkspace, voucher.id);
         return <details className={`workspace-voucher-record${focusVoucherId === voucher.id ? " is-focused" : ""}`} id={`workspace-voucher-${voucher.id}`} key={voucher.id} tabIndex={-1}>
-          <summary><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>{voucher.date} · {voucher.lines?.length || 0} 行分录</small></span><b>¥{money(validation.debit)}</b><em className={draft ? "engine-badge warning" : "engine-badge"}>{voucherStatusLabel(voucher.status)}</em></summary>
+          <summary onClick={(event) => onVoucherFocusChange?.(voucher.id, !event.currentTarget.parentElement.open)}><span><strong>{voucher.no || "草稿"} · {voucher.summary}</strong><small>{voucher.date} · {voucher.lines?.length || 0} 行分录</small></span><b>¥{money(validation.debit)}</b><em className={draft ? "engine-badge warning" : "engine-badge"}>{voucherStatusLabel(voucher.status)}</em></summary>
           <div className="workspace-voucher-content">
             {voucher.status === "invalidated" && <p className="engine-next-note">{voucher.invalidationReason}</p>}
             {voucher.reconciliationCorrection?.status === "pending" && <p className="engine-next-note">核销更正将在本张凭证入账时同步生效，原核销与原凭证目前仍然有效。</p>}
@@ -1349,7 +1361,7 @@ function WorkspaceVoucherPanel({ onToast, voucherIds, focusVoucherId, focusReque
               {draft && <button className="secondary-button" type="button" disabled={busy || Boolean(actionBlockedReason) || !notes[voucher.id]?.trim()} onClick={() => changeVoucher(voucher, "cancel")}>取消{voucher.revisionOf ? "更正" : "凭证"}草稿</button>}
               {voucher.status === "posted" && !voucher.payrollAccrual && <button className="secondary-button" type="button" disabled={busy || Boolean(actionBlockedReason) || !notes[voucher.id]?.trim()} onClick={() => changeVoucher(voucher, "revision")}>创建更正草稿</button>}
             </div></div>}
-            <details className="engine-section"><summary>来源、附件与历史 · {attachments.manifest.length} 项</summary><ul className="engine-trace-list">{attachments.manifest.map((item) => <li key={`${item.kind}-${item.id}`}><strong>{item.kind}</strong><span>{item.name}</span></li>)}</ul><p>{voucher.versions?.length || 0} 条版本记录 · {voucher.reviews?.length || 0} 条复核记录</p>{(voucher.versions || []).map((version, index) => <p key={index}>{version.at} · {version.actor} · {version.reason}</p>)}</details>
+            <details className="engine-section"><summary>来源、附件与历史 · {attachments.manifest.length} 项</summary><ul className="engine-trace-list">{attachments.manifest.map((item) => <VoucherAttachmentEntry key={`${item.kind}-${item.id}`} workspace={activeWorkspace} voucher={voucher} entry={item} onNavigate={onNavigate} />)}</ul><p>{voucher.versions?.length || 0} 条版本记录 · {voucher.reviews?.length || 0} 条复核记录</p>{(voucher.versions || []).map((version, index) => <p key={index}>{version.at} · {version.actor} · {version.reason}</p>)}</details>
           </div>
         </details>;
       }) : <p className="settlement-empty">{voucherIds ? "当前范围没有计提凭证。" : "当前范围没有凭证；可从银行交易生成，或在手工凭证入口录入。"}</p>}</div>
@@ -1362,7 +1374,7 @@ export function AccountingWorkbench(props) {
   return props.transactionId ? <TransactionAccountingWorkbench {...props} /> : <WorkspaceVoucherPanel {...props} />;
 }
 
-function TransactionAccountingWorkbench({ transactionId, onToast }) {
+function TransactionAccountingWorkbench({ transactionId, onToast, onNavigate }) {
   const { activeWorkspace, actions, state, store, fileVault } = useFinanceDesk();
   const terminology = workspaceTerminology(activeWorkspace);
   const displayText = (value) => applyWorkspaceTerminology(value, activeWorkspace);
@@ -2191,7 +2203,7 @@ function TransactionAccountingWorkbench({ transactionId, onToast }) {
                 <summary>查看来源与附件清单</summary>
                 <p>流水 {trace.transactions.length} · 关联流水 {trace.relatedTransactions?.length || 0} · 业务事件 {trace.businessEvents.length} · 账单 {trace.bills.length} · 订单/合同 {trace.businessReferences?.filter((reference) => reference.kind === "order_contract").length || 0} · 资料 {trace.documents.length} · 历史版本 {trace.versions.length} · 审计 {trace.audit.length}</p>
                 <ul className="engine-trace-list">
-                  {attachments.manifest.map((item) => <li key={item.id}><strong>{item.kind}</strong><span>{item.name}</span></li>)}
+                  {attachments.manifest.map((item) => <VoucherAttachmentEntry key={`${item.kind}-${item.id}`} workspace={activeWorkspace} voucher={voucher} entry={item} transactionId={transactionId} onNavigate={onNavigate} />)}
                   {trace.versions.map((version, index) => {
                     const versionAccounts = voucherLineAccountPresentation(activeWorkspace, accountOptions, version.lines || []);
                     return <li key={`${version.version || "history"}-${index}`}><strong>历史版本 V{version.version || index + 1}</strong><span>{version.summary || "凭证修订记录"} · {version.reason || "无单独修订说明"} · 分录科目：{versionAccounts.accountText}</span></li>;

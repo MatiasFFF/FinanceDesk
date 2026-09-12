@@ -9,6 +9,8 @@
   font-family: inherit;
   isolation: isolate;
 }
+.ai-simple-app.ai-home { display: flex; flex-direction: column; }
+.ai-home > .ai-topbar { flex-shrink: 0; }
 .ai-simple-app.ai-workbench::before { position: fixed; z-index: -1; inset: 0; background: #ffffff57; content: ""; pointer-events: none; }
 .ai-simple-app button { cursor: pointer; }
 .ai-simple-app button:disabled { cursor: default; }
@@ -44,9 +46,10 @@
 .ai-menu-identity { display: grid; gap: 7px; padding: 13px 12px; font-size: 13px; color: #6d809d; }
 .ai-menu-identity select { width: 100%; min-width: 0; padding: 8px; background: #fff; border: 1px solid #d7e3f4; border-radius: 8px; color: #143058; font-size: 14px; }
 .ai-menu-identity > strong { font-size: 14px; font-weight: 500; color: #345577; }
-.ai-home-content { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 112px 24px 100px; }
+/* Retain the original 5.4vh upward centering through padding, so tall drafts stay in document flow. */
+.ai-home-content { display: flex; flex: 1 0 auto; align-items: center; justify-content: center; padding: 20px 24px calc(100px + 10.8vh); }
 .ai-composer { border: 1px solid #d7e4f6; border-radius: 19px; background: #ffffffd9; }
-.ai-composer-home { width: min(58.2vw, 930px); transform: translateY(-5.4vh); border: 2px solid #ffffffe0; border-radius: 32px; background: #f9fcffe6; box-shadow: 0 12px 42px #3782dd14; }
+.ai-composer-home { width: min(58.2vw, 930px); border: 2px solid #ffffffe0; border-radius: 32px; background: #f9fcffe6; box-shadow: 0 12px 42px #3782dd14; }
 .ai-composer-row { display: flex; align-items: flex-end; gap: 18px; padding: 12px 11px 12px 19px; }
 .ai-composer-home .ai-composer-row { gap: 22px; min-height: 96px; padding: 12px 14px 12px 23px; }
 .ai-file-input { display: none; }
@@ -104,7 +107,8 @@
 .ai-message-assistant .ai-message-text { padding-right: 15px; }
 .ai-conversation-empty { display: grid; grid-template-columns: 50px minmax(0, 1fr); align-items: start; gap: 18px; padding-top: 50px; }
 .ai-conversation-empty p { margin: 7px 0 0; font-size: 18px; line-height: 1.7; }
-.ai-conversation-footer { flex-shrink: 0; padding: 10px 43px 35px; }
+/* Long upload/error feedback can scroll without consuming the entire message area. */
+.ai-conversation-footer { flex-shrink: 0; min-height: 0; max-height: min(74%, calc(100% - 128px)); padding: 10px 43px 35px; overflow-y: auto; overscroll-behavior: contain; scroll-padding-block: 12px; overflow-wrap: anywhere; }
 .ai-processing { display: flex; align-items: center; gap: 9px; color: #6c86ad; font-size: 15px; margin: 10px 0 0; }
 .ai-processing svg { animation: ai-spin 1.3s linear infinite; }
 @keyframes ai-spin { to { transform: rotate(360deg); } }
@@ -182,8 +186,8 @@
 .ai-report-section tbody tr.is-total { background: #f3f7fe; font-weight: 600; }
 .ai-report-detail { padding: 14px 0; font-size: 14px; }
 .ai-report-detail summary { cursor: pointer; color: #2e69c7; }
-.ai-proposal-list { display: grid; gap: 16px; }
-.ai-proposal { padding: 19px; border: 1px solid #d6e3f4; border-radius: 15px; background: #fff; }
+.ai-proposal-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0; }
+.ai-proposal { min-width: 0; padding: 19px; border: 1px solid #d6e3f4; border-radius: 15px; background: #fff; overflow-wrap: anywhere; }
 .ai-proposal h3 { margin: 0 0 8px; font-size: 16px; line-height: 1.5; font-weight: 600; }
 .ai-proposal p { margin: 8px 0; font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
 .ai-proposal-preview { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr); column-gap: 16px; row-gap: 8px; padding: 14px 0; margin: 10px 0; border-block: 1px solid #e3ebf6; font-size: 14px; line-height: 1.6; }
@@ -201,6 +205,8 @@
 .ai-preview-mapping summary { color: #4e76af; cursor: pointer; }
 .ai-preview-errors { color: #9c4b3f; padding-left: 20px; font-size: 14px; line-height: 1.8; }
 .ai-proposal-originals { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0 14px; }
+.ai-proposal-originals > .ai-text-button { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.ai-proposal-originals > .ai-text-button > svg { flex-shrink: 0; }
 .ai-proposal-status { color: #527c70; font-size: 14px; }
 .ai-confirmation-results { font-size: 15px; line-height: 1.7; }
 .ai-confirmation-results p { margin: 9px 0 0; }
@@ -252,7 +258,8 @@
 .ai-file-progress-item .ai-text-button { flex-shrink: 0; font-size: 12px; }
 .ai-file-progress-item[data-state="failed"] small { color: #aa5d4f; }
 .ai-file-progress-item[data-state="completed"] small { color: #608773; }
-.ai-proposal-editor { display: grid; gap: 15px; margin-top: 12px; }
+.ai-proposal-editor { display: grid; grid-template-columns: minmax(0, 1fr); gap: 15px; min-width: 0; margin-top: 12px; }
+.ai-proposal-editor > * { min-width: 0; }
 .ai-proposal-editor > p { margin: 0; }
 .ai-proposal-edit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px 20px; }
 .ai-proposal-evidence { display: grid; gap: 5px; min-width: 0; max-height: 240px; overflow-y: auto; margin: 0; padding: 12px 14px; border: 1px solid #dbe7f7; border-radius: 10px; }
@@ -334,7 +341,7 @@
   .ai-account-trigger > svg:first-child { width: 35px; height: 35px; }
   .ai-topbar:has(.ai-topbar-actions), .ai-topbar-actions { gap: 8px 12px; }
   .ai-topbar-actions .ai-version-switch { padding-inline: 6px; }
-  .ai-home-content { padding: 90px 20px; }
+  .ai-home-content { padding: 20px 20px calc(98px + 10.8vh); }
   .ai-composer-home { width: 100%; border-radius: 23px; }
   .ai-composer-home .ai-composer-row { gap: 10px; min-height: 76px; padding: 11px 11px 11px 13px; }
   .ai-composer-home textarea { height: 30px; font-size: 17px; }
@@ -364,7 +371,7 @@
   .ai-confirmation-counts { padding-inline: 14px; }
   .ai-confirmation-counts > div { font-size: 15px; padding: 14px 0; }
   .ai-primary-button { min-height: 44px; padding: 10px 18px; font-size: 15px; }
-  .ai-conversation-footer { max-height: 74%; overflow-y: auto; overscroll-behavior: contain; padding: 8px 13px max(16px, env(safe-area-inset-bottom)); }
+  .ai-conversation-footer { padding: 8px 13px max(16px, env(safe-area-inset-bottom)); }
   .ai-composer { border-radius: 17px; }
   .ai-composer-row { gap: 8px; padding: 9px 9px 9px 10px; }
   .ai-composer textarea { min-height: 28px; max-height: 144px; font-size: 16px; height: auto; }
