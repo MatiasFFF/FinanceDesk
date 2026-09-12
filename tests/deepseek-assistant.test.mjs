@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { EventEmitter } from "node:events";
-import { runFinanceAssistant, ASSISTANT_MAX_ROUNDS, ASSISTANT_REQUEST_TIMEOUT_MS } from "../src/application/deepseekClient.js";
+import { runFinanceAssistant, ASSISTANT_MAX_ROUNDS, ASSISTANT_REQUEST_TIMEOUT_MS, ASSISTANT_TOOL_RESULT_LIMIT } from "../src/application/deepseekClient.js";
 import { requestDeepSeek, financeAssistantHandler, financeAssistantPlugin,
   FINANCE_ASSISTANT_BODY_LIMIT, FINANCE_ASSISTANT_TIMEOUT_MS } from "../server/financeAssistant.js";
 import vercelHandler, { config } from "../api/finance-assistant.js";
@@ -149,13 +149,10 @@ test("HTTP and network errors never relay provider secrets or automatically retr
     (error) => error.code === "KEY_REQUIRED" && !error.message.includes(key));
 });
 
-test("invalid, unknown or truncated tool batches perform no business operation", async () => {
+test("unknown, repeated or truncated tool batches perform no business operation", async () => {
   const replies = [
     () => completion("", [call("call_1", "execute_js")]),
-    () => completion("", [call("call_1", "get_context", "{")]),
-    () => completion("", [call("call_1", "get_context", "[]")]),
     () => completion("", [call(), call()]),
-    () => completion("", [call(), call("call_2", "get_context", "null")]),
     () => completion("", [call()], "length"),
     () => completion("", [call()], "stop"),
     () => completion("", undefined, "tool_calls"),
@@ -164,6 +161,79 @@ test("invalid, unknown or truncated tool batches perform no business operation",
     executeTool: () => assert.fail("must not execute"), fetchImpl: async () => reply() }),
     (error) => ["ASSISTANT_INVALID_TOOL", "ASSISTANT_INCOMPLETE", "ASSISTANT_INVALID_RESPONSE"].includes(error.code));
   await assert.rejects(requestDeepSeek({ authorization, body: { messages: initial() }, fetchImpl: async () => upstream("partial", [call()], "length") }), { status: 422 });
+});
+
+test("malformed arguments return a nonexecuted tool result and the model can correct the next call", async () => {
+  for (const malformed of ["{", "[]", "null"]) {
+    const requests = [];
+    const executed = [];
+    const answer = await runFinanceAssistant({ apiKey: key, messages: initial(),
+      executeTool: (entry) => { executed.push(entry); return { period: "2026-09", counts: { transactions: 2 } }; },
+      fetchImpl: async (_url, options) => {
+        const request = JSON.parse(options.body);
+        requests.push(request);
+        if (requests.length === 1) return completion("", [call("bad-input", "get_context", malformed)]);
+        if (requests.length === 2) {
+          const error = JSON.parse(request.messages.at(-1).content);
+          assert.equal(error.status, "needs_input");
+          assert.equal(error.error.recoverable, true);
+          return completion("", [call("corrected-input", "get_context", { section: "overview" })]);
+        }
+        return completion("本期有2笔流水，尚需核对入账状态。");
+      } });
+    assert.equal(executed.length, 1);
+    assert.equal(executed[0].id, "corrected-input");
+    assert.equal(answer.toolResults.length, 2);
+    assert.equal(answer.toolResults[0].result.error.code, "AI_ARGUMENTS_INVALID");
+    assert.equal(requests.length, 3);
+  }
+});
+
+test("recoverable business omissions stay in the model loop but permission and original failures stop it", async () => {
+  let requests = 0;
+  const answer = await runFinanceAssistant({ apiKey: key, messages: initial(),
+    executeTool: () => ({ ok: false, status: "needs_input", error: { code: "BUSINESS_EVENT_REFERENCE_REQUIRED", recoverable: true, message: "请补采购订单编号" } }),
+    fetchImpl: async (_url, options) => {
+      requests += 1;
+      if (requests === 1) return completion("", [call("missing-input", "propose_bank_business", {})]);
+      assert.equal(JSON.parse(JSON.parse(options.body).messages.at(-1).content).error.code, "BUSINESS_EVENT_REFERENCE_REQUIRED");
+      return completion("这笔费用还缺采购订单编号，请核对原件后补充。");
+    } });
+  assert.equal(answer.finishReason, "stop");
+  assert.equal(requests, 2);
+  for (const code of ["AI_ACCESS_DENIED", "AI_ORIGINAL_UNAVAILABLE", "AI_SOURCE_CHANGED", "AI_PERIOD_ARCHIVED"]) {
+    let invoked = 0;
+    let fetched = 0;
+    await assert.rejects(runFinanceAssistant({ apiKey: key, messages: initial(),
+      executeTool: () => { invoked += 1; throw Object.assign(new Error("需要停止的实际业务错误"), { code }); },
+      fetchImpl: async () => { fetched += 1; return completion("", [call(), call("second-call")]); },
+    }), { code });
+    assert.equal(fetched, 1);
+    assert.equal(invoked, 1);
+  }
+});
+
+test("large tool previews are bounded without losing the saved proposal status or exposing credentials", async () => {
+  let requests = 0;
+  const proposal = { id: "proposal-real", kind: "bank_import", status: "pending", title: "核对银行流水", summary: "3笔待确认", sourceIds: ["original-real"],
+    preview: { transactions: Array.from({ length: 150 }, (_, i) => ({ id: `row-${i}`, summary: `真实长字段${key}`.repeat(2000), amount: i })) } };
+  const result = await runFinanceAssistant({ apiKey: key, messages: initial(), executeTool: () => ({ status: "pending_confirmation", proposal }),
+    fetchImpl: async (_url, options) => {
+      requests += 1;
+      if (requests === 1) return completion("", [call("large-preview", "prepare_bank_import", { documentId: "original-real", accountId: "bank-real" })]);
+      const body = JSON.parse(options.body);
+      const content = body.messages.at(-1).content;
+      assert.ok(new TextEncoder().encode(content).byteLength <= ASSISTANT_TOOL_RESULT_LIMIT);
+      const summary = JSON.parse(content);
+      assert.equal(summary.status, "pending_confirmation");
+      assert.equal(summary.resultTruncated, true);
+      assert.equal(summary.proposal.id, "proposal-real");
+      assert.equal(summary.proposal.status, "pending");
+      assert.equal(content.includes(key), false);
+      return completion("银行原件已保存，导入建议待确认；长预览请在页面查看。");
+    } });
+  assert.equal(result.toolResults[0].result.proposal.status, "pending");
+  assert.equal(JSON.stringify(result).includes(key), false);
 });
 
 test("tool failure stops the batch, keeps completed results and fills unanswered protocol messages", async () => {

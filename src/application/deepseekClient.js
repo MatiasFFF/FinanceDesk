@@ -2,6 +2,7 @@ import { AI_FINANCE_TOOLS } from "./aiFinanceTools.js";
 
 export const ASSISTANT_MAX_ROUNDS = 6;
 export const ASSISTANT_REQUEST_TIMEOUT_MS = 55_000;
+export const ASSISTANT_TOOL_RESULT_LIMIT = 64_000;
 const MAX_BODY_BYTES = 1_000_000;
 const MAX_TOOL_CALLS = 8;
 const toolNames = new Set(AI_FINANCE_TOOLS.map((tool) => tool.function.name));
@@ -11,6 +12,41 @@ class AssistantClientError extends Error {
 const fail = (code, message) => new AssistantClientError(code, message);
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const cancelled = () => fail("ASSISTANT_CANCELLED", "已停止本轮整理，已保存的资料和待确认事项会保留");
+
+function boundedToolResult(value, key) {
+  const serialized = redact(JSON.stringify(value ?? null), key);
+  if (new TextEncoder().encode(serialized).byteLength <= ASSISTANT_TOOL_RESULT_LIMIT) return JSON.parse(serialized);
+  let remaining = 12000;
+  function shorten(item, depth = 0) {
+    if (remaining < 64 || depth > 6) return "[本轮摘要省略]";
+    if (typeof item === "string") {
+      const text = item.slice(0, Math.min(remaining, 1500));
+      remaining -= text.length;
+      return text.length < item.length ? `${text}…[已截断]` : text;
+    }
+    if (Array.isArray(item)) return item.slice(0, 12).map((entry) => shorten(entry, depth + 1));
+    if (isObject(item)) {
+      const entries = [];
+      for (const [name, entry] of Object.entries(item)) {
+        if (remaining < 64) break;
+        if (name.length > 128) continue;
+        remaining -= name.length + 8;
+        entries.push([name, shorten(entry, depth + 1)]);
+      }
+      return Object.fromEntries(entries);
+    }
+    remaining -= 16;
+    return item;
+  }
+  const compact = shorten(JSON.parse(serialized));
+  const result = { ...(isObject(compact) ? compact : { data: compact }), resultTruncated: true,
+    coverage: "仅返回本轮摘要，完整已保存资料和建议仍在工作台；不能视为全部内容，请缩小对象范围或按offset继续查询。" };
+  // Preserve operation status even when a large preview used the available room.
+  if (isObject(value?.proposal)) result.proposal = { id: value.proposal.id, kind: value.proposal.kind, status: value.proposal.status,
+    title: String(value.proposal.title || "").slice(0, 200), summary: String(value.proposal.summary || "").slice(0, 1000),
+    sourceIds: value.proposal.sourceIds?.slice(0, 20).map((id) => String(id).slice(0, 128)) };
+  return JSON.parse(redact(JSON.stringify(result), key));
+}
 
 function redact(value, key) {
   return String(value).split(key).join("[密钥已隐藏]").replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, "[密钥已隐藏]");
@@ -139,14 +175,16 @@ export async function runFinanceAssistant({ apiKey, messages: inputMessages, too
       if (calls.length && round === ASSISTANT_MAX_ROUNDS - 1) {
         throw fail("ASSISTANT_ROUND_LIMIT", "本轮整理已到上限，已生成的待确认事项会保留；核对后可继续处理");
       }
-      // Validate the whole batch before invoking any business operation.
+      // Unknown operations and duplicate calls stop the whole batch. Malformed
+      // arguments receive a tool result so the model can correct that input.
       const parsedCalls = calls.map((call) => {
         if (!allowedNames.has(call.function.name) || completedIds.has(call.id) || typeof executeTool !== "function") {
           throw fail("ASSISTANT_INVALID_TOOL", "助手请求了未允许或已处理的操作，已停止处理");
         }
         let args;
-        try { args = JSON.parse(call.function.arguments); } catch { throw fail("ASSISTANT_INVALID_TOOL", "助手给出的操作参数不完整，已停止处理"); }
-        if (!isObject(args)) throw fail("ASSISTANT_INVALID_TOOL", "助手给出的操作参数格式不正确，已停止处理");
+        try { args = JSON.parse(call.function.arguments); } catch { args = null; }
+        if (!isObject(args)) return { id: call.id, name: call.function.name, inputError: { ok: false, status: "needs_input",
+          error: { code: "AI_ARGUMENTS_INVALID", recoverable: true, message: "参数必须是完整JSON对象；请按工具定义修正后重新调用，本次没有执行任何业务操作。" } } };
         return { id: call.id, name: call.function.name, arguments: args };
       });
       messages.push(message);
@@ -157,11 +195,15 @@ export async function runFinanceAssistant({ apiKey, messages: inputMessages, too
         if (signal?.aborted) throw cancelled();
         let result;
         try {
-          const output = await executeTool({ ...call, signal });
-          result = JSON.parse(redact(JSON.stringify(output ?? null), key));
+          const output = call.inputError || await executeTool({ ...call, signal });
+          result = boundedToolResult(output, key);
         } catch (error) {
           if (signal?.aborted) throw cancelled();
+          if (error?.name === "AbortError") throw cancelled();
           if (error?.code === "AI_TARGET_CHANGED") throw fail("AI_TARGET_CHANGED", "当前工作台或账期已改变，本轮整理已停止");
+          if (["AI_ACCESS_DENIED", "AI_PERIOD_ARCHIVED", "AI_ORIGINAL_UNAVAILABLE", "AI_SOURCE_CHANGED", "AI_DOCUMENT_NOT_FOUND", "AI_TRANSACTION_NOT_FOUND", "BANK_ORIGINAL_CHANGED"].includes(error?.code)) {
+            throw fail(error.code, redact(error.message, key).slice(0, 1000));
+          }
           throw fail("ASSISTANT_TOOL_FAILED", redact(error?.message || "本地处理未能完成，请核对当前资料后继续", key).slice(0, 1000));
         }
         completedIds.add(call.id);

@@ -147,18 +147,163 @@ test("document suggestions preserve actual fields until confirmed and reject sta
   assert.equal(f.store.getActiveWorkspace().documents[0].structuredData.amount, 128.5);
   assert.equal(f.store.getActiveWorkspace().documents[0].structuredData.counterparty, "原填写单位");
   assert.equal(f.store.getActiveWorkspace().documents[0].structuredData.verificationStatus, "unverified");
-  await assert.rejects(f.service.invokeTool("propose_document_fields", { documentId: f.document.id, fields: { verificationStatus: "verified" }, reason: "模型不能替代查验" }), /允许的候选字段/);
+  const forbidden = await f.service.invokeTool("propose_document_fields", { documentId: f.document.id, fields: { verificationStatus: "verified" }, reason: "模型不能替代查验" });
+  assert.equal(forbidden.status, "needs_input");
+  assert.match(forbidden.error.message, /允许的候选字段/);
 });
 
 test("tools reject unknown operations, cross-target parameters, nonfinite amounts and other-period originals", async () => {
   const f = await invoiceFixture();
   await assert.rejects(f.service.invokeTool("postVoucher", {}), { code: "AI_UNKNOWN_TOOL" });
-  await assert.rejects(f.service.invokeTool("get_context", { section: "overview", workspaceId: "other" }), /不支持的参数/);
-  await assert.rejects(f.service.invokeTool("propose_document_fields", { documentId: f.document.id, fields: { amount: Infinity }, reason: "bad" }), /有效数值/);
+  const wrongTargetInput = await f.service.invokeTool("get_context", { section: "overview", workspaceId: "other" });
+  assert.equal(wrongTargetInput.status, "needs_input");
+  assert.match(wrongTargetInput.error.message, /不支持的参数/);
+  const invalidAmount = await f.service.invokeTool("propose_document_fields", { documentId: f.document.id, fields: { amount: Infinity }, reason: "bad" });
+  assert.equal(invalidAmount.status, "needs_input");
+  assert.match(invalidAmount.error.message, /有效数值/);
   const next = structuredClone(f.store.getActiveWorkspace());
   next.documents[0].period = "2026-08";
   f.store.actions.replaceWorkspace(f.workspaceId, next);
   await assert.rejects(f.service.invokeTool("read_document", { documentId: f.document.id }), { code: "AI_DOCUMENT_NOT_FOUND" });
+});
+
+test("human bank mapping revisions replace auto-detected columns and permanently supersede the old confirmation", async () => {
+  const f = fixture();
+  const { proposal } = await importProposal(f);
+  const mapping = { ...proposal.editableValues.mapping };
+  assert.ok(Object.hasOwn(mapping, "summary"));
+  delete mapping.summary;
+  const revised = await f.service.reviseProposal(proposal.id, { mapping });
+  assert.equal(revised.status, "pending_confirmation");
+  assert.equal(revised.proposal.revisesProposalId, proposal.id);
+  assert.equal(revised.proposal.revisedBy, "本地用户");
+  assert.equal(revised.proposal.preview.mapping.summary, undefined);
+  assert.equal(revised.proposal.preview.transactions[0].summary, "银行流水");
+  await assert.rejects(f.service.confirmProposal(proposal.id), { code: "AI_PROPOSAL_CHANGED" });
+  const reloaded = f.createService(createFinanceDeskStore({ repository: f.repository }));
+  const old = reloaded.getConversation().proposals.find((item) => item.id === proposal.id);
+  assert.equal(old.status, "superseded");
+  assert.equal(old.supersededBy, revised.proposal.id);
+  await reloaded.confirmProposal(revised.proposal.id);
+  assert.ok(reloaded.getContext("transactions").items.every((item) => item.summary === "银行流水"));
+  await assert.rejects(reloaded.reviseProposal(revised.proposal.id, { mapping }), { code: "AI_PROPOSAL_CHANGED" });
+});
+
+test("an invalid recalculated mapping leaves the old suggestion pending without saving an unusable revision", async () => {
+  const f = fixture();
+  const { proposal } = await importProposal(f);
+  const mapping = { ...proposal.editableValues.mapping };
+  delete mapping.date;
+  const result = await f.service.reviseProposal(proposal.id, { mapping });
+  assert.equal(result.status, "needs_mapping");
+  assert.deepEqual(result.preview.missingFields, ["date"]);
+  assert.equal(f.service.getConversation().proposals.length, 1);
+  assert.equal(f.service.getConversation().proposals[0].status, "pending");
+  assert.equal(f.store.getActiveWorkspace().transactions.length, 0);
+});
+
+test("human invoice revisions rebuild before/after values and never accept changed or already handled sources", async () => {
+  const f = await invoiceFixture();
+  const original = (await f.service.invokeTool("propose_document_fields", { documentId: f.document.id,
+    fields: { amount: 128.5, counterparty: "候选单位" }, reason: "原件候选" })).proposal;
+  const revised = (await f.service.reviseProposal(original.id, { fields: { amount: 129 } })).proposal;
+  assert.equal(f.store.getActiveWorkspace().documents[0].structuredData.amount, null);
+  assert.deepEqual(revised.preview.fields.find((item) => item.key === "amount"), { key: "amount", before: null, after: 129 });
+  assert.ok(revised.preview.allowedFields.includes("invoiceNumber"));
+  assert.equal(revised.editableValues.fields.counterparty, "候选单位");
+  await assert.rejects(f.service.reviseProposal(original.id, { fields: { amount: 130 } }), { code: "AI_PROPOSAL_CHANGED" });
+  updateLocalDocumentMetadata({ ...f, documentId: f.document.id, patch: { structuredData: { counterparty: "人工最新值" } } });
+  await assert.rejects(f.service.reviseProposal(revised.id, { fields: { amount: 130 } }), { code: "AI_SOURCE_CHANGED" });
+  assert.equal(f.service.getConversation().proposals.length, 2);
+});
+
+test("a business revision can change classification fields but not the original transaction, amount or period", async () => {
+  const evidence = await withVoucherEvidence(createAccountingFixture({ withReconciliations: false, withPostedVouchers: false }));
+  const f = fixture(evidence.workspace, evidence.fileVault);
+  const before = structuredClone(f.store.getActiveWorkspace().transactions.find((item) => item.id === "txn-fee"));
+  const proposal = (await f.service.invokeTool("propose_bank_business", { transactionId: "txn-fee", businessType: "bankFee", account: "expenseFee",
+    taxTreatment: "input_non_deductible", invoiceStatus: "not_applicable", evidenceIds: ["doc-bank"], reason: "收费回单依据" })).proposal;
+  for (const classification of [{ amount: 1 }, { transactionId: "txn-split" }, { businessPeriod: "2026-09" }]) {
+    await assert.rejects(f.service.reviseProposal(proposal.id, { classification }), /不能修改/);
+  }
+  const revised = (await f.service.reviseProposal(proposal.id, { classification: { reason: "本人已核对收费依据", counterparty: "开户银行" } })).proposal;
+  assert.equal(revised.preview.reason, "本人已核对收费依据");
+  assert.equal(revised.preview.counterparty, "开户银行");
+  assert.equal(revised.preview.transaction.amount, before.amount);
+  assert.deepEqual(f.store.getActiveWorkspace().transactions.find((item) => item.id === "txn-fee"), before);
+  assert.equal(f.store.getActiveWorkspace().vouchers.length, 0);
+});
+
+test("cancelling invoice recalculation retains the pending original suggestion and prevents confirmation while recalculating", async () => {
+  const f = await invoiceFixture();
+  const proposal = (await f.service.invokeTool("propose_document_fields", { documentId: f.document.id, fields: { amount: 128.5 }, reason: "票据金额" })).proposal;
+  const read = f.fileVault.getOwned.bind(f.fileVault);
+  let release;
+  let started;
+  const entered = new Promise((resolve) => { started = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  f.fileVault.getOwned = async (...args) => { started(); await gate; return read(...args); };
+  const controller = new AbortController();
+  const revising = f.service.reviseProposal(proposal.id, { fields: { amount: 129 } }, { signal: controller.signal });
+  await entered;
+  await assert.rejects(f.service.confirmProposal(proposal.id), { code: "AI_PROPOSAL_BUSY" });
+  controller.abort();
+  release();
+  await assert.rejects(revising, { name: "AbortError" });
+  assert.equal(f.service.getConversation().proposals.length, 1);
+  assert.equal(f.service.getConversation().proposals[0].status, "pending");
+});
+
+test("a revision made through another service during final bank original verification prevents the old import write", async () => {
+  const f = fixture();
+  const { proposal } = await importProposal(f);
+  const read = f.fileVault.getOwned.bind(f.fileVault);
+  let reads = 0;
+  let revised;
+  f.fileVault.getOwned = async (...args) => {
+    const original = await read(...args);
+    if (++reads === 3) {
+      const mapping = { ...proposal.editableValues.mapping };
+      delete mapping.summary;
+      revised = await f.createService().reviseProposal(proposal.id, { mapping });
+    }
+    return original;
+  };
+  await assert.rejects(f.service.confirmProposal(proposal.id), { code: "AI_PROPOSAL_CHANGED" });
+  assert.ok(revised.proposal.id);
+  assert.equal(f.store.getActiveWorkspace().transactions.length, 0);
+  assert.equal(f.service.getConversation().proposals[0].status, "superseded");
+});
+
+test("partial uploads retain only saved attachments and subsequent selection reuses the first original", async () => {
+  const f = fixture();
+  const unsupported = Object.assign(new Blob(["unsupported"], { type: "application/octet-stream" }), { name: "资料.zip" });
+  let saved;
+  await assert.rejects(f.service.uploadFiles([bankFile(), unsupported]), (error) => {
+    assert.equal(error.uploaded.length, 1);
+    saved = error.uploaded[0];
+    return /暂不支持/.test(error.message);
+  });
+  const repeated = await f.service.uploadFiles([bankFile()]);
+  assert.equal(repeated[0].documentId, saved.documentId);
+  assert.equal((await f.fileVault.listByWorkspace(f.workspaceId)).length, 1);
+  assert.equal(f.store.getActiveWorkspace().transactions.length, 0);
+});
+
+test("recoverable business omissions return a concrete missing requirement while invalid originals stop immediately", async () => {
+  const f = fixture();
+  const { proposal, attachment } = await importProposal(f);
+  const imported = await f.service.confirmProposal(proposal.id);
+  const transactionId = imported.result.transactionIds.find((id) => f.store.getActiveWorkspace().transactions.find((item) => item.id === id).amount < 0);
+  const missing = await f.service.invokeTool("propose_bank_business", { transactionId, businessType: "purchaseExpense", account: "expenseOther",
+    taxTreatment: "input_non_deductible", invoiceStatus: "pending", evidenceIds: [attachment.documentId], reason: "待补真实采购依据" });
+  assert.equal(missing.status, "needs_input");
+  assert.equal(missing.error.code, "BUSINESS_EVENT_REFERENCE_REQUIRED");
+  assert.match(missing.error.message, /编号/);
+  const stored = await f.fileVault.get(attachment.documentId);
+  await f.fileVault.put({ ...stored, blob: new Blob(["corrupt"]) });
+  await assert.rejects(f.service.invokeTool("read_document", { documentId: attachment.documentId }), { code: "AI_ORIGINAL_UNAVAILABLE" });
+  assert.equal(f.store.getActiveWorkspace().vouchers.length, 0);
 });
 
 test("stored chat strips unknown credential fields and key-shaped text; archive and user changes retain existing boundaries", async () => {

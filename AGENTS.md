@@ -18,6 +18,10 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 
 ## Durable FinanceDesk decisions
 
+- 2026-09-12 用户再次明确要求增派并行任务，本轮补充 `01a0942e-1464-78c1-8c55-6d3d26c80bcc` 负责 AiReports.jsx、简版报表来源及导出相关文件；`01a0942e-1603-79e3-bbac-4bd91b0c23e8` 负责独立完整流程测试源码。用户已明确确认两个新任务原本就未开 Fast，现均按 Astra / Ultra / Fast关闭正式启动，不再重复确认。原流程任务不再改 AiReports.jsx；原三个任务继续既定范围。新增任务也不自行运行测试、服务、浏览器或提交发布，统一由总控执行。
+
+- 2026-09-12 用户授权对 AI 简版首版继续自主细化功能、操作流程、界面和响应式体验，优先复用三个已有 Astra / Ultra 且 Fast 关闭的任务，必要时可增派独立任务。本轮具体范围：上传与识别进度和恢复、待确认建议的人工修正及重新预览、对话可读性与滚动、可搜索的本期流水及资源定位、工作台/输入/弹窗的蓝色简洁视觉与手机操作。保持首页极简、原版入口和财务核心；不建设注册收费、云同步或通用代理框架。新分工取代首版文件边界：界面任务 `01a09404-9ec3-7992-8905-f63bd8a53871` 负责 AiSimpleApp/AiComposer/AiDialog/AiSettings、简版CSS及输入helper；流程任务 `01a09404-a046-7382-98b4-4cd56e5a4cf2` 负责 AiConversation/AiResources/AiProposalPreview/AiReports 及相关组件；业务任务 `01a08149-3faf-7b31-8761-466eda506f53` 负责 AI财务服务、工具定义、DeepSeek客户端与代理和必要核心修改。三方编写各自必要测试，不自行执行；总控统一验证、浏览器、依赖变更、构建、main提交与发布。密钥继续只在当前标签页临时使用，真实API联调证据须与模拟测试分开报告。
+
 - 2026-09-12 用户进一步授权多会话并行构建简版，全部使用 GPT-6 Astra / Ultra，不开启 Fast。本批分工更新：`01a09404-9ec3-7992-8905-f63bd8a53871` 负责 `src/features/ai-simple/`、`src/main.jsx` 与简版界面；`01a09404-a046-7382-98b4-4cd56e5a4cf2` 负责 `src/application/deepseekClient.js`、`server/financeAssistant.js`、`api/finance-assistant.js`、两份 Vite 配置及 DeepSeek 定点测试/文档；原实施任务 `01a08149-3faf-7b31-8761-466eda506f53` 仅负责 `src/application/aiFinanceService.js`、首批必要财务核心修改及业务测试/文档。三方只写各自文件，接口直接协调；所有测试执行、服务、浏览器、AGENTS、图片资产、构建和提交发布仍由当前简版总控负责。同一 main、同一目录，不分支/worktree，不继续拆内部子代理。本条取代下面单实施任务的文件分工。
 
 - 2026-09-12 用户确认新增 DeepSeek AI 简版并开始实施：先供本人和同事试用，首批做通“上传流水和票据 → AI 整理核对 → 查看凭证和报表”。保留现有完整版与原入口，新增 `?mode=ai` 入口，两版共用现有工作台、账期、财务核心和本地原件；本批允许为这条真实流程接 DeepSeek，取代下方旧轮次“暂不接 AI、不做简版”的范围限制。首页按 `docs/ai-simple/reference-home.png`，工作台按 `docs/ai-simple/reference-workbench.png` 实现：蓝色渐变、首页仅输入框和右上角账户入口；工作台以当前对话及必要确认事项为中心，资料与报表按需进入，不加常驻侧栏、步骤条或快捷卡片墙。右上角先作为内部试用工作台入口，本批不建设外部客户注册、会员收费或云同步。用户已有 DeepSeek API；密钥由用户在专门的配置位置填写，不写入源码、构建产物、业务数据或日志，不要求在聊天中发送。业务写入沿用原有权限、原件和入账确认，AI 结果须由业务程序校验；不建设通用代理框架。

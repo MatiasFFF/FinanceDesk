@@ -238,7 +238,7 @@ export function createFinanceDeskService({ store, fileVault }) {
     return entry;
   }
 
-  async function registerBankFile(file, { workspaceId, signal, onProgress, fileName, sheetName, encoding, sourceDocumentId } = {}) {
+  async function registerBankFile(file, { workspaceId, signal, onProgress, fileName, sheetName, encoding, sourceDocumentId, exactMapping = false } = {}) {
     workspaceFor(workspaceId);
     if (!(file instanceof Blob)) throw failure("本地宿主必须提供真实 File 或 Blob，不能传入文件描述对象");
     const parsed = await readBankFile(file, { signal, onProgress, fileName, sheetName, encoding, computeHash: true });
@@ -249,7 +249,7 @@ export function createFinanceDeskService({ store, fileVault }) {
       if (!original || original.category !== "银行流水" || original.hash !== parsed.fileHash) throw failure("已保存银行原件与所选文件不一致", "BANK_ORIGINAL_CHANGED");
     }
     const fileRef = createId("bank-file");
-    files.set(fileRef, { file, parsed, workspaceId, sourceDocumentId, released: false, executing: 0 });
+    files.set(fileRef, { file, parsed, workspaceId, sourceDocumentId, exactMapping, released: false, executing: 0 });
     return jsonCopy({ fileRef, workspaceId, ...parsed });
   }
 
@@ -277,6 +277,7 @@ export function createFinanceDeskService({ store, fileVault }) {
     }
     return prepareBankImport(workspace, {
       ...entry.input, ...file.parsed, mapping: entry.input.mapping || file.parsed.inspection.mapping,
+      exactMapping: file.exactMapping,
       importId: entry.id, importedAt: entry.importedAt,
     });
   }

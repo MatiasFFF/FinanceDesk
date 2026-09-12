@@ -392,7 +392,7 @@ export function inspectBankTable(table, options = {}) {
     return { headers: [], mapping: {}, missingFields: ["date", "amount"], preview: [], rowCount: 0 };
   }
   const headers = table[0].map((value, index) => normalizeText(value) || `未命名列 ${index + 1}`);
-  const mapping = { ...detectBankFieldMapping(headers), ...(options.mapping || {}) };
+  const mapping = { ...(options.exactMapping ? {} : detectBankFieldMapping(headers)), ...(options.mapping || {}) };
   const missingFields = [];
   if (mapping.date == null) missingFields.push("date");
   if (mapping.amount == null && mapping.credit == null && mapping.debit == null) missingFields.push("amount");
@@ -524,7 +524,7 @@ export function transactionDedupeKey(transaction) {
 }
 
 export function normalizeBankTable(table, mapping, options = {}) {
-  const inspection = inspectBankTable(table, { mapping });
+  const inspection = inspectBankTable(table, { mapping, exactMapping: options.exactMapping });
   if (inspection.missingFields.length) {
     throw new Error(`缺少必要字段映射：${inspection.missingFields.map((field) => BANK_FIELD_DEFINITIONS[field].label).join("、")}`);
   }
@@ -1564,6 +1564,7 @@ export function prepareBankImport(workspace, input) {
   const selectedPeriod = input.period == null || input.period === "" ? null : String(input.period);
   if (selectedPeriod && !validPeriod(selectedPeriod)) throw new Error("请选择有效的导入账期");
   const normalized = normalizeBankTable(input.table, input.mapping, {
+    exactMapping: input.exactMapping,
     accountId: input.accountId,
     fileName: input.fileName,
     currency: account.currency,

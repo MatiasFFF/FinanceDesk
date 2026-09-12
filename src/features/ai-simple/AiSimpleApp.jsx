@@ -2,12 +2,13 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowSquareOut, CaretDown, CaretRight, Check, GearSix, Plus, UserCircle } from "@phosphor-icons/react";
 import { useFinanceDesk } from "../../store/FinanceDeskProvider.jsx";
 import { BLANK_WORKSPACE_INITIAL_ROLE_OPTIONS, hasWorkspacePermission } from "../../domain/foundation.js";
-import { localAccountingPeriod } from "../../domain/periods.js";
+import { isPeriodArchived, localAccountingPeriod } from "../../domain/periods.js";
 import { AccountingPeriodPicker } from "../workspaces/AccountingPeriodPicker.jsx";
 import { allowPeriodNavigation } from "../workspaces/periodNavigation.js";
 import { AiComposer } from "./AiComposer.jsx";
 import { AiDialog } from "./AiDialog.jsx";
 import { AiSettings } from "./AiSettings.jsx";
+import { selectAiAttachments } from "./aiAttachments.js";
 import blueBackground from "../../assets/ai-blue-background.png";
 import "./ai-simple.css";
 
@@ -48,18 +49,34 @@ export default function AiSimpleApp() {
   const [busy, setBusy] = useState(false);
   const [sendOnEnter, setSendOnEnter] = useState(0);
   const [notice, setNotice] = useState("");
+  const [attachmentNotice, setAttachmentNotice] = useState(null);
+  const [dragging, setDragging] = useState(false);
   const keyRef = useRef("");
   const menuRef = useRef(null);
+  const menuPanelRef = useRef(null);
+  const dragDepthRef = useRef(0);
   const targetKey = `${activeWorkspace?.id || "new"}:${activeWorkspace?.currentPeriod || ""}`;
   const draft = drafts[targetKey] || blankDraft();
   const activeUsers = (activeWorkspace?.users || []).filter((user) => user.status === "active");
   const canManage = !activeWorkspace || hasWorkspacePermission(state, activeWorkspace.id, "workspace.manage");
+  const canAttach = !busy && !resources && !settingsOpen && !createOpen && persistenceStatus.canWrite && !!activeWorkspace && !isPeriodArchived(activeWorkspace) && hasWorkspacePermission(state, activeWorkspace.id, "documents.add");
   const hasDrafts = Object.values(drafts).some((item) => item.text.trim() || item.files.length);
   const readKey = () => keyRef.current;
   function changeDraft(update) {
     setDrafts((current) => ({ ...current, [targetKey]: typeof update === "function" ? update(current[targetKey] || blankDraft()) : update }));
   }
   function addFiles(files) { changeDraft((current) => ({ ...current, files: [...current.files, ...files.map((file) => ({ id: crypto.randomUUID(), file }))] })); }
+  const isFileDrag = (event) => Array.from(event.dataTransfer?.types || []).includes("Files") && !event.target.closest(".ai-dialog-backdrop");
+  function resetDrag() { dragDepthRef.current = 0; setDragging(false); }
+  function dropFiles(event) {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    resetDrag();
+    if (!canAttach) { setNotice(busy ? "当前正在处理资料，完成或停止后再添加。" : "请在可编辑的账期和操作身份下添加资料。"); return; }
+    const result = selectAiAttachments(event.dataTransfer.files, draft.files);
+    if (result.accepted.length) addFiles(result.accepted);
+    setAttachmentNotice({ message: result.message, tone: result.tone, targetKey, revision: Date.now() });
+  }
   function showError(error) { setNotice(error?.message || String(error)); }
   function enterWorkbench() { setMenuOpen(false); if (!activeWorkspace) setCreateOpen(true); else setScreen("workbench"); }
   function sendFromHome() {
@@ -86,15 +103,16 @@ export default function AiSimpleApp() {
   }
   useEffect(() => {
     document.title = "FinanceDesk · 财务助手";
-    return () => { keyRef.current = ""; };
   }, []);
   useEffect(() => {
     if (!menuOpen) return undefined;
+    const frame = requestAnimationFrame(() => menuPanelRef.current?.querySelector("button")?.focus({ preventScroll: true }));
     const outside = (event) => { if (!menuRef.current?.contains(event.target)) setMenuOpen(false); };
-    const escape = (event) => { if (event.key === "Escape") { setMenuOpen(false); menuRef.current?.querySelector("button")?.focus(); } };
+    const escape = (event) => { if (event.key === "Escape") { event.preventDefault(); setMenuOpen(false); menuRef.current?.querySelector("button")?.focus({ preventScroll: true }); } };
     document.addEventListener("pointerdown", outside); document.addEventListener("keydown", escape);
-    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
+    return () => { cancelAnimationFrame(frame); document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
   }, [menuOpen]);
+  useEffect(resetDrag, [targetKey, busy, resources]);
   useEffect(() => {
     if (!hasDrafts && !busy) return undefined;
     const leave = (event) => { event.preventDefault(); event.returnValue = ""; };
@@ -106,25 +124,32 @@ export default function AiSimpleApp() {
   return <div className={`ai-simple-app ai-${screen}`} style={{ "--ai-background": `url(${blueBackground})` }}>
     <header className="ai-topbar">
       {screen === "workbench" && <button className="ai-home-link" type="button" disabled={busy || !!resources} onClick={() => { setSendOnEnter(0); setScreen("home"); }}><ArrowLeft size={19} />首页</button>}
-      <div className="ai-account" ref={menuRef}>
-        <button className="ai-account-trigger" type="button" aria-haspopup="menu" aria-expanded={menuOpen} disabled={busy || !!resources} onClick={() => setMenuOpen((value) => !value)}><UserCircle size={43} weight="duotone" aria-hidden="true" /><span>我的工作台</span><CaretDown size={17} /></button>
-        {menuOpen && <div className="ai-account-menu" role="menu" aria-label="我的工作台">
-          <button className="ai-menu-current" role="menuitem" type="button" onClick={enterWorkbench}><span><strong>{activeWorkspace?.name || "进入工作台"}</strong><small>{activeWorkspace?.currentPeriod || "创建后即可开始"}</small></span><CaretRight size={17} /></button>
-          {state.workspaces.length > 1 && <div className="ai-workspace-list">{state.workspaces.map((workspace) => <button role="menuitem" type="button" key={workspace.id} onClick={() => switchWorkspace(workspace.id)}><span>{workspace.name}</span>{workspace.id === activeWorkspace?.id && <Check size={16} />}</button>)}</div>}
-          {activeUsers.length > 0 && <label className="ai-menu-identity"><span>操作身份</span><select value={state.activeUserId || ""} onChange={(event) => { try { setSendOnEnter(0); actions.switchUser(activeWorkspace.id, event.target.value); } catch (error) { showError(error); } }}><option value="" disabled>选择操作人</option>{activeUsers.map((user) => <option key={user.id} value={user.id}>{user.name} · {activeWorkspace.roles?.find((role) => role.id === user.roleId)?.name || user.role || "操作人"}</option>)}</select></label>}
-          {canManage && <button role="menuitem" type="button" onClick={() => { setMenuOpen(false); setCreateOpen(true); }}><Plus size={18} />新建工作台</button>}
-          <button role="menuitem" type="button" onClick={() => { setMenuOpen(false); setSettingsOpen(true); }}><GearSix size={18} />DeepSeek 设置{configured && <Check size={15} className="ai-menu-check" />}</button>
-          <button role="menuitem" type="button" onClick={returnFullVersion}><ArrowSquareOut size={18} />返回完整版</button>
+      <div className="ai-account" ref={menuRef} onBlur={(event) => { if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setMenuOpen(false); }}>
+        <button className="ai-account-trigger" type="button" aria-haspopup="dialog" aria-expanded={menuOpen} disabled={busy || !!resources} onClick={() => setMenuOpen((value) => !value)}><UserCircle size={43} weight="duotone" aria-hidden="true" /><span>我的工作台</span><CaretDown size={17} /></button>
+        {menuOpen && <div ref={menuPanelRef} className="ai-account-menu" role="dialog" aria-label="我的工作台" onKeyDown={(event) => {
+          if (event.target.tagName === "SELECT" || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+          const items = Array.from(event.currentTarget.querySelectorAll("button:not(:disabled), select:not(:disabled)"));
+          const index = items.indexOf(document.activeElement);
+          const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+          event.preventDefault(); items[next]?.focus({ preventScroll: true });
+        }}>
+          {!!state.workspaces.length && <div className="ai-workspace-list">{state.workspaces.map((workspace) => <button type="button" key={workspace.id} aria-current={workspace.id === activeWorkspace?.id ? "true" : undefined} onClick={() => workspace.id === activeWorkspace?.id ? enterWorkbench() : switchWorkspace(workspace.id)}><span><strong>{workspace.name}</strong><small>{workspace.currentPeriod}</small></span>{workspace.id === activeWorkspace?.id && <Check size={16} />}</button>)}</div>}
+          {activeUsers.length === 1 && activeUsers[0].id === state.activeUserId ? <div className="ai-menu-identity"><span>操作身份</span><strong>{activeUsers[0].name} · {activeWorkspace.roles?.find((role) => role.id === activeUsers[0].roleId)?.name || activeUsers[0].role || "操作人"}</strong></div> : activeUsers.length > 0 && <label className="ai-menu-identity"><span>操作身份</span><select value={state.activeUserId || ""} onChange={(event) => { try { setSendOnEnter(0); actions.switchUser(activeWorkspace.id, event.target.value); } catch (error) { showError(error); } }}><option value="" disabled>选择操作人</option>{activeUsers.map((user) => <option key={user.id} value={user.id}>{user.name} · {activeWorkspace.roles?.find((role) => role.id === user.roleId)?.name || user.role || "操作人"}</option>)}</select></label>}
+          {canManage && <button type="button" onClick={() => { setMenuOpen(false); setCreateOpen(true); }}><Plus size={18} />新建工作台</button>}
+          <button type="button" onClick={() => { setMenuOpen(false); setSettingsOpen(true); }}><GearSix size={18} />DeepSeek 设置{configured && <Check size={15} className="ai-menu-check" />}</button>
+          <button type="button" onClick={returnFullVersion}><ArrowSquareOut size={18} />返回完整版</button>
         </div>}
       </div>
     </header>
     {screen === "home" ? <main className="ai-home-content"><AiComposer home value={draft.text} files={draft.files} onChange={(text) => changeDraft((current) => ({ ...current, text }))} onFiles={addFiles} onRemoveFile={(id) => changeDraft((current) => ({ ...current, files: current.files.filter((item) => item.id !== id) }))} onSend={sendFromHome} /></main>
-      : activeWorkspace && <main className="ai-workbench-main"><div className="ai-workbench-heading"><div className="ai-workbench-title"><h1 title={activeWorkspace.name}>{activeWorkspace.name}</h1><AccountingPeriodPicker workspace={activeWorkspace} disabled={busy || !!resources} onSelect={switchPeriod} /></div><button className="ai-resources-link" type="button" disabled={busy} onClick={() => setResources({ initialTab: "documents" })}>资料与报表<CaretRight size={18} /></button></div>
+      : activeWorkspace && <main className={`ai-workbench-main${dragging ? " is-dragging" : ""}`} onDragEnterCapture={(event) => { if (!isFileDrag(event) || !canAttach) return; dragDepthRef.current += 1; setDragging(true); }} onDragLeaveCapture={(event) => { if (!isFileDrag(event)) return; dragDepthRef.current = Math.max(0, dragDepthRef.current - 1); if (!dragDepthRef.current) setDragging(false); }} onDragOver={(event) => { if (!isFileDrag(event)) return; event.preventDefault(); event.dataTransfer.dropEffect = canAttach ? "copy" : "none"; }} onDropCapture={resetDrag} onDrop={dropFiles} onDragEnd={resetDrag}>
+        {dragging && <div className="ai-drop-overlay" aria-hidden="true"><span>松开即可添加流水或票据</span></div>}
+        <div className="ai-workbench-heading"><div className="ai-workbench-title"><h1 title={activeWorkspace.name}>{activeWorkspace.name}</h1><AccountingPeriodPicker workspace={activeWorkspace} disabled={busy || !!resources} onSelect={switchPeriod} /></div><button className="ai-resources-link" type="button" disabled={busy} onClick={() => setResources({ initialTab: "documents" })}>资料与报表<CaretRight size={18} /></button></div>
         {!persistenceStatus.canWrite && <p className="ai-error ai-persistence-error" role="status">{persistenceStatus.message}</p>}
-        <Suspense fallback={<div className="ai-conversation-loading" role="status">正在打开工作台…</div>}><Conversation key={`${targetKey}:${state.activeUserId || ""}`} draft={draft} onDraftChange={changeDraft} readKey={readKey} configured={configured} requestSettings={() => setSettingsOpen(true)} autoSendNonce={sendOnEnter} onBusyChange={setBusy} onOpenResources={setResources} onToast={setNotice} /></Suspense>
+        <Suspense fallback={<div className="ai-conversation-loading" role="status">正在打开工作台…</div>}><Conversation key={`${targetKey}:${state.activeUserId || ""}`} draft={draft} onDraftChange={changeDraft} attachmentNotice={attachmentNotice?.targetKey === targetKey ? attachmentNotice : null} readKey={readKey} configured={configured} requestSettings={() => setSettingsOpen(true)} autoSendNonce={sendOnEnter} onBusyChange={setBusy} onOpenResources={setResources} onToast={setNotice} /></Suspense>
       </main>}
-    {settingsOpen && <AiSettings configured={configured} onClose={() => setSettingsOpen(false)} onSave={(value) => { keyRef.current = value; setConfigured(true); setSettingsOpen(false); setNotice("密钥已在当前标签页设置，输入和附件已保留。"); }} onClear={() => { keyRef.current = ""; setConfigured(false); setSettingsOpen(false); setNotice("当前标签页的密钥已清除。"); }} />}
-    {createOpen && <CreateWorkspace onClose={() => setCreateOpen(false)} onCreated={() => { setCreateOpen(false); setScreen("workbench"); setSendOnEnter(0); }} />}
+    {settingsOpen && <AiSettings configured={configured} onClose={() => setSettingsOpen(false)} onSave={(value) => { keyRef.current = value; setConfigured(true); setSettingsOpen(false); setNotice("DeepSeek 设置已保存。"); }} onClear={() => { keyRef.current = ""; setConfigured(false); setSettingsOpen(false); setNotice("DeepSeek 密钥已清除。"); }} />}
+    {createOpen && <CreateWorkspace onClose={() => setCreateOpen(false)} onCreated={(created) => { if (!activeWorkspace) setDrafts((current) => ({ ...current, [targetKey]: blankDraft(), [`${created.id}:${created.currentPeriod}`]: current[targetKey] || blankDraft() })); setCreateOpen(false); setScreen("workbench"); setSendOnEnter(0); }} />}
     {resources && activeWorkspace && <Suspense fallback={<AiDialog title="资料与报表" wide onClose={() => setResources(null)}><p className="ai-helper">正在打开…</p></AiDialog>}><Resources key={targetKey} {...resources} onClose={() => setResources(null)} onToast={setNotice} /></Suspense>}
     {notice && <div className="ai-toast" role="status">{notice}</div>}
   </div>;

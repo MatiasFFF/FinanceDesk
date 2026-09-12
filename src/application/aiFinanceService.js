@@ -17,7 +17,18 @@ const safeText = (value, limit = 32000) => String(value ?? "").replace(/sk-[A-Za
 const documentVersion = (document) => JSON.stringify([document.id, document.hash, document.version, document.period,
   document.category, document.storage?.blobId, document.structuredData, document.contentRecognition?.resultId, document.archiveStatus, document.lifecycleStatus]);
 const fieldNames = { invoice: ["invoiceNumber", "invoiceDate", "counterparty", "amount", "taxAmount", "taxRate"] };
-const publicProposal = ({ payload, fingerprint, ...proposal }) => copy(proposal);
+const recoverableToolCodes = new Set(["AI_INVALID_INPUT", "AI_BANK_ACCOUNT_REQUIRED", "BANK_IMPORT_INPUT_INVALID",
+  "BUSINESS_EVENT_TYPE_REQUIRED", "BUSINESS_EVENT_DIRECTION_INVALID", "BUSINESS_EVENT_COUNTERPARTY_REQUIRED",
+  "BUSINESS_EVENT_REFERENCE_REQUIRED", "BUSINESS_EVENT_BILL_KIND_INVALID", "BUSINESS_EVENT_BILL_DIRECTION_INVALID",
+  "BUSINESS_EVENT_TAX_REQUIRED", "BUSINESS_EVENT_INVOICE_STATUS_REQUIRED", "BUSINESS_EVENT_ACCOUNT_INVALID"]);
+const select = (record, keys) => Object.fromEntries(keys.filter((key) => record?.[key] !== undefined).map((key) => [key, record[key]]));
+const proposalSummary = (proposal) => select(proposal, ["id", "kind", "status", "title", "summary", "sourceIds", "revisesProposalId", "supersededBy", "appliedAt", "message"]);
+const documentSummary = (document) => ({ ...select(document, ["id", "name", "period", "category"]), recognitionStatus: document.contentRecognition?.ocrStatus || "not_started" });
+const transactionSummary = (transaction) => select(transaction, ["id", "date", "amount", "summary", "counterparty", "accountId", "evidenceIds", "status", "bankBusinessEventId", "classification"]);
+const publicProposal = ({ payload, fingerprint, ...proposal }) => copy({ ...proposal,
+  editableValues: proposal.kind === "bank_import" ? { mapping: payload.mapping || {} }
+    : proposal.kind === "document_fields" ? { fields: payload.fields }
+      : { classification: Object.fromEntries(Object.entries(payload).filter(([key]) => !["transactionId", "businessPeriod"].includes(key))) } });
 
 function validateValue(value, schema, path = "参数") {
   if (schema.enum && !schema.enum.includes(value)) throw fail(`${path}不在可选范围内`);
@@ -45,6 +56,7 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
   if (!store?.getState || !workspaceId || !validAccountingPeriod(period)) throw fail("请选择工作台和有效账期");
   const actorId = store.getState().activeUserId || null;
   const confirming = new Map();
+  const revising = new Set();
 
   function target(permission = "data.read", signal) {
     signal?.throwIfAborted();
@@ -52,13 +64,16 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
     const workspace = getWorkspace(state, workspaceId);
     if (!workspace || state.activeWorkspaceId !== workspaceId || workspace.currentPeriod !== period
       || (state.activeUserId || null) !== actorId) throw fail("工作台、账期或操作身份已切换，请在当前页面重新发起", "AI_TARGET_CHANGED");
-    if (permission === "data.read") store.assertWorkspaceAccess(workspaceId, permission);
-    else store.assertWorkspaceWritable(workspaceId, period, permission);
+    if (permission !== "data.read" && isPeriodArchived(workspace, period)) throw fail("当前账期已经归档，只能查看", "AI_PERIOD_ARCHIVED");
+    try {
+      if (permission === "data.read") store.assertWorkspaceAccess(workspaceId, permission);
+      else store.assertWorkspaceWritable(workspaceId, period, permission);
+    } catch (error) { throw fail(error.message, "AI_ACCESS_DENIED"); }
     return workspace;
   }
   // Existing async financial operations also check the fixed target at their
   // final synchronous write, including cancellation while verifying originals.
-  function scopedStore(signal, transform) {
+  function scopedStore(signal, transform, beforeWrite) {
     return { ...store,
       assertWorkspaceAccess: (...args) => { target("data.read", signal); return store.assertWorkspaceAccess(...args); },
       assertWorkspaceWritable: (...args) => { target("data.read", signal); return store.assertWorkspaceWritable(...args); },
@@ -66,6 +81,7 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
         if (typeof actions[key] !== "function") return actions[key];
         return (...args) => {
           target("data.read", signal);
+          beforeWrite?.();
           if (key === "replaceWorkspace" && transform) args[1] = transform(args[1]);
           return actions[key](...args);
         };
@@ -93,7 +109,12 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
     return transaction;
   }
   function sourceFingerprint(kind, payload, workspace = target()) {
-    if (kind !== "bank_business") return documentVersion(documentFor(payload.documentId, workspace));
+    if (kind === "document_fields") return documentVersion(documentFor(payload.documentId, workspace));
+    if (kind === "bank_import") {
+      const document = documentFor(payload.documentId, workspace);
+      return JSON.stringify({ document: documentVersion(document), account: workspace.bankAccounts.find((item) => item.id === payload.accountId),
+        imports: workspace.bankImports.filter((item) => item.accountId === payload.accountId && item.period === period && item.fileHash === document.hash) });
+    }
     const transaction = transactionFor(payload.transactionId, workspace);
     const relatedTransaction = payload.relatedTransactionId ? transactionFor(payload.relatedTransactionId, workspace) : null;
     const ids = new Set([...(transaction.evidenceIds || []), ...(payload.evidenceIds || []), ...(relatedTransaction?.evidenceIds || [])]);
@@ -104,15 +125,20 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
       vouchers: workspace.vouchers.filter((item) => item.sourceIds?.includes(transaction.id) || item.bankBusinessEventId === transaction.bankBusinessEventId),
       accounts: workspaceAccountDefinitions(workspace), rules: workspace.ruleSets });
   }
-  function addProposal(kind, payload, { title, summary, preview, sourceIds }, permission = "data.write") {
+  function addProposal(kind, payload, { title, summary, preview, sourceIds }, permission = "data.write", revision = null) {
     const workspace = target(permission);
+    if (revision) assertProposalCurrent(revision);
     const fingerprint = sourceFingerprint(kind, payload, workspace);
     const prior = conversation(workspace).proposals.find((item) => item.status === "pending" && item.kind === kind
       && item.fingerprint === fingerprint && JSON.stringify(item.payload) === JSON.stringify(payload));
-    if (prior) return publicProposal(prior);
+    if (prior && !revision) return publicProposal(prior);
+    const revisedAt = stamp();
+    const actor = revision ? store.assertWorkspaceAccess(workspaceId, "data.read") : null;
     const proposal = { id: createId("ai-proposal"), kind, status: "pending", title, summary: safeText(summary, 4000),
-      preview: copy(preview), sourceIds, createdAt: stamp(), payload: copy(payload), fingerprint };
-    saveConversation((current) => ({ ...current, proposals: [...current.proposals, proposal] }), permission);
+      preview: copy(preview), sourceIds, createdAt: revisedAt, payload: copy(payload), fingerprint,
+      ...(revision ? { revisesProposalId: revision.id, revisedAt, revisedBy: actor?.name || "本地用户" } : {}) };
+    saveConversation((current) => ({ ...current, proposals: [...current.proposals.map((item) => item.id === revision?.id
+      ? { ...item, status: "superseded", supersededBy: proposal.id, supersededAt: revisedAt } : item), proposal] }), permission);
     return publicProposal(proposal);
   }
   function proposalFor(id) {
@@ -158,11 +184,46 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
       ...(section === "transactions" ? { options, relatedBills: workspace.bills.filter((item) => periodOf(item) && periodOf(item) <= period && !["cancelled", "void"].includes(item.status)).slice(0, 100) } : {}) });
   }
 
+  function getAssistantContext(section = "overview", options = {}) {
+    const context = getContext(section, options);
+    const compactOptions = (source) => ({
+      accounts: (source.accounts || []).map((item) => select(item, ["id", "name", "accountNumber", "status"])),
+      chartOfAccounts: (source.chartOfAccounts || []).map((item) => select(item, ["id", "label", "category", "status"])),
+      businessTypes: (source.businessTypes || []).map((item) => select(item, ["id", "label", "account", "allowedDirections", "billKinds", "referenceMode", "referenceLabel", "taxTreatments", "fixedTaxTreatment", "invoiceRequired", "relatedTransactionRole"])),
+      taxTreatments: source.taxTreatments, invoiceStatuses: source.invoiceStatuses,
+    });
+    const base = select(context, ["workspaceId", "name", "period", "archived", "counts"]);
+    if (section === "overview") {
+      const workspace = target();
+      const current = conversation(workspace);
+      const lastUser = current.messages.findLast((message) => message.role === "user");
+      return copy({ ...base, ...compactOptions(context),
+        pendingTasks: context.pendingTasks.slice(0, 10).map((item) => select(item, ["id", "code", "message", "sourceId", "status"])),
+        proposals: current.proposals.slice(-12).map(proposalSummary),
+        recentDocuments: workspace.documents.filter((item) => item.period === period).slice(-12).map(documentSummary),
+        recentTransactions: workspace.transactions.filter((item) => String(item.date || "").slice(0, 7) === period).slice(-10).map(transactionSummary),
+        latestRequest: lastUser ? { content: safeText(lastUser.content, 4000), attachments: lastUser.attachments } : null,
+        coverage: "仅含近期对象；需要更多本期资料时按section和offset查询，不能将摘要当成全部账务。" });
+    }
+    if (section === "reports") return copy({ ...base, reports: select(context.reports, ["period", "balanceSheet", "incomeStatement", "cashFlow", "checks"]),
+      postingBasis: "报表按现有财务核心计算，待确认建议和未入账草稿不作为已入账数据。" });
+    const compact = { documents: documentSummary, transactions: transactionSummary,
+      tasks: (item) => select(item, ["id", "code", "message", "sourceId", "status", "missingEvidence"]),
+      vouchers: (item) => select(item, ["id", "no", "date", "period", "summary", "status", "lines", "sourceIds", "evidenceIds", "blockers"]),
+      accounts: (item) => select(item, ["id", "name", "accountNumber", "status", "openingBalance", "statementClosing"]) }[section];
+    const items = context.items.slice(0, 20).map(compact);
+    return copy({ ...base, items, total: context.total, offset: context.offset, nextOffset: context.offset + items.length < context.total ? context.offset + items.length : null,
+      ...(context.options ? { options: compactOptions(context.options), relatedBills: context.relatedBills.slice(0, 30).map((item) => select(item, ["id", "no", "kind", "counterparty", "date", "amount", "summary", "status"])) } : {}) });
+  }
+
   async function readOriginal(documentId, { signal } = {}) {
     const document = documentFor(documentId, target("data.read", signal));
     const before = documentVersion(document);
-    await verifyStoredDocumentOriginal({ fileVault, workspaceId, document });
-    const record = await getStoredDocumentRecord({ fileVault, workspaceId, document });
+    let record;
+    try {
+      await verifyStoredDocumentOriginal({ fileVault, workspaceId, document });
+      record = await getStoredDocumentRecord({ fileVault, workspaceId, document });
+    } catch (error) { target("data.read", signal); throw fail(error.message, "AI_ORIGINAL_UNAVAILABLE"); }
     if (documentVersion(documentFor(documentId, target("data.read", signal))) !== before) throw fail("资料原件已变化，请重新打开", "AI_SOURCE_CHANGED");
     return { ...record, documentId, name: document.name, mimeType: document.mimeType || record.blob.type };
   }
@@ -198,36 +259,53 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
         const attachment = { documentId: document.id, name: document.name, kind: bank ? "bank" : "document", recognitionStatus: document.contentRecognition?.ocrStatus || "not_started" };
         uploaded.push(attachment);
         if (recognized && attachment.recognitionStatus !== "completed") {
-          const { recognizeLocalDocument } = await import("../features/intake/localDocumentRecognition.js");
-          target("documents.add", signal);
-          const result = await recognizeLocalDocument({ blob: file, name, mimeType: file.type, category: document.category, signal,
-            onProgress: (progress) => onProgress?.({ ...progress, name, documentId: document.id }) });
-          await saveLocalDocumentRecognition({ store: scopedStore(signal), fileVault, workspaceId, documentId: document.id, period,
-            sourceVersion: document.version, sourceHash: document.hash, category: document.category, result, signal,
-            isCurrent: () => { target("documents.add", signal); return true; } });
-          attachment.recognitionStatus = "completed";
+          try {
+            const { recognizeLocalDocument } = await import("../features/intake/localDocumentRecognition.js");
+            target("documents.add", signal);
+            const result = await recognizeLocalDocument({ blob: file, name, mimeType: file.type, category: document.category, signal,
+              onProgress: (progress) => onProgress?.({ ...progress, name, documentId: document.id }) });
+            await saveLocalDocumentRecognition({ store: scopedStore(signal), fileVault, workspaceId, documentId: document.id, period,
+              sourceVersion: document.version, sourceHash: document.hash, category: document.category, result, signal,
+              isCurrent: () => { target("documents.add", signal); return true; } });
+            attachment.recognitionStatus = "completed";
+          } catch (error) {
+            if (!signal?.aborted && error.name !== "AbortError") {
+              attachment.recognitionStatus = "failed";
+              attachment.recognitionError = safeText(error.message, 500);
+              try {
+                const workspace = target("documents.add", signal);
+                const current = documentFor(document.id, workspace);
+                if (current.hash === document.hash && current.version === document.version && current.contentRecognition?.ocrStatus !== "completed") {
+                  store.actions.replaceWorkspace(workspaceId, { ...workspace, documents: workspace.documents.map((item) => item.id === document.id
+                    ? { ...item, contentRecognition: { ...item.contentRecognition, ocrStatus: "failed", error: attachment.recognitionError } } : item) }, { period, requiredPermission: "documents.add" });
+                }
+              } catch { error.recognitionStatusSaved = false; }
+            }
+            throw error;
+          }
         }
       }
       return uploaded;
     } catch (error) { error.uploaded = uploaded; throw error; }
   }
 
-  async function bankPlan(payload, signal, callback) {
+  async function bankPlan(payload, signal, callback, beforeWrite) {
     const document = documentFor(payload.documentId, target("data.write", signal));
+    if (!target().bankAccounts.some((account) => account.id === payload.accountId)) throw fail("请先在当前工作台添加或选择银行账户", "AI_BANK_ACCOUNT_REQUIRED");
     if (document.category !== "银行流水") throw fail("请选择已上传的银行CSV或Excel原件");
     if (payload.mapping) for (const key of Object.keys(payload.mapping)) if (!Object.hasOwn(BANK_FIELD_DEFINITIONS, key)) throw fail(`不支持的银行列：${key}`);
     const original = await readOriginal(document.id, { signal });
-    const bank = createFinanceDeskService({ store: scopedStore(signal), fileVault });
-    const file = await bank.registerBankFile(original.blob, { workspaceId, fileName: document.name, sourceDocumentId: document.id, signal });
+    const bank = createFinanceDeskService({ store: scopedStore(signal, null, beforeWrite), fileVault });
+    const file = await bank.registerBankFile(original.blob, { workspaceId, fileName: document.name, sourceDocumentId: document.id, exactMapping: payload.mapping !== undefined, signal });
     try {
       target("data.write", signal);
-      const inspection = inspectBankTable(file.table, { mapping: payload.mapping });
+      const inspection = inspectBankTable(file.table, { mapping: payload.mapping, exactMapping: payload.mapping !== undefined });
       if (inspection.missingFields.length) return await callback({ bank, plan: null, file, document, inspection });
       const plan = bank.prepareBankImport({ workspaceId, period, accountId: payload.accountId, fileRef: file.fileRef, ...(payload.mapping ? { mapping: payload.mapping } : {}) });
       return await callback({ bank, plan, file, document, inspection });
     } finally { bank.releaseBankFile(file.fileRef); }
   }
-  async function prepareImport(input, signal) {
+  async function prepareImport(input, signal, revision = null) {
     return bankPlan(input, signal, ({ plan, document, inspection }) => {
       if (!plan) return { status: "needs_mapping", message: "请根据原文件表头和样例行指定缺少的列映射", preview: {
         fileName: document.name, headers: inspection.headers, mapping: inspection.mapping, missingFields: inspection.missingFields,
@@ -238,7 +316,7 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
         transactions: plan.transactions.slice(0, 20), errors: plan.errors.slice(0, 30), reconciliation: plan.reconciliation };
       if (plan.errorCount || (!plan.importableRowCount && !plan.duplicateCount)) return { status: "needs_correction", preview, message: "请先核对文件与列映射，尚未创建导入确认事项" };
       const proposal = addProposal("bank_import", { ...input, mapping: preview.mapping }, { title: `导入 ${document.name}`,
-        summary: `${plan.importableRowCount}笔可导入，${plan.duplicateCount}笔重复；确认后保存流水。`, preview, sourceIds: [document.id] });
+        summary: `${plan.importableRowCount}笔可导入，${plan.duplicateCount}笔重复；确认后保存流水。`, preview, sourceIds: [document.id] }, "data.write", revision);
       return { status: "pending_confirmation", proposal };
     });
   }
@@ -249,7 +327,7 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
     if (input.relatedBillId && !workspace.bills.some((item) => item.id === input.relatedBillId && periodOf(item) && periodOf(item) <= period)) throw fail("所选账单不属于可用业务来源");
     return { ...input, businessPeriod: period, reason: safeText(input.reason, 4000) };
   }
-  function proposeBusiness(input) {
+  function proposeBusiness(input, revision = null) {
     const workspace = target("data.write");
     const payload = businessInput(input, workspace);
     const prepared = confirmBankTransactionBusinessEvent(workspace, payload, { actor: "待用户确认的AI建议" });
@@ -265,13 +343,13 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
       businessTypeLabel: manualBusinessEventTypesForWorkspace(workspace).find((item) => item.id === input.businessType)?.label,
       account: input.account, accountLabel: workspaceAccountDefinitions(workspace).find((item) => item.id === input.account)?.label,
       taxTreatment: input.taxTreatment, invoiceStatus: input.invoiceStatus, reason: payload.reason, evidenceIds: input.evidenceIds,
-      referenceNo: input.referenceNo, counterparty: input.counterparty, relatedTransactionId: input.relatedTransactionId,
+      relatedBillId: input.relatedBillId, referenceNo: input.referenceNo, counterparty: input.counterparty, relatedTransactionId: input.relatedTransactionId,
       event, voucher, draftIssue };
     return { status: "pending_confirmation", proposal: addProposal("bank_business", payload, { title: `确认${preview.businessTypeLabel || "流水归属"}`,
       summary: `${transaction.date} · ${transaction.counterparty || "对手待补充"} · ${transaction.amount}；${payload.reason}`, preview,
-      sourceIds: [transaction.id, ...input.evidenceIds, ...[input.relatedBillId, input.relatedTransactionId].filter(Boolean)] }) };
+      sourceIds: [transaction.id, ...input.evidenceIds, ...[input.relatedBillId, input.relatedTransactionId].filter(Boolean)] }, "data.write", revision) };
   }
-  async function proposeFields(input, signal) {
+  async function proposeFields(input, signal, revision = null) {
     const contents = await readDocument(input.documentId, signal);
     target("documents.add", signal);
     const keys = Object.keys(input.fields);
@@ -279,12 +357,42 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
     if (!contents.text.trim()) throw fail("原件还没有可用识别文字，请先完成本地识别或人工填写");
     if (Object.values(input.fields).some((value) => typeof value === "string" && safeText(value) !== value)) throw fail("候选字段包含不应保存的内容");
     const document = documentFor(input.documentId);
-    const normalized = normalizeDocumentStructuredData(document.category, { ...document.structuredData, ...input.fields });
+    let normalized;
+    try { normalized = normalizeDocumentStructuredData(document.category, { ...document.structuredData, ...input.fields }); }
+    catch (error) { throw fail(error.message); }
     const fields = Object.fromEntries(keys.map((key) => [key, normalized[key]]));
     const payload = { documentId: input.documentId, fields, reason: safeText(input.reason, 4000) };
     return { status: "pending_confirmation", proposal: addProposal("document_fields", payload, { title: `核对 ${document.name}`,
-      summary: payload.reason, sourceIds: [document.id], preview: { documentId: document.id, name: document.name, category: document.category,
-        fields: keys.map((key) => ({ key, before: document.structuredData?.[key] ?? null, after: fields[key] })), reason: payload.reason } }, "documents.add") };
+      summary: payload.reason, sourceIds: [document.id], preview: { documentId: document.id, name: document.name, category: document.category, allowedFields: contents.allowedFields,
+        fields: keys.map((key) => ({ key, before: document.structuredData?.[key] ?? null, after: fields[key] })), reason: payload.reason } }, "documents.add", revision) };
+  }
+
+  async function reviseProposal(id, updates, { signal } = {}) {
+    const original = proposalFor(id);
+    assertProposalCurrent(original, signal);
+    if (confirming.has(id) || revising.has(id)) throw fail("该事项正在处理，请完成当前操作后再修改", "AI_PROPOSAL_BUSY");
+    const key = { bank_import: "mapping", document_fields: "fields", bank_business: "classification" }[original.kind];
+    if (!key || !updates || Array.isArray(updates) || Object.keys(updates).length !== 1 || !Object.hasOwn(updates, key)
+      || !updates[key] || typeof updates[key] !== "object" || Array.isArray(updates[key])) throw fail("请只修改本类建议允许的字段");
+    const tool = { bank_import: "prepare_bank_import", document_fields: "propose_document_fields", bank_business: "propose_bank_business" }[original.kind];
+    const schema = AI_FINANCE_TOOLS.find((item) => item.function.name === tool).function.parameters;
+    let input = copy(original.payload);
+    if (key === "classification") {
+      for (const field of Object.keys(updates.classification)) if (field === "transactionId" || !Object.hasOwn(schema.properties, field)) throw fail(`不能修改流水来源、金额、账期或此字段：${field}`);
+      input = { ...input, ...updates.classification };
+      delete input.businessPeriod;
+      for (const field of ["relatedBillId", "referenceNo", "relatedTransactionId"]) if (input[field] === "") delete input[field];
+    } else input[key] = key === "mapping" ? { ...updates.mapping }
+      : Object.fromEntries(Object.entries({ ...input.fields, ...updates.fields }).map(([field, value]) => [field, value === null ? "" : value]));
+    validateValue(input, schema);
+    revising.add(id);
+    try {
+      if (key === "mapping") return await prepareImport(input, signal, original);
+      if (key === "fields") return await proposeFields(input, signal, original);
+      for (const documentId of new Set([...original.payload.evidenceIds, ...input.evidenceIds])) await readOriginal(documentId, { signal });
+      assertProposalCurrent(original, signal);
+      return proposeBusiness(input, original);
+    } finally { revising.delete(id); }
   }
 
   async function applyProposal(id, { reason, signal } = {}) {
@@ -296,7 +404,7 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
         assertProposalCurrent(proposal, signal);
         if (!plan) throw fail("银行列映射已失效，请重新整理");
         return bank.executeBankImport({ workspaceId, planId: plan.planId });
-      });
+      }, () => assertProposalCurrent(proposal, signal));
       workspace = target("data.write", signal);
       const message = `已导入${result.counts.imported}笔流水，跳过${result.counts.duplicates}笔重复；尚未入账。`;
       store.actions.replaceWorkspace(workspaceId, appliedWorkspace(workspace, proposal, result, message), { period, requiredPermission: "data.write" });
@@ -327,7 +435,7 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
   }
 
   return {
-    getContext, uploadFiles, readOriginal,
+    getContext, getAssistantContext, uploadFiles, readOriginal, reviseProposal,
     getConversation() { const current = conversation(); return { messages: copy(current.messages), proposals: current.proposals.map(publicProposal) }; },
     appendMessage(input) {
       if (!input || !["user", "assistant"].includes(input.role) || typeof input.content !== "string") throw fail("对话角色或内容不正确");
@@ -344,14 +452,23 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
       target("data.read", signal);
       const schema = AI_FINANCE_TOOLS.find((item) => item.function.name === name)?.function.parameters;
       if (!schema) throw fail("不支持的AI工具", "AI_UNKNOWN_TOOL");
-      validateValue(input, schema);
-      if (name === "get_context") return getContext(input.section, { offset: input.offset });
-      if (name === "read_document") return readDocument(input.documentId, signal);
-      if (name === "prepare_bank_import") return prepareImport(input, signal);
-      if (name === "propose_bank_business") return proposeBusiness(input);
-      return proposeFields(input, signal);
+      try {
+        validateValue(input, schema);
+        if (name === "get_context") return getAssistantContext(input.section, { offset: input.offset });
+        if (name === "read_document") return await readDocument(input.documentId, signal);
+        if (name === "prepare_bank_import") return await prepareImport(input, signal);
+        if (name === "propose_bank_business") return proposeBusiness(input);
+        return await proposeFields(input, signal);
+      } catch (error) {
+        target("data.read", signal);
+        if (!recoverableToolCodes.has(error.code)) throw error;
+        return { ok: false, status: "needs_input", error: { code: error.code, message: safeText(error.message, 1000), recoverable: true,
+          requiredFields: schema.required, allowedFields: Object.keys(schema.properties), ...(error.details?.field ? { field: error.details.field } : {}) },
+          nextAction: "依据已读取的真实资料修正缺项后可重新调用；没有依据就向用户说明缺什么，不能猜测，也不能自动确认或入账。" };
+      }
     },
     confirmProposal(id, options = {}) {
+      if (revising.has(id)) return Promise.reject(fail("正在重新计算预览，请完成修改后再确认", "AI_PROPOSAL_BUSY"));
       if (confirming.has(id)) return confirming.get(id);
       const pending = applyProposal(id, options).finally(() => confirming.delete(id));
       confirming.set(id, pending);
