@@ -238,14 +238,18 @@ export function createFinanceDeskService({ store, fileVault }) {
     return entry;
   }
 
-  async function registerBankFile(file, { workspaceId, signal, onProgress, fileName, sheetName, encoding } = {}) {
+  async function registerBankFile(file, { workspaceId, signal, onProgress, fileName, sheetName, encoding, sourceDocumentId } = {}) {
     workspaceFor(workspaceId);
     if (!(file instanceof Blob)) throw failure("本地宿主必须提供真实 File 或 Blob，不能传入文件描述对象");
     const parsed = await readBankFile(file, { signal, onProgress, fileName, sheetName, encoding, computeHash: true });
     signal?.throwIfAborted();
-    workspaceFor(workspaceId);
+    const workspace = workspaceFor(workspaceId);
+    if (sourceDocumentId) {
+      const original = workspace.documents.find((item) => item.id === sourceDocumentId);
+      if (!original || original.category !== "银行流水" || original.hash !== parsed.fileHash) throw failure("已保存银行原件与所选文件不一致", "BANK_ORIGINAL_CHANGED");
+    }
     const fileRef = createId("bank-file");
-    files.set(fileRef, { file, parsed, workspaceId, released: false, executing: 0 });
+    files.set(fileRef, { file, parsed, workspaceId, sourceDocumentId, released: false, executing: 0 });
     return jsonCopy({ fileRef, workspaceId, ...parsed });
   }
 
@@ -333,6 +337,7 @@ export function createFinanceDeskService({ store, fileVault }) {
   async function execute(entry, file) {
     const { workspaceId, period } = entry.input;
     let sourceDocument = null;
+    let createdSourceDocument = false;
     const validateTarget = () => {
       const workspace = workspaceFor(workspaceId);
       store.assertWorkspaceWritable(workspaceId, period, "data.write");
@@ -340,7 +345,7 @@ export function createFinanceDeskService({ store, fileVault }) {
       return workspace;
     };
     async function cleanup() {
-      if (!sourceDocument) return;
+      if (!sourceDocument || !createdSourceDocument) return;
       const workspace = getWorkspace(store.getState(), workspaceId);
       if (!workspace?.documents?.some((item) => item.id === sourceDocument.id)) return;
       try { await removeLocalDocument({ store, fileVault, workspaceId, documentId: sourceDocument.id }); }
@@ -358,11 +363,21 @@ export function createFinanceDeskService({ store, fileVault }) {
       const actor = store.assertWorkspaceAccess(workspaceId, "data.write")?.name || "本地用户";
       // Keep it unlinked until the bank commit. Failed imports can remove this
       // newly created document using the ordinary usage checks, without force.
-      sourceDocument = await saveLocalDocument({ store, fileVault, workspaceId, file: file.file,
-        metadata: { category: "银行流水", period, actor, name: file.parsed.fileName },
-      });
+      if (file.sourceDocumentId) {
+        sourceDocument = workspace.documents.find((item) => item.id === file.sourceDocumentId);
+        if (!sourceDocument || sourceDocument.period !== period || sourceDocument.category !== "银行流水"
+          || sourceDocument.hash !== file.parsed.fileHash) throw failure("已保存银行原件或所属账期已变化", "BANK_ORIGINAL_CHANGED");
+      } else {
+        sourceDocument = await saveLocalDocument({ store, fileVault, workspaceId, file: file.file,
+          metadata: { category: "银行流水", period, actor, name: file.parsed.fileName },
+        });
+        createdSourceDocument = true;
+      }
       await verifyStoredDocumentOriginal({ fileVault, workspaceId, document: sourceDocument });
       workspace = validateTarget();
+      const latestOriginal = workspace.documents.find((item) => item.id === sourceDocument.id);
+      if (!latestOriginal || latestOriginal.hash !== sourceDocument.hash || latestOriginal.version !== sourceDocument.version
+        || latestOriginal.period !== period || latestOriginal.storage?.blobId !== sourceDocument.storage?.blobId) throw failure("导入期间银行原件已变化", "BANK_ORIGINAL_CHANGED");
       plan = prepare(entry, workspace, file);
       assertPlan(plan);
       if (!plan.importableRowCount) {
