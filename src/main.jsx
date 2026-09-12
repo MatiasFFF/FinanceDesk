@@ -1,16 +1,14 @@
-import React, { lazy, Suspense } from "react";
+import React from "react";
 import { createRoot } from "react-dom/client";
-import { App } from "./App.jsx";
+import { FinanceDeskShell } from "./FinanceDeskShell.jsx";
 import { FinanceDeskProvider } from "./store/FinanceDeskProvider.jsx";
+import { AiSessionProvider } from "./features/ai-simple/AiSessionContext.jsx";
 import "./styles.css";
-
-const AiSimpleApp = lazy(() => import("./features/ai-simple/AiSimpleApp.jsx"));
-const aiMode = new URLSearchParams(window.location.search).get("mode") === "ai";
 
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <FinanceDeskProvider>
-      {aiMode ? <Suspense fallback={<main className="ai-entry-loading" role="status">正在打开财务助手…</main>}><AiSimpleApp /></Suspense> : <App />}
+      <AiSessionProvider><FinanceDeskShell /></AiSessionProvider>
     </FinanceDeskProvider>
   </React.StrictMode>,
 );

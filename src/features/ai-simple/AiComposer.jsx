@@ -1,8 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { ArrowUp, FileText, Paperclip, Stop, X } from "@phosphor-icons/react";
+import { ArrowUp, CaretDown, FileText, Paperclip, Stop, X } from "@phosphor-icons/react";
 import { AI_ATTACHMENT_ACCEPT, AI_ATTACHMENT_HELP, selectAiAttachments, shouldSendFromKey } from "./aiAttachments.js";
 
-export function AiComposer({ value, files, onChange, onFiles, onRemoveFile, onSend, busy, onCancel, home = false, disabled = false, attachmentNotice = null }) {
+export function AiComposer({ value, files, onChange, onFiles, onRemoveFile, onSend, busy, onCancel, home = false, disabled = false, attachmentNotice = null, modelLabel = "", onOpenSettings }) {
   const inputRef = useRef(null);
   const textareaRef = useRef(null);
   const composingRef = useRef(false);
@@ -69,6 +69,7 @@ export function AiComposer({ value, files, onChange, onFiles, onRemoveFile, onSe
       {busy ? <button className="ai-send-button ai-stop-button" type="button" onClick={onCancel} aria-label="停止处理" title="停止处理"><Stop size={21} weight="fill" /></button>
         : <button className="ai-send-button" type="submit" disabled={!canSend} aria-label="发送"><ArrowUp size={home ? 31 : 27} weight="bold" /></button>}
     </div>
+    {!home && modelLabel && <button type="button" className="ai-text-button ai-current-model" disabled={busy} onClick={onOpenSettings} title={busy ? "本次整理期间模型保持不变" : "选择模型与思考模式"} aria-label={`${busy ? "本次整理模型" : "当前模型"}：${modelLabel}${busy ? "" : "，打开 DeepSeek 设置"}`}><span>{modelLabel}</span><CaretDown size={14} aria-hidden="true" /></button>}
     {(feedback?.message || dragging) && <div className={`ai-composer-feedback${feedback?.tone === "warning" ? " is-warning" : ""}`} role="status" id={noticeId}>{dragging ? "松开即可添加资料" : feedback?.message}{feedback?.tone === "warning" && <small>{AI_ATTACHMENT_HELP}</small>}</div>}
   </form>;
 }

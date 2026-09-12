@@ -5,7 +5,7 @@
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-panel, 14px);
   background: var(--paper);
-  box-shadow: 0 6px 18px rgba(75, 53, 41, 0.04);
+  box-shadow: 0 6px 18px rgba(24, 49, 83, 0.04);
 }
 
 .accounting-heading,
@@ -60,8 +60,8 @@
 }
 
 .engine-badge.warning {
-  background: var(--clay-soft);
-  color: var(--clay-dark);
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 
 .engine-error {
@@ -71,8 +71,8 @@
   padding: 9px;
   border: 1px solid rgba(178, 79, 54, 0.25);
   border-radius: 8px;
-  background: #fff3ef;
-  color: #8f3e2b;
+  background: var(--danger-soft);
+  color: var(--danger);
   font-size: var(--font-helper, 12px);
 }
 
@@ -323,7 +323,7 @@
   border: 1px solid var(--line-soft);
   border-radius: 7px;
   background: var(--paper);
-  color: #8f3e2b;
+  color: var(--danger);
   font: inherit;
   font-size: var(--font-helper, 12px);
   font-weight: 600;
@@ -356,7 +356,7 @@
 
 .engine-voucher-balance strong {
   margin-left: auto;
-  color: #8f3e2b;
+  color: var(--danger);
 }
 
 .engine-voucher-tax-total {
@@ -365,7 +365,7 @@
 }
 
 .engine-voucher-balance.is-balanced strong {
-  color: #42634f;
+  color: var(--success);
 }
 
 .engine-voucher-card > input {
@@ -471,7 +471,7 @@
   display: flex;
   align-items: flex-start;
   gap: 7px;
-  color: var(--clay-dark);
+  color: var(--warning);
 }
 
 .engine-exceptions > div span {
@@ -943,7 +943,7 @@
 .ledger-tabs button.active {
   background: var(--clay-soft);
   color: var(--clay-dark);
-  box-shadow: inset 0 0 0 1px rgba(178, 79, 54, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(39, 104, 247, 0.12);
 }
 
 .ledger-filters {
@@ -1143,12 +1143,12 @@
   border: 1px solid var(--line-soft);
   border-radius: 9px;
   background: var(--canvas);
-  box-shadow: 0 1px 0 rgba(75, 53, 41, 0.025);
+  box-shadow: 0 1px 0 rgba(24, 49, 83, 0.025);
 }
 
 .engine-voucher-card {
   background: var(--paper-strong);
-  box-shadow: 0 4px 14px rgba(75, 53, 41, 0.035);
+  box-shadow: 0 4px 14px rgba(24, 49, 83, 0.035);
 }
 
 .engine-voucher-card > .engine-voucher-row {
@@ -1188,7 +1188,7 @@
 .settlement-bill-row {
   border: 1px solid var(--line-soft);
   background: var(--paper-strong);
-  box-shadow: 0 4px 14px rgba(75, 53, 41, 0.03);
+  box-shadow: 0 4px 14px rgba(24, 49, 83, 0.03);
 }
 
 .ledger-tabs {
@@ -1507,7 +1507,7 @@
 .workspace-voucher-panel h2 { margin: 0; font-size: var(--font-card-title, 16px); }
 .workspace-voucher-list { display: grid; min-width: 0; }
 .workspace-voucher-record { min-width: 0; border-top: 1px solid var(--line-soft); }
-.workspace-voucher-record.is-focused { outline: 2px solid rgba(217, 119, 87, 0.32); outline-offset: 4px; }
+.workspace-voucher-record.is-focused { outline: 2px solid rgba(39, 104, 247, 0.32); outline-offset: 4px; }
 .workspace-voucher-record > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 16px; padding: 14px 0; cursor: pointer; }
 .workspace-voucher-record > summary > span { display: grid; gap: 4px; min-width: 0; }
 .workspace-voucher-record summary strong { overflow-wrap: anywhere; font-size: var(--font-body, 14px); }

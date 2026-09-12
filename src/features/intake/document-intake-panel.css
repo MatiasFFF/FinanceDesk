@@ -45,7 +45,7 @@
   flex-wrap: wrap;
   gap: 12px;
   padding: 13px 14px;
-  border: 1px solid rgba(217, 119, 87, 0.3);
+  border: 1px solid rgba(39, 104, 247, 0.3);
   border-radius: 10px;
   background: var(--sand);
 }
@@ -65,7 +65,7 @@
 .document-empty-action p { margin: 0; }
 
 .document-return-target:focus {
-  outline: 2px solid rgba(217, 119, 87, 0.52);
+  outline: 2px solid rgba(39, 104, 247, 0.52);
   outline-offset: 3px;
 }
 
@@ -89,7 +89,7 @@
 .document-recognition p { margin: 0; }
 .document-recognition-actions > strong { margin-right: auto; font-size: var(--font-card-title, 16px); font-weight: 600; line-height: 1.5; }
 .document-recognition-progress { display: grid; gap: 6px; }
-.document-recognition-progress progress { width: 100%; accent-color: var(--accent, #ae624a); }
+.document-recognition-progress progress { width: 100%; accent-color: var(--accent); }
 .document-recognition-candidates { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
 .document-recognition-candidates > li > div { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
 .document-recognition-candidates small { display: block; margin-top: 4px; }
@@ -122,7 +122,7 @@
 .document-contract-discount-review { display: grid; gap: 6px; }
 .document-contract-discount-review p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .document-contract-plan-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.document-contract-counterparty-error { color: var(--danger, #a64632); font-size: var(--font-helper, 12px); overflow-wrap: anywhere; }
+.document-contract-counterparty-error { color: var(--danger); font-size: var(--font-helper, 12px); overflow-wrap: anywhere; }
 .document-intake-panel .document-contract-plan-list {
   max-height: none;
   overflow: visible;

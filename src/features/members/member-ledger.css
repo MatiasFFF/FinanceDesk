@@ -17,7 +17,7 @@
 }
 
 .member-ledger-hero > div { min-width: 0; }
-.member-ledger-hero h2 { margin: 3px 0 6px; font-family: ui-serif, "Songti SC", serif; font-size: var(--font-card-title, 16px); }
+.member-ledger-hero h2 { margin: 3px 0 6px; font-family: inherit; font-size: var(--font-card-title, 16px); }
 .member-ledger-hero p:last-child { max-width: 720px; margin: 0; color: var(--muted); font-size: var(--font-helper, 12px); line-height: 1.65; }
 .member-ledger-hero > span { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 7px; color: var(--sage); font-size: var(--font-helper, 12px); font-weight: 600; }
 
@@ -39,10 +39,10 @@
   background: var(--paper);
 }
 
-.member-metric > span { display: grid; width: 39px; height: 39px; flex: 0 0 auto; place-items: center; border-radius: 10px; background: var(--sage-soft); color: var(--sage); }
+.member-metric > span { display: grid; width: 39px; height: 39px; flex: 0 0 auto; place-items: center; border-radius: 10px; background: var(--accent-soft); color: var(--accent); }
 .member-metric > div { display: grid; min-width: 0; gap: 3px; }
 .member-metric small, .member-metric p { margin: 0; overflow: hidden; color: var(--quiet); font-size: var(--font-helper, 12px); text-overflow: ellipsis; white-space: nowrap; }
-.member-metric strong { font-family: ui-serif, "Songti SC", serif; font-size: 20px; }
+.member-metric strong { font-family: inherit; font-size: 20px; }
 
 .member-entry-layout {
   display: grid;
@@ -104,7 +104,7 @@
 .membership-package-preview { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .membership-package-preview > span { display: grid; gap: 3px; padding: 9px 10px; border-radius: 8px; background: var(--paper-strong); }
 .membership-package-preview small { color: var(--quiet); font-size: var(--font-helper, 12px); }
-.membership-package-preview strong { font-family: ui-serif, "Songti SC", serif; font-size: 14px; }
+.membership-package-preview strong { font-family: inherit; font-size: 14px; }
 .membership-package-rule-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: stretch; gap: 9px; margin-top: 11px; }
 .membership-package-rule-list > article { display: grid; min-width: 0; height: 100%; align-content: start; gap: 10px; padding: 12px; border: 1px solid var(--line-soft); border-radius: 9px; background: var(--paper-strong); }
 .membership-package-rule-list > article.disabled { opacity: 0.6; }
@@ -157,7 +157,7 @@
 .commission-calculation-list small, .commission-calculation-list p { margin: 0; color: var(--quiet); font-size: var(--font-helper, 12px); }
 .commission-rule-feedback { margin: 11px 0 0; padding: 9px 11px; border-radius: 8px; font-size: var(--font-helper, 12px); }
 .commission-rule-feedback.success { background: var(--sage-soft); color: var(--sage); }
-.commission-rule-feedback.danger { background: var(--clay-soft); color: var(--clay-dark); }
+.commission-rule-feedback.danger { background: var(--danger-soft); color: var(--danger); }
 .commission-collection-empty { margin: 0; color: var(--muted); font-size: var(--font-body, 14px); }
 .commission-source-issues > summary { display: flex; align-items: flex-start; gap: 8px; }
 .commission-source-issues > summary > svg { flex-shrink: 0; margin-top: 2px; }
@@ -182,7 +182,7 @@
 .member-balance-values > span { display: grid; gap: 4px; padding: 10px; border-radius: 8px; background: var(--sand); }
 .member-balance-values > span.primary { grid-column: 1 / -1; background: var(--sage-soft); }
 .member-balance-values small { color: var(--quiet); font-size: var(--font-helper, 12px); }
-.member-balance-values strong { font-family: ui-serif, "Songti SC", serif; font-size: 16px; }
+.member-balance-values strong { font-family: inherit; font-size: 16px; }
 .member-card-foot { display: flex; min-width: 0; align-items: end; justify-content: space-between; flex-wrap: wrap; gap: 10px; color: var(--quiet); font-size: var(--font-helper, 12px); }
 .member-card-foot > span { min-width: 0; flex: 1 1 150px; overflow-wrap: break-word; word-break: normal; }
 .member-card-foot label { display: grid; gap: 3px; min-width: 92px; }
@@ -200,8 +200,8 @@
 .member-event-amount strong { white-space: nowrap; }
 .member-event-mark { width: 8px; height: 32px; flex: 0 0 auto; border-radius: 6px; background: var(--sage); }
 .member-event-mark.consumption { background: var(--clay); }
-.member-event-mark.refund { background: #a96b5e; }
-.member-event-mark.commission { background: #85745f; }
+.member-event-mark.refund { background: var(--warning); }
+.member-event-mark.commission { background: var(--muted); }
 .member-event-status { display: grid; min-width: 0; justify-items: end; gap: 7px; }
 .member-event-status > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .member-event-status button { min-width: 72px; min-height: 30px; padding: 0 9px; font-size: var(--font-body, 14px); }
@@ -212,10 +212,10 @@
 .member-reconciliation-metrics { display: grid; min-width: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .member-reconciliation-metrics > span { display: grid; gap: 4px; padding: 11px; border-radius: 9px; background: var(--sand); }
 .member-reconciliation-metrics small { color: var(--quiet); font-size: var(--font-helper, 12px); }
-.member-reconciliation-metrics strong { min-width: 0; font-family: ui-serif, "Songti SC", serif; font-size: 16px; overflow-wrap: anywhere; }
+.member-reconciliation-metrics strong { min-width: 0; font-family: inherit; font-size: 16px; overflow-wrap: anywhere; }
 .member-reconciliation-result { display: flex; align-items: center; gap: 9px; margin-top: 10px; padding: 10px 11px; border-radius: 9px; }
 .member-reconciliation-result.success { background: var(--sage-soft); color: var(--sage); }
-.member-reconciliation-result.danger { background: var(--clay-soft); color: var(--clay-dark); }
+.member-reconciliation-result.danger { background: var(--danger-soft); color: var(--danger); }
 .member-reconciliation-result > span { display: grid; min-width: 0; gap: 2px; }
 .member-reconciliation-result strong { font-size: var(--font-body, 14px); }
 .member-reconciliation-result small { color: var(--muted); font-size: var(--font-helper, 12px); }

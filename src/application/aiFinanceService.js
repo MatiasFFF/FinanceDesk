@@ -8,6 +8,7 @@ import { BANK_FIELD_DEFINITIONS, inspectBankTable } from "../features/intake/ban
 import { getLocalDocumentRecognition, getStoredDocumentRecord, hashLocalFile, normalizeDocumentStructuredData, saveLocalDocument, saveLocalDocumentRecognition, updateLocalDocumentMetadata, verifyStoredDocumentOriginal } from "../features/intake/documentIntake.js";
 import { createFinanceDeskService, postWorkspaceVoucher } from "./financeDeskService.js";
 import { AI_FINANCE_TOOLS } from "./aiFinanceTools.js";
+import { DEEPSEEK_REASONING_EFFORTS, isDeepSeekModelId } from "./deepseekModels.js";
 
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const fail = (message, code = "AI_INVALID_INPUT") => Object.assign(new Error(message), { code });
@@ -444,6 +445,11 @@ export function createAiFinanceService({ store, fileVault, workspaceId, period }
         return { documentId, name: document.name, kind: document.category === "银行流水" ? "bank" : "document" };
       });
       const message = { id: createId("ai-message"), role: input.role, content: safeText(input.content), attachments, createdAt: stamp() };
+      const metadata = input.modelMetadata;
+      if (input.role === "assistant" && isDeepSeekModelId(metadata?.requestedModel) && ["enabled", "disabled"].includes(metadata?.thinking)) {
+        message.modelMetadata = { requestedModel: metadata.requestedModel, responseModel: isDeepSeekModelId(metadata.responseModel) ? metadata.responseModel : null,
+          thinking: metadata.thinking, reasoningEffort: metadata.thinking === "enabled" && DEEPSEEK_REASONING_EFFORTS.includes(metadata.reasoningEffort) ? metadata.reasoningEffort : null };
+      }
       if (!message.content.trim() && !attachments.length) throw fail("请输入内容或上传资料");
       saveConversation((current) => ({ ...current, messages: [...current.messages, message] }), "documents.add");
       return copy(message);

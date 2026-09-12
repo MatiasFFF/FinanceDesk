@@ -35,9 +35,9 @@ function CashDetails({ section, onVouchers }) {
   </details>;
 }
 
-export default function AiReports({ workspace, onVouchers, onToast }) {
+export default function AiReports({ workspace, onVouchers, onToast, initialSection, onSectionChange }) {
   const model = useMemo(() => buildAiReportModel(workspace), [workspace]);
-  const [selected, setSelected] = useState("income");
+  const [selected, setSelected] = useState(() => model.sections.some((item) => item.id === initialSection) ? initialSection : "income");
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
   const currentModel = useRef(model);
@@ -75,7 +75,7 @@ export default function AiReports({ workspace, onVouchers, onToast }) {
       <strong>{note.title}</strong><p>{note.detail}</p>
       {note.voucherIds.length > 0 && <button className="ai-inline-button" type="button" onClick={() => onVouchers?.({ voucherId: note.voucherIds[0] })}>{note.id === "pendingVouchers" ? "复核待入账凭证" : "查看相关凭证"}</button>}
     </li>)}</ul></div>}
-    <nav className="ai-report-tabs" aria-label="选择财务报表">{model.sections.map((item) => <button type="button" key={item.id} className={selected === item.id ? "is-active" : ""} aria-pressed={selected === item.id} onClick={() => setSelected(item.id)}>{item.title}</button>)}</nav>
+    <nav className="ai-report-tabs" aria-label="选择财务报表">{model.sections.map((item) => <button type="button" key={item.id} className={selected === item.id ? "is-active" : ""} aria-pressed={selected === item.id} onClick={() => { setSelected(item.id); onSectionChange?.(item.id); }}>{item.title}</button>)}</nav>
     {!model.postedCount && <p className="ai-report-empty">{model.hasOpeningBalances ? "本期尚无已入账凭证；资产负债与现金余额包含期初余额。" : "本期暂无已入账金额。凭证复核入账后，报表会随之更新。"}</p>}
     <section className="ai-report-section" aria-label={section.title}>
       <h3>{section.title}</h3>

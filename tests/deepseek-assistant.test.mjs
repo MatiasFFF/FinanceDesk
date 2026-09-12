@@ -89,10 +89,13 @@ test("missing key stops before HTTP and never echoes an invalid value", async ()
   }
 });
 
-test("proxy rejects arbitrary targets, tools, model overrides and oversized UTF-8 bodies before forwarding", async () => {
+test("proxy rejects arbitrary targets, tools, invalid model settings and oversized UTF-8 bodies before forwarding", async () => {
   const bodies = [
     { messages: initial(), url: "https://example.invalid" },
-    { messages: initial(), model: "another-model" },
+    { messages: initial(), model: "https://example.invalid/model" },
+    { messages: initial(), model: "deepseek-flash", thinking: "sometimes" },
+    { messages: initial(), model: "deepseek-future", thinking: "enabled" },
+    { messages: initial(), reasoningEffort: "ultra" },
     { messages: initial(), tools: [] },
     [], { messages: [] }, { messages: Array(81).fill(initial()[1]) },
     { messages: [{ role: "user", content: { image: "x" } }] },
@@ -378,4 +381,152 @@ test("Vite dev and preview use the exact same route; Vercel exports the shared h
   let passed = false;
   handler({ url: "/api/finance-assistant/other" }, {}, () => { passed = true; });
   assert.equal(passed, true);
+});
+
+test("selected Pro and thinking effort reach every upstream round; reasoning stays private", async () => {
+  const requests = [];
+  const events = [];
+  const original = [...initial(), { role: "assistant", content: "此前只是待确认建议，尚未入账。" }, { role: "user", content: "请继续核对" }];
+  const settings = { model: "deepseek-v4-pro", thinking: "enabled", reasoningEffort: "max" };
+  const result = await runFinanceAssistant({ apiKey: key, messages: original, ...settings,
+    executeTool: () => ({ status: "pending_confirmation" }), onMessage: (entry) => events.push(entry),
+    fetchImpl: async (_url, options) => json(await requestDeepSeek({ authorization, body: JSON.parse(options.body), signal: options.signal,
+      fetchImpl: async (_target, init) => {
+        const request = JSON.parse(init.body);
+        requests.push(request);
+        assert.equal(request.model, settings.model);
+        assert.deepEqual(request.thinking, { type: "enabled" });
+        assert.equal(request.reasoning_effort, "max");
+        assert.equal(request.temperature, undefined);
+        assert.ok(request.max_tokens > 4096);
+        assert.equal(init.cache, "no-store");
+        assert.equal(init.body.includes(key), false);
+        if (requests.length === 1) {
+          assert.equal(request.messages.filter((item) => item.role === "assistant").length, 0);
+          assert.equal(request.messages.at(-1).content, "请继续核对");
+          assert.equal(request.messages.at(-2).role, "user");
+          assert.match(request.messages.at(-2).content, /"role":"assistant"/);
+          assert.match(request.messages.at(-2).content, /尚未入账/);
+        } else {
+          const assistants = request.messages.filter((item) => item.role === "assistant");
+          assert.equal(assistants.length, requests.length - 1);
+          assistants.forEach((item, index) => {
+            assert.equal(item.reasoning_content, `private-reasoning-${index + 1} [密钥已隐藏]`);
+            assert.equal(item.modelMetadata, undefined);
+          });
+        }
+        const calls = requests.length < 3 ? [call(`thinking-${requests.length}`)] : undefined;
+        return json({ model: "deepseek-v4-pro-0813", choices: [{ message: { ...message(calls ? "正在核对" : "仍需确认，尚未入账", calls), reasoning_content: `private-reasoning-${requests.length} ${key}` }, finish_reason: calls ? "tool_calls" : "stop" }] });
+      } })),
+  });
+  const metadata = { requestedModel: settings.model, responseModel: "deepseek-v4-pro-0813", thinking: "enabled", reasoningEffort: "max" };
+  assert.equal(requests.length, 3);
+  assert.deepEqual(result.modelMetadata, metadata);
+  assert.deepEqual(result.message.modelMetadata, metadata);
+  assert.ok(events.filter((entry) => entry.role === "assistant").every((entry) => JSON.stringify(entry.modelMetadata) === JSON.stringify(metadata)));
+  assert.doesNotMatch(JSON.stringify([events, result]), /reasoning_content|private-reasoning/);
+  assert.equal(original[2].role, "assistant");
+  assert.equal(original[2].content, "此前只是待确认建议，尚未入账。");
+});
+
+test("thinking final-only responses are public without thought; disabled replies drop upstream reasoning", async () => {
+  for (const thinking of ["enabled", "disabled"]) {
+    const result = await runFinanceAssistant({ apiKey: key, messages: initial(), thinking,
+      fetchImpl: async (_url, options) => json(await requestDeepSeek({ authorization, body: JSON.parse(options.body),
+        fetchImpl: async () => json({ model: "deepseek-flash", choices: [{ message: { ...message("请先提供本期流水"), reasoning_content: "private-final-thought" }, finish_reason: "stop" }] }),
+      })),
+    });
+    assert.equal(result.modelMetadata.reasoningEffort, thinking === "enabled" ? "high" : null);
+    assert.doesNotMatch(JSON.stringify(result), /reasoning_content|private-final-thought/);
+  }
+});
+
+test("unknown model IDs pass unchanged in non-thinking mode; unavailable models never fall back", async () => {
+  let requests = 0;
+  const model = "deepseek-next-release";
+  const response = await requestDeepSeek({ authorization, body: { messages: initial(), model }, fetchImpl: async (_url, options) => {
+    const request = JSON.parse(options.body);
+    assert.equal(request.model, model);
+    assert.deepEqual(request.thinking, { type: "disabled" });
+    assert.equal(request.reasoning_effort, undefined);
+    return upstream("模型响应正文自称另一身份并不构成证明");
+  } });
+  assert.deepEqual(response.modelMetadata, { requestedModel: model, responseModel: null, thinking: "disabled", reasoningEffort: null });
+  await assert.rejects(runFinanceAssistant({ apiKey: key, messages: initial(), model,
+    fetchImpl: async (_url, options) => {
+      requests += 1;
+      try {
+        return json(await requestDeepSeek({ authorization, body: JSON.parse(options.body), fetchImpl: async () => ({ ok: false, status: 404, json: () => assert.fail("must not read error") }) }));
+      } catch (error) { return json({ error: error.message }, error.status); }
+    },
+  }), { code: "ASSISTANT_MODEL_UNAVAILABLE" });
+  assert.equal(requests, 1);
+});
+
+test("thinking failures and cancellation retain public results without retaining thought", async () => {
+  for (const outcome of ["tool-error", "cancel", "length", "missing-thought"]) {
+    const controller = new AbortController();
+    const events = [];
+    let requests = 0;
+    await assert.rejects(runFinanceAssistant({ apiKey: key, messages: initial(), thinking: "enabled", signal: controller.signal,
+      onMessage: (entry) => events.push(entry),
+      executeTool: () => {
+        if (outcome === "cancel") { controller.abort(); return { proposalId: "already-saved" }; }
+        if (outcome === "tool-error") throw new Error("本地操作未完成");
+        return { status: "pending_confirmation" };
+      },
+      fetchImpl: async () => {
+        requests += 1;
+        if (requests === 1) return json({ message: { ...message("待核对", [call()]), reasoning_content: "private-failed-thought" }, finishReason: "tool_calls" });
+        return json({ message: { ...message("未完成"), ...(outcome === "missing-thought" ? {} : { reasoning_content: "private-limited-thought" }) }, finishReason: outcome === "length" ? "length" : "stop" });
+      },
+    }), (error) => {
+      assert.doesNotMatch(JSON.stringify([error, events]), /reasoning_content|private-failed-thought|private-limited-thought/);
+      if (outcome === "cancel") assert.equal(error.toolResults[0].result.proposalId, "already-saved");
+      return ["ASSISTANT_CANCELLED", "ASSISTANT_TOOL_FAILED", "ASSISTANT_INCOMPLETE", "ASSISTANT_INVALID_RESPONSE"].includes(error.code);
+    });
+  }
+});
+
+test("thinking continuation rejects missing history reasoning, truncation and oversized payloads before local work", async () => {
+  await assert.rejects(requestDeepSeek({ authorization, body: { messages: [...initial(), message("prior reply"), { role: "user", content: "继续" }], thinking: "enabled" },
+    fetchImpl: () => assert.fail("missing live thought must not forward"),
+  }), { status: 400 });
+  const privateResponse = (finish_reason, reasoning_content) => json({ model: "deepseek-flash", choices: [{ message: { ...message("", [call()]), reasoning_content }, finish_reason }] });
+  for (const reply of [() => privateResponse("length", "private-partial"), () => privateResponse("tool_calls", null)]) {
+    await assert.rejects(requestDeepSeek({ authorization, body: { messages: initial(), thinking: "enabled" }, fetchImpl: async () => reply() }),
+      (error) => [422, 502].includes(error.status) && !JSON.stringify(error).includes("private-partial"));
+  }
+  await assert.rejects(runFinanceAssistant({ apiKey: key, thinking: "enabled", messages: [{ role: "user", content: "票".repeat(400_000) }],
+    fetchImpl: () => assert.fail("oversized content must not fetch"),
+  }), { code: "ASSISTANT_TOO_LARGE" });
+});
+
+test("response metadata cannot echo keys or claim a different requested setting", async () => {
+  const result = await requestDeepSeek({ authorization, body: { messages: initial() }, fetchImpl: async () => json({ model: key, choices: [{ message: message(), finish_reason: "stop" }] }) });
+  assert.equal(result.modelMetadata.responseModel, null);
+  await assert.rejects(runFinanceAssistant({ apiKey: key, messages: initial(), fetchImpl: async () => json({ message: message(), finishReason: "stop",
+    modelMetadata: { requestedModel: "deepseek-v4-pro", responseModel: "deepseek-v4-pro", thinking: "disabled", reasoningEffort: null },
+  }) }), { code: "ASSISTANT_INVALID_RESPONSE" });
+});
+
+test("thinking keeps the existing client deadline and preserves no partial thought on timeout", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let requests = 0;
+  const pending = runFinanceAssistant({ apiKey: key, messages: initial(), thinking: "enabled", reasoningEffort: "high",
+    executeTool: () => ({ saved: true }),
+    fetchImpl: async (_url, options) => {
+      requests += 1;
+      if (requests === 1) return json({ message: { ...message("", [call()]), reasoning_content: "private-before-timeout" }, finishReason: "tool_calls" });
+      const waiting = new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error(key)), { once: true }));
+      t.mock.timers.tick(ASSISTANT_REQUEST_TIMEOUT_MS);
+      return waiting;
+    },
+  });
+  await assert.rejects(pending, (error) => {
+    assert.equal(error.code, "ASSISTANT_TIMEOUT");
+    assert.equal(error.toolResults[0].result.saved, true);
+    assert.doesNotMatch(JSON.stringify(error), /reasoning_content|private-before-timeout/);
+    return true;
+  });
 });

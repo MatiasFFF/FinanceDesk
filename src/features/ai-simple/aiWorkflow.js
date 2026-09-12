@@ -51,7 +51,55 @@ export function proposalDestinations(proposal, workspace) {
   if (proposal.kind === "bank_import" && proposal.status === "applied") destinations.push({ label: "查看导入流水", initialTab: "transactions", importDocumentId: proposal.sourceIds?.[0] });
   const ids = new Set([result.documentId, proposal.preview?.documentId, ...(proposal.sourceIds || [])].filter(Boolean));
   for (const document of workspace.documents || []) if (ids.has(document.id)) destinations.push({ label: document.name || "查看原件", initialTab: "documents", documentId: document.id });
-  return destinations;
+  return destinations.map((destination) => ({ ...destination, workspaceId: workspace.id, period: proposal.period || workspace.currentPeriod }));
+}
+
+export function resolveWorkbenchNavigation(page, options = {}) {
+  const panels = { vouchers: "vouchers", transactions: "transactions", bills: "business", manualVouchers: "manual" };
+  return { page: panels[page] ? "reconcile" : page, options: panels[page] ? { ...options, panel: panels[page] } : { ...options } };
+}
+
+export function rememberAiDocumentFocus(location, documentId) {
+  if (location.tab !== "documents" || (location.options.documentId || "") === (documentId || "")) return location;
+  // Remember a local selection without replaying the external focus request.
+  // A different file must not inherit another file's edit action or save return.
+  const { action, returnTo, ...options } = location.options;
+  return { ...location, options: { ...options, documentId: documentId || "", section: "files" } };
+}
+
+export function resolveAiResourceNavigation(page, options = {}) {
+  const target = resolveWorkbenchNavigation(page, options);
+  const panel = target.options.panel || "transactions";
+  const tab = target.page === "reconcile" ? ({ transactions: "transactions", vouchers: "vouchers" }[panel])
+    : ["documents", "reports", "bankImport"].includes(target.page) ? target.page : null;
+  // Detailed report sections and opening balances belong to the full workbench.
+  const full = !tab || (target.page === "reports" && (options.section || options.versionId));
+  return { ...target, mode: full ? "full" : "resources", ...(full ? {} : { tab }) };
+}
+
+export function navigationTargetError(workspace, { workspaceId, period, options = {} } = {}) {
+  if (!workspace) return "当前没有可打开的工作台。";
+  if ((workspaceId && workspaceId !== workspace.id) || (options.workspaceId && options.workspaceId !== workspace.id)) return "这条事项属于其他工作台，请回到原工作台后再打开。";
+  if ((period && period !== workspace.currentPeriod) || (options.period && options.period !== workspace.currentPeriod)) return "这条事项属于其他账期，请回到原账期后再打开。";
+  const recordPeriod = (record, kind) => kind === "transactions" ? String(record.date || "").slice(0, 7) || record.period
+    : record.period || String(record.date || "").slice(0, 7);
+  const targets = [["transactionId", "transactions", "流水"], ["voucherId", "vouchers", "凭证"], ["documentId", "documents", "资料"], ["importDocumentId", "documents", "导入原件"], ["importId", "bankImports", "导入批次"]];
+  for (const [key, collection, label] of targets) {
+    if (!options[key]) continue;
+    const record = (workspace[collection] || []).find((item) => item.id === options[key]);
+    if (!record) return `找不到这条${label}，可能已删除或属于其他工作台。`;
+    const targetPeriod = recordPeriod(record, collection);
+    if (targetPeriod && targetPeriod !== workspace.currentPeriod) return `这条${label}不属于当前账期，请回到原账期后再打开。`;
+  }
+  if (options.importDocumentId && !(workspace.bankImports || []).some((item) => item.sourceDocumentId === options.importDocumentId && item.period === workspace.currentPeriod)) return "当前账期没有这份原件的导入批次，请返回原事项重新选择。";
+  if (options.transactionId && (options.importId || options.importDocumentId)) {
+    const transaction = workspace.transactions.find((item) => item.id === options.transactionId);
+    const imports = (workspace.bankImports || []).filter((item) => item.period === workspace.currentPeriod
+      && (!options.importId || item.id === options.importId) && (!options.importDocumentId || item.sourceDocumentId === options.importDocumentId));
+    if (!imports.some((item) => item.id === transaction.importId)) return "这笔流水不属于所选导入批次，请返回原事项重新选择。";
+  }
+  if (options.versionId && options.versionId !== "live" && !(workspace.delivery?.reportVersions || []).some((item) => item.id === options.versionId && item.period === workspace.currentPeriod)) return "找不到当前账期的这份报表版本。";
+  return "";
 }
 
 export function proposalEditValues(proposal) {

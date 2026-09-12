@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   Archive,
+  ArrowLeft,
   ArrowRight,
   Bank,
   CaretDown,
@@ -99,6 +100,7 @@ import {
 } from "./productWorkflow.js";
 import { useFinanceDesk } from "./store/FinanceDeskProvider.jsx";
 import { importWorkspaceReceipt } from "./application/financeDeskService.js";
+import { navigationTargetError, resolveWorkbenchNavigation } from "./features/ai-simple/aiWorkflow.js";
 
 const FoundationRecordsPanel = lazy(() => import("./features/workspaces/FoundationRecordsPanel.jsx").then((module) => ({ default: module.FoundationRecordsPanel })));
 const BankImportPanel = lazy(() => import("./features/intake/BankImportPanel.jsx").then((module) => ({ default: module.BankImportPanel })));
@@ -367,7 +369,7 @@ function BoundaryNote({ compact = false }) {
       <CloudSlash size={18} />
       <div>
         <strong>本地模式</strong>
-        <span>资料在本机处理；银行、税务与外部 AI 未连接。</span>
+        <span>账本与原件保存在本机；银行、税务系统未连接。</span>
       </div>
     </div>
   );
@@ -512,7 +514,7 @@ function BottomNav({ workspace, page, onPage }) {
   );
 }
 
-function Topbar({ state, workspace, page, workspaceOverlayOpen, onImport, onSwitchWorkspace, onSwitchPeriod, onOpenWorkspaceDialog }) {
+function Topbar({ state, workspace, page, workspaceOverlayOpen, onImport, onSwitchWorkspace, onSwitchPeriod, onOpenWorkspaceDialog, onReturnToAssistant }) {
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const workspaceMenuRef = useRef(null);
@@ -573,6 +575,7 @@ function Topbar({ state, workspace, page, workspaceOverlayOpen, onImport, onSwit
         <p className="page-subtitle">{subtitle}</p>
       </div>
       <div className="topbar-actions">
+        {onReturnToAssistant && <button className="secondary-button full-workbench-return" type="button" onClick={onReturnToAssistant}><ArrowLeft size={17} />AI 助手</button>}
         <div className="mobile-workspace-wrap" ref={workspaceMenuRef}>
           <button ref={workspaceTriggerRef} className="secondary-button mobile-workspace" aria-expanded={workspaceOpen} aria-haspopup="menu" onClick={() => { setMoreOpen(false); setWorkspaceOpen((value) => !value); }} type="button"><span>{workspace?.name || "选择工作台"}</span><CaretDown size={14} /></button>
           {workspaceOpen && <WorkspaceMenu state={state} activeWorkspace={workspace} onSwitch={onSwitchWorkspace} onOpenDialog={openWorkspaceDialog} onClose={() => setWorkspaceOpen(false)} />}
@@ -815,6 +818,7 @@ function ReconcilePage({ workspace, onPage, panelRequest, onStatus, onReview, on
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [focusedId, setFocusedId] = useState(null);
   const [activeBatchId, setActiveBatchId] = useState(null);
+  const [activeImportDocumentId, setActiveImportDocumentId] = useState(null);
   const [manualVoucherRequest, setManualVoucherRequest] = useState(null);
   const manualVoucherRequestNonce = useRef(0);
   function openManualVoucher(billId) {
@@ -827,6 +831,7 @@ function ReconcilePage({ workspace, onPage, panelRequest, onStatus, onReview, on
     setSelectedIds(new Set());
     setFocusedId(null);
     setActiveBatchId(null);
+    setActiveImportDocumentId(null);
     setManualVoucherRequest(null);
   }, [workspace.id, workspace.currentPeriod]);
   useEffect(() => {
@@ -834,7 +839,8 @@ function ReconcilePage({ workspace, onPage, panelRequest, onStatus, onReview, on
     setActivePanel(nextPanel);
     if (nextPanel !== "transactions") return;
     setActiveBatchId(panelRequest?.importId || null);
-    if (panelRequest?.importId || panelRequest?.transactionId) {
+    setActiveImportDocumentId(panelRequest?.importDocumentId || null);
+    if (panelRequest?.importId || panelRequest?.importDocumentId || panelRequest?.transactionId) {
       setFilter("all");
       setQuery("");
       setSelectedIds(new Set());
@@ -842,7 +848,9 @@ function ReconcilePage({ workspace, onPage, panelRequest, onStatus, onReview, on
     setFocusedId(panelRequest?.transactionId || null);
   }, [workspace.id, workspace.currentPeriod, panelRequest]);
   const periodTransactions = workspace.transactions.filter((item) => String(item.date || "").startsWith(workspace.currentPeriod));
-  const baseTransactions = activeBatchId ? periodTransactions.filter((item) => item.importId === activeBatchId) : periodTransactions;
+  const sourceBatchIds = new Set((workspace.bankImports || []).filter((item) => item.period === workspace.currentPeriod && item.sourceDocumentId === activeImportDocumentId).map((item) => item.id));
+  const hasBatchFilter = Boolean(activeBatchId || activeImportDocumentId);
+  const baseTransactions = periodTransactions.filter((item) => (!activeBatchId || item.importId === activeBatchId) && (!activeImportDocumentId || sourceBatchIds.has(item.importId)));
   const counts = { all: baseTransactions.length, unresolved: baseTransactions.filter((item) => !["posted", "ignored"].includes(item.status)).length, reconciled: baseTransactions.filter((item) => ["reconciled", "posted"].includes(item.status)).length, ignored: baseTransactions.filter((item) => item.status === "ignored").length };
   const filtered = baseTransactions.filter((item) => { const filterOk = filter === "all" || (filter === "unresolved" ? !["posted", "ignored"].includes(item.status) : filter === "reconciled" ? ["reconciled", "posted"].includes(item.status) : item.status === filter); const haystack = `${item.counterparty} ${item.summary} ${item.serial} ${item.suggestion}`.toLowerCase(); return filterOk && haystack.includes(query.trim().toLowerCase()); });
   const focused = periodTransactions.find((item) => item.id === focusedId) || null;
@@ -854,7 +862,7 @@ function ReconcilePage({ workspace, onPage, panelRequest, onStatus, onReview, on
   const batchMissingDocumentIds = new Set((workspace.exceptionTasks || [])
     .filter((task) => task.code === "missing_document" && task.status !== "resolved" && batchTransactionIds.has(task.sourceId))
     .map((task) => task.sourceId));
-  const batchSummary = activeBatchId ? {
+  const batchSummary = hasBatchFilter ? {
     posted: baseTransactions.filter((item) => item.status === "posted").length,
     missing: baseTransactions.filter((item) => batchMissingDocumentIds.has(item.id) && !["posted", "ignored"].includes(item.status)).length,
     deferred: baseTransactions.filter((item) => item.status === "ignored").length,
@@ -885,10 +893,10 @@ function ReconcilePage({ workspace, onPage, panelRequest, onStatus, onReview, on
           <DeferredView active={activePanel === "vouchers"} label="凭证与账簿"><AccountingWorkbench onToast={onToast} focusVoucherId={panelRequest?.voucherId} focusRequestNonce={panelRequest?.nonce} /></DeferredView>
         </div>
         <div className="reconcile-panel" id="reconcile-panel-transactions" role="tabpanel" aria-labelledby="reconcile-tab-transactions" hidden={activePanel !== "transactions"}>
-        {activeBatchId && <div className={`batch-context-bar ${pendingQueue.length ? "" : "is-complete"}`}><span><strong>{pendingQueue.length ? "正在处理刚导入的批次" : "本批流水已处理完成"}</strong><small>{baseTransactions.length} 笔 · 已入账 {batchSummary.posted} · 待补资料 {batchSummary.missing} · 其他待处理 {batchSummary.pending} · 暂不处理 {batchSummary.deferred}</small></span><button className="secondary-button" type="button" onClick={() => { setActiveBatchId(null); setFilter("unresolved"); setQuery(""); setSelectedIds(new Set()); setFocusedId(null); }}>查看本期全部流水</button></div>}
+        {hasBatchFilter && <div className={`batch-context-bar ${pendingQueue.length ? "" : "is-complete"}`}><span><strong>{pendingQueue.length ? "正在处理所选导入批次" : "本批流水已处理完成"}</strong><small>{baseTransactions.length} 笔 · 已入账 {batchSummary.posted} · 待补资料 {batchSummary.missing} · 其他待处理 {batchSummary.pending} · 暂不处理 {batchSummary.deferred}</small></span><button className="secondary-button" type="button" onClick={() => { setActiveBatchId(null); setActiveImportDocumentId(null); setFilter("unresolved"); setQuery(""); setSelectedIds(new Set()); setFocusedId(null); }}>查看本期全部流水</button></div>}
         <section className="workspace-toolbar"><div className="filter-tabs" role="tablist" aria-label="流水状态筛选">{FILTERS.map((item) => <button className={filter === item.id ? "active" : ""} key={item.id} onClick={() => setFilter(item.id)} role="tab" type="button">{item.label}<span>{counts[item.id]}</span></button>)}</div><label className="search-field"><MagnifyingGlass size={17} /><input aria-label="搜索流水" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索对方、摘要或流水号" />{query && <button className="visible" onClick={() => setQuery("")} type="button" aria-label="清空流水搜索"><X size={15} /></button>}</label></section>
         {selection.length > 0 && <div className="batch-bar"><span><strong>已选择 {selection.length} 笔</strong><small>批量动作只作用于当前选择</small></span><div><button className="soft-button" onClick={() => onExportSelected(selection)} type="button"><DownloadSimple size={16} />导出所选</button><button className="secondary-button" onClick={() => onStatus([...selectedIds], "ignored")} type="button">暂不处理</button><button className="primary-button" onClick={() => onReview([...selectedIds])} type="button">运行规则复核</button><button className="icon-button compact" onClick={() => setSelectedIds(new Set())} type="button" aria-label="清除选择"><X size={17} /></button></div></div>}
-        <section className="panel table-panel"><div className="table-heading"><span>{activeBatchId ? "本批流水" : "本期流水"}</span><span>{filtered.length} / {baseTransactions.length} 笔</span></div><TransactionList workspace={workspace} items={filtered} selectedIds={selectedIds} focusedId={focusedId} onToggle={toggle} onToggleAll={toggleAll} onFocus={setFocusedId} /></section>
+        <section className="panel table-panel"><div className="table-heading"><span>{hasBatchFilter ? "本批流水" : "本期流水"}</span><span>{filtered.length} / {baseTransactions.length} 笔</span></div><TransactionList workspace={workspace} items={filtered} selectedIds={selectedIds} focusedId={focusedId} onToggle={toggle} onToggleAll={toggleAll} onFocus={setFocusedId} /></section>
         </div>
         <BoundaryNote />
       </div>
@@ -1113,6 +1121,11 @@ function ReportsPage({ workspace, onPage, onFreeze, onExportExcel, onOpeningSave
   const versions = workspace.delivery.reportVersions.filter((item) => item.period === workspace.currentPeriod);
   const selectedVersion = versions.find((item) => item.id === versionId);
   const snapshot = selectedVersion?.snapshot || live;
+  useEffect(() => {
+    if (focusRequest?.page !== "reports") return;
+    if (focusRequest.section && Object.hasOwn(snapshot.sections, focusRequest.section)) { setSectionId(focusRequest.section); setDrill(null); }
+    if (focusRequest.versionId) setVersionId(focusRequest.versionId);
+  }, [focusRequest, workspace.id, workspace.currentPeriod]);
   const section = snapshot.sections[sectionId];
   const latest = versions[0];
   const previous = versions[1];
@@ -1689,7 +1702,7 @@ function NoWorkspace({ onCreate }) {
   return <main className="no-workspace"><p className="eyebrow">{PRODUCT_NAME}</p><h1>先创建一个属于你的工作台</h1><p>可以从空白开始，也可以复制“山岚健身工作室”行业模板。模板不是固定品牌，之后可以改名或删除。</p><button className="primary-button" onClick={onCreate} type="button"><Plus size={18} />新建工作台</button><BoundaryNote /></main>;
 }
 
-function App() {
+function App({ navigationRequest, onReturnToAssistant } = {}) {
   const { state, activeWorkspace, actions, store, fileVault, loadReport, persistenceStatus } = useFinanceDesk();
   const [page, setPage] = useState("overview");
   const [workspaceDialog, setWorkspaceDialog] = useState(null);
@@ -1701,6 +1714,10 @@ function App() {
   const [reconcilePanelRequest, setReconcilePanelRequest] = useState(null);
   const [pageFocusRequest, setPageFocusRequest] = useState(null);
   const [toast, setToast] = useState(null);
+  const [navigationError, setNavigationError] = useState("");
+  const handledNavigationRequest = useRef(null);
+  const navigationNonce = useRef(0);
+  const navigationScope = useRef(`${activeWorkspace?.id || ""}:${activeWorkspace?.currentPeriod || ""}`);
   const periodOperations = useRef(0);
   usePeriodLeaveGuard({ busy: () => periodOperations.current > 0 });
   async function runPeriodOperation(action) {
@@ -1718,15 +1735,34 @@ function App() {
     || workspace?.users?.find((user) => user.status === "active")
     || null;
   const actorName = activeOperator?.name?.trim() || "本地用户";
+  const currentPageFocusRequest = pageFocusRequest?.workspaceId === workspace?.id && pageFocusRequest?.period === workspace?.currentPeriod ? pageFocusRequest : null;
+  const currentReconcilePanelRequest = reconcilePanelRequest?.workspaceId === workspace?.id && reconcilePanelRequest?.period === workspace?.currentPeriod ? reconcilePanelRequest : null;
+  useEffect(() => {
+    const scope = `${workspace?.id || ""}:${workspace?.currentPeriod || ""}`;
+    if (scope === navigationScope.current) return;
+    navigationScope.current = scope;
+    setReconcilePanelRequest(null);
+    setPageFocusRequest(null);
+    setNavigationError("");
+  }, [workspace?.id, workspace?.currentPeriod]);
+  useEffect(() => {
+    if (!navigationRequest) return;
+    const identity = navigationRequest.nonce ?? navigationRequest;
+    if (handledNavigationRequest.current === identity) return;
+    handledNavigationRequest.current = identity;
+    const reason = navigationTargetError(workspace, navigationRequest);
+    if (reason) { setNavigationError(reason); return; }
+    navigateToPage(navigationRequest.page || "overview", navigationRequest.options || {});
+  }, [navigationRequest, workspace?.id, workspace?.currentPeriod]);
   useEffect(() => { if (page !== activePage) setPage(activePage); }, [page, activePage]);
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
     if (["localhost", "127.0.0.1"].includes(window.location.hostname)) document.title = "财务工作台 · 本地预览";
-    if (pageFocusRequest?.page === activePage && pageFocusRequest.section) {
-      const frame = window.requestAnimationFrame(() => document.getElementById(pageFocusRequest.section)?.scrollIntoView({ block: "start" }));
+    if (currentPageFocusRequest?.page === activePage && currentPageFocusRequest.section) {
+      const frame = window.requestAnimationFrame(() => document.getElementById(currentPageFocusRequest.section)?.scrollIntoView({ block: "start" }));
       return () => window.cancelAnimationFrame(frame);
     }
-  }, [activePage, workspace?.id, pageFocusRequest]);
+  }, [activePage, workspace?.id, currentPageFocusRequest]);
   useEffect(() => { if (!toast) return undefined; const timer = window.setTimeout(() => setToast(null), 3200); return () => window.clearTimeout(timer); }, [toast]);
   useEffect(() => {
     if (!resumeImportAfterSetup || !workspace?.bankAccounts?.length) return;
@@ -1741,16 +1777,25 @@ function App() {
     return () => { document.body.style.overflow = previousOverflow; };
   }, [workspaceDialog, managerOpen, importOpen]);
   function navigateToPage(nextPage, options = {}) {
-    if (nextPage === "bankImport") {
+    const target = resolveWorkbenchNavigation(nextPage, options);
+    const reason = navigationTargetError(workspace, { options: target.options });
+    if (reason) { setNavigationError(reason); return; }
+    const destination = target.page;
+    if (destination !== "bankImport" && !enabledPageIds.has(destination)) {
+      setNavigationError("当前工作台尚未启用这项功能，请在基础设置中启用后再打开。");
+      return;
+    }
+    setNavigationError("");
+    if (destination === "bankImport") {
       setImportOpen(true);
       return;
     }
-    const panelAliases = { vouchers: "vouchers", bills: "business", manualVouchers: "manual" };
-    const destination = panelAliases[nextPage] ? "reconcile" : nextPage;
-    setPageFocusRequest({ page: destination, ...options, nonce: Date.now() });
-    if (destination === "setup") setSetupInitialStage(options.stage || "s0");
-    if (destination === "reconcile") setReconcilePanelRequest({ ...options, panel: panelAliases[nextPage] || options.panel || "transactions", nonce: Date.now() });
-    setPage(enabledPageIds.has(destination) ? destination : "overview");
+    const nonce = ++navigationNonce.current;
+    const scope = { workspaceId: workspace.id, period: workspace.currentPeriod };
+    setPageFocusRequest({ ...target.options, ...scope, page: destination, nonce });
+    if (destination === "setup") setSetupInitialStage(target.options.stage || "s0");
+    if (destination === "reconcile") setReconcilePanelRequest({ ...target.options, ...scope, panel: target.options.panel || "transactions", nonce });
+    setPage(destination);
   }
   function requestBankAccountSetup() {
     setImportOpen(false);
@@ -2319,6 +2364,7 @@ function App() {
   if (!workspace) {
     return (
       <div className="app-shell empty-shell">
+        {onReturnToAssistant && <button className="secondary-button full-workbench-return" type="button" onClick={onReturnToAssistant}><ArrowLeft size={17} />AI 助手</button>}
         <NoWorkspace onCreate={() => setWorkspaceDialog("create")} />
         <WorkspaceDialog mode={workspaceDialog} workspace={null} onClose={() => setWorkspaceDialog(null)} onSubmit={submitWorkspaceDialog} />
         {toast && <div className={"toast " + toast.tone}><CheckCircle size={19} weight="fill" />{toast.message}</div>}
@@ -2329,15 +2375,16 @@ function App() {
     <div className="app-shell">
       <Sidebar state={state} workspace={workspace} page={activePage} onPage={navigateToPage} onSwitchWorkspace={switchWorkspace} onSwitchUser={switchUser} onOpenWorkspaceDialog={openWorkspaceDialog} />
       <div className="app-main">
-        <Topbar state={state} workspace={workspace} page={activePage} workspaceOverlayOpen={Boolean(workspaceDialog || managerOpen || importOpen)} onImport={() => setImportOpen(true)} onSwitchWorkspace={switchWorkspace} onSwitchPeriod={switchPeriod} onOpenWorkspaceDialog={openWorkspaceDialog} />
+        <Topbar state={state} workspace={workspace} page={activePage} workspaceOverlayOpen={Boolean(workspaceDialog || managerOpen || importOpen)} onImport={() => setImportOpen(true)} onSwitchWorkspace={switchWorkspace} onSwitchPeriod={switchPeriod} onOpenWorkspaceDialog={openWorkspaceDialog} onReturnToAssistant={onReturnToAssistant} />
+        {navigationError && <div className="danger-banner" role="alert"><WarningCircle size={18} /><span>{navigationError}</span></div>}
         {!persistenceStatus.canWrite && <div className="danger-banner recovery-banner" role="status"><WarningCircle size={18} /><span>{persistenceStatus.message}</span></div>}
         {loadReport.recovered && <div className="danger-banner recovery-banner"><WarningCircle size={18} /><span><strong>{loadReport.source === "backup" ? "本地数据已从上一次有效副本恢复。" : "本地主副本与备用副本均无法读取，当前已加载初始模板。"}</strong>{loadReport.errors?.length ? ` 原因：${loadReport.errors.join("；")}` : " 请先核对数据并导出备份。"}</span></div>}
         {activePage === "overview" && <OverviewPage workspace={workspace} onPage={navigateToPage} onResolveNotice={resolveNotice} />}
-        <DeferredView key={`${workspace.id}-documents`} active={activePage === "documents"} label="日常资料" fullPage><div className="page-content documents-page"><DocumentIntakePanel onToast={(message) => setToast({ tone: "success", message })} onNavigate={navigateToPage} focusRequest={pageFocusRequest?.page === "documents" ? pageFocusRequest : null} /></div></DeferredView>
+        <DeferredView key={`${workspace.id}-documents`} active={activePage === "documents"} label="日常资料" fullPage><div className="page-content documents-page"><DocumentIntakePanel onToast={(message) => setToast({ tone: "success", message })} onNavigate={navigateToPage} focusRequest={currentPageFocusRequest?.page === "documents" ? currentPageFocusRequest : null} /></div></DeferredView>
         {workspaceModuleEnabled(workspace, "members") && <DeferredView key={`${workspace.id}-members`} active={activePage === "members"} label="会员台账" fullPage><MemberLedgerPage workspace={workspace} onAddMember={addLedgerMember} onMemberStatus={changeLedgerMemberStatus} onAddEvent={addLedgerEvent} onEventStatus={changeLedgerEventStatus} onPage={navigateToPage} /></DeferredView>}
         {workspaceModuleEnabled(workspace, "inventory") && <DeferredView key={`${workspace.id}-inventory`} active={activePage === "inventory"} label="库存" fullPage><InventoryPage workspace={workspace} onPage={navigateToPage} onToast={(message) => setToast({ tone: "success", message })} /></DeferredView>}
-        <DeferredView key={`${workspace.id}-reconcile`} active={activePage === "reconcile"} label="业务处理工作区" fullPage><ReconcilePage workspace={workspace} onPage={navigateToPage} panelRequest={reconcilePanelRequest} onStatus={setTransactionStatus} onReview={reviewTransactions} onSaveReview={saveTransactionReview} onEvidence={(...args) => runPeriodOperation(() => addEvidence(...args))} onLinkEvidence={linkExistingEvidence} onDownloadEvidence={downloadLinkedEvidence} onUnlinkEvidence={unlinkEvidenceFromTransaction} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} /></DeferredView>
-        {activePage === "reports" && <ReportsPage workspace={workspace} onPage={navigateToPage} onFreeze={freezeReport} onExportExcel={() => runPeriodOperation(exportReportExcel)} onOpeningSave={saveOpeningBalances} focusRequest={pageFocusRequest} />}
+        <DeferredView key={`${workspace.id}-reconcile`} active={activePage === "reconcile"} label="业务处理工作区" fullPage><ReconcilePage workspace={workspace} onPage={navigateToPage} panelRequest={currentReconcilePanelRequest} onStatus={setTransactionStatus} onReview={reviewTransactions} onSaveReview={saveTransactionReview} onEvidence={(...args) => runPeriodOperation(() => addEvidence(...args))} onLinkEvidence={linkExistingEvidence} onDownloadEvidence={downloadLinkedEvidence} onUnlinkEvidence={unlinkEvidenceFromTransaction} onExportSelected={exportSelected} onResolveException={resolveException} onToast={(message) => setToast({ tone: "success", message })} /></DeferredView>
+        {activePage === "reports" && <ReportsPage workspace={workspace} onPage={navigateToPage} onFreeze={freezeReport} onExportExcel={() => runPeriodOperation(exportReportExcel)} onOpeningSave={saveOpeningBalances} focusRequest={currentPageFocusRequest} />}
         <DeferredView key={`${workspace.id}-tax`} active={activePage === "tax"} label="确认与申报" fullPage><TaxPage workspace={workspace} onPage={navigateToPage} onTaxChange={changeTax} onTaxCommit={commitTax} onSectionDecision={recordInitialConfirmationSection} onPrepareDraft={prepareDraft} onFinalConfirm={finalConfirm} onExport={() => runPeriodOperation(exportPackage)} onReceipt={(file) => runPeriodOperation(() => receiveReceipt(file))} /></DeferredView>
         {activePage === "archive" && <ArchivePage workspace={workspace} onPage={navigateToPage} onDownloadDocument={downloadArchiveDocument} onReceipt={(file) => runPeriodOperation(() => receiveReceipt(file))} onArchive={completeArchive} onNextPeriod={goNextPeriod} onExportIndex={exportArchiveIndex} onExportArchive={exportArchivedPeriod} />}
         {activePage === "setup" && <Suspense fallback={<div className="page-content"><p className="quiet-copy" role="status" style={{ margin: 0, fontSize: "var(--font-body, 14px)" }}>正在加载基础资料…</p></div>}><FoundationRecordsPanel initialStage={setupInitialStage} key={`${workspace.id}-${setupInitialStage}`} onToast={(message) => setToast({ tone: "success", message })} /></Suspense>}

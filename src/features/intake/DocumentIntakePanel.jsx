@@ -340,7 +340,7 @@ function documentKindLabel(kind) {
   return { contract: "合同", invoice: "发票", approval: "审批单" }[kind] || "资料";
 }
 
-export function DocumentIntakePanel({ defaultCategory = "其他资料", compact = false, payrollOnly = false, onToast, onNavigate, activeSection, onSectionChange, focusRequest }) {
+export function DocumentIntakePanel({ defaultCategory = "其他资料", compact = false, payrollOnly = false, onToast, onNavigate, activeSection, onSectionChange, focusRequest, onDocumentFocusChange }) {
   const { state, activeWorkspace, actions, store, fileVault } = useFinanceDesk();
   const terminology = workspaceTerminology(activeWorkspace);
   const displayText = (value) => applyWorkspaceTerminology(value, activeWorkspace);
@@ -375,6 +375,10 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   const [editReturnTarget, setEditReturnTarget] = useState(null);
   const [preview, setPreview] = useState(null);
   const [detailDocumentId, setDetailDocumentId] = useState(null);
+  function focusDocument(documentId) {
+    setDetailDocumentId(documentId);
+    if (documentId !== detailDocumentId) onDocumentFocusChange?.(documentId);
+  }
   const [recognitionView, setRecognitionView] = useState(null);
   const [recognitionNotice, setRecognitionNotice] = useState("");
   const [recognitionPage, setRecognitionPage] = useState(0);
@@ -550,7 +554,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
 
   useEffect(() => {
     if (detailDocumentId && !visibleDocuments.some((document) => document.id === detailDocumentId)) {
-      setDetailDocumentId(null);
+      focusDocument(null);
     }
   }, [detailDocumentId, visibleDocuments]);
 
@@ -577,6 +581,9 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   }
 
   useEffect(() => {
+    // Reset the consumed request with the view, so StrictMode's mount replay
+    // restores the requested document after clearing the local detail state.
+    handledFocusRequest.current = null;
     setCategory(payrollEnabled || !isPayrollDocumentCategory(defaultCategory) ? defaultCategory : "其他资料");
     setPeriod(activeWorkspace.currentPeriod || "");
     setRelatedObjectId("");
@@ -622,7 +629,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     setPeriodFilter("all");
     setCategoryFilter("all");
     setStatusFilter("all");
-    if (focusRequest.action === "edit") beginEdit(document, focusRequest.returnTo || null);
+    if (focusRequest.action === "edit") beginEdit(document, focusRequest.returnTo || null, false);
     else {
       selectSection("files");
       setDetailDocumentId(document.id);
@@ -743,7 +750,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
   }
 
   async function showPreview(document) {
-    setDetailDocumentId(document.id);
+    focusDocument(document.id);
     clearPendingDocumentAction();
     setError("");
     try {
@@ -827,7 +834,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     }
   }
 
-  function beginEdit(document, returnTarget = null) {
+  function beginEdit(document, returnTarget = null, rememberFocus = true) {
     selectSection("files");
     if (editing) {
       if (editing.id !== document.id) setError("请先保存或取消当前资料的编辑，再打开另一份资料。");
@@ -839,7 +846,8 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
     setPeriodFilter("all");
     setCategoryFilter("all");
     setStatusFilter("all");
-    setDetailDocumentId(document.id);
+    if (rememberFocus) focusDocument(document.id);
+    else setDetailDocumentId(document.id);
     setEditReturnTarget(returnTarget);
     setEditing(documentEditDraft(document, activeWorkspace));
   }
@@ -1316,7 +1324,7 @@ export function DocumentIntakePanel({ defaultCategory = "其他资料", compact 
                 <div className="document-state-row"><span>{archived ? "已归档" : "未归档"}</span><span className={locallyAvailable ? "original-available" : "original-missing"}>原件：{locallyAvailable ? "本机可用" : "本机缺失"}</span></div>
                 <details className="document-trace-details" open={detailDocumentId === document.id}><summary onClick={(event) => {
                   event.preventDefault();
-                  setDetailDocumentId((current) => current === document.id ? null : document.id);
+                  focusDocument(detailDocumentId === document.id ? null : document.id);
                 }}>资料详情与追溯</summary>
                   {!archived && <div className="document-secondary-actions">
                     {!isEditing && <button className="secondary-button" type="button" onClick={() => beginEdit(document)}><PencilSimple size={15} />编辑资料</button>}

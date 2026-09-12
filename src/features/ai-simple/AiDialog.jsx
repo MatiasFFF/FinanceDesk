@@ -16,7 +16,7 @@ function syncDialogLayers() {
   });
 }
 
-export function AiDialog({ title, onClose, children, wide = false, className = "", closeDisabled = false }) {
+export function AiDialog({ title, onClose, children, wide = false, className = "", closeDisabled = false, headerAction = null }) {
   const panelRef = useRef(null);
   const backdropRef = useRef(null);
   const closeRef = useRef(onClose);
@@ -63,7 +63,7 @@ export function AiDialog({ title, onClose, children, wide = false, className = "
   }, []);
   return createPortal(<div ref={backdropRef} className="ai-dialog-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget && !closeDisabled) onClose(); }}>
     <section ref={panelRef} tabIndex={-1} className={`ai-dialog${wide ? " ai-dialog-wide" : ""}${className ? ` ${className}` : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>
-      <header className="ai-dialog-heading"><h2 id={titleId}>{title}</h2><button className="ai-icon-button" type="button" aria-label="关闭" disabled={closeDisabled} onClick={onClose}><X size={22} /></button></header>
+      <header className="ai-dialog-heading"><h2 id={titleId}>{title}</h2><div className="ai-dialog-heading-actions">{headerAction}<button className="ai-icon-button" type="button" aria-label="关闭" disabled={closeDisabled} onClick={onClose}><X size={22} /></button></div></header>
       <div className="ai-dialog-content">{children}</div>
     </section>
   </div>, document.querySelector(".ai-simple-app") || document.body);

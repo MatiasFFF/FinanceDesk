@@ -75,13 +75,13 @@
   flex: 0 0 auto;
   place-items: center;
   border-radius: 10px;
-  background: var(--sage-soft);
-  color: var(--sage);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .inventory-metric.loss > span {
-  background: var(--clay-soft);
-  color: var(--clay-dark);
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 
 .inventory-metric > div {
@@ -101,7 +101,7 @@
 
 .inventory-metric strong {
   min-width: 0;
-  font-family: ui-serif, "Songti SC", serif;
+  font-family: inherit;
   font-size: 19px;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
@@ -211,8 +211,8 @@
 .inventory-form input:focus,
 .inventory-form select:focus,
 .inventory-form textarea:focus {
-  border-color: var(--sage);
-  box-shadow: 0 0 0 3px rgba(114, 128, 106, 0.1);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(39, 104, 247, 0.1);
 }
 
 .inventory-form input:disabled,
@@ -318,8 +318,8 @@
 }
 
 .inventory-form-feedback.error {
-  background: var(--clay-soft);
-  color: var(--clay-dark);
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .inventory-form-feedback.success {
@@ -413,8 +413,8 @@
 
 .inventory-flow-type.loss,
 .inventory-voucher-state.pending {
-  background: var(--clay-soft);
-  color: var(--clay-dark);
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 
 .inventory-status-pill.inactive {

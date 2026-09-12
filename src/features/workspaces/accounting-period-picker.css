@@ -81,7 +81,7 @@
   text-align: center;
 }
 .accounting-period-year input:hover { border-color: var(--line); }
-.accounting-period-error { margin: -4px 0 12px; color: var(--clay-dark); font-size: 12px; }
+.accounting-period-error { margin: -4px 0 12px; color: var(--danger); font-size: 12px; }
 .accounting-period-months { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .accounting-period-month {
   display: flex;

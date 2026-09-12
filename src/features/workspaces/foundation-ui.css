@@ -33,12 +33,12 @@
 .foundation-card small,
 .workspace-list-item small {
   color: var(--quiet);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
 }
 
 .foundation-section-heading h3 {
   margin: 2px 0 0;
-  font-family: ui-serif, "Songti SC", "STSong", serif;
+  font-family: inherit;
   font-size: 18px;
 }
 
@@ -69,7 +69,7 @@
 }
 
 .workspace-list-item.active {
-  border-color: rgba(217, 119, 87, 0.55);
+  border-color: rgba(39, 104, 247, 0.55);
   background: var(--clay-soft);
   color: var(--clay-dark);
 }
@@ -121,7 +121,7 @@
   justify-content: center;
   gap: 6px;
   border: 0;
-  color: #a44936;
+  color: var(--danger);
   cursor: pointer;
 }
 
@@ -130,7 +130,7 @@
   padding: 0 12px;
   border: 1px solid rgba(164, 73, 54, 0.25);
   border-radius: 8px;
-  background: #fff7f4;
+  background: var(--danger-soft);
 }
 
 .danger-button:disabled {
@@ -152,7 +152,7 @@
 .foundation-hint {
   margin: 9px 0 0;
   color: var(--quiet);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.55;
 }
 
@@ -166,9 +166,9 @@
 .permission-chip-list span {
   padding: 4px 7px;
   border-radius: 999px;
-  background: var(--sage-soft);
-  color: #52604d;
-  font-size: 10px;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-size: var(--font-helper, 12px);
   font-weight: 650;
 }
 
@@ -197,8 +197,8 @@
 }
 
 .permission-option.selected {
-  border-color: rgba(128, 145, 119, 0.72);
-  background: var(--sage-soft);
+  border-color: rgba(39, 104, 247, 0.72);
+  background: var(--accent-soft);
 }
 
 .foundation-field .permission-option input[type="checkbox"] {
@@ -222,7 +222,7 @@
 
 .permission-option small {
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.35;
 }
 
@@ -247,7 +247,7 @@
   border-radius: 6px;
   background: var(--paper);
   color: var(--espresso);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
 }
 
 .authorization-list {
@@ -267,13 +267,13 @@
 }
 
 .foundation-error {
-  background: #fff0eb;
-  color: #983f2d;
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .foundation-notice {
   background: var(--sage-soft);
-  color: #52604d;
+  color: var(--success);
 }
 
 .foundation-manager-footer {
@@ -284,7 +284,7 @@
   margin-top: 14px;
   padding: 12px 4px 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
 }
 
 .foundation-manager-footer span {
@@ -309,7 +309,7 @@
 
 .foundation-page-heading h2 {
   margin: 0;
-  font-family: ui-serif, "Songti SC", "STSong", serif;
+  font-family: inherit;
   font-size: clamp(23px, 2.4vw, 32px);
 }
 
@@ -324,7 +324,7 @@
   flex-shrink: 0;
   gap: 6px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
 }
 
 .stage-status-control select {
@@ -342,7 +342,7 @@
   padding: 5px;
   border: 1px solid var(--line-soft);
   border-radius: 10px;
-  background: rgba(251, 249, 244, 0.75);
+  background: rgba(255, 255, 255, 0.75);
 }
 
 .foundation-stage-tabs button {
@@ -457,7 +457,7 @@
   border: 1px dashed var(--line);
   border-radius: 8px;
   color: var(--quiet);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
   text-align: center;
 }
 
@@ -478,8 +478,8 @@
 
 .entity-error {
   margin: 0;
-  color: #a44936;
-  font-size: 11px;
+  color: var(--danger);
+  font-size: var(--font-helper, 12px);
 }
 
 .company-form {
@@ -548,13 +548,13 @@
   border-radius: 999px;
   background: var(--sage-soft);
   color: var(--sage);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
   font-weight: 700;
 }
 
 .mapping-badge.warning {
-  background: var(--clay-soft);
-  color: var(--clay-dark);
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 
 .mapping-grid {
@@ -586,7 +586,7 @@
 .balance-inputs > span {
   padding-bottom: 11px;
   color: var(--quiet);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
 }
 
 .balance-inputs .foundation-field {
@@ -602,7 +602,7 @@
 .bank-preview-scroll table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
   white-space: nowrap;
 }
 
@@ -624,24 +624,24 @@
   border: 1px solid transparent;
   border-radius: 9px;
   background: var(--sage-soft);
-  color: #52604d;
+  color: var(--success);
 }
 
 .import-report.warning {
-  background: var(--clay-soft);
-  color: #8e4937;
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 
 .import-report.reconciliation-pending {
   border-color: rgba(184, 132, 54, 0.28);
-  background: #f8edd7;
-  color: #80551f;
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 
 .import-report.blocked {
   border-color: rgba(174, 70, 57, 0.28);
-  background: #f6dfdc;
-  color: #8b382f;
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .import-report > div {
@@ -663,7 +663,7 @@
   min-height: 22px;
   padding: 3px 8px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
   font-weight: 750;
   line-height: 1.2;
 }
@@ -675,12 +675,12 @@
 
 .import-decision-badge.pending {
   background: rgba(184, 132, 54, 0.16);
-  color: #80551f;
+  color: var(--warning);
 }
 
 .import-decision-badge.blocked {
   background: rgba(174, 70, 57, 0.14);
-  color: #8b382f;
+  color: var(--danger);
 }
 
 .reconciliation-followup {
@@ -690,7 +690,7 @@
 .import-report p,
 .import-report small {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
 }
 
 .document-record-grid {
@@ -727,7 +727,7 @@
 .document-record small,
 .document-record p {
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
 }
 
 .document-record-icon {
@@ -755,8 +755,8 @@
 }
 
 .document-action-confirmation.delete {
-  background: var(--clay-soft);
-  color: var(--clay-dark);
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .document-action-confirmation > svg {
@@ -771,13 +771,13 @@
 
 .document-action-confirmation-copy strong {
   color: inherit;
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
 }
 
 .document-action-confirmation-copy p {
   margin: 0;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -791,7 +791,7 @@
 .document-action-confirmation-actions button {
   min-height: 34px;
   padding-inline: 11px;
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
 }
 
 .foundation-record-actions button:disabled {
@@ -1052,7 +1052,7 @@
   flex-wrap: wrap;
   gap: 3px 8px;
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.45;
 }
 
@@ -1090,8 +1090,8 @@
   gap: 7px;
   padding: 10px 11px;
   border-radius: 7px;
-  background: #fff7f4;
-  color: #7f3b2d;
+  background: var(--danger-soft);
+  color: var(--danger);
   text-align: left;
 }
 
@@ -1104,7 +1104,7 @@
 
 .foundation-record-delete-confirm > small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.5;
 }
 
@@ -1626,7 +1626,7 @@
 .foundation-editor-panel h4 {
   margin: 2px 0 0;
   color: var(--espresso);
-  font-family: ui-serif, "Songti SC", "STSong", serif;
+  font-family: inherit;
   font-size: 15px;
 }
 
@@ -1665,7 +1665,7 @@
 
 .foundation-summary-grid small {
   color: var(--quiet);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.35;
 }
 
@@ -1681,7 +1681,7 @@
 
 .foundation-summary-grid p {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.5;
   overflow-wrap: break-word;
   word-break: normal;
@@ -2102,7 +2102,7 @@
 .category-rule-order-actions .foundation-record-status {
   width: 100%;
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
   text-align: right;
 }
 
@@ -2112,9 +2112,9 @@
   gap: 10px;
   min-width: 0;
   padding: 13px;
-  border: 1px solid rgba(128, 145, 119, 0.28);
+  border: 1px solid rgba(39, 104, 247, 0.28);
   border-radius: 10px;
-  background: rgba(235, 239, 230, 0.45);
+  background: var(--accent-soft);
 }
 
 .category-rule-preview-heading,
@@ -2138,8 +2138,8 @@
 
 .category-rule-preview-heading > span {
   flex: 0 0 auto;
-  color: var(--sage);
-  font-size: 11px;
+  color: var(--accent);
+  font-size: var(--font-helper, 12px);
   font-weight: 700;
 }
 
@@ -2147,7 +2147,7 @@
 .category-rule-preview-transaction small,
 .category-rule-preview-meta dt {
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
 }
 
 .category-rule-preview-list {
@@ -2196,15 +2196,15 @@
 .category-rule-preview-meta dd {
   margin: 0;
   color: var(--espresso);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
 .category-rule-preview-warning {
   margin: 0;
-  color: #a44936;
-  font-size: 11px;
+  color: var(--danger);
+  font-size: var(--font-helper, 12px);
   line-height: 1.5;
 }
 
@@ -2340,9 +2340,9 @@
 }
 
 .foundation-entity-record-actions > .foundation-user-status-action.is-enable {
-  border-color: rgba(128, 145, 119, 0.3);
-  background: var(--sage-soft);
-  color: var(--sage);
+  border-color: rgba(39, 104, 247, 0.3);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .foundation-entity-record-actions > .foundation-user-status-action.is-stop {
@@ -2549,7 +2549,7 @@
 
 .management-report-display-toggle small {
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--font-helper, 12px);
 }
 
 .foundation-terminology-grid {
@@ -2594,7 +2594,7 @@
 }
 
 .foundation-page .permission-option.selected {
-  border-color: rgba(128, 145, 119, 0.58);
+  border-color: rgba(39, 104, 247, 0.58);
 }
 
 @media (max-width: 900px) {
@@ -2874,7 +2874,7 @@
 
 .foundation-disclosure > summary small {
   color: var(--quiet);
-  font-size: 11px;
+  font-size: var(--font-helper, 12px);
   line-height: 1.5;
 }
 
@@ -2964,7 +2964,7 @@
   border: 0;
   border-radius: 10px;
   background: var(--canvas);
-  box-shadow: inset 0 0 0 1px rgba(61, 50, 41, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(24, 49, 83, 0.08);
   overflow: visible;
 }
 

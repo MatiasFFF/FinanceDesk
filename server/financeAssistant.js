@@ -1,8 +1,14 @@
 import { AI_FINANCE_TOOLS } from "../src/application/aiFinanceTools.js";
+import { isDeepSeekModelId, normalizeDeepSeekModelSettings } from "../src/application/deepseekModels.js";
+import { deepseekModelsHandler } from "./deepseekModels.js";
 
 const ENDPOINT = "https://api.deepseek.com/chat/completions";
 export const FINANCE_ASSISTANT_BODY_LIMIT = 1_000_000;
 export const FINANCE_ASSISTANT_TIMEOUT_MS = 50_000;
+// This includes thinking plus final output. Keep the deadline below Vercel's
+// existing 60-second limit; reaching either limit is an incomplete reply.
+export const FINANCE_ASSISTANT_THINKING_MAX_TOKENS = 16_384;
+const MAX_REASONING_CHARS = 256_000;
 class AssistantRequestError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
@@ -23,8 +29,7 @@ function normalizeCalls(calls, key, status = 400) {
   });
 }
 
-function normalizeMessages(body, key) {
-  if (!isObject(body) || Object.keys(body).some((name) => name !== "messages")) throw fail(400, "请求参数不正确，请重新发送当前消息");
+function normalizeMessages(body, key, settings) {
   if (Buffer.byteLength(JSON.stringify(body), "utf8") > FINANCE_ASSISTANT_BODY_LIMIT) throw fail(413, "本轮内容过多，请分批处理资料");
   if (!Array.isArray(body.messages) || !body.messages.length || body.messages.length > 80) throw fail(400, "本轮对话为空或过长，请另起一轮处理");
   const pending = new Set();
@@ -33,6 +38,10 @@ function normalizeMessages(body, key) {
     if (!isObject(message) || !["system", "user", "assistant", "tool"].includes(message.role)
       || (message.content != null && typeof message.content !== "string")) throw fail(400, "对话内容格式不正确");
     const clean = { role: message.role, content: redact(message.content || "", key) };
+    if (message.role === "assistant" && settings.thinking === "enabled") {
+      if (typeof message.reasoning_content !== "string" || message.reasoning_content.length > MAX_REASONING_CHARS) throw fail(400, "思考续轮内容不完整，请重新发起整理");
+      clean.reasoning_content = redact(message.reasoning_content, key);
+    }
     if (message.role === "tool") {
       if (typeof message.tool_call_id !== "string" || !pending.delete(redact(message.tool_call_id, key))) throw fail(400, "工具结果缺少对应操作");
       clean.tool_call_id = redact(message.tool_call_id, key);
@@ -57,21 +66,26 @@ function normalizeMessages(body, key) {
 export async function requestDeepSeek({ authorization, body, signal, fetchImpl = fetch }) {
   if (typeof authorization !== "string" || !/^Bearer [A-Za-z0-9_-]{8,512}$/.test(authorization)) throw fail(401, "请先在 DeepSeek 设置中填写有效密钥");
   const key = authorization.slice(7);
-  const messages = normalizeMessages(body, key);
+  if (!isObject(body) || Object.keys(body).some((name) => !["messages", "model", "thinking", "reasoningEffort"].includes(name))) throw fail(400, "请求参数不正确，请重新发送当前消息");
+  let settings;
+  try { settings = normalizeDeepSeekModelSettings(body); } catch { throw fail(400, "模型或思考设置不正确，请在设置中重新选择"); }
+  if (settings.model.includes(key)) throw fail(400, "模型标识不正确，请重新选择");
+  const messages = normalizeMessages(body, key, settings);
   if (signal?.aborted) throw fail(504, "请求已取消或超时，已保存的资料仍在工作台");
   let response;
   try {
-    response = await fetchImpl(ENDPOINT, { method: "POST", redirect: "error", headers: { "Content-Type": "application/json", Authorization: authorization }, signal,
-      body: JSON.stringify({ model: "deepseek-flash", thinking: { type: "disabled" }, stream: false, max_tokens: 4096, temperature: 0.2,
+    response = await fetchImpl(ENDPOINT, { method: "POST", cache: "no-store", redirect: "error", headers: { "Content-Type": "application/json", Authorization: authorization }, signal,
+      body: JSON.stringify({ model: settings.model, thinking: { type: settings.thinking }, stream: false,
+        ...(settings.thinking === "enabled" ? { max_tokens: FINANCE_ASSISTANT_THINKING_MAX_TOKENS, reasoning_effort: settings.reasoningEffort } : { max_tokens: 4096, temperature: 0.2 }),
         messages, tools: AI_FINANCE_TOOLS, tool_choice: "auto" }) });
   } catch {
     if (signal?.aborted) throw fail(504, "请求已取消或超时，已保存的资料仍在工作台");
     throw fail(502, "暂时无法连接 DeepSeek，请稍后继续；已保存资料仍在工作台");
   }
   if (!response.ok) {
-    const labels = { 400: "DeepSeek 未接受本轮请求，请减少内容后继续", 401: "DeepSeek 密钥无效或已失效，请在设置中修改", 402: "DeepSeek 账户余额不足，请充值后继续", 403: "DeepSeek 未允许本轮请求，请核对账户状态", 429: "DeepSeek 请求过于频繁，请稍后继续" };
+    const labels = { 400: "DeepSeek 未接受当前模型、设置或内容，请刷新模型列表并缩小本轮范围", 401: "DeepSeek 密钥无效或已失效，请在设置中修改", 402: "DeepSeek 账户余额不足，请充值后继续", 403: "DeepSeek 未允许本轮请求，请核对账户状态", 404: "所选 DeepSeek 模型当前不可用，请刷新模型列表重新选择", 429: "DeepSeek 请求过于频繁，请稍后继续" };
     // Do not read or relay upstream errors, headers, credentials, or stack traces.
-    throw fail(labels[response.status] ? response.status : 502, labels[response.status] || "DeepSeek 暂时未能完成请求，请稍后继续");
+    throw fail(response.status === 404 ? 409 : labels[response.status] ? response.status : 502, labels[response.status] || "DeepSeek 暂时未能完成请求，请稍后继续");
   }
   let result;
   try { result = await response.json(); } catch {
@@ -82,15 +96,23 @@ export async function requestDeepSeek({ authorization, body, signal, fetchImpl =
   const choice = result?.choices?.[0];
   const message = choice?.message;
   if (!isObject(message) || message.role !== "assistant" || (message.content != null && typeof message.content !== "string")) throw fail(502, "DeepSeek 没有返回可处理的回复");
-  if (!["stop", "tool_calls"].includes(choice.finish_reason)) throw fail(422, "DeepSeek 本轮内容未完成，请缩小处理范围后继续");
+  if (!["stop", "tool_calls"].includes(choice.finish_reason)) throw fail(422, "DeepSeek 本轮思考或回复未完成，请缩小处理范围或降低思考强度后继续");
   const clean = { role: "assistant", content: redact(message.content || "", key) };
+  if (settings.thinking === "enabled") {
+    if (typeof message.reasoning_content !== "string" || message.reasoning_content.length > MAX_REASONING_CHARS) throw fail(502, "DeepSeek 思考续轮内容不完整，请重新发起整理");
+    clean.reasoning_content = redact(message.reasoning_content, key);
+  }
   if (message.tool_calls != null) {
     if (!Array.isArray(message.tool_calls)) throw fail(502, "DeepSeek 操作内容格式不正确");
     if (message.tool_calls.length) clean.tool_calls = normalizeCalls(message.tool_calls, key, 502);
   }
   if ((choice.finish_reason === "tool_calls") !== Boolean(clean.tool_calls?.length)) throw fail(502, "DeepSeek 操作内容不完整");
   if (!clean.tool_calls?.length && !clean.content.trim()) throw fail(502, "DeepSeek 没有返回可处理的回复");
-  return { message: clean, finishReason: choice.finish_reason };
+  const responseModel = isDeepSeekModelId(result.model) && !result.model.includes(key) ? result.model : null;
+  return { message: clean, finishReason: choice.finish_reason, modelMetadata: {
+    requestedModel: settings.model, responseModel, thinking: settings.thinking,
+    reasoningEffort: settings.thinking === "enabled" ? settings.reasoningEffort : null,
+  } };
 }
 
 async function readRequestBody(req) {
@@ -143,8 +165,10 @@ export async function financeAssistantHandler(req, res) {
 export function financeAssistantPlugin() {
   const configure = (server) => {
     server.middlewares.use((req, res, next) => {
-      if (req.url?.split("?")[0] !== "/api/finance-assistant") return next();
-      return financeAssistantHandler(req, res);
+      const path = req.url?.split("?")[0];
+      if (path === "/api/finance-assistant") return financeAssistantHandler(req, res);
+      if (path === "/api/deepseek-models") return deepseekModelsHandler(req, res);
+      return next();
     });
   };
   return { name: "financedesk-ai-proxy", configureServer: configure, configurePreviewServer: configure };
