@@ -12,7 +12,8 @@ import {
   WarningCircle,
 } from "@phosphor-icons/react";
 import { assertWorkspacePermission } from "../../domain/foundation.js";
-import { postWorkspaceVoucher } from "../../application/financeDeskService.js";
+import { postWorkspaceVoucher, reverseWorkspaceAdvanceApplication } from "../../application/financeDeskService.js";
+import { isPeriodArchived } from "../../domain/periods.js";
 
 import {
   BILL_KINDS,
@@ -29,6 +30,7 @@ import {
   applyReconciliation,
   assessTransactionEvidence,
   billSettlement,
+  bankBusinessEventDraftStateAllowsCreation,
   buildAdvanceBalances,
   buildAttachmentPackage,
   buildAccountingLedgers,
@@ -70,6 +72,7 @@ import {
   unresolvedExceptionTasks,
   validateVoucherBalance,
   vouchersForMemberEvent,
+  vouchersForAdvanceApplication,
   vouchersForReconciliation,
   vouchersForSource,
   workspaceAccountDefinitions,
@@ -731,7 +734,7 @@ export function MemberBusinessAccountingQueue({ onToast, onNavigate }) {
       .filter((event) => String(event.date || "").startsWith(activeWorkspace.currentPeriod) && isRecognizedMemberEvent(event))
       .map((event) => {
         const related = vouchersForMemberEvent(activeWorkspace, event);
-        const voucher = related.find((item) => !["posted", "superseded"].includes(item.status))
+        const voucher = related.find((item) => ["draft", "changes_requested"].includes(item.status))
           || [...related].reverse().find((item) => item.status === "posted")
           || null;
         return { event, voucher };
@@ -927,9 +930,13 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true, o
   const [recognitionLinks, setRecognitionLinks] = useState({});
   const [createdBillId, setCreatedBillId] = useState("");
   const [busy, setBusy] = useState(false);
-  usePeriodLeaveGuard({ dirty: (showForm && JSON.stringify(form) !== JSON.stringify(emptyBillForm(activeWorkspace.currentPeriod))) || Object.values(recognitionLinks).some((item) => item.id || item.amount), busy });
   const [advanceUsage, setAdvanceUsage] = useState({});
   const [advanceVoucherNotes, setAdvanceVoucherNotes] = useState({});
+  const [advanceReversal, setAdvanceReversal] = useState({ applicationId: "", reason: "" });
+  usePeriodLeaveGuard({ dirty: (showForm && JSON.stringify(form) !== JSON.stringify(emptyBillForm(activeWorkspace?.currentPeriod)))
+    || Object.values(recognitionLinks).some((item) => item.id || item.amount)
+    || Object.values(advanceUsage).some((item) => item.targetBillId || item.amount)
+    || Object.values(advanceVoucherNotes).some((note) => note.trim()) || Boolean(advanceReversal.reason.trim()), busy });
   const [error, setError] = useState("");
   const actor = currentActorName(state, activeWorkspace);
   const billRows = useMemo(() => {
@@ -962,6 +969,7 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true, o
     setShowForm(false);
     setAdvanceUsage({});
     setAdvanceVoucherNotes({});
+    setAdvanceReversal({ applicationId: "", reason: "" });
     setRecognitionLinks({});
     setCreatedBillId("");
     setError("");
@@ -1072,6 +1080,18 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true, o
     } finally { setBusy(false); }
   }
 
+  function reverseAdvanceUse(applicationId) {
+    if (busy || advanceReversal.applicationId !== applicationId) return;
+    setError("");
+    try {
+      reverseWorkspaceAdvanceApplication({ store }, { workspaceId: activeWorkspace.id, period: activeWorkspace.currentPeriod,
+        applicationId, reason: advanceReversal.reason });
+      setAdvanceReversal({ applicationId: "", reason: "" });
+      setAdvanceVoucherNotes((notes) => ({ ...notes, [applicationId]: "" }));
+      onToast?.("冲销已撤回，余额与账单未核销金额已恢复；撤回原因已保留");
+    } catch (caught) { setError(displayText(caught.message || "冲销撤回失败")); }
+  }
+
   return (
     <>
       {showMemberBusiness && memberBusinessEnabled(activeWorkspace) && <MemberBusinessAccountingQueue onToast={onToast} onNavigate={onNavigate} />}
@@ -1151,19 +1171,29 @@ export function ReceivablesPayablesPanel({ onToast, showMemberBusiness = true, o
               <div className="settlement-bill-main"><span className="settlement-kind">{meta.label}</span><strong>{bill.no || bill.id} · {bill.counterparty}</strong><small>{bill.summary} · 计划 ¥{money(advance?.originalAmount)} · 待到账 ¥{money(advance?.pendingFunding)}</small></div>
               <div className="settlement-bill-amounts"><span><small>原余额</small><strong>¥{money(advance?.originalBalance)}</strong></span><span><small>累计使用</small><strong>¥{money(advance?.usedAmount)}</strong></span><span><small>剩余余额</small><strong>¥{money(advance?.availableBalance)}</strong></span></div>
               <details>
-                <summary>{advance?.applications.length ? `${advance.applications.length} 次使用 · 继续分次冲销` : "选择对应账单使用余额"}</summary>
-                {advance?.applications.length > 0 && <div className="settlement-source-list">{advance.applications.map((application) => {
-                  const relatedVouchers = (activeWorkspace.vouchers || []).filter((voucher) => voucher.advanceApplicationId === application.id && ["posted", "draft", "changes_requested"].includes(voucher.status));
-                  const voucher = relatedVouchers.find((item) => item.id === application.voucherId || item.id === application.draftVoucherId) || relatedVouchers.at(-1);
+                <summary>{advance?.applicationHistory.length ? `${advance.applicationHistory.length} 条使用记录` : "选择对应账单使用余额"}</summary>
+                {advance?.applicationHistory.length > 0 && <div className="settlement-source-list">{advance.applicationHistory.map((application) => {
+                  const relatedVouchers = vouchersForAdvanceApplication(activeWorkspace, application);
+                  const voucher = relatedVouchers.find((item) => item.status === "posted") || relatedVouchers.find((item) => item.id === application.draftVoucherId) || relatedVouchers.at(-1);
+                  const cancelled = ["cancelled", "reversed"].includes(application.status);
+                  const posted = application.accountingStatus === "posted" || application.status === "posted" || voucher?.status === "posted";
+                  const canReverse = application.status === "confirmed" && !posted;
+                  const writable = !isPeriodArchived(activeWorkspace, application.businessPeriod || application.date?.slice(0, 7))
+                    && (application.businessPeriod || application.date?.slice(0, 7)) === activeWorkspace.currentPeriod;
+                  const reversing = advanceReversal.applicationId === application.id;
                   return <div key={application.id}>
                     <span>
                       <strong>{application.targetBillNo || application.targetBillId} · {application.targetSummary || "对应账单"} · ¥{money(application.amount)}</strong>
-                      <small>{application.date} · 来源 {application.id} · {voucher ? `${voucher.no || "草稿"} / ${voucher.status}` : "待生成凭证"}</small>
-                      {voucher && ["draft", "changes_requested"].includes(voucher.status) && <input value={advanceVoucherNotes[application.id] || ""} onChange={(event) => setAdvanceVoucherNotes((notes) => ({ ...notes, [application.id]: event.target.value }))} placeholder="填写人工复核意见后入账" />}
+                      <small>{application.date} · {cancelled ? `已撤回 · ${application.cancellationReason || application.reversalReason || "历史撤回记录"}` : posted ? "已入账" : voucher ? "待复核入账" : "待生成凭证"}</small>
+                      {cancelled && <small>{application.cancelledBy || application.reversedBy || ""} · {application.cancelledAt || application.reversedAt || ""}</small>}
+                      {reversing ? <input autoFocus aria-label="撤回冲销原因" value={advanceReversal.reason} onChange={(event) => setAdvanceReversal({ applicationId: application.id, reason: event.target.value })} placeholder="填写撤回原因" />
+                        : !cancelled && voucher && ["draft", "changes_requested"].includes(voucher.status) && <input value={advanceVoucherNotes[application.id] || ""} onChange={(event) => setAdvanceVoucherNotes((notes) => ({ ...notes, [application.id]: event.target.value }))} placeholder="填写人工复核意见后入账" />}
                     </span>
-                    {!voucher && <button className="secondary-button" type="button" onClick={() => createAdvanceVoucherDraft(application.id)}><Plus size={15} />生成凭证草稿</button>}
-                    {voucher && ["draft", "changes_requested"].includes(voucher.status) && <button className="primary-button" type="button" disabled={!advanceVoucherNotes[application.id]?.trim()} onClick={() => postAdvanceVoucher(application.id, voucher.id)}><CheckCircle size={15} />人工复核入账</button>}
-                    {voucher?.status === "posted" && <b>{voucher.no} · 已入账</b>}
+                    {reversing ? <><button className="secondary-button" type="button" disabled={busy || !advanceReversal.reason.trim()} onClick={() => reverseAdvanceUse(application.id)}>确认撤回</button><button className="secondary-button" type="button" onClick={() => setAdvanceReversal({ applicationId: "", reason: "" })}>取消</button></>
+                      : <>{!cancelled && !posted && !voucher && <button className="secondary-button" type="button" disabled={busy} onClick={() => createAdvanceVoucherDraft(application.id)}><Plus size={15} />生成凭证草稿</button>}
+                        {!cancelled && voucher && ["draft", "changes_requested"].includes(voucher.status) && <button className="primary-button" type="button" disabled={busy || !advanceVoucherNotes[application.id]?.trim()} onClick={() => postAdvanceVoucher(application.id, voucher.id)}><CheckCircle size={15} />人工复核入账</button>}
+                        {canReverse && <button className="secondary-button" type="button" disabled={busy || !writable || Boolean(advanceReversal.applicationId)} title={writable ? "撤回未入账冲销并恢复余额" : "请切换到这笔冲销所属的未归档账期"} onClick={() => setAdvanceReversal({ applicationId: application.id, reason: "" })}><ArrowCounterClockwise size={15} />撤回冲销</button>}</>}
+                    {posted && <b>{voucher?.no || "凭证"} · 已入账</b>}
                   </div>;
                 })}</div>}
                 {allocations.length > 0 && <div className="settlement-source-list">{allocations.map((allocation) => <div key={allocation.id}><span><strong>{allocation.transaction?.date || "—"} · 原资金流水</strong><small>{allocation.transaction?.serial || allocation.transactionId} · {allocation.id}</small></span><b>¥{money(allocation.amount)}</b></div>)}</div>}
@@ -1464,7 +1494,7 @@ function TransactionAccountingWorkbench({ transactionId, onToast }) {
     && businessEvent.taxAttributes?.treatment !== "tax_pending"
     && !businessEvent.review?.required
     && (!(businessEvent.crossPeriod || REVIEW_REQUIRED_BANK_BUSINESS_TYPES.has(businessEvent.businessType)) || businessEvent.review?.status === "approved")
-    && !["voucher_draft", "posted"].includes(businessEvent.accountingStatus)
+    && bankBusinessEventDraftStateAllowsCreation(activeWorkspace, businessEvent)
   ));
   const canCreateDraft = periodWritable && !requiresBusinessEventConfirmation
     && classification?.eventType !== EVENT_TYPES.UNKNOWN

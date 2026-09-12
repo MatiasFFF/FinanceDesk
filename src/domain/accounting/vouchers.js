@@ -28,9 +28,9 @@ import {
   syncInventoryVoucherIntegrityTasks,
   unresolvedExceptionTasks,
 } from "../../features/evidence/evidenceEngine.js";
-import { assertSettlementRecognition } from "../../features/reconciliation/settlementRecognition.js";
+import { assertSettlementRecognition, settlementPeriodEnd } from "../../features/reconciliation/settlementRecognition.js";
 import { assertMemberRechargeVoucher, linkMemberRechargeSource, memberRechargeSource, memberRechargeVouchers } from "../../features/members/memberRechargeSources.js";
-import { commitReconciliationCorrection } from "../../features/reconciliation/reconciliationEngine.js";
+import { advanceBalance, confirmedAllocationsForBill, commitReconciliationCorrection } from "../../features/reconciliation/reconciliationEngine.js";
 import { assertPayrollVoucherPosting } from "./payrollAccounting.js";
 import {
   MEMBER_EVENT_DEFINITIONS,
@@ -78,6 +78,48 @@ export function assertAccountingPeriodWritable(workspace, period = workspace.cur
   }
 }
 
+const liveVoucher = (voucher) => ["posted", "draft", "changes_requested"].includes(voucher.status);
+
+function voucherReferencesRecord(voucher, record) {
+  return [voucher.memberEventId, voucher.bankBusinessEventId, voucher.advanceApplicationId].includes(record.id)
+    || voucherSourceIds(voucher).includes(record.id)
+    || [record.draftVoucherId, record.voucherId, record.postedVoucherId].includes(voucher.id);
+}
+
+export function vouchersForAdvanceApplication(workspace, applicationOrId) {
+  const application = typeof applicationOrId === "string" ? findAdvanceApplication(workspace, applicationOrId) : applicationOrId;
+  return (workspace.vouchers || []).filter((voucher) => liveVoucher(voucher) && voucherReferencesRecord(voucher, application));
+}
+
+export function bankBusinessEventDraftStateAllowsCreation(workspace, event) {
+  if (!event) return true;
+  const linked = (workspace.vouchers || []).filter((voucher) => voucherReferencesRecord(voucher, event));
+  if (event.accountingStatus === "posted" || linked.some(liveVoucher)) return false;
+  if (event.accountingStatus !== "voucher_draft" && !event.draftVoucherId) return true;
+  const previous = event.draftVoucherId ? linked.find((voucher) => voucher.id === event.draftVoucherId) : linked.at(-1);
+  return Boolean(previous && ["invalidated", "superseded", "cancelled", "canceled"].includes(previous.status));
+}
+
+// A cancelled draft releases only the source pointers it owns. A revision must
+// never reset the original posted business or another live draft's state.
+function releaseVoucherDraftSources(workspace, voucher, context) {
+  for (const records of [workspace.businessEvents || [], workspace.advanceApplications || []]) {
+    for (const record of records.filter((item) => item.draftVoucherId === voucher.id)) {
+      const remaining = (workspace.vouchers || []).filter((item) => liveVoucher(item) && voucherReferencesRecord(item, record));
+      const posted = remaining.find((item) => item.status === "posted");
+      const draft = remaining.find((item) => ["draft", "changes_requested"].includes(item.status));
+      record.draftVoucherId = draft?.id || null;
+      record.accountingStatus = posted || record.accountingStatus === "posted" ? "posted" : draft ? "voucher_draft"
+        : record.advanceBillId ? "unprocessed" : record.sourceType === "bankTransaction" ? "pending" : "ready";
+      if (record.sourceType === "bankTransaction") {
+        record.accountingAttributes = { ...(record.accountingAttributes || {}), postingStatus: record.accountingStatus };
+      }
+      record.updatedAt = context.at;
+      record.updatedBy = context.actor;
+    }
+  }
+}
+
 export function cancelVoucherDraft(workspace, { voucherId, reason }, context = {}) {
   if (!String(reason || "").trim()) throw new AccountingRuleError("VOUCHER_CANCEL_REASON_REQUIRED", "取消凭证草稿必须填写原因");
   const next = cloneAccountingState(workspace);
@@ -92,6 +134,7 @@ export function cancelVoucherDraft(workspace, { voucherId, reason }, context = {
   voucher.invalidatedBy = resolved.actor;
   voucher.invalidationReason = note;
   voucher.versions = [...(voucher.versions || []), { at: resolved.at, actor: resolved.actor, action: "cancel_draft", reason: note, previousStatus }];
+  releaseVoucherDraftSources(next, voucher, resolved);
   (next.exceptionTasks || []).filter((task) => task.sourceId === voucher.id && task.status !== "resolved").forEach((task) => {
     Object.assign(task, { status: "resolved", resolution: "voucher_draft_cancelled", resolvedAt: resolved.at, resolvedBy: resolved.actor });
     task.history = [...(task.history || []), { at: resolved.at, actor: resolved.actor, action: "voucher_draft_cancelled", note }];
@@ -129,10 +172,7 @@ export function invalidateReconciliationDrafts(workspace, transactionId, allocat
       voucher.invalidatedAt = resolvedContext.at;
       voucher.invalidationReason = reason;
       voucher.versions = [...(voucher.versions || []), before, voucherSnapshot(voucher, resolvedContext, reason)];
-      (next.businessEvents || []).filter((event) => event.draftVoucherId === voucher.id).forEach((event) => {
-        event.draftVoucherId = null;
-        event.accountingStatus = "pending";
-      });
+      releaseVoucherDraftSources(next, voucher, resolvedContext);
       (next.exceptionTasks || []).filter((task) => task.sourceId === voucher.id && task.status !== "resolved").forEach((task) => {
         task.status = "resolved";
         task.resolution = "source_invalidated";
@@ -420,7 +460,7 @@ export function vouchersForMemberEvent(workspace, eventOrId) {
   if (memberEventKind(event) === MEMBER_EVENT_KINDS.RECHARGE && event.transactionId) return memberRechargeVouchers(workspace, event);
   const sourceIds = new Set(collectSourceIds(event.id, event.billId));
   return (workspace.vouchers || []).filter((voucher) => (
-    (voucher.sourceIds || []).some((sourceId) => sourceIds.has(sourceId))
+    voucherReferencesRecord(voucher, event) || (voucher.sourceIds || []).some((sourceId) => sourceIds.has(sourceId))
     || (voucher.lines || []).some((line) => (line.sourceIds || []).some((sourceId) => sourceIds.has(sourceId)))
   ));
 }
@@ -630,14 +670,16 @@ export function createBankBusinessEventVoucherDraft(workspace, {
     throw new AccountingRuleError("MEMBER_MODULE_DISABLED", "当前工作台未启用会员模块，不能生成会员业务凭证");
   }
   const activeVoucher = (next.vouchers || []).find((voucher) => (
-    (voucher.bankBusinessEventId === event.id || voucher.sourceIds?.includes(event.id))
-    && ["posted", "draft", "changes_requested"].includes(voucher.status)
+    voucherReferencesRecord(voucher, event) && liveVoucher(voucher)
   ));
   if (activeVoucher) {
     throw new AccountingRuleError("SOURCE_ALREADY_VOUCHERED", `业务事件 ${event.businessEventNo || event.id} 已有${activeVoucher.no || "凭证草稿"}`);
   }
-  if (["voucher_draft", "posted"].includes(event.accountingStatus)) {
+  if (event.accountingStatus === "posted") {
     throw new AccountingRuleError("SOURCE_ALREADY_VOUCHERED", `业务事件 ${event.businessEventNo || event.id} 已进入凭证链`);
+  }
+  if (!bankBusinessEventDraftStateAllowsCreation(next, event)) {
+    throw new AccountingRuleError("BUSINESS_EVENT_DRAFT_STATE_UNRESOLVED", "原凭证草稿缺失或状态不明，请先在凭证中核对，不能直接重复生成");
   }
 
   const classification = effectiveBankTransactionClassification(next, transaction);
@@ -1079,10 +1121,11 @@ export function createMemberEventVoucherDraft(workspace, { eventId, summary, not
     if (memberRechargeVouchers(next, event).length) return next;
     if (event.allocationId) return createVoucherDraft(next, { transactionId: event.transactionId, summary, note }, resolvedContext);
   }
-  const existing = vouchersForMemberEvent(next, event).find((voucher) => voucher.status !== "superseded");
+  const existing = vouchersForMemberEvent(next, event).find(liveVoucher);
   if (existing) {
     throw new AccountingRuleError("SOURCE_ALREADY_VOUCHERED", `这笔会员业务已有${existing.no || "凭证草稿"}`);
   }
+  if (event.accountingStatus === "posted") throw new AccountingRuleError("SOURCE_ALREADY_VOUCHERED", "这笔会员业务已经入账，请通过原凭证处理更正");
 
   const lines = memberEventVoucherLines(next, event);
   const validation = validateVoucherBalance({ lines }, accountingRules(next).amountTolerance, next);
@@ -1144,23 +1187,28 @@ export function createAdvanceApplicationVoucherDraft(workspace, { applicationId,
   if (application.status !== "confirmed") {
     throw new AccountingRuleError("ADVANCE_APPLICATION_NOT_CONFIRMED", "预收/预付冲销关系必须先人工确认，才能生成凭证");
   }
-  const existing = (next.vouchers || []).find((voucher) => (
-    voucher.advanceApplicationId === application.id && voucher.status !== "superseded"
-  ));
+  const existing = vouchersForAdvanceApplication(next, application)[0];
   if (existing) {
     throw new AccountingRuleError("SOURCE_ALREADY_VOUCHERED", `这笔冲销关系已有${existing.no || "凭证草稿"}`);
   }
+  if (application.accountingStatus === "posted") throw new AccountingRuleError("SOURCE_ALREADY_VOUCHERED", "这笔冲销已经入账，请通过原凭证处理更正");
 
   const advanceBill = findBill(next, application.advanceBillId);
   const targetBill = findBill(next, application.targetBillId);
   const lines = advanceApplicationVoucherLines(next, application);
   const validation = validateVoucherBalance({ lines }, accountingRules(next).amountTolerance, next);
   if (!validation.balanced) throw new AccountingRuleError("VOUCHER_UNBALANCED", validation.errors.join("；"), validation);
+  const asOf = settlementPeriodEnd(application.businessPeriod || String(application.date || "").slice(0, 7));
+  const balance = advanceBalance(next, advanceBill, { asOf });
+  if (balance.fundedAmount + accountingRules(next).amountTolerance < balance.usedAmount) {
+    throw new AccountingRuleError("ADVANCE_FUNDING_IN_USE", "冲销所属月份的有效资金不足，请先核对预收/预付余额及相关冲销，不能继续生成凭证");
+  }
+  const funding = confirmedAllocationsForBill(next, advanceBill.id, { asOf });
   const sourceIds = collectSourceIds(
     application.id,
-    application.sourceIds || [],
     application.advanceBillId,
     application.targetBillId,
+    funding.map((allocation) => [allocation.id, allocation.transactionId]),
   );
   const sourceTransactions = sourceTransactionsForVoucher(next, { sourceIds });
   const evidenceIds = collectSourceIds(
@@ -1178,6 +1226,7 @@ export function createAdvanceApplicationVoucherDraft(workspace, { applicationId,
     version: 1,
     sourceType: "advanceApplication",
     advanceApplicationId: application.id,
+    reconciliationSources: funding.map(({ id, billId, amount }) => ({ id, billId, amount })),
     lines,
     sourceIds,
     evidenceIds,

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createBlankWorkspace } from "../src/domain/foundation.js";
-import { createMemberEventVoucherDraft, createVoucherDraft, postVoucher, postVoucherWithEvidence } from "../src/domain/accounting/vouchers.js";
+import { cancelVoucherDraft, createMemberEventVoucherDraft, createVoucherDraft, postVoucher, postVoucherWithEvidence } from "../src/domain/accounting/vouchers.js";
 import { assessTransactionEvidence, assessVoucherEvidence, recordManualVoucherEvidenceFailure } from "../src/features/evidence/evidenceEngine.js";
 import { buildMemberRechargeSourceOptions, linkMemberRechargeSource } from "../src/features/members/memberRechargeSources.js";
 import { refreshLocalFileAvailability } from "../src/features/intake/documentIntake.js";
@@ -19,6 +19,25 @@ function rechargeWorkspace() {
     classification: { eventType: "memberRecharge", account: "contractLiability", confidence: 100, reasons: [], riskFlags: [] } }];
   return workspace;
 }
+
+test("a cancelled recharge draft can be rebuilt from either entry and posts one receipt only", async () => {
+  let workspace = linkMemberRechargeSource(rechargeWorkspace(), { eventId: "recharge-1", transactionId: "receipt-1" }, context);
+  workspace = createMemberEventVoucherDraft(workspace, { eventId: "recharge-1" }, context);
+  const originalId = workspace.vouchers[0].id;
+  workspace = cancelVoucherDraft(workspace, { voucherId: originalId, reason: "重建充值摘要" }, context);
+  assert.equal(workspace.businessEvents[0].accountingStatus, "ready");
+  assert.equal(workspace.businessEvents[0].draftVoucherId, null);
+  workspace = createVoucherDraft(workspace, { transactionId: "receipt-1" }, context);
+  workspace = createMemberEventVoucherDraft(workspace, { eventId: "recharge-1" }, context);
+  const active = workspace.vouchers.filter((voucher) => voucher.status === "draft");
+  assert.equal(active.length, 1);
+  assert.notEqual(active[0].id, originalId);
+  const fixture = await withVoucherEvidence(workspace);
+  const posted = await postVoucherWithEvidence(fixture.workspace, postInput(active[0].id), { ...context, fileVault: fixture.fileVault });
+  assert.equal(posted.vouchers.filter((voucher) => voucher.status === "posted").length, 1);
+  assert.equal(posted.vouchers.find((voucher) => voucher.id === originalId).status, "invalidated");
+  assert.equal(posted.businessEvents[0].accountingStatus, "posted");
+});
 
 test("manual recharge cannot post without explicitly selecting its real receipt", () => {
   const workspace = rechargeWorkspace();

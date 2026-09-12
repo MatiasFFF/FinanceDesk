@@ -20,6 +20,7 @@ import {
 } from "../../domain/accounting/model.js";
 import { settlementBillIsEffective, settlementRecordIsEffective, settlementTransactionIsEffective, settlementPeriodEnd } from "./settlementRecognition.js";
 import { assertBillWrite } from "../../domain/accounting/billWriteRules.js";
+import { isPeriodArchived, validAccountingPeriod } from "../../domain/periods.js";
 import {
   applyManualClassification,
   classifyBankTransaction,
@@ -40,6 +41,7 @@ import {
   createPostedVoucherRevision,
   invalidateReconciliationDrafts,
   reviseDraftVoucher,
+  vouchersForAdvanceApplication,
   vouchersForReconciliation,
 } from "../../domain/accounting/vouchers.js";
 
@@ -1214,6 +1216,61 @@ export function applyAdvanceToBill(workspace, {
   return next;
 }
 
+export function reverseAdvanceApplication(workspace, { applicationId, reason }, context = {}) {
+  if (typeof reason !== "string" || !reason.trim()) throw new AccountingRuleError("ADVANCE_REVERSAL_REASON_REQUIRED", "撤回冲销必须填写原因");
+  let next = cloneAccountingState(workspace);
+  let application = (next.advanceApplications || []).find((item) => item.id === applicationId);
+  if (!application) throw new AccountingRuleError("ADVANCE_APPLICATION_NOT_FOUND", "找不到这笔预收/预付冲销，请刷新后重试");
+  const relatedVouchers = vouchersForAdvanceApplication(next, application);
+  if (application.accountingStatus === "posted" || application.status === "posted" || relatedVouchers.some((voucher) => voucher.status === "posted")) {
+    throw new AccountingRuleError("POSTED_ADVANCE_CORRECTION_REQUIRED", "这笔冲销已经入账，不能直接撤回；请通过原凭证处理更正并保留冲销记录", { applicationId, voucherIds: relatedVouchers.filter((voucher) => voucher.status === "posted").map((voucher) => voucher.id) });
+  }
+  if (application.status !== "confirmed") throw new AccountingRuleError("ADVANCE_APPLICATION_NOT_ACTIVE", "这笔冲销已撤回或已失效，不能重复撤回");
+  assertAccountingPeriodWritable(next, application.businessPeriod || periodOf(application.date));
+  if (isPeriodArchived(next, periodOf(application.date))) throw new AccountingRuleError("PERIOD_ARCHIVED", "冲销所属账期已归档，不能直接撤回；请在未归档账期处理调整");
+  relatedVouchers.forEach((voucher) => assertAccountingPeriodWritable(next, voucher.period));
+  const resolved = operationContext({ ...context, mode: "manual" });
+  const note = reason.trim();
+  const asOf = settlementPeriodEnd(next.currentPeriod);
+  const before = { advance: advanceBalance(next, application.advanceBillId, { asOf }), target: billSettlement(next, application.targetBillId, { asOf }) };
+  for (const voucher of relatedVouchers) next = cancelVoucherDraft(next, { voucherId: voucher.id, reason: `撤回冲销：${note}` }, resolved);
+  application = next.advanceApplications.find((item) => item.id === applicationId);
+  // This unposted application was entered in error: void it in its own open
+  // accounting period. cancelledAt remains the actual wall-clock audit time.
+  Object.assign(application, { status: "cancelled", accountingStatus: "cancelled", draftVoucherId: null,
+    cancelledAt: resolved.at, cancelledBy: resolved.actor, cancellationReason: note, updatedAt: resolved.at, updatedBy: resolved.actor });
+  (next.exceptionTasks || []).filter((task) => task.sourceId === applicationId && task.status !== "resolved").forEach((task) => {
+    Object.assign(task, { status: "resolved", resolution: "advance_application_cancelled", resolvedAt: resolved.at, resolvedBy: resolved.actor });
+    task.history = [...(task.history || []), { at: resolved.at, actor: resolved.actor, action: "advance_application_cancelled", note }];
+  });
+  appendAuditEntry(next, { action: "reconciliation.advance_reverse", entityType: "advanceApplication", entityId: applicationId,
+    detail: `${note}；恢复预收/预付可用余额和对应账单未核销金额`, before,
+    after: { application, advance: advanceBalance(next, application.advanceBillId, { asOf }), target: billSettlement(next, application.targetBillId, { asOf }) },
+    sourceIds: collectSourceIds(applicationId, application.advanceBillId, application.targetBillId, relatedVouchers.map((voucher) => voucher.id)),
+  }, resolved);
+  return next;
+}
+
+function assertAdvanceFundingCoverage(workspace, billId) {
+  const bill = findBill(workspace, billId);
+  if (!isAdvanceBill(bill)) return;
+  const periods = new Set([workspace.currentPeriod, ...(workspace.advanceApplications || [])
+    .filter((application) => application.advanceBillId === billId && ["confirmed", "posted", "reversed"].includes(application.status))
+    .flatMap((application) => [application.businessPeriod, periodOf(application.date)])].filter(validAccountingPeriod));
+  // Future cash must not hide a deficit in an earlier application month.
+  for (const period of [...periods].sort().concat(null)) {
+    const asOf = period ? settlementPeriodEnd(period) : undefined;
+    const balance = advanceBalance(workspace, bill, { asOf });
+    if (balance.fundedAmount + accountingRules(workspace).amountTolerance >= balance.usedAmount) continue;
+    const applications = confirmedAdvanceApplications(workspace, { advanceBillId: billId, asOf });
+    const targets = [...new Set(applications.map((application) => {
+      const target = findBill(workspace, application.targetBillId);
+      return target.no || target.summary || "对应账单";
+    }))];
+    throw new AccountingRuleError("ADVANCE_FUNDING_IN_USE", `撤销后 ${bill.no || bill.summary || "这笔预收/预付"}${period ? ` 在 ${period} 月末` : ""}的资金仅剩 ${balance.fundedAmount.toFixed(2)} 元，不足以覆盖已使用的 ${balance.usedAmount.toFixed(2)} 元。请在预收/预付余额中先撤回对应 ${targets.join("、")} 的未入账冲销；已入账冲销请通过原凭证处理更正。`, { advanceBillId: billId, period, fundedAmount: balance.fundedAmount, usedAmount: balance.usedAmount, applicationIds: applications.map((application) => application.id) });
+  }
+}
+
 function combinations(items, minimumSize, maximumSize) {
   const results = [];
   function visit(start, selected) {
@@ -2029,6 +2086,8 @@ export function reverseReconciliation(workspace, { allocationId, reason }, conte
   if (posted.length) throw new AccountingRuleError("POSTED_RECONCILIATION_CORRECTION_REQUIRED", "该核销已经入账；请选择正确账单并创建核销更正草稿，复核入账时同步替换核销和凭证", { voucherIds: posted.map((voucher) => voucher.id) });
   const before = transactionSettlement(transaction);
   allocation.status = "reversed";
+  allocation.reversalEffectiveDate = allocation.date || transaction.date;
+  assertAdvanceFundingCoverage(next, allocation.billId);
   allocation.reversedAt = resolvedContext.at;
   allocation.reversedBy = resolvedContext.actor;
   allocation.reversalReason = reason.trim();
@@ -2060,7 +2119,8 @@ function validateCorrectionReplacement(workspace, allocation, transaction, repla
   if (allocation.billId === replacement.billId) throw new AccountingRuleError("CORRECTION_TARGET_REQUIRED", "请选择与原核销不同的正确账单");
   if (roundMoney(allocation.amount) !== roundMoney(replacement.amount)) throw new AccountingRuleError("CORRECTION_AMOUNT_CHANGED", "本次核销更正保持原核销金额，请重新选择正确账单");
   const preview = cloneAccountingState(workspace);
-  correctionAllocation(preview, allocation.id).allocation.status = "reversed";
+  Object.assign(correctionAllocation(preview, allocation.id).allocation, { status: "reversed", reversalEffectiveDate: allocation.date || transaction.date });
+  assertAdvanceFundingCoverage(preview, allocation.billId);
   const draft = buildReconciliationAllocationDraft(preview, { transactionId: transaction.id, allocations: [replacement] });
   if (!draft.valid) throw new AccountingRuleError(draft.issues[0].code, draft.issues[0].message, draft.issues[0].details);
 }
@@ -2123,6 +2183,7 @@ export function commitReconciliationCorrection(workspace, voucher, context) {
   const before = transactionSettlement(transaction);
   allocation.status = "reversed";
   allocation.reversedAt = context.at;
+  allocation.reversalEffectiveDate = allocation.date || transaction.date;
   allocation.reversedBy = context.actor;
   allocation.reversalReason = plan.reason;
   allocation.correctedByVoucherId = voucher.id;
@@ -2329,7 +2390,8 @@ export function buildAdvanceBalances(workspace, { asOf } = {}) {
     .filter((bill) => [BILL_KINDS.DEPOSIT_RECEIVED, BILL_KINDS.PREPAYMENT_PAID].includes(bill.kind) && settlementBillIsEffective(bill, asOf))
     .map((bill) => {
       const balance = advanceBalance(workspace, bill, { asOf });
-      const applications = confirmedAdvanceApplications(workspace, { advanceBillId: bill.id, asOf }).map((application) => {
+      const applicationHistory = (workspace.advanceApplications || []).filter((application) => application.advanceBillId === bill.id
+        && (!asOf || String(application.date || application.createdAt || "").slice(0, 10) <= asOf)).map((application) => {
         const targetBill = (workspace.bills || []).find((candidate) => candidate.id === application.targetBillId);
         return {
           ...application,
@@ -2338,6 +2400,7 @@ export function buildAdvanceBalances(workspace, { asOf } = {}) {
           targetSummary: targetBill?.summary,
         };
       });
+      const applications = applicationHistory.filter((application) => settlementRecordIsEffective(application, asOf, application.date || String(application.createdAt || "").slice(0, 10)));
       return {
         billId: bill.id,
         billNo: bill.no,
@@ -2351,6 +2414,7 @@ export function buildAdvanceBalances(workspace, { asOf } = {}) {
         availableBalance: balance.availableBalance,
         pendingFunding: balance.pendingFunding,
         applications,
+        applicationHistory,
         sourceIds: balance.sourceIds,
       };
     });

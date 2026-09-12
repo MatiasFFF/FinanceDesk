@@ -5,6 +5,8 @@ import { removeLocalDocument, saveLocalDocument, verifyStoredDocumentOriginal } 
 import { accountingRules, collectSourceIds, workspaceAccountDefinitions } from "../domain/accounting/model.js";
 import { prepareVoucherPosting, reviseDraftVoucher } from "../domain/accounting/vouchers.js";
 import { attachReceipt, importLocalReceipt } from "../productWorkflow.js";
+import { advanceBalance, billSettlement, reverseAdvanceApplication } from "../features/reconciliation/reconciliationEngine.js";
+import { settlementPeriodEnd } from "../features/reconciliation/settlementRecognition.js";
 
 const string = { type: "string", minLength: 1 };
 const target = { workspaceId: string, period: { type: "string", pattern: "^[1-9]\\d{3}-(0[1-9]|1[0-2])$" } };
@@ -24,6 +26,7 @@ export const FINANCE_DESK_OPERATIONS = [
   definition("getWorkspaceContext", "查询指定工作台和账期的账户及导入记录", target, ["workspaceId", "period"], ["workspaceId", "period", "archived", "periods", "accounts", "imports"]),
   definition("getVoucherContext", "读取指定账期凭证、补件和可用操作", voucherTarget, ["workspaceId", "period", "voucherId"], ["workspaceId", "period", "voucher", "missingItems", "nextActions"]),
   definition("postVoucher", "核验原件后按最新目标工作台入账，可同时保存分录修订", { ...voucherTarget, reviewNote: string, edits: voucherEdits }, ["workspaceId", "period", "voucherId", "reviewNote"], ["workspaceId", "period", "voucher", "missingItems", "nextActions"]),
+  definition("reverseAdvanceApplication", "撤回指定账期尚未入账的预收/预付冲销，恢复余额并保留撤回历史", { ...target, applicationId: string, reason: string }, ["workspaceId", "period", "applicationId", "reason"], ["workspaceId", "period", "application", "advance", "target", "cancelledVoucherIds"]),
   definition("importReceipt", "把本地回执原件登记到指定申报包，保存后再次确认包与原件归属", { ...target, fileRef: string, packageId: string, packageHash: string, reportVersionId: string }, ["workspaceId", "period", "fileRef", "packageId", "packageHash", "reportVersionId"], ["workspaceId", "period", "receipt"]),
   definition("prepareBankImport", "对已注册本地文件进行映射和导入预检查", {
     ...target, accountId: string, fileRef: string, mapping: { type: "object", properties: Object.fromEntries(Object.keys(BANK_FIELD_DEFINITIONS).map((field) => [field, { type: "integer", minimum: 0 }])), additionalProperties: false },
@@ -186,6 +189,25 @@ export async function importWorkspaceReceipt({ store, fileVault, file }, input) 
     }
     throw error;
   }
+}
+
+export function reverseWorkspaceAdvanceApplication({ store }, input) {
+  const { workspaceId, period, applicationId, reason } = input || {};
+  if (typeof workspaceId !== "string" || !workspaceId.trim() || !validAccountingPeriod(period)
+    || typeof applicationId !== "string" || !applicationId.trim() || typeof reason !== "string" || !reason.trim()) throw failure("请指定工作台、账期、冲销记录及撤回原因");
+  for (const key of Object.keys(input)) if (!["workspaceId", "period", "applicationId", "reason"].includes(key)) throw failure(`不支持的参数：${key}`);
+  const user = store.assertWorkspaceWritable(workspaceId, period, "data.write");
+  const latest = getWorkspace(store.getState(), workspaceId);
+  const targetWorkspace = activateWorkspacePeriod(latest, period);
+  const next = reverseAdvanceApplication(targetWorkspace, { applicationId, reason }, { actor: user?.name || "本地用户", at: new Date().toISOString(), mode: "manual" });
+  const cancelledVoucherIds = (next.vouchers || []).filter((voucher) => voucher.status === "invalidated"
+    && (targetWorkspace.vouchers || []).some((previous) => previous.id === voucher.id && ["draft", "changes_requested"].includes(previous.status))).map((voucher) => voucher.id);
+  const state = store.actions.replaceWorkspace(workspaceId, activateWorkspacePeriod(next, latest.currentPeriod), { period, requiredPermission: "data.write" });
+  const saved = getWorkspace(state, workspaceId);
+  const application = saved.advanceApplications.find((item) => item.id === applicationId);
+  const asOf = settlementPeriodEnd(period);
+  return jsonCopy({ workspaceId, period, application, advance: advanceBalance(saved, application.advanceBillId, { asOf }),
+    target: billSettlement(saved, application.targetBillId, { asOf }), cancelledVoucherIds });
 }
 
 export function createFinanceDeskService({ store, fileVault }) {
@@ -382,6 +404,9 @@ export function createFinanceDeskService({ store, fileVault }) {
     },
     postVoucher(input) {
       return postWorkspaceVoucher({ store, fileVault }, validate("postVoucher", input));
+    },
+    reverseAdvanceApplication(input) {
+      return reverseWorkspaceAdvanceApplication({ store }, validate("reverseAdvanceApplication", input));
     },
     listWorkspaces(input = {}) {
       validate("listWorkspaces", input);

@@ -2,9 +2,28 @@
 
 `src/foundation.js` 是纯 JavaScript 入口，可在 Node 或浏览器中直接调用，不挂载 React。`src/foundation-react.js` 保留 Provider 和现有页面组件。
 
-应用服务已覆盖银行导入、凭证原件核验与入账、申报回执登记；对应手动页面使用相同入口。库存、账单和草稿取消保留明确的领域函数；Excel 与申报包可直接生成文件，识别持久化可接收带提供方信息的结果。模型调用、DeepSeek 和简版页面均未接入。
+应用服务已覆盖银行导入、凭证原件核验与入账、申报回执登记、未入账预收/预付冲销撤回；对应手动页面使用相同入口。库存、账单和草稿取消保留明确的领域函数；Excel 与申报包可直接生成文件，识别持久化可接收带提供方信息的结果。模型调用、DeepSeek 和简版页面均未接入。
 
 ## 可直接运行的 Node 示例
+
+### 撤回未入账预收/预付冲销
+
+```js
+const result = service.reverseAdvanceApplication({
+  workspaceId, period: '2026-08', applicationId, reason: '误选了对应账单',
+});
+// { workspaceId, period, application, advance, target, cancelledVoucherIds }
+```
+
+页面调用 `reverseWorkspaceAdvanceApplication({ store }, input)`；服务的同名操作复用这个入口。操作身份来自目标工作台 store，不能传入 actor；明确指定工作台、冲销所属账期、冲销 ID 和原因，在最新状态上一次保存，保留用户当前显示的工作台与月份。返回该月末的预收/预付余额及目标账单结算金额。
+
+这是一笔尚未入账误录的取消：`application.status = cancelled`，余额从其所属未归档期排除该笔使用；`cancelledAt` 记录真实操作时间。例如九月回到未归档八月撤回，八月底余额立即恢复。`cancellationReason`、`cancelledBy`、原始来源及旧凭证保留，`buildAdvanceBalances().rows[].applicationHistory` 提供历史展示。有效凭证无论通过专用 ID、sourceIds 或分录间接引用冲销，都阻止直接撤回已入账记录；归档记录仍走原有更正边界。
+
+撤回同时取消该笔冲销自己的未入账草稿，只关闭冲销与这些草稿自身的待办，不改原始资金或其他冲销。单独 `cancelVoucherDraft` 只解除草稿及其拥有的来源指针，冲销仍有效并可重建；银行来源恢复 pending、会员恢复 ready、冲销恢复 unprocessed。旧银行草稿缓存只有能追到已作废/替代凭证时允许重建，缺失或未知状态仍提示核对。
+
+撤销原始资金或更正其归属时，共用资金覆盖校验：核对当前月、有关冲销月末及最终余额，后续月份到账不能补早月缺口；足额保留资金允许撤销多余关联。新冲销草稿根据当前有效资金生成 `reconciliationSources`，保留历史来源在原冲销和旧凭证中；当前来源失效、缺失原件仍阻止入账。常见错误：`ADVANCE_REVERSAL_REASON_REQUIRED`、`ADVANCE_APPLICATION_NOT_ACTIVE`、`POSTED_ADVANCE_CORRECTION_REQUIRED`、`ADVANCE_FUNDING_IN_USE`、`BUSINESS_EVENT_DRAFT_STATE_UNRESOLVED`，以及既有归档、账期和权限错误。
+
+### 银行导入示例
 
 在仓库根目录执行下列命令。示例只用内存存储、内存原件库及模拟 CSV，不接触真实账本。
 
@@ -70,6 +89,7 @@ JS
 | `getVoucherContext` | `workspaceId`, `period`, `voucherId` | 无 | `voucher`、自身 `missingItems`、`nextActions` |
 | `postVoucher` | `workspaceId`, `period`, `voucherId`, `reviewNote` | `edits`：`summary`、`lines`、`evidenceIds`、`sourceIds`、`basis`、`reason` | 最新已保存 `voucher`、自身缺项及后续操作 |
 | `importReceipt` | `workspaceId`, `period`, `fileRef`, `packageId`, `packageHash`, `reportVersionId` | 无 | 固定目标的 `receipt`，含真实原件 ID、哈希和申报包标识 |
+| `reverseAdvanceApplication` | `workspaceId`, `period`, `applicationId`, `reason` | 无 | 已保存的撤回记录 `application`、该月末 `advance` 与 `target` 余额、作废草稿 ID |
 
 `workspaceId`、`accountId`、`planId` 和 `importId` 是非空字符串；`period` 必须明确指定为 `YYYY-MM`，并与文件内流水日期一致。一次文件仅导入一个月份。`mapping` 将字段名映射到从零开始的非负整数列序号，不能越过文件实际列数，也不接受未知字段；省略或传空对象时保留自动映射。标准字段包括 `date`、`amount`、`credit`、`debit`、`direction`、`counterparty`、`counterpartyAccount`、`summary`、`serial`、`balance`、`channel`、`currency`。
 
@@ -149,7 +169,7 @@ const store = createFinanceDeskStore({
 ## 领域规则与文件结果
 
 - 库存：`valueInventoryPeriod` 从唯一初始库存和之前已保存流水计算分仓月初，再估价本月流水。新物料保存 `openingPeriod`；旧数据从最早创建/业务日期推断，不使用正在显示的月份。补录未归档旧月会逐月重算受影响物料后续未归档流水，负库存则整次不保存；已入账损耗凭证保留原值，通过现有成本更正处理。归档月份展示保存金额，不重新估价；影响归档结余的回溯修改拒绝并指向最新未归档月份盘盈、盘亏。名称、规格等普通资料可继续编辑，已被后续月份使用的初始财务值不能直接改写。
-- 账单：`assertBillWrite` 用于通用 upsert/status/delete、往来新建、红票金额调整。按账单本身的业务月、日期和 period 检查归档；未使用且未归档的账单可编辑。已核销、预付款冲销或已入账的关键金额/主体/期间等字段不能静默覆盖；备注和合法到期日调整仍允许。红票不得低于已结算额或改归档历史；已入账金额差异的通用跨期联动调整尚未实现。错误给出实际关联 ID；未入账核销有银行流水撤销入口，预收/预付冲销目前没有直接撤回入口，不把同金额换账单的核销更正称为金额调整。
+- 账单：`assertBillWrite` 用于通用 upsert/status/delete、往来新建、红票金额调整。按账单本身的业务月、日期和 period 检查归档；未使用且未归档的账单可编辑。已核销、预付款冲销或已入账的关键金额/主体/期间等字段不能静默覆盖；备注和合法到期日调整仍允许。红票不得低于已结算额或改归档历史；已入账金额差异的通用跨期联动调整尚未实现。错误给出实际关联记录：未入账核销有银行流水撤销入口，未入账冲销可在预收/预付余额中撤回，已入账仍通过原凭证更正；同金额换账单的核销更正不能替代金额调整。
 - 草稿：`cancelVoucherDraft(workspace, {voucherId, reason}, context)` 将 draft/changes_requested 标记 invalidated，记录原因/历史并解决自身任务。普通手工和通用凭证列表已提供取消入口；`cancelReconciliationCorrection` 复用相同规则，保留原凭证和原核销。已入账或已归档不可直接取消。
 - Excel：`generateFrozenReportExcel(workspace, options)` 位于 reporting 模块，返回 `{bytes, blob, metadata}`；仍验证冻结版本和来源指纹。`exportFrozenReportExcel` 仅增加浏览器下载。
 - 申报包：`generateLocalFilingPackage(workspace)` 位于 productWorkflow，返回 `{bytes, blob, metadata}`，复用既有 ZIP 内容及确认条件。`exportLocalFilingPackage` 仅增加浏览器下载；纯生成不操作 DOM，也不登记为已外部提交。

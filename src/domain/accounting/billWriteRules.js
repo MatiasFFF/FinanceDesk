@@ -52,7 +52,7 @@ export function assertBillWrite(workspace, previous, proposed, { operation = "up
     const zeroAdjustment = operation === "red-invoice" || (previous && Number(previous.amount) === 0 && amount === 0);
     if (!["number", "string"].includes(typeof proposed.amount) || String(proposed.amount).trim() === "" || !Number.isFinite(amount)
       || amount < 0 || (!zeroAdjustment && roundMoney(amount) <= 0)) throw billError("INVALID_BILL_AMOUNT", "账单金额必须是大于 0 的有效金额");
-    if ((!previous || Number(previous.amount) !== amount) && amount + 0.01 < relations.settledAmount) throw billError("BILL_BELOW_SETTLED", `账单金额不能低于已核销或冲销的 ${relations.settledAmount.toFixed(2)} 元；关联记录：${[...relations.allocations, ...relations.applications].map((record) => record.id).join("、")}。未入账核销可在对应银行流水撤销；预收/预付冲销暂不支持直接撤回。`, { billId: previous?.id, settledAmount: relations.settledAmount });
+    if ((!previous || Number(previous.amount) !== amount) && amount + 0.01 < relations.settledAmount) throw billError("BILL_BELOW_SETTLED", `账单金额不能低于已核销或冲销的 ${relations.settledAmount.toFixed(2)} 元；关联记录：${[...relations.allocations, ...relations.applications].map((record) => record.id).join("、")}。未入账核销可在对应银行流水撤销；未入账冲销可在预收/预付余额中填写原因后撤回，已入账记录需通过原凭证更正。`, { billId: previous?.id, settledAmount: relations.settledAmount });
   }
   const financialChange = operation === "delete" || changedFields.length > 0;
   const explicitRedAdjustment = operation === "red-invoice" && changedFields.every((field) => field === "amount") && !relations.vouchers.length;
@@ -60,7 +60,7 @@ export function assertBillWrite(workspace, previous, proposed, { operation = "up
     const linked = [...relations.allocations.map((item) => `核销 ${item.id}（流水 ${item.transactionId}）`),
       ...relations.applications.map((item) => `预收/预付冲销 ${item.id}`), ...relations.vouchers.map((item) => `已入账凭证 ${item.no || item.id}`)];
     const route = relations.vouchers.length ? "请在凭证中处理更正并保留原记录；涉及账单金额差异的历史调整尚不支持直接联动，请先核对调整方案。"
-      : relations.applications.length ? "预收/预付冲销目前没有直接撤回入口，请保留原账单并先核对调整方案。"
+      : relations.applications.length ? "请先在预收/预付余额中撤回未入账冲销，再修改账单；已入账冲销请通过原凭证更正。"
         : "请先在对应银行流水中撤销未入账核销，再修改账单。";
     throw billError("BILL_FINANCIAL_RELATIONS", `账单已关联${linked.join("、")}，不能直接修改财务字段或删除。${route}`, { billId: previous.id, changedFields, ...relations });
   }

@@ -15,7 +15,8 @@ export function settlementBillIsEffective(bill, asOf) {
 }
 
 export function settlementRecordIsEffective(record, asOf, date) {
-  const reversedLater = record.status === "reversed" && asOf && record.reversedAt && record.reversedAt.slice(0, 10) > asOf;
+  const reversalDate = record.reversalEffectiveDate || record.reversedAt;
+  const reversedLater = record.status === "reversed" && asOf && reversalDate && reversalDate.slice(0, 10) > asOf;
   if (!["confirmed", "posted"].includes(record.status) && !reversedLater) return false;
   return !asOf || Boolean(date && String(date).slice(0, 10) <= asOf);
 }

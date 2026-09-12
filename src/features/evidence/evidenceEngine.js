@@ -517,7 +517,13 @@ export function voucherEvidenceSources(workspace, voucher) {
     sources.push(source);
     const { record } = source;
     collectSourceIds(record.evidenceIds, record.documentIds, record.documentId, record.sourceDocumentId, record.invoiceDocumentIds).forEach((documentId) => documentIds.add(documentId));
-    collectSourceIds(record.sourceIds, record.billId, record.relatedBillId, record.transactionId, record.allocationId, record.contractId, record.invoiceId, record.approvalId, record.originalSourceId,
+    // A newly rebuilt advance voucher snapshots its current funding allocations.
+    // The application keeps historical funding IDs for audit, not as live sources
+    // of this replacement draft. Explicit voucher roots and all originals are
+    // still checked, and posting validates every reconciliationSources entry.
+    const historicalAdvanceSources = source.collection === "advanceApplications" && record.id === voucher.advanceApplicationId
+      && voucher.reconciliationSources?.length > 0;
+    collectSourceIds(historicalAdvanceSources ? [] : record.sourceIds, record.billId, record.relatedBillId, record.transactionId, record.allocationId, record.contractId, record.invoiceId, record.approvalId, record.originalSourceId,
       record.sourceImportId, record.advanceBillId, record.targetBillId, record.itemId, source.transaction?.id).forEach((sourceId) => ids.add(sourceId));
   }
   return { sourceIds: [...ids], roots, sources, documentIds: [...documentIds], invalidSourceIds: roots.filter((id) => !records.has(id)
